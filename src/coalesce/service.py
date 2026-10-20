@@ -82,7 +82,8 @@ def _angle(value: Any) -> float:
     if not isinstance(value["value"], (int, float)):
         raise RequestError("INVALID_PARAMETER", "angle value must be a number", field="rotation")
     angle = _finite_number(value["value"], "rotation")
-    return math.degrees(angle) if value["unit"] == "rad" else angle
+    converted = math.degrees(angle) if value["unit"] == "rad" else angle
+    return _finite_number(converted, "rotation")
 
 
 class Action(str, Enum):
