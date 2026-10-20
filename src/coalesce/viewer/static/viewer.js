@@ -399,6 +399,17 @@ window.coalesceViewer = {
   get revision() { return current?.revision ?? null; },
   get failure() { return failure; },
 };
+if (window.coalesceDebug === true) {
+  // read-only gpu counters for the browser stress test; a test sets the flag before load
+  Object.defineProperty(window.coalesceViewer, 'memory', {
+    get: () => ({
+      geometries: renderer.info.memory.geometries,
+      textures: renderer.info.memory.textures,
+      programs: renderer.info.programs.length,
+      cachedMeshes: geometries.size,
+    }),
+  });
+}
 
 requestRender();
 connect();

@@ -11,6 +11,7 @@ const lines = readline.createInterface({ input: process.stdin })[Symbol.asyncIte
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
 const errors = [];
+await page.addInitScript(() => { window.coalesceDebug = true; });
 page.on('pageerror', (error) => errors.push(String(error)));
 page.on('console', (message) => message.type() === 'error' && errors.push(message.text()));
 
@@ -44,6 +45,7 @@ async function step(name, check) {
   await lines.next();
 }
 
+const STRESS_LAST = 52; // tests/test_viewer_browser.py publishes revisions 3..52 after 'front'
 const revision = () => page.getByTestId('revision');
 const waitRevision = (n) => page.waitForFunction((n) => window.coalesceViewer?.revision === n, n, { timeout: 15000 });
 
@@ -57,7 +59,11 @@ await page.waitForTimeout(300);
 await step('revision-1', async () => ({ label: await revision().textContent(), url: page.url(), ...(await drawn()) }));
 await waitRevision(2);
 await page.waitForTimeout(300);
-await step('revision-2', async () => ({ label: await revision().textContent(), ...(await drawn()) }));
+await step('revision-2', async () => ({
+  label: await revision().textContent(),
+  memory: await page.evaluate(() => window.coalesceViewer.memory),
+  ...(await drawn()),
+}));
 await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
 await step('failure', async () => ({
   label: await revision().textContent(),
@@ -67,5 +73,8 @@ await step('failure', async () => ({
 await page.getByRole('button', { name: 'Front' }).click();
 await page.waitForTimeout(300);
 await step('front', async () => ({ pressed: await page.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), ...(await drawn()) }));
+await waitRevision(STRESS_LAST);
+await page.waitForTimeout(300);
+await step('stress', async () => ({ memory: await page.evaluate(() => window.coalesceViewer.memory) }));
 await browser.close();
 process.exit(0); // stdin stays open otherwise

@@ -99,6 +99,14 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             front = step("front")
             assert front["pressed"] == "true" and front["dark"] > 0.0003
             assert front["errors"] == []
+            for revision in range(3, 53):  # back to back, so some loads lose the race
+                store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
+            next_step()
+
+            stress = step("stress")
+            # 50 more revisions free what they replace: gpu counts match the one-part baseline
+            assert stress["memory"] == second["memory"], (stress["memory"], second["memory"])
+            assert stress["errors"] == []
             next_step()
             assert driver.wait(timeout=30) == 0
         finally:
