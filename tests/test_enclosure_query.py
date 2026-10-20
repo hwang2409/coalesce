@@ -1,12 +1,20 @@
 import json
+import shutil
 
 import pytest
 from build123d import Align, Box, Compound, Face, Location, Shape
 from jsonschema import validate
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from test_mcp_cut_hole_circle import cut, rectangle_sketch
 from test_mcp_truthful_contract import list_server_tools
 from test_mcp_vertical import run_server
-from test_pcb_enclosure import FEATURE_HOLES, FIXTURES, base_request, import_request
+from test_pcb_enclosure import (
+    FEATURE_HOLES,
+    FIXTURES,
+    base_request,
+    import_request,
+    standoffs_request,
+)
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 
@@ -48,6 +56,61 @@ def _assert_bbox(actual, expected):
     assert actual["min"]["unit"] == actual["max"]["unit"] == "mm"
     assert tuple(actual["min"][axis] for axis in "xyz") == pytest.approx(expected["min"], abs=1e-6)
     assert tuple(actual["max"][axis] for axis in "xyz") == pytest.approx(expected["max"], abs=1e-6)
+
+
+def _join(request_id, revision, feature_id, sketch_id, target, distance):
+    return {
+        "action": "create",
+        "expectedRevision": revision,
+        "requestId": request_id,
+        "featureId": feature_id,
+        "kind": "extrude",
+        "parameters": {
+            "profile": {"sketchId": sketch_id, "profileIds": [f"{sketch_id}_profile"]},
+            "distance": {"value": distance, "unit": "mm"},
+            "operation": "join",
+            "target": {"featureId": target},
+            "direction": "normal",
+        },
+    }
+
+
+def _create_rectangle(
+    service, *, revision, sketch_id, width, height, plane="XY", offset=0, center=(0, 0)
+):
+    return service.sketch(
+        rectangle_sketch(
+            request_id=sketch_id,
+            revision=revision,
+            sketch_id=sketch_id,
+            entity_id=f"{sketch_id}_profile",
+            width=width,
+            height=height,
+            plane=plane,
+            offset=offset,
+            center=center,
+        )
+    )
+
+
+def _base_service(tmp_path, *, standoffs=False, lid=False, port=False):
+    service = DocumentService(tmp_path / "as-built.coalesce.json")
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    revision = 2
+    terminal = "base"
+    if standoffs:
+        assert service.feature(standoffs_request())["ok"]
+        revision += 1
+        terminal = "mounts"
+    if lid:
+        assert service.feature(lid_request(revision=revision))["ok"]
+        revision += 1
+    if port:
+        assert service.feature(port_request(revision=revision))["ok"]
+        revision += 1
+        terminal = "port"
+    return service, revision, terminal
 
 
 @pytest.mark.anyio
@@ -300,6 +363,139 @@ async def test_enclosure_query_without_lid_or_ports_returns_empty_lists(tmp_path
     assert result["ports"] == []
     assert result["standoffs"]["count"] == 0
     assert result["standoffs"]["items"] == []
+
+
+def test_enclosure_query_measures_wall_pocket_from_terminal_solid(tmp_path):
+    service, revision, terminal = _base_service(tmp_path)
+    assert _create_rectangle(
+        service,
+        revision=revision,
+        sketch_id="wall_pocket",
+        width=4,
+        height=2,
+        plane="YZ",
+        offset=-3,
+        center=(5, 2),
+    )["ok"]
+    assert service.feature(
+        cut(
+            request_id="wall-pocket-cut",
+            revision=revision + 1,
+            feature_id="wall_pocket_cut",
+            target=terminal,
+            tool="wall_pocket",
+            depth=1.5,
+        )
+    )["ok"]
+
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    assert _value(result["base"]["minimumWallThickness"]) == pytest.approx(0.5, abs=1e-6)
+
+
+def test_enclosure_query_reports_board_and_lid_interference_from_joined_rib(tmp_path):
+    service, revision, terminal = _base_service(tmp_path, lid=True)
+    assert _create_rectangle(
+        service,
+        revision=revision,
+        sketch_id="rib",
+        width=2,
+        height=2,
+        offset=-1,
+        center=(10, 5),
+    )["ok"]
+    assert service.feature(
+        _join("rib", revision + 1, "rib", "rib", terminal, 10)
+    )["ok"]
+
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    assert _value(result["cavity"]["boardInterference"]["volume"]) > 0
+    assert all(
+        _value(clearance) <= 0 for clearance in result["cavity"]["boardClearance"].values()
+    )
+    assert _value(result["lids"][0]["interference"]["volume"]) > 0
+    assert _value(result["lids"][0]["fitGap"]["min"]) <= 0
+
+
+def test_enclosure_query_measures_port_aperture_after_later_cut(tmp_path):
+    service, revision, terminal = _base_service(tmp_path, port=True)
+    assert _create_rectangle(
+        service,
+        revision=revision,
+        sketch_id="widen_port",
+        width=3,
+        height=3,
+        plane="YZ",
+        offset=-3,
+        center=(8.5, 3.2),
+    )["ok"]
+    assert service.feature(
+        cut(
+            request_id="widen-port",
+            revision=revision + 1,
+            feature_id="widen_port_cut",
+            target=terminal,
+            tool="widen_port",
+        )
+    )["ok"]
+
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    assert _value(result["ports"][0]["opening"]["uMax"]) == pytest.approx(10, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("sketch_id", "width", "center", "expected"),
+    [
+        ("half_boss", 3, (0.5, 3), "partial"),
+        ("delete_boss", 6, (2, 3), "missing"),
+        ("split_side", 0.2, (2, 3), "partial"),
+    ],
+)
+def test_enclosure_query_classifies_cut_standoff_without_provenance_crash(
+    tmp_path, sketch_id, width, center, expected
+):
+    service, revision, terminal = _base_service(tmp_path, standoffs=True)
+    assert _create_rectangle(
+        service,
+        revision=revision,
+        sketch_id=sketch_id,
+        width=width,
+        height=6,
+        center=center,
+    )["ok"]
+    assert service.feature(
+        cut(
+            request_id=f"{sketch_id}-cut",
+            revision=revision + 1,
+            feature_id=f"{sketch_id}_cut",
+            target=terminal,
+            tool=sketch_id,
+        )
+    )["ok"]
+
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    item = next(item for item in result["standoffs"]["items"] if item["holeId"] == FEATURE_HOLES[0])
+
+    assert result["ok"] is True
+    assert item["classification"] == expected
+    assert item["axis"]["x"] == pytest.approx(2)
+    assert FEATURE_HOLES[0] not in result["standoffs"]["coveredHoleIds"]
+
+
+def test_enclosure_query_warns_about_unclassified_board_holes(tmp_path):
+    board = tmp_path / "custom-library.kicad_pcb"
+    shutil.copyfile(FIXTURES / "features.kicad_pcb", board)
+    board.write_text(board.read_text().replace("MountingHole:M2", "CustomLibrary:M2"))
+    service = DocumentService(tmp_path / "custom-library.coalesce.json")
+    assert service.import_board(import_request(board))["ok"]
+    assert service.feature(base_request())["ok"]
+
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    warning = next(item for item in result["warnings"] if item["code"] == "UNCLASSIFIED_BOARD_HOLES")
+    assert warning["holeIds"] == [FEATURE_HOLES[0]]
 
 
 @pytest.mark.anyio
