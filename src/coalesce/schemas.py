@@ -328,17 +328,24 @@ FEATURE_CREATE_SCHEMA = {
     "required": ["action", *FEATURE_PROPERTIES, "parameters"],
     "additionalProperties": False,
 }
+EXTRUDE_UPDATE_SET = {
+    "type": "object",
+    "properties": {"distance": QUANTITY},
+    "required": ["distance"],
+    "additionalProperties": False,
+}
+TARGET_UPDATE_SET = {
+    "type": "object",
+    "properties": {"target": FEATURE_TARGET},
+    "required": ["target"],
+    "additionalProperties": False,
+}
 FEATURE_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "update"},
         **FEATURE_PROPERTIES,
-        "set": {
-            "type": "object",
-            "properties": {"distance": QUANTITY},
-            "required": ["distance"],
-            "additionalProperties": False,
-        },
+        "set": {"oneOf": [EXTRUDE_UPDATE_SET, TARGET_UPDATE_SET]},
     },
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
@@ -358,13 +365,19 @@ FEATURE_ACTION_SCHEMAS = {
         "hole": HOLE_PARAMETERS,
     }.items()
 }
-FEATURE_ACTION_SCHEMAS[("update", "extrude")] = {
-    **FEATURE_UPDATE_SCHEMA,
-    "properties": {
-        **FEATURE_UPDATE_SCHEMA["properties"],
-        "kind": {"const": "extrude"},
-    },
-}
+for kind, changes in {
+    "extrude": EXTRUDE_UPDATE_SET,
+    "cut": TARGET_UPDATE_SET,
+    "hole": TARGET_UPDATE_SET,
+}.items():
+    FEATURE_ACTION_SCHEMAS[("update", kind)] = {
+        **FEATURE_UPDATE_SCHEMA,
+        "properties": {
+            **FEATURE_UPDATE_SCHEMA["properties"],
+            "kind": {"const": kind},
+            "set": changes,
+        },
+    }
 FEATURE_SCHEMA = {
     "type": "object",
     "properties": {

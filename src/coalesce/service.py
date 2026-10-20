@@ -255,6 +255,11 @@ class ExtrudeChanges:
 
 
 @dataclass(frozen=True)
+class TargetChanges:
+    target: FeatureTarget
+
+
+@dataclass(frozen=True)
 class SketchCreate(_Operation):
     action: Action
     expectedRevision: float
@@ -326,6 +331,34 @@ class ExtrudeUpdate(_Operation):
         return {*super().wire_fields(), "kind"}
 
 
+@dataclass(frozen=True)
+class CutUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: TargetChanges
+    kind: ClassVar[str] = "cut"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class HoleUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: TargetChanges
+    kind: ClassVar[str] = "hole"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
 MutationOperation = (
     BoardImportOperation
     | SketchCreate
@@ -334,6 +367,8 @@ MutationOperation = (
     | CutCreate
     | HoleCreate
     | ExtrudeUpdate
+    | CutUpdate
+    | HoleUpdate
 )
 
 
@@ -466,9 +501,21 @@ def _parse_extrude(payload: dict[str, Any], common: dict[str, Any]) -> ExtrudeCr
     )
 
 
-def _parse_cut(payload: dict[str, Any], common: dict[str, Any]) -> CutCreate:
+def _parse_target_update(
+    payload: dict[str, Any], common: dict[str, Any], update: type[CutUpdate | HoleUpdate]
+) -> CutUpdate | HoleUpdate:
+    changes = payload.get("set")
+    if not isinstance(changes, dict) or set(changes) != {"target"}:
+        raise RequestError("INVALID_PARAMETER", f"{update.kind} update requires set.target")
+    return update(
+        **common,
+        set=TargetChanges(target=FeatureTarget(changes["target"].get("featureId"))),
+    )
+
+
+def _parse_cut(payload: dict[str, Any], common: dict[str, Any]) -> CutCreate | CutUpdate:
     if common["action"] is Action.UPDATE:
-        raise RequestError("INVALID_PARAMETER", "only extrude features can be updated")
+        return _parse_target_update(payload, common, CutUpdate)
     parameters = payload.get("parameters", {})
     depth = parameters.get("depth", {})
     return CutCreate(
@@ -506,9 +553,9 @@ def _hole_positions(parameters: dict[str, Any]) -> tuple[HolePosition, ...]:
     return positions
 
 
-def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
+def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate | HoleUpdate:
     if common["action"] is Action.UPDATE:
-        raise RequestError("INVALID_PARAMETER", "only extrude features can be updated")
+        return _parse_target_update(payload, common, HoleUpdate)
     parameters = payload.get("parameters", {})
     return HoleCreate(
         **common,
@@ -525,7 +572,9 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
     )
 
 
-def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate:
+def _parse_feature(
+    payload: dict[str, Any],
+) -> ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate | CutUpdate | HoleUpdate:
     kind = payload.get("kind")
     parser = {"extrude": _parse_extrude, "cut": _parse_cut, "hole": _parse_hole}.get(kind)
     if parser is None:
@@ -802,7 +851,23 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     return operation.featureId
 
 
-def _apply_cut(graph: Any, operation: CutCreate) -> str:
+def _apply_target_update(
+    graph: Any,
+    operation: CutUpdate | HoleUpdate,
+    feature_type: type[Cut | Hole],
+) -> str:
+    node = graph.nodes.get(operation.featureId)
+    if not isinstance(node, feature_type):
+        raise RequestError("UNKNOWN_ID", f"unknown {operation.kind}: {operation.featureId}")
+    target = operation.set.target.featureId
+    _validate_body_target(graph, target, operation.kind)
+    node.target = target
+    return operation.featureId
+
+
+def _apply_cut(graph: Any, operation: CutCreate | CutUpdate) -> str:
+    if isinstance(operation, CutUpdate):
+        return _apply_target_update(graph, operation, Cut)
     parameters = operation.parameters
     _validate_body_target(graph, parameters.target.featureId, "cut")
     if not isinstance(graph.nodes.get(parameters.tool.sketchId), Sketch):
@@ -819,7 +884,9 @@ def _apply_cut(graph: Any, operation: CutCreate) -> str:
     return operation.featureId
 
 
-def _apply_hole(graph: Any, operation: HoleCreate) -> str:
+def _apply_hole(graph: Any, operation: HoleCreate | HoleUpdate) -> str:
+    if isinstance(operation, HoleUpdate):
+        return _apply_target_update(graph, operation, Hole)
     parameters = operation.parameters
     _validate_body_target(graph, parameters.target.featureId, "hole")
     graph.add(
@@ -836,13 +903,15 @@ def _apply_hole(graph: Any, operation: HoleCreate) -> str:
 
 def _apply_feature(
     graph: Any,
-    operation: ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate,
+    operation: ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate | CutUpdate | HoleUpdate,
 ) -> str:
     applier = {
         ExtrudeCreate: _apply_extrude,
         ExtrudeUpdate: _apply_extrude,
         CutCreate: _apply_cut,
+        CutUpdate: _apply_cut,
         HoleCreate: _apply_hole,
+        HoleUpdate: _apply_hole,
     }[type(operation)]
     return applier(graph, operation)
 
@@ -916,6 +985,7 @@ class DocumentService:
         self._lock = threading.RLock()
         self._document = self.store.load()
         self._regen = None
+        self._graph_error: GraphError | None = None
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
         self._kernel_loader = kernel_loader or _KERNEL_LOADER
@@ -936,9 +1006,13 @@ class DocumentService:
             self._kernel_loader.start()
             self._kernel_loader.wait()
             with self._lock:
-                if self._regen is not None:
+                if self._regen is not None or self._graph_error is not None:
                     return
-                result = regenerate(self._document.graph)
+                try:
+                    result = regenerate(self._document.graph)
+                except GraphError as error:
+                    self._record_graph_error(error)
+                    return
                 self._assert_valid(result)
                 self._regen = result
                 if self._publisher is not None and self._document.revision > 0:
@@ -946,14 +1020,44 @@ class DocumentService:
         except Exception:  # noqa: BLE001 - startup errors must not kill the server
             _LOG.exception("kernel startup failed")
 
+    def _record_graph_error(self, error: GraphError) -> None:
+        self._graph_error = error
+        if self._publisher is None:
+            return
+        failure = _graph_error_response(self._document.revision, None, "regeneration", error)
+        details = failure["error"]
+        feature_ids = [
+            value
+            for key in ("target", "consumer", "feature")
+            if isinstance((value := details.get(key)), str)
+        ]
+        self._publisher.publish_failure(
+            feature_ids,
+            {key: details[key] for key in ("code", "message", "hint") if key in details},
+        )
+
     def _ensure_geometry(self) -> None:
         self.start_kernel_warmup()
         self._kernel_loader.wait()
         with self._lock:
-            if self._regen is None:
+            if self._regen is not None:
+                return
+            if self._graph_error is not None:
+                raise self._graph_error
+            try:
                 result = regenerate(self._document.graph)
-                self._assert_valid(result)
-                self._regen = result
+            except GraphError as error:
+                self._record_graph_error(error)
+                raise
+            self._assert_valid(result)
+            self._regen = result
+
+    def _geometry_failure(self, operation: str) -> dict[str, Any] | None:
+        try:
+            self._ensure_geometry()
+        except GraphError as error:
+            return _graph_error_response(self._document.revision, None, operation, error)
+        return None
 
     @property
     def revision(self) -> int:
@@ -1048,6 +1152,8 @@ class DocumentService:
                         actual=self._document.revision,
                     )
 
+                self.start_kernel_warmup()
+                self._kernel_loader.wait()
                 graph = loads(dumps(self._document.graph))
                 changed_id = apply(graph, parsed)
                 result = regenerate(graph)
@@ -1083,6 +1189,7 @@ class DocumentService:
                 durable = self.store.save(document)
                 self._document = document
                 self._regen = result
+                self._graph_error = None
                 if self._publisher is not None:
                     self._publisher.publish(document.revision, result)
                 if not durable:
@@ -1198,8 +1305,6 @@ class DocumentService:
         return {}
 
     def import_board(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_geometry()
-
         def response(graph: Any, result: RegenResult, changed_id: str) -> dict[str, Any]:
             node = next(
                 item
@@ -1217,7 +1322,6 @@ class DocumentService:
         )
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_geometry()
         entities = payload.get("entities") or payload.get("set", {}).get("entities")
 
         def response(graph: Any, result: RegenResult, changed_id: str) -> dict[str, Any]:
@@ -1235,7 +1339,6 @@ class DocumentService:
         )
 
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_geometry()
         return self._mutate(
             "feature",
             payload,
@@ -1249,8 +1352,10 @@ class DocumentService:
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")
-        if kind in {"measurements", "feature", "reference"}:
-            self._ensure_geometry()
+        if kind in {"measurements", "feature", "reference"} and (
+            failure := self._geometry_failure("query")
+        ):
+            return failure
         with self._lock:
             requested_revision = payload.get("revision", self._document.revision)
             if requested_revision != self._document.revision:
@@ -1396,7 +1501,8 @@ class DocumentService:
         }
 
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_geometry()
+        if failure := self._geometry_failure("check"):
+            return failure
         with self._lock:
             if payload.get("action") != "evaluate":
                 return _safe_error(

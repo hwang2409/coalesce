@@ -42,6 +42,7 @@ Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
 Use operation `join` with an explicit target feature to add material to one contacting body.
 A join, cut, hole, or fillet must target the current terminal feature of its body lineage.
+Use `feature` update with `set.target.featureId` to retarget an existing cut or hole.
 For finite cuts, `flip=false` cuts along the negative sketch normal and `flip=true` cuts
 along the positive sketch normal. Through-all cuts are bidirectional, and flip has no effect for through-all cuts.
 Holes use absolute XY positions and global +Z only. Omitted hole depth means through-all.

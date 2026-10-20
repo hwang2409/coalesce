@@ -18,7 +18,7 @@ from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
 from test_viewer_browser import playwright_module
 
 from coalesce.document_store import Document, DocumentStore
-from coalesce.graph import Cut, Extrude, Graph, Rectangle, Sketch
+from coalesce.graph import Cut, Extrude, Graph, Hole, HolePosition, Plane, Rectangle, Sketch
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
@@ -58,6 +58,149 @@ def _wait_for_scene(parsed, headers, revision):
                 raise
         time.sleep(0.02)
     raise AssertionError(f"viewer did not publish revision {revision}")
+
+
+def _next_viewer_event(parsed, headers):
+    request = urllib.request.Request(
+        f"{parsed.scheme}://{parsed.netloc}/events", headers=headers
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        event = response.readline().decode().strip()
+        data = response.readline().decode().strip()
+    return event.removeprefix("event: "), json.loads(data.removeprefix("data: "))
+
+
+@pytest.mark.anyio
+async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_path):
+    path = tmp_path / "fork.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=3))
+    graph.add(
+        Sketch(
+            "wall_sketch",
+            plane=Plane("XY", 3),
+            entities=[Rectangle("outer", 60, 40), Rectangle("inner", 54, 34)],
+        )
+    )
+    graph.add(
+        Extrude(
+            "wall",
+            sketch="wall_sketch",
+            height=22,
+            operation="join",
+            target="plate",
+        )
+    )
+    graph.add(
+        Hole(
+            "holes",
+            target="wall",
+            diameter=3,
+            positions=[HolePosition("center", (0, 17))],
+        )
+    )
+    graph.add(
+        Sketch(
+            "port_sketch",
+            plane=Plane("XZ", -20),
+            position=(0, 14, 0),
+            entities=[Rectangle("port", 10, 8)],
+        )
+    )
+    graph.add(Cut("portcut", target="wall", tool="port_sketch"))
+    DocumentStore(path).save(Document(graph, revision=7))
+    before = path.read_bytes()
+    errlog = (tmp_path / "server.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+
+        measurements = result_json(
+            await session.call_tool("query", {"select": {"kind": "measurements"}})
+        )
+        graph_error = {
+            "code": "TARGET_ALREADY_CONSUMED",
+            "message": "target wall is already consumed by holes",
+            "retryable": False,
+            "operation": "query",
+            "feature": "portcut",
+            "target": "wall",
+            "consumer": "holes",
+            "terminalFeatureId": "holes",
+            "hint": "target holes to apply this after holes",
+        }
+        assert measurements["error"] == graph_error
+        reference = result_json(
+            await session.call_tool(
+                "query",
+                {
+                    "select": {
+                        "kind": "reference",
+                        "reference": {"feature": "holes", "role": "cap_end"},
+                    }
+                },
+            )
+        )
+        assert reference["error"] == graph_error
+        checked = result_json(
+            await session.call_tool("check", {"action": "evaluate"})
+        )
+        assert checked["error"] == {**graph_error, "operation": "check"}
+
+        event, failure = await asyncio.to_thread(_next_viewer_event, parsed, headers)
+        assert event == "failure"
+        assert failure["error"]["code"] == "TARGET_ALREADY_CONSUMED"
+        assert failure["error"]["hint"] == "target holes to apply this after holes"
+
+        unrelated = result_json(
+            await session.call_tool(
+                "feature",
+                {
+                    "action": "update",
+                    "expectedRevision": 7,
+                    "requestId": "unrelated",
+                    "featureId": "plate",
+                    "kind": "extrude",
+                    "set": {"distance": {"value": 4, "unit": "mm"}},
+                },
+            )
+        )
+        assert unrelated["error"]["code"] == "TARGET_ALREADY_CONSUMED"
+        assert unrelated["revision"] == 7
+        assert path.read_bytes() == before
+
+        repaired = result_json(
+            await session.call_tool(
+                "feature",
+                {
+                    "action": "update",
+                    "expectedRevision": 7,
+                    "requestId": "repair-portcut",
+                    "featureId": "portcut",
+                    "kind": "cut",
+                    "set": {"target": {"featureId": "holes"}},
+                },
+            )
+        )
+        assert repaired["revision"] == 8
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8)
+        assert len(scene["parts"]) == 1
+        assert scene["parts"][0]["terminalFeatureId"] == "portcut"
 
 
 @pytest.mark.anyio

@@ -5,7 +5,7 @@ from test_mcp_cut_hole_circle import cut, extrude, hole, rectangle_sketch
 from test_mcp_vertical import run_server
 
 from coalesce.document_store import Document, DocumentStore
-from coalesce.graph import Extrude, Fillet, Graph, Rectangle, Sketch
+from coalesce.graph import Extrude, Fillet, Graph, Hole, HolePosition, Rectangle, Sketch
 from coalesce.references import Reference
 
 
@@ -23,6 +23,17 @@ def join_extrude(
     payload["parameters"]["operation"] = "join"
     payload["parameters"]["target"] = {"featureId": target}
     return payload
+
+
+def target_update(*, request_id, revision, feature_id, kind, target):
+    return {
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": request_id,
+        "featureId": feature_id,
+        "kind": kind,
+        "set": {"target": {"featureId": target}},
+    }
 
 
 def patterned_hole(*, request_id, revision, feature_id, target, positions):
@@ -349,6 +360,103 @@ async def test_real_stdio_rejects_review_fork_and_accepts_terminal_target(tmp_pa
     assert accepted[0]["revision"] == 7
     assert len(accepted[1]["parts"]) == accepted[1]["solidCount"] == 1
     assert accepted[1]["parts"][0]["terminalFeatureId"] == "portcut"
+
+
+@pytest.mark.anyio
+async def test_real_stdio_repairs_persisted_hole_fork_and_rejects_bad_targets_atomically(
+    tmp_path,
+):
+    path = tmp_path / "hole-fork.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("wall", sketch="plate_sketch", height=10))
+    graph.add(
+        Hole(
+            "holes",
+            target="wall",
+            diameter=3,
+            positions=[HolePosition("left", (-5, 0))],
+        )
+    )
+    graph.add(
+        Hole(
+            "vent",
+            target="wall",
+            diameter=3,
+            positions=[HolePosition("right", (5, 0))],
+        )
+    )
+    DocumentStore(path).save(Document(graph, revision=4))
+
+    repaired = await run_server(
+        path,
+        [
+            (
+                "feature",
+                target_update(
+                    request_id="repair-vent",
+                    revision=4,
+                    feature_id="vent",
+                    kind="hole",
+                    target="holes",
+                ),
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert repaired[0]["revision"] == 5
+    assert len(repaired[1]["parts"]) == repaired[1]["solidCount"] == 1
+    assert repaired[1]["parts"][0]["terminalFeatureId"] == "vent"
+    before = path.read_bytes()
+
+    rejected = await run_server(
+        path,
+        [
+            (
+                "feature",
+                target_update(
+                    request_id="unknown-target",
+                    revision=5,
+                    feature_id="vent",
+                    kind="hole",
+                    target="missing",
+                ),
+            ),
+            (
+                "feature",
+                target_update(
+                    request_id="non-body-target",
+                    revision=5,
+                    feature_id="vent",
+                    kind="hole",
+                    target="plate_sketch",
+                ),
+            ),
+            (
+                "feature",
+                target_update(
+                    request_id="consumed-target",
+                    revision=5,
+                    feature_id="vent",
+                    kind="hole",
+                    target="wall",
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert [result["error"]["code"] for result in rejected[:3]] == [
+        "UNKNOWN_ID",
+        "INVALID_PARAMETER",
+        "TARGET_ALREADY_CONSUMED",
+    ]
+    assert rejected[2]["error"]["target"] == "wall"
+    assert rejected[2]["error"]["consumer"] == "holes"
+    assert rejected[2]["error"]["terminalFeatureId"] == "holes"
+    assert rejected[3]["revision"] == 5
+    assert path.read_bytes() == before
 
 
 @pytest.mark.anyio
