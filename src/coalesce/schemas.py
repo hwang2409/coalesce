@@ -457,6 +457,7 @@ QUERY_SCHEMA = {
                     ]
                 },
                 "id": {"type": "string", "minLength": 1},
+                "role": {"enum": ["manufacturing", "reference"]},
                 "reference": REFERENCE,
             },
             "required": ["kind"],

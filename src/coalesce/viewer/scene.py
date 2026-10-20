@@ -29,6 +29,7 @@ class ScenePart:
     shape: Shape
     color: str | None = None
     visible: bool = True
+    role: str = "manufacturing"
     # short part-list text; name stays the stable identity.
     label: str | None = None
     source_body: BodySource | None = None
@@ -96,6 +97,8 @@ def _build_scene(
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate part names in {names}")
     for part in parts:
+        if part.role not in {"manufacturing", "reference"}:
+            raise ValueError(f"part {part.name!r} has unknown role {part.role!r}")
         if part.color is not None and not _COLOR.fullmatch(part.color):
             raise ValueError(f"part {part.name!r} color must be #rrggbb, got {part.color!r}")
     meshes, scene_parts, lows, highs = {}, [], [], []
@@ -109,6 +112,7 @@ def _build_scene(
                 "name": part.name,
                 "partId": part.name,
                 "label": part.label or part.name,
+                "role": part.role,
                 "sourceBody": asdict(part.source_body) if part.source_body else None,
                 "terminalFeatureId": part.terminal_feature,
                 "area": {"value": part.area if part.area is not None else part.shape.area, "unit": "mm^2"},

@@ -1011,10 +1011,12 @@ def _change(before: Any, after: Any, changed_id: str) -> dict[str, str]:
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     from .viewer import ScenePart
 
-    for part in terminal_parts(result):
+    for part in terminal_parts(result, role=None):
         yield ScenePart(
             part.part_id,
             part.shape,
+            color="#6f8f72" if part.role == "reference" else None,
+            role=part.role,
             label=part.label,
             source_body=part.source_body,
             terminal_feature=part.terminal_feature,
@@ -1179,7 +1181,7 @@ class DocumentService:
         """Show a failed sketch or feature call in the viewer; the last good scene stays."""
         if self._publisher is None:
             return
-        feature_id = payload.get("featureId") or payload.get("sketchId")
+        feature_id = payload.get("featureId") or payload.get("sketchId") or payload.get("assetId")
         error = result["error"]
         self._publisher.publish_failure(
             [feature_id] if isinstance(feature_id, str) else [],
@@ -1555,7 +1557,7 @@ class DocumentService:
             if kind == "server":
                 return {**base, "viewerUrl": self._viewer_url}
             if kind == "measurements":
-                return {**base, **self._metrics()}
+                return {**base, **self._metrics(select.get("role", "manufacturing"))}
             if kind == "feature":
                 return self._query_feature(select, base)
             if kind == "reference":
@@ -1654,13 +1656,14 @@ class DocumentService:
             "center": point(center),
         }
 
-    def _metrics(self) -> dict[str, Any]:
-        parts = terminal_parts(self._regen)
+    def _metrics(self, role: str = "manufacturing") -> dict[str, Any]:
+        parts = terminal_parts(self._regen, role=role)
         solids = [part.shape for part in parts]
         catalog = [
             {
                 "partId": part.part_id,
                 "label": part.label,
+                "role": part.role,
                 "sourceBody": asdict(part.source_body),
                 "terminalFeatureId": part.terminal_feature,
                 "featureId": part.terminal_feature,
@@ -1672,6 +1675,7 @@ class DocumentService:
             for part in parts
         ]
         return {
+            "role": role,
             "bbox": self._bbox(solids),
             "volume": {"value": sum(part.shape.volume for part in parts), "unit": "mm^3"},
             "area": {"value": sum(part.shape.area for part in parts), "unit": "mm^2"},
@@ -1714,8 +1718,8 @@ class DocumentService:
                     )
                     continue
                 valid = all(
-                    BRepCheck_Analyzer(shape.wrapped).IsValid()
-                    for shape in self._regen.shapes.values()
+                    BRepCheck_Analyzer(part.shape.wrapped).IsValid()
+                    for part in terminal_parts(self._regen)
                 )
                 results.append(
                     {

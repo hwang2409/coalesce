@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any
 
+from .graph import BoardImport
 from .references import BodySource, Candidate
 
 
@@ -13,6 +14,7 @@ from .references import BodySource, Candidate
 class TerminalPart:
     part_id: str
     label: str
+    role: str
     source_body: BodySource
     terminal_feature: str
     shape: Any
@@ -55,7 +57,28 @@ def _solid_body(solid: Any, owned: list[Candidate]) -> tuple[BodySource, tuple[s
     return body, history
 
 
-def terminal_parts(result: Any) -> list[TerminalPart]:
+def _terminal_part(
+    result: Any,
+    feature: str,
+    solid: Any,
+    body: BodySource,
+    history: tuple[str, ...],
+    split: bool,
+) -> TerminalPart:
+    role = (
+        "reference"
+        if isinstance(result.graph.nodes[body.feature], BoardImport)
+        else "manufacturing"
+    )
+    part_id = f"{body.feature}/{body.entity}"
+    if split:
+        suffix = hashlib.sha256("\n".join(history).encode()).hexdigest()[:12]
+        part_id = f"{part_id}#{suffix}"
+    label = "pcb reference" if role == "reference" else body.feature
+    return TerminalPart(part_id, label, role, body, feature, solid)
+
+
+def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[TerminalPart]:
     owned = [
         candidate
         for candidates in result.provenance.values()
@@ -71,15 +94,12 @@ def terminal_parts(result: Any) -> list[TerminalPart]:
     counts: dict[BodySource, int] = {}
     for _, _, body, _ in solids:
         counts[body] = counts.get(body, 0) + 1
-    parts: list[TerminalPart] = []
-    for feature, solid, body, history in solids:
-        base = f"{body.feature}/{body.entity}"
-        if counts[body] > 1:
-            suffix = hashlib.sha256("\n".join(history).encode()).hexdigest()[:12]
-            part_id = f"{base}#{suffix}"
-        else:
-            part_id = base
-        parts.append(TerminalPart(part_id, body.feature, body, feature, solid))
+    parts = [
+        _terminal_part(result, feature, solid, body, history, counts[body] > 1)
+        for feature, solid, body, history in solids
+    ]
+    if role is not None:
+        parts = [part for part in parts if part.role == role]
     if len({part.part_id for part in parts}) != len(parts):
         raise ValueError("terminal part provenance is ambiguous")
     return parts
