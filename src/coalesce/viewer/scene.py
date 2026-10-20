@@ -34,6 +34,8 @@ class ScenePart:
     terminal_feature: str | None = None
     area: float | None = None
     volume: float | None = None
+    # the features that built this part, oldest first: [{"id", "kind", "holes"?}]
+    features: tuple[dict, ...] = ()
 
 
 def _bytes(kind: str, values: list) -> bytes:
@@ -69,7 +71,9 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     return data, counts, lo, hi
 
 
-def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) -> tuple[dict, dict[str, bytes]]:
+def _build_scene(
+    revision: int, parts: Iterable[ScenePart], tolerance: float, change: dict | None
+) -> tuple[dict, dict[str, bytes]]:
     """Validate and tessellate parts into (scene JSON, mesh bytes by content digest)."""
     parts = list(parts)
     names = [p.name for p in parts]
@@ -96,6 +100,7 @@ def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) ->
                 "color": part.color or PALETTE[index % len(PALETTE)],
                 "visible": part.visible,
                 "size": [exact.size.X, exact.size.Y, exact.size.Z],
+                "features": list(part.features),
                 "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
             }
         )
@@ -109,6 +114,7 @@ def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) ->
             "max": [max(c) for c in zip(*highs)] if highs else [0, 0, 0],
         },
         "parts": scene_parts,
+        "change": change,
     }
     return scene, meshes
 
@@ -133,12 +139,13 @@ class ViewerSceneStore:
         self._revision: int | None = None
         self._failure: dict | None = None
 
-    def publish(self, revision: int, parts: Iterable[ScenePart]) -> None:
+    def publish(self, revision: int, parts: Iterable[ScenePart], change: dict | None = None) -> None:
+        """``change`` says what the commit did, for the human: {"featureId", "summary"}."""
         with self._changed:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
         # tessellate outside the lock: readers keep serving the last scene meanwhile.
-        scene, meshes = _build_scene(revision, parts, self.TOLERANCE)
+        scene, meshes = _build_scene(revision, parts, self.TOLERANCE, change)
 
         with self._changed:
             if self._revision is not None and revision <= self._revision:

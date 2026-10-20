@@ -195,10 +195,9 @@ def on_screen(result) -> bool:
 
 
 def scale_matches_grid(result) -> bool:
-    if result["scale"] is None:  # narrow layouts have no room for the scale bar
-        return True
-    bar_mm, grid_mm = re.fullmatch(r"(\S+) mm, grid (\S+) mm", result["scale"]).groups()
-    return bar_mm == grid_mm
+    # narrow layouts show a compact scale: the bar length only
+    bar_mm, grid_mm = re.fullmatch(r"(\S+) mm(?:, grid (\S+) mm)?", result["scale"]).groups()
+    return grid_mm in (None, bar_mm)
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
