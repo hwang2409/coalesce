@@ -41,6 +41,7 @@ Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+
 Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
 Use operation `join` with an explicit target feature to add material to one contacting body.
+A join, cut, hole, or fillet must target the current terminal feature of its body lineage.
 For finite cuts, `flip=false` cuts along the negative sketch normal and `flip=true` cuts
 along the positive sketch normal. Through-all cuts are bidirectional, and flip has no effect for through-all cuts.
 Holes use absolute XY positions and global +Z only. Omitted hole depth means through-all.

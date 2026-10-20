@@ -603,6 +603,7 @@ def _graph_error_response(
         "JOIN_NON_MANIFOLD",
         "HOLES_INTERSECT",
         "HOLE_NO_EFFECT",
+        "TARGET_ALREADY_CONSUMED",
     }
     details = {
         key: value

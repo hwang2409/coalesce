@@ -14,6 +14,7 @@ from coalesce import (
     Fillet,
     Graph,
     GraphError,
+    Hole,
     Rectangle,
     Reference,
     Sketch,
@@ -83,6 +84,79 @@ def test_duplicate_sketch_entity_ids_fail_graph_validation_before_regen():
     assert caught.value.error["sketch"] == "sk"
     assert caught.value.error["entity"] == "dup"
 
+
+
+def _assert_consumed_target_error(
+    graph: Graph, *, target: str, consumer: str, terminal: str
+) -> None:
+    with pytest.raises(GraphError) as caught:
+        graph.validate()
+
+    assert caught.value.error == {
+        "code": "target_already_consumed",
+        "message": f"target {target} is already consumed by {consumer}",
+        "feature": next(reversed(graph.nodes)),
+        "target": target,
+        "consumer": consumer,
+        "terminalFeatureId": terminal,
+        "hint": f"target {terminal} to apply this after {consumer}",
+    }
+
+
+def test_two_cuts_cannot_consume_the_same_target():
+    graph = base()
+    graph.add(Sketch("first_tool", entities=[Rectangle("first_profile", 2, 2)]))
+    graph.add(Cut("first_cut", target="base", tool="first_tool"))
+    graph.add(Sketch("second_tool", entities=[Rectangle("second_profile", 2, 2)]))
+    graph.add(Cut("second_cut", target="base", tool="second_tool"))
+
+    _assert_consumed_target_error(
+        graph, target="base", consumer="first_cut", terminal="first_cut"
+    )
+
+
+def test_cut_can_target_the_hole_that_consumed_the_body():
+    graph = base()
+    graph.add(Hole("holes", target="base", diameter=2))
+    graph.add(Sketch("port_tool", entities=[Rectangle("port", 2, 2)]))
+    graph.add(Cut("portcut", target="holes", tool="port_tool"))
+
+    graph.validate()
+
+
+def test_join_cannot_consume_an_already_consumed_target():
+    graph = base()
+    graph.add(Hole("holes", target="base", diameter=2))
+    graph.add(Sketch("boss", entities=[Rectangle("boss_profile", 2, 2)]))
+    graph.add(
+        Extrude(
+            "join",
+            sketch="boss",
+            height=2,
+            operation="join",
+            target="base",
+        )
+    )
+
+    _assert_consumed_target_error(
+        graph, target="base", consumer="holes", terminal="holes"
+    )
+
+
+def test_retargeting_a_feature_to_a_consumed_target_is_rejected():
+    graph = base()
+    graph.add(Sketch("other_sketch", entities=[Rectangle("other", 4, 4)]))
+    graph.add(Extrude("other", sketch="other_sketch", height=4))
+    graph.add(Sketch("tool", entities=[Rectangle("tool_profile", 2, 2)]))
+    graph.add(Cut("first_cut", target="base", tool="tool"))
+    graph.add(Hole("holes", target="other", diameter=1))
+    graph.validate()
+
+    graph.nodes["holes"].target = "base"
+
+    _assert_consumed_target_error(
+        graph, target="base", consumer="first_cut", terminal="first_cut"
+    )
 
 
 def test_case_1_cap_end_height_geometry():

@@ -196,6 +196,162 @@ async def test_real_stdio_detached_join_is_atomic_and_names_entity(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_real_stdio_rejects_review_fork_and_accepts_terminal_target(tmp_path):
+    path = tmp_path / "review-fork.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=60,
+                    height=40,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+            (
+                "sketch",
+                {
+                    "action": "create",
+                    "expectedRevision": 2,
+                    "requestId": "wall-sketch",
+                    "sketchId": "wall_sketch",
+                    "plane": {
+                        "kind": "origin",
+                        "name": "XY",
+                        "offset": {"value": 3, "unit": "mm"},
+                    },
+                    "entities": [
+                        {
+                            "id": "outer",
+                            "kind": "rectangle",
+                            "width": {"value": 60, "unit": "mm"},
+                            "height": {"value": 40, "unit": "mm"},
+                        },
+                        {
+                            "id": "inner",
+                            "kind": "rectangle",
+                            "width": {"value": 54, "unit": "mm"},
+                            "height": {"value": 34, "unit": "mm"},
+                        },
+                    ],
+                },
+            ),
+            (
+                "feature",
+                join_extrude(
+                    request_id="wall",
+                    revision=3,
+                    feature_id="wall",
+                    sketch_id="wall_sketch",
+                    profile_ids=["outer", "inner"],
+                    distance=22,
+                    target="plate",
+                ),
+            ),
+            (
+                "feature",
+                patterned_hole(
+                    request_id="holes",
+                    revision=4,
+                    feature_id="holes",
+                    target="wall",
+                    positions=[
+                        {"name": "nw", "point": [-28, 18]},
+                        {"name": "ne", "point": [28, 18]},
+                        {"name": "sw", "point": [-28, -18]},
+                        {"name": "se", "point": [28, -18]},
+                    ],
+                ),
+            ),
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="port-sketch",
+                    revision=5,
+                    sketch_id="port_sketch",
+                    entity_id="port",
+                    width=10,
+                    height=8,
+                    plane="XZ",
+                    offset=-20,
+                    center=(0, 14),
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 6
+    before = path.read_bytes()
+
+    rejected = (
+        await run_server(
+            path,
+            [
+                (
+                    "feature",
+                    cut(
+                        request_id="portcut-wall",
+                        revision=6,
+                        feature_id="portcut",
+                        target="wall",
+                        tool="port_sketch",
+                    ),
+                )
+            ],
+        )
+    )[0]
+
+    assert rejected["revision"] == 6
+    assert rejected["error"] == {
+        "code": "TARGET_ALREADY_CONSUMED",
+        "message": "target wall is already consumed by holes",
+        "retryable": False,
+        "operation": "feature",
+        "feature": "portcut",
+        "target": "wall",
+        "consumer": "holes",
+        "terminalFeatureId": "holes",
+        "hint": "target holes to apply this after holes",
+    }
+    assert path.read_bytes() == before
+
+    accepted = await run_server(
+        path,
+        [
+            (
+                "feature",
+                cut(
+                    request_id="portcut-holes",
+                    revision=6,
+                    feature_id="portcut",
+                    target="holes",
+                    tool="port_sketch",
+                ),
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert accepted[0]["revision"] == 7
+    assert len(accepted[1]["parts"]) == accepted[1]["solidCount"] == 1
+    assert accepted[1]["parts"][0]["terminalFeatureId"] == "portcut"
+
+
+@pytest.mark.anyio
 async def test_real_stdio_four_named_holes_are_one_revision_and_survive_restart(tmp_path):
     path = tmp_path / "pattern.coalesce.json"
     positions = [
