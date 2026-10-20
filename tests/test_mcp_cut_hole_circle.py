@@ -116,6 +116,7 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
     assert "flip=true" in description
     assert "positive sketch normal" in description
     assert "through-all" in description
+    assert "bidirectional" in description
     assert "XY +Z, XZ -Y, YZ +X" in description
 
 

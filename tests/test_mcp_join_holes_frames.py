@@ -4,6 +4,10 @@ import pytest
 from test_mcp_cut_hole_circle import cut, extrude, hole, rectangle_sketch
 from test_mcp_vertical import run_server
 
+from coalesce.document_store import Document, DocumentStore
+from coalesce.graph import Extrude, Fillet, Graph, Rectangle, Sketch
+from coalesce.references import Reference
+
 
 def join_extrude(
     *, request_id, revision, feature_id, sketch_id, profile_ids, distance, target
@@ -404,3 +408,351 @@ async def test_hole_positions_validation_is_atomic(tmp_path):
     assert "unique" in results[1]["error"]["message"]
     assert "positions[0].point[0]" in results[2]["error"]["message"]
     assert results[-1]["revision"] == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "positions",
+    [
+        [
+            {"name": "left", "point": [0, 0]},
+            {"name": "right", "point": [2, 0]},
+        ],
+        [
+            {"name": "first", "point": [0, 0]},
+            {"name": "second", "point": [0, 0]},
+        ],
+    ],
+)
+async def test_intersecting_named_holes_are_atomic(tmp_path, positions):
+    path = tmp_path / "intersecting-holes.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 2
+
+    results = await run_server(
+        path,
+        [
+            (
+                "feature",
+                patterned_hole(
+                    request_id="holes",
+                    revision=2,
+                    feature_id="holes",
+                    target="plate",
+                    positions=positions,
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert results[0]["error"]["code"] == "HOLES_INTERSECT"
+    assert results[0]["error"]["pairs"] == [
+        [positions[0]["name"], positions[1]["name"]]
+    ]
+    assert results[0]["revision"] == results[1]["revision"] == 2
+
+
+@pytest.mark.anyio
+async def test_mixed_effect_named_holes_are_atomic_and_name_misses(tmp_path):
+    path = tmp_path / "mixed-effect-holes.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 2
+
+    positions = [
+        {"name": "hit", "point": [0, 0]},
+        {"name": "miss", "point": [20, 0]},
+    ]
+    results = await run_server(
+        path,
+        [
+            (
+                "feature",
+                patterned_hole(
+                    request_id="holes",
+                    revision=2,
+                    feature_id="holes",
+                    target="plate",
+                    positions=positions,
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert results[0]["error"]["code"] == "HOLE_NO_EFFECT"
+    assert results[0]["error"]["names"] == ["miss"]
+    assert results[0]["revision"] == results[1]["revision"] == 2
+
+
+@pytest.mark.anyio
+async def test_all_named_holes_miss_with_whole_feature_error(tmp_path):
+    path = tmp_path / "all-miss-holes.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 2
+
+    result = (
+        await run_server(
+            path,
+            [
+                (
+                    "feature",
+                    patterned_hole(
+                        request_id="holes",
+                        revision=2,
+                        feature_id="holes",
+                        target="plate",
+                        positions=[
+                            {"name": "far-left", "point": [20, 0]},
+                            {"name": "far-right", "point": [30, 0]},
+                        ],
+                    ),
+                )
+            ],
+        )
+    )[0]
+
+    assert result["error"]["code"] == "HOLE_NO_EFFECT"
+    assert result["error"]["featureId"] == "holes"
+    assert "names" not in result["error"]
+    assert result["revision"] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("flip", [False, True])
+async def test_through_all_cut_reports_bidirectional_tool_normal(tmp_path, flip):
+    path = tmp_path / f"through-{flip}.coalesce.json"
+    results = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="base-sketch",
+                    revision=0,
+                    sketch_id="base_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="base",
+                    revision=1,
+                    feature_id="base",
+                    sketch_id="base_sketch",
+                    profile_ids=["plate"],
+                    distance=10,
+                ),
+            ),
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="tool-sketch",
+                    revision=2,
+                    sketch_id="tool_sketch",
+                    entity_id="tool",
+                    width=4,
+                    height=4,
+                    plane="XZ",
+                    center=(0, 5),
+                ),
+            ),
+            (
+                "feature",
+                cut(
+                    request_id="through",
+                    revision=3,
+                    feature_id="through",
+                    target="base",
+                    tool="tool_sketch",
+                    flip=flip,
+                ),
+            ),
+        ],
+    )
+
+    assert results[-1]["direction"] == [0, -1, 0]
+
+
+@pytest.mark.anyio
+async def test_join_accepts_fillet_body_as_target(tmp_path):
+    graph = Graph()
+    graph.add(Sketch("base_sketch", entities=[Rectangle("plate", 20, 20)]))
+    graph.add(Extrude("base", sketch="base_sketch", height=3))
+    graph.add(
+        Fillet(
+            "rounded",
+            target="base",
+            edges=[Reference("base", "between(side(bottom),cap_end)")],
+            radius=1,
+        )
+    )
+    graph.add(
+        Sketch(
+            "boss_sketch",
+            entities=[Rectangle("boss", 4, 4)],
+            position=(0, 0, 3),
+        )
+    )
+    path = tmp_path / "join-fillet.coalesce.json"
+    DocumentStore(path).save(Document(graph, revision=4))
+
+    results = await run_server(
+        path,
+        [
+            (
+                "feature",
+                join_extrude(
+                    request_id="boss",
+                    revision=4,
+                    feature_id="boss",
+                    sketch_id="boss_sketch",
+                    profile_ids=["boss"],
+                    distance=2,
+                    target="rounded",
+                ),
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert results[0]["revision"] == 5
+    assert results[1]["solidCount"] == 1
+    assert results[1]["volume"]["value"] > 20 * 20 * 3
+
+
+@pytest.mark.anyio
+async def test_join_rejects_existing_sketch_target_as_invalid_parameter(tmp_path):
+    path = tmp_path / "join-sketch.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="base-sketch",
+                    revision=0,
+                    sketch_id="base_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="boss-sketch",
+                    revision=1,
+                    sketch_id="boss_sketch",
+                    entity_id="boss",
+                    width=4,
+                    height=4,
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 2
+
+    result = (
+        await run_server(
+            path,
+            [
+                (
+                    "feature",
+                    join_extrude(
+                        request_id="boss",
+                        revision=2,
+                        feature_id="boss",
+                        sketch_id="boss_sketch",
+                        profile_ids=["boss"],
+                        distance=2,
+                        target="base_sketch",
+                    ),
+                )
+            ],
+        )
+    )[0]
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["revision"] == 2
