@@ -54,7 +54,8 @@ def test_root_and_footprint_edges_accept_layer_and_layers_with_shared_transforms
     back = """(footprint "Back" (layer "B.Cu") (at 30 40 90)
       (fp_line (start 0 0) (end 2 0) (layer "Edge.Cuts"))
       (fp_line (start 2 0) (end 0 0) (layer "Edge.Cuts")))"""
-    board = _parse_text(tmp_path, _board(_line((0, 0), (1, 0)), _line((1, 0), (0, 0)), front, back))
+    root_layers = '(gr_line (start 0 0) (end 1 0) (layers "Edge.Cuts"))'
+    board = _parse_text(tmp_path, _board(root_layers, _line((1, 0), (0, 0)), front, back))
     segments = [segment for loop in board.outline + board.inner_cutouts for segment in loop.segments]
     endpoints = {(segment.start, segment.end) for segment in segments}
     assert ((10.0, 20.0), (10.0, 22.0)) in endpoints
@@ -115,10 +116,19 @@ def test_any_nonzero_closing_gap_is_open_outline(tmp_path):
     items = _polygon(points)[:-1] + [_line((0, 10), (0.000001, 0))]
     board = _parse_text(tmp_path, _board(*items))
     assert [error.kind for error in board.errors] == ["open_outline"]
-    assert board.errors[0].endpoints == [(0.000001, 0.0), (0.0, 0.0)] or board.errors[0].endpoints
+    assert board.errors[0].endpoints == [(0.000001, 0.0), (0.0, 0.0)]
 
 
-@pytest.mark.parametrize("text", ["", "(", "(kicad_pcb (general (thickness nope)))", "(not_a_board)"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "(",
+        "(kicad_pcb (general (thickness nope)))",
+        "(kicad_pcb (gr_arc (start 0 0) (mid 1 0) (end 2 0) (layer Edge.Cuts)))",
+        "(not_a_board)",
+    ],
+)
 def test_all_malformed_input_returns_structured_parse_error(tmp_path, text):
     board = _parse_text(tmp_path, text)
     assert board.errors and board.errors[0].kind == "parse"
