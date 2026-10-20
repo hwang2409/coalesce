@@ -150,12 +150,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self.send(200, body, kind, headers)
         if not (path in ("/events", "/api/session") or _SCENE.fullmatch(path) or _MESH.fullmatch(path)):
             return self.send(HTTPStatus.NOT_FOUND)
+        if path == "/api/session":
+            # an expected state, not an error: the page asks whether its key still works.
+            return self.json({"authorized": self.authorized()})
         if not self.authorized():
             return self.send(HTTPStatus.UNAUTHORIZED)
         if path == "/events":
             return self.events()
-        if path == "/api/session":
-            return self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
         if match := _SCENE.fullmatch(path):
             return self.scene(int(match[1]))
         mesh = self.viewer.store.mesh(_MESH.fullmatch(path)[1])

@@ -10,15 +10,20 @@ const lines = readline.createInterface({ input: process.stdin })[Symbol.asyncIte
 
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
-const errors = [];
 await page.addInitScript(() => { window.coalesceDebug = true; });
-page.on('pageerror', (error) => errors.push(String(error)));
-page.on('console', (message) => message.type() === 'error' && errors.push(message.text()));
+const errorsOf = (target) => {
+  const found = [];
+  target.on('pageerror', (error) => found.push(String(error)));
+  target.on('console', (message) => message.type() === 'error' && found.push(message.text()));
+  return found;
+};
 
-// share of canvas pixels covered by model edge lines, plus the topmost such row
+// share of canvas pixels covered by model edge lines, the topmost such row (canvas and
+// page device px), and the scene the page says it drew; call after settled()
 async function drawn() {
   return page.evaluate(() => {
     const source = document.getElementById('view');
+    const offset = source.getBoundingClientRect().top * devicePixelRatio;
     const copy = document.createElement('canvas');
     copy.width = source.width;
     copy.height = source.height;
@@ -34,14 +39,16 @@ async function drawn() {
         top = Math.min(top, Math.floor(i / 4 / copy.width));
       }
     }
-    return { dark: dark / (data.length / 4), top };
+    return { dark: dark / (data.length / 4), top, pageTop: top + offset, scene: window.coalesceViewer.drawn };
   });
 }
 
+const errors = errorsOf(page);
 async function step(name, check) {
   const result = await check();
   if (shots) await page.screenshot({ path: `${shots}/${name}.png` });
-  console.log(`step ${name} ${JSON.stringify({ ...result, errors })}`);
+  // console errors since the previous step
+  console.log(`step ${name} ${JSON.stringify({ ...result, errors: errors.splice(0) })}`);
   await lines.next();
 }
 
@@ -67,6 +74,8 @@ const layout = () => page.evaluate(() => {
 let eventRequests = 0;
 page.on('request', (request) => new URL(request.url()).pathname === '/events' && (eventRequests += 1));
 const waitRevision = (n) => page.waitForFunction((n) => window.coalesceViewer?.revision === n, n, { timeout: 15000 });
+// the canvas has its final size and position and a frame for them is drawn
+const settled = () => page.waitForFunction(() => window.coalesceViewer.drawn.settled, null, { timeout: 15000 });
 
 await page.goto(url);
 await step('empty', async () => {
@@ -75,7 +84,7 @@ await step('empty', async () => {
   return { label: await revision().textContent(), link: await page.locator('#link-text').textContent(), disabled: await controls(), gizmo: await gizmo() };
 });
 await waitRevision(1);
-await page.waitForTimeout(300);
+await settled();
 await step('revision-1', async () => ({
   label: await revision().textContent(),
   url: page.url(),
@@ -84,7 +93,7 @@ await step('revision-1', async () => ({
   ...(await drawn()),
 }));
 await waitRevision(2);
-await page.waitForTimeout(300);
+await settled();
 await step('revision-2', async () => ({
   label: await revision().textContent(),
   ...(await layout()),
@@ -92,6 +101,7 @@ await step('revision-2', async () => ({
   ...(await drawn()),
 }));
 await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
+await settled();
 await step('failure', async () => ({
   label: await revision().textContent(),
   failure: await page.locator('#failure').innerText(),
@@ -99,15 +109,19 @@ await step('failure', async () => ({
   ...(await drawn()),
 }));
 await page.getByRole('button', { name: 'Front' }).click();
-await page.waitForTimeout(300);
+await settled();
 await step('front', async () => ({ pressed: await page.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), ...(await drawn()) }));
 await page.getByRole('button', { name: 'Iso' }).click();
+await settled();
+const iso = await drawn(); // the model's place before the connection drops
 await page.locator('#stale').waitFor({ state: 'visible', timeout: 15000 });
+await settled();
 await page.waitForTimeout(300); // let the dim transition finish before the screenshot
-await step('disconnected', stale);
+await step('disconnected', async () => ({ ...(await stale()), before: iso.pageTop, ...(await drawn()) }));
 await page.locator('#stale').waitFor({ state: 'hidden', timeout: 15000 });
+await settled();
 await page.waitForTimeout(300);
-await step('reconnected', stale);
+await step('reconnected', async () => ({ ...(await stale()), before: iso.pageTop, ...(await drawn()) }));
 await waitRevision(STRESS_LAST);
 await page.waitForTimeout(300);
 await step('stress', async () => ({ memory: await page.evaluate(() => window.coalesceViewer.memory) }));
@@ -120,9 +134,12 @@ await step('new-link', async () => ({
   ...(await stale()),
   status: await shown('#status'),
   eventRequestsAfter: eventRequests - requestsAtEnd,
+  disabled: await controls(),
+  camera: await page.evaluate(() => window.coalesceViewer.drawn.camera),
 }));
 // a fresh browser profile without the key: no cookie, no #token fragment
 const bare = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
+const bareErrors = errorsOf(bare);
 await bare.goto(new URL(url).origin + '/');
 await bare.getByText('Open the viewer link that coalesce printed').waitFor({ timeout: 15000 });
 await bare.waitForTimeout(300);
@@ -130,6 +147,7 @@ if (shots) await bare.screenshot({ path: `${shots}/no-access.png` });
 console.log(`step no-access ${JSON.stringify({
   link: await bare.locator('#link-text').textContent(),
   gizmo: await bare.locator('.gizmo').isVisible(),
+  errors: bareErrors,
 })}`);
 await lines.next();
 await browser.close();

@@ -18,6 +18,8 @@ from build123d import Align, Box, fillet
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 SMOKE = Path(__file__).with_name("viewer_smoke.mjs")
+# chromium logs every request to a stopped server, whatever sent it; no page code can avoid it
+REFUSED = "net::ERR_CONNECTION_REFUSED"
 
 
 def plate(height: float) -> Box:
@@ -60,10 +62,14 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
         )
 
-        def step(name):
+        def step(name, outage=False):
             line = driver.stdout.readline()
             assert line.startswith(f"step {name} "), line
-            return json.loads(line.split(" ", 2)[2])
+            result = json.loads(line.split(" ", 2)[2])
+            # no console errors in any state, expired key and no access included
+            errors = [e for e in result["errors"] if not (outage and REFUSED in e)]
+            assert errors == [], (name, errors)
+            return result
 
         def next_step():
             driver.stdin.write("next\n")
@@ -99,16 +105,22 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             failed = step("failure")
             assert failed["label"] == "2"
             assert "edge_fillet" in failed["failure"] and "fillet" in failed["failure"]
-            assert failed["dark"] == pytest.approx(second["dark"])  # last good scene stays
+            # the last good scene stays: same revision, parts, meshes and gpu geometries, drawn
+            assert failed["scene"]["revision"] == 2
+            identity = ("revision", "parts", "meshes", "geometries")
+            assert [failed["scene"][k] for k in identity] == [second["scene"][k] for k in identity]
+            assert failed["dark"] > 0.0003
+            # the status row shrinks the canvas from the top, but the model keeps its place
+            assert failed["scene"]["frames"] > second["scene"]["frames"]
+            assert abs(failed["pageTop"] - second["pageTop"]) <= 2, (failed["pageTop"], second["pageTop"])
             next_step()
 
             front = step("front")
             assert front["pressed"] == "true" and front["dark"] > 0.0003
-            assert front["errors"] == []
             server.close()  # the page stays open on the last scene
             next_step()
 
-            lost = step("disconnected")
+            lost = step("disconnected", outage=True)
             assert lost["link"] == "Not live"
             assert "Revision 2 may be out of date" in lost["banner"]
             assert "Not live" not in lost["banner"]  # the sidebar names the state once
@@ -117,13 +129,15 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             assert lost["viewTop"] == lost["statusBottom"] > 0 and lost["viewBottom"] == 800
             # the old edit failure stays readable but no longer looks current
             assert lost["failureColor"] != failed["failureColor"]
+            assert abs(lost["pageTop"] - lost["before"]) <= 2  # a second row: still no jump
             # same port and key, as after a brief drop: the page must recover by itself
             restarted = ViewerServer(store, port=server.port)
             restarted._token = server._token  # test-only: a real restart would print a new key
             next_step()
 
-            back = step("reconnected")
+            back = step("reconnected", outage=True)
             assert (back["link"], back["banner"], back["filter"]) == ("Live", None, "none")
+            assert abs(back["pageTop"] - back["before"]) <= 2
             for revision in range(3, 53):  # back to back, so some loads lose the race
                 store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
             next_step()
@@ -131,21 +145,21 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             stress = step("stress")
             # 50 more revisions free what they replace: gpu counts match the one-part baseline
             assert stress["memory"] == second["memory"], (stress["memory"], second["memory"])
-            # skipped revisions must not look like failures in the browser console
-            assert stress["errors"] == []
+            # step() also checked that skipped revisions logged no console errors
             restarted.close()
             restarted = ViewerServer(store, port=server.port)  # a real restart: a new key
             next_step()
 
-            ended = step("new-link")
+            ended = step("new-link", outage=True)  # a brief gap while the port changes hands
             assert ended["link"] == "Link expired"
             assert "Open the new viewer link" in ended["status"]
             assert "stderr" in ended["status"]
             assert ended["eventRequestsAfter"] == 0  # the page stopped retrying the old key
             assert ended["gizmo"] is False
-            # only the expected answers to the old key (event stream and session probe)
-            denied = "the server responded with a status of 401"
-            assert ended["errors"] and all(denied in e for e in ended["errors"]), ended["errors"]
+            assert "Revision 52 is stale" in ended["status"]
+            # nothing current to aim at: orbit and view buttons are off
+            assert ended["camera"] is False and ended["disabled"] == [True] * 5
+            # an expired key is an expected state, not a browser error (no 401s)
             next_step()
 
             bare = step("no-access")

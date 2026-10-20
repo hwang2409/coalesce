@@ -49,15 +49,35 @@ for (const [x, y, z, color] of AXES) {
 }
 
 let frame = 0;
+let frames = 0; // completed renders, for the browser test
+let shownTop = null; // canvas page top and height at the last render
+let shownHeight = 0;
 function requestRender() {
   if (!frame) frame = requestAnimationFrame(render);
+}
+
+// the status row moves the canvas top edge: keep the model's scale and screen position
+function holdModel(top, h) {
+  const unitsPerPx = (camera.top - camera.bottom) / camera.zoom / shownHeight;
+  const half = ((camera.top - camera.bottom) / 2) * (h / shownHeight);
+  camera.top = half;
+  camera.bottom = -half;
+  const down = top + h / 2 - (shownTop + shownHeight / 2); // css px the view center moved
+  const offset = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).multiplyScalar(-down * unitsPerPx);
+  camera.position.add(offset);
+  controls.target.add(offset);
 }
 
 function render() {
   frame = 0;
   const { clientWidth: w, clientHeight: h } = canvas;
   if (!w || !h) return;
-  if (canvas.width !== Math.round(w * renderer.getPixelRatio())) renderer.setSize(w, h, false);
+  const top = canvas.getBoundingClientRect().top;
+  if (shownTop !== null && top !== shownTop) holdModel(top, h);
+  shownTop = top;
+  shownHeight = h;
+  const ratio = renderer.getPixelRatio();
+  if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) renderer.setSize(w, h, false);
   const aspect = w / h;
   const half = (camera.top - camera.bottom) / 2;
   camera.left = -half * aspect;
@@ -69,6 +89,7 @@ function render() {
   renderer.clear();
   renderer.render(scene, camera);
   updateScale(h);
+  frames += 1;
   if ($('gizmo').hidden) return;
 
   // corner axes follow the main camera's orientation
@@ -171,6 +192,13 @@ for (const button of document.querySelectorAll('[data-view]')) {
   button.addEventListener('click', () => applyView(button.dataset.view));
 }
 $('fit').addEventListener('click', () => applyView(activeView ?? 'iso'));
+
+// off before the first scene and once the link expired: nothing current to aim at
+function enableCamera(on) {
+  controls.enabled = on;
+  for (const button of document.querySelectorAll('.views button')) button.disabled = !on;
+}
+enableCamera(false);
 
 // ---- gpu resources: each group owns its materials; the mesh cache owns part geometry
 
@@ -317,9 +345,10 @@ function setLink(state, text) {
   line.hidden = !stale;
   line.dataset.state = state;
   if (state === 'ended') {
+    enableCamera(false);
     const title = document.createElement('strong');
-    title.textContent = `${NEW_LINK}.`;
-    line.replaceChildren(title, ` ${NEW_LINK_HELP}`);
+    title.textContent = `Revision ${current?.revision} is stale.`;
+    line.replaceChildren(title, ` ${NEW_LINK}. ${NEW_LINK_HELP}`);
   } else {
     line.textContent = stale ? `Revision ${current.revision} may be out of date. This page reconnects by itself.` : '';
   }
@@ -380,6 +409,14 @@ async function loadRevision(revision) {
   }
 }
 
+// all unique meshes at once; allSettled so none is still in flight when this returns
+async function loadMeshes(parts) {
+  const unique = new Map(parts.map((part) => [part.mesh.id, part.mesh]));
+  const results = await Promise.allSettled([...unique.values()].map(loadMesh));
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
+}
+
 async function loadOne(revision) {
   if (!current) notice(`Loading revision ${revision}`);
   else $('revision-meta').textContent = `Loading revision ${revision}`;
@@ -388,11 +425,7 @@ async function loadOne(revision) {
     if (response.status === 204) throw new Superseded();
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    // all unique meshes at once; allSettled so none is still in flight when this load ends
-    const unique = new Map(data.parts.map((part) => [part.mesh.id, part.mesh]));
-    const results = await Promise.allSettled([...unique.values()].map(loadMesh));
-    const failed = results.find((result) => result.status === 'rejected');
-    if (failed) throw failed.reason;
+    await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     clearGroup(model, { ownsGeometry: false });
     for (const part of data.parts) model.add(partObject(part, geometries.get(part.mesh.id)));
@@ -404,7 +437,7 @@ async function loadOne(revision) {
     syncGizmo();
     if (!fitted) {
       fitted = true;
-      for (const button of document.querySelectorAll('.views button')) button.disabled = false;
+      enableCamera(true);
       applyView('iso');
     }
     requestRender();
@@ -431,8 +464,7 @@ async function connect() {
     }).catch(() => null);
     history.replaceState(null, '', location.pathname);
   }
-  const session = await fetch('/api/session', { cache: 'no-store' }).catch(() => null);
-  if (!session || session.status !== 204) {
+  if (await authorized() !== true) {
     setLink('denied', 'No access');
     notice('Open the viewer link that coalesce printed',
       'This page needs the access key from that link. The key is part of the address after #token=.');
@@ -442,6 +474,16 @@ async function connect() {
   listen();
 }
 
+// true or false; null while the server is unreachable
+async function authorized() {
+  try {
+    const response = await fetch('/api/session', { cache: 'no-store' });
+    return (await response.json()).authorized === true;
+  } catch {
+    return null;
+  }
+}
+
 function listen() {
   const events = new EventSource('/events');
   events.addEventListener('open', () => {
@@ -449,7 +491,11 @@ function listen() {
     if (!current) notice('Waiting for the first revision',
       'Geometry appears here after your agent commits its first edit. This page updates by itself.');
   });
-  events.addEventListener('error', () => lost(events));
+  events.addEventListener('error', () => {
+    // reconnect only after the probe, so a stream never retries with a key the server dropped
+    events.close();
+    lost();
+  });
   events.addEventListener('revision', (event) => {
     const { revision } = JSON.parse(event.data);
     failure = null;
@@ -462,18 +508,18 @@ function listen() {
   });
 }
 
-// EventSource retries a stopped server by itself, but a restarted server has a new key:
-// ask it whether our cookie still works before promising a reconnect.
-async function lost(events) {
+// a restarted server has a new key: ask whether our cookie still works before reconnecting
+async function lost() {
   setLink('lost', 'Not live');
   if (!current) notice('Disconnected from coalesce', 'This page reconnects by itself when coalesce runs again.');
-  const session = await fetch('/api/session', { cache: 'no-store' }).catch(() => null);
-  if (session?.status === 401) {
-    events.close();
+  const access = await authorized();
+  if (access === null) {
+    setTimeout(lost, 2000);
+  } else if (access) {
+    listen();
+  } else {
     setLink('ended', 'Link expired');
     if (!current) notice(NEW_LINK, NEW_LINK_HELP);
-  } else if (events.readyState === EventSource.CLOSED) {
-    setTimeout(listen, 2000); // EventSource gives up after a non-200 answer; keep trying
   }
 }
 
@@ -489,6 +535,18 @@ if (window.coalesceDebug === true) {
       textures: renderer.info.memory.textures,
       programs: renderer.info.programs.length,
       cachedMeshes: geometries.size,
+    }),
+  });
+  // scene identity and render state, so the test waits for a finished frame, not a timer
+  Object.defineProperty(window.coalesceViewer, 'drawn', {
+    get: () => ({
+      frames,
+      settled: frame === 0 && shownTop === canvas.getBoundingClientRect().top && shownHeight === canvas.clientHeight,
+      revision: current?.revision ?? null,
+      parts: model.children.map((group) => group.name),
+      meshes: current?.parts.map((part) => part.mesh.id) ?? [],
+      geometries: model.children.map((group) => group.children[0].geometry.uuid),
+      camera: controls.enabled,
     }),
   });
 }

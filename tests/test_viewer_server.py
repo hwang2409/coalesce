@@ -173,7 +173,10 @@ def test_rejects_missing_token_bad_origin_and_bad_host(served):
     mesh_url = store.scene(1)["parts"][0]["mesh"]["url"]
     token = token_of(server)
 
-    for path in ["/api/session", "/events", "/api/scene/1", mesh_url]:
+    for cookie in [None, f"coalesce_{server.port}=wrong"]:
+        status, _, body = call(server, "GET", "/api/session", cookie=cookie)
+        assert (status, json.loads(body)) == (200, {"authorized": False})
+    for path in ["/events", "/api/scene/1", mesh_url]:
         assert call(server, "GET", path)[0] == 401
         assert call(server, "GET", path, cookie=f"coalesce_{server.port}=wrong")[0] == 401
 
@@ -189,7 +192,8 @@ def test_rejects_missing_token_bad_origin_and_bad_host(served):
     assert session(None, token) == 403
 
     cookie = login(server)
-    assert call(server, "GET", "/api/session", cookie=cookie)[0] == 204
+    status, _, body = call(server, "GET", "/api/session", cookie=cookie)
+    assert (status, json.loads(body)) == (200, {"authorized": True})
     assert call(server, "GET", "/api/scene/1", cookie=cookie)[0] == 200
     evil_origin = {"Origin": "http://evil.example"}
     assert call(server, "GET", "/api/scene/1", cookie=cookie, headers=evil_origin)[0] == 403
