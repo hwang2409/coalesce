@@ -4,8 +4,8 @@ from dataclasses import dataclass, replace
 from itertools import product
 from math import sqrt
 
-from build123d import Shape
 from build123d import Plane as BuildPlane
+from build123d import Shape
 
 from .extrusion import extrude_sketch, sketch_location
 from .graph import Cut, Extrude, GraphError, Sketch
