@@ -10,6 +10,7 @@ class Cardinality(str, Enum):
     ONE = "one"
     ONE_OR_MORE = "one_or_more"
     EXACTLY = "exactly"
+    ANY = "any"
 
 
 class Status(str, Enum):
@@ -22,10 +23,24 @@ class Status(str, Enum):
 
 
 @dataclass(frozen=True)
+class BodySource:
+    feature: str
+    entity: str
+
+
+@dataclass(frozen=True)
+class SketchSegmentSource:
+    sketch: str
+    entity: str
+    segment: str
+
+
+@dataclass(frozen=True)
 class ElementKey:
     feature: str
     role: str
-    source: str | None = None
+    source: SketchSegmentSource | str | tuple[ElementKey, ...] | None = None
+    body: BodySource | None = None
 
 
 @dataclass
@@ -64,7 +79,8 @@ class Reference:
     role: str
     cardinality: Cardinality = Cardinality.ONE
     count: int | None = None
-    source: str | None = None
+    source: SketchSegmentSource | str | None = None
+    body: BodySource | None = None
     filters: list[Filter] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -72,7 +88,27 @@ class Reference:
             raise ValueError("exactly cardinality requires a non-negative count")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self) | {"cardinality": self.cardinality.value}
+        filters = [
+            {"kind": type(predicate).__name__, **asdict(predicate)}
+            for predicate in self.filters
+        ]
+        return {
+            "feature": self.feature,
+            "role": self.role,
+            "cardinality": self.cardinality.value,
+            "count": self.count,
+            "source": (
+                {"kind": "sketch_segment", **asdict(self.source)}
+                if isinstance(self.source, SketchSegmentSource)
+                else self.source
+            ),
+            "body": (
+                {"kind": "body_source", **asdict(self.body)}
+                if self.body is not None
+                else None
+            ),
+            "filters": filters,
+        }
 
 
 @dataclass
@@ -117,19 +153,27 @@ def _error(ref: Reference, status: Status, candidates: list[Candidate]) -> dict[
     }
 
 
-def _filter(candidates: list[Candidate], predicate: Filter) -> list[Candidate]:
+@dataclass
+class _FilterResult:
+    candidates: list[Candidate]
+    tied: bool = False
+
+
+def _filter(candidates: list[Candidate], predicate: Filter) -> _FilterResult:
     direction = _unit(predicate.direction)
     if isinstance(predicate, Normal):
-        return [
-            candidate
-            for candidate in candidates
-            if "normal" in candidate.descriptor
-            and isclose(
-                _dot(_unit(tuple(candidate.descriptor["normal"])), direction),
-                1.0,
-                abs_tol=predicate.tolerance,
-            )
-        ]
+        return _FilterResult(
+            [
+                candidate
+                for candidate in candidates
+                if "normal" in candidate.descriptor
+                and isclose(
+                    _dot(_unit(tuple(candidate.descriptor["normal"])), direction),
+                    1.0,
+                    abs_tol=predicate.tolerance,
+                )
+            ]
+        )
 
     positions = [
         (candidate, _dot(tuple(candidate.descriptor["center"]), direction))
@@ -137,19 +181,61 @@ def _filter(candidates: list[Candidate], predicate: Filter) -> list[Candidate]:
         if "center" in candidate.descriptor
     ]
     if isinstance(predicate, Position):
-        return [
-            candidate
-            for candidate, position in positions
-            if isclose(position, predicate.value, abs_tol=predicate.tolerance)
-        ]
+        return _FilterResult(
+            [
+                candidate
+                for candidate, position in positions
+                if isclose(position, predicate.value, abs_tol=predicate.tolerance)
+            ]
+        )
     if not positions:
-        return []
+        return _FilterResult([])
     maximum = max(position for _, position in positions)
-    return [
+    selected = [
         candidate
         for candidate, position in positions
         if isclose(position, maximum, abs_tol=predicate.tolerance)
     ]
+    return _FilterResult(selected, tied=len(selected) > 1)
+
+
+def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> _FilterResult:
+    candidates = [
+        candidate
+        for candidate in provenance.get(ref.feature, [])
+        if candidate.key.role == ref.role
+        and (ref.source is None or candidate.key.source == ref.source)
+        and (ref.body is None or candidate.key.body == ref.body)
+    ]
+    tied = False
+    for predicate in ref.filters:
+        result = _filter(candidates, predicate)
+        candidates = result.candidates
+        tied = tied or result.tied
+    return _FilterResult(candidates, tied)
+
+
+def _classify(result: _FilterResult) -> Status:
+    candidates = result.candidates
+    if not candidates:
+        return Status.EMPTY
+    if result.tied:
+        return Status.AMBIGUOUS
+    if any(candidate.merged_from for candidate in candidates):
+        return Status.MERGED
+    if len(candidates) > 1 and len({candidate.key for candidate in candidates}) == 1:
+        return Status.SPLIT
+    return Status.OK
+
+
+def _violates_cardinality(ref: Reference, count: int) -> bool:
+    if ref.cardinality is Cardinality.ANY:
+        return False
+    if ref.cardinality is Cardinality.ONE:
+        return count != 1
+    if ref.cardinality is Cardinality.ONE_OR_MORE:
+        return count < 1
+    return count != ref.count
 
 
 def resolve(
@@ -159,33 +245,20 @@ def resolve(
     ordered_features: list[str] | None = None,
     before_feature: str | None = None,
 ) -> Resolution:
-    if before_feature is not None and ordered_features is not None:
-        if ref.feature in ordered_features and before_feature in ordered_features:
-            if ordered_features.index(ref.feature) >= ordered_features.index(before_feature):
-                status = Status.ORDER
-                return Resolution(status, error=_error(ref, status, []))
+    if (
+        before_feature is not None
+        and ordered_features is not None
+        and ref.feature in ordered_features
+        and before_feature in ordered_features
+        and ordered_features.index(ref.feature) >= ordered_features.index(before_feature)
+    ):
+        return Resolution(Status.ORDER, error=_error(ref, Status.ORDER, []))
 
-    candidates = [
-        candidate
-        for candidate in provenance.get(ref.feature, [])
-        if candidate.key.role == ref.role
-        and (ref.source is None or candidate.key.source == ref.source)
-    ]
-    for predicate in ref.filters:
-        candidates = _filter(candidates, predicate)
-
-    if not candidates:
-        status = Status.EMPTY
-    elif any(candidate.merged_from for candidate in candidates):
-        status = Status.MERGED
-    elif ref.cardinality is Cardinality.ONE and len(candidates) > 1:
-        status = (
-            Status.SPLIT
-            if len({candidate.key for candidate in candidates}) == 1
-            else Status.AMBIGUOUS
-        )
-    elif ref.cardinality is Cardinality.EXACTLY and len(candidates) != ref.count:
-        status = Status.SPLIT if len({candidate.key for candidate in candidates}) == 1 else Status.AMBIGUOUS
-    else:
-        return Resolution(Status.OK, candidates)
-    return Resolution(status, candidates, _error(ref, status, candidates))
+    filtered = _select(ref, provenance)
+    candidates = filtered.candidates
+    status = _classify(filtered)
+    violates = _violates_cardinality(ref, len(candidates))
+    if status is Status.OK and violates:
+        status = Status.AMBIGUOUS
+    error = _error(ref, status, candidates) if violates or filtered.tied else None
+    return Resolution(status, candidates, error)

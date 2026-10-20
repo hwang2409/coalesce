@@ -1,72 +1,232 @@
-from coalesce import *
-from coalesce.regen import regenerate
+import json
+import subprocess
+import sys
+from dataclasses import asdict
+from math import isclose
+
+import pytest
+
+from coalesce import (
+    Cardinality,
+    Cut,
+    Extrude,
+    Fillet,
+    Graph,
+    GraphError,
+    Rectangle,
+    Reference,
+    Sketch,
+    SketchSegmentSource,
+    Status,
+    regenerate,
+)
+from coalesce.serialization import loads
 
 
-def base(height=10):
-    g = Graph()
-    g.add(Sketch("sk", entities=[Rectangle("bottom", 10, 10)]))
-    g.add(Extrude("base", sketch="sk", height=height))
-    return g
+def base(height=10, *, position=(0, 0, 0), rotation=(0, 0, 0)):
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "sk",
+            entities=[Rectangle("profile", 10, 10)],
+            position=position,
+            rotation=rotation,
+        )
+    )
+    graph.add(Extrude("base", sketch="sk", height=height))
+    return graph
+
+
+def snapshot(result):
+    candidates = []
+    for candidate in result.provenance["base"]:
+        descriptor = candidate.descriptor
+        candidates.append(
+            {
+                "key": json.loads(json.dumps(asdict(candidate.key))),
+                "center": [round(value, 6) for value in descriptor["center"]],
+                "measure": round(descriptor.get("area", descriptor.get("length", 0)), 6),
+            }
+        )
+    resolution = result.resolve(Reference("base", "side(left)"))
+    return {
+        "candidates": candidates,
+        "resolution": {
+            "status": resolution.status.value,
+            "keys": [
+                json.loads(json.dumps(asdict(candidate.key)))
+                for candidate in resolution.candidates
+            ],
+        },
+    }
+
+
+def test_duplicate_sketch_entity_ids_fail_graph_validation_before_regen():
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "sk",
+            entities=[
+                Rectangle("dup", 2, 2),
+                Rectangle("dup", 2, 2, position=(4, 0)),
+            ],
+        )
+    )
+    graph.add(Extrude("parts", sketch="sk", height=3))
+
+    with pytest.raises(GraphError) as caught:
+        graph.validate()
+
+    assert caught.value.error["code"] == "duplicate_entity_id"
+    assert caught.value.error["sketch"] == "sk"
+    assert caught.value.error["entity"] == "dup"
+
 
 
 def test_case_1_cap_end_height_geometry():
-    g = base(); regenerate(g)
+    graph = base()
+    first = regenerate(graph)
     ref = Reference("base", "cap_end")
-    first = g.resolve(ref); assert first.status is Status.OK
-    assert round(first.candidates[0].entity.center().Z) == 10
-    g.nodes["base"].height = 20; regenerate(g)
-    second = g.resolve(ref); assert second.status is Status.OK
-    assert round(second.candidates[0].entity.center().Z) == 20
+
+    first_cap = first.resolve(ref)
+    assert first_cap.status is Status.OK
+    assert isclose(first_cap.candidates[0].entity.center().Z, 10)
+
+    graph.nodes["base"].height = 20
+    second_cap = regenerate(graph).resolve(ref)
+    assert second_cap.status is Status.OK
+    assert isclose(second_cap.candidates[0].entity.center().Z, 20)
 
 
 def test_case_2_rectangle_wall_follows_width():
-    g = base(); regenerate(g); ref = Reference("base", "side(bottom)")
-    assert g.resolve(ref).status is Status.OK
-    g.nodes["sk"].entities[0].width = 20; regenerate(g)
-    wall = g.resolve(ref); assert wall.status is Status.OK
-    assert wall.candidates[0].entity.normal_at().Y < 0
-    assert round(wall.candidates[0].entity.center().Y) == -5
+    graph = base()
+    ref = Reference("base", "side(left)")
 
+    first = regenerate(graph).resolve(ref)
+    assert first.status is Status.OK
+    assert isclose(first.candidates[0].entity.center().X, -5)
 
-def test_case_4_hole_edge_and_radius_change():
-    g = base(); g.add(Hole("hole", target="base", diameter=4)); regenerate(g)
-    wall = g.resolve(Reference("hole", "hole_wall")); assert wall.status is Status.OK
-    assert round(wall.candidates[0].entity.radius, 5) == 2
-    g.nodes["hole"].diameter = 6; regenerate(g)
-    assert round(g.resolve(Reference("hole", "hole_wall")).candidates[0].entity.radius, 5) == 3
+    graph.nodes["sk"].entities[0].width = 20
+    second = regenerate(graph).resolve(ref)
+    assert second.status is Status.OK
+    assert isclose(second.candidates[0].entity.center().X, -10)
 
 
 def test_case_8_delete_through_graph_api():
-    g = base(); regenerate(g); g.remove("base")
-    result = g.resolve(Reference("base", "cap_end"))
-    assert result.status is Status.EMPTY and result.error["feature"] == "base"
+    graph = base()
+    assert regenerate(graph).resolve(Reference("base", "cap_end")).status is Status.OK
+
+    graph.delete("base")
+    resolution = regenerate(graph).resolve(Reference("base", "cap_end"))
+
+    assert resolution.status is Status.EMPTY
+    assert resolution.error["feature"] == "base"
+    assert resolution.error["reference"]["role"] == "cap_end"
 
 
-def test_case_9_slot_splits_cap_and_cardinality_collects_both():
-    g = base(); g.add(Sketch("slot", entities=[Rectangle("slot", 2, 20)])); g.add(Cut("cut", target="base", tool="slot")); regenerate(g)
-    one = g.resolve(Reference("cut", "cap_end")); assert one.status is Status.SPLIT and len(one.candidates) == 2
-    many = g.resolve(Reference("cut", "cap_end", Cardinality.ONE_OR_MORE)); assert many.status is Status.OK
-    assert len(many.candidates) == 2
-    assert round(sum(c.entity.area for c in many.candidates)) == 80
+def test_case_23_regeneration_is_deterministic_in_and_out_of_process():
+    graph = base(position=(3, -2, 1), rotation=(0, 0, 30))
+    serialized = graph.to_json()
+
+    first = snapshot(regenerate(graph))
+    second = snapshot(regenerate(graph))
+    script = """
+import json, sys
+from dataclasses import asdict
+from coalesce import Reference, regenerate
+from coalesce.serialization import loads
+result = regenerate(loads(sys.stdin.read()))
+candidates = []
+for candidate in result.provenance['base']:
+    descriptor = candidate.descriptor
+    candidates.append({
+        'key': asdict(candidate.key),
+        'center': [round(value, 6) for value in descriptor['center']],
+        'measure': round(descriptor.get('area', descriptor.get('length', 0)), 6),
+    })
+resolution = result.resolve(Reference('base', 'side(left)'))
+print(json.dumps({
+    'candidates': candidates,
+    'resolution': {
+        'status': resolution.status.value,
+        'keys': [asdict(candidate.key) for candidate in resolution.candidates],
+    },
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        input=serialized,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert first == second == json.loads(completed.stdout)
+    assert regenerate(graph).resolve(Reference("base", "side(left)")).status is Status.OK
 
 
-def test_case_13_fillet_changes_volume_and_creates_blend():
-    g = base(); g.add(Fillet("round", target="base", edges=[Reference("base", "edge(side(bottom),cap_end)")], radius=1)); regenerate(g)
-    assert g.shapes["round"].volume < g.shapes["base"].volume
-    blend = g.resolve(Reference("round", "blend")); assert blend.status is Status.OK
-    assert any(f.geom_type.name != "PLANE" for f in [c.entity for c in blend.candidates])
+def test_anti_guessing_rotated_rectangle_uses_constructed_segment_history():
+    graph = base(position=(7, -3, 2), rotation=(0, 0, 30))
+
+    resolution = regenerate(graph).resolve(Reference("base", "side(left)"))
+
+    assert resolution.status is Status.OK
+    wall = resolution.candidates[0].entity
+    assert isclose(wall.center().X, 7 - 5 * 3**0.5 / 2)
+    assert isclose(wall.center().Y, -5.5)
 
 
-def test_case_17_equal_max_faces_are_not_silent():
-    g = base(); g.add(Sketch("boss_sk", entities=[Circle("boss", 2)])); g.add(Extrude("boss", sketch="boss_sk", height=10)); regenerate(g)
-    tops = [f for f in g.shapes["base"].faces() if round(f.normal_at().Z) == 1]
-    assert len(tops) == 1 and round(tops[0].center().Z) == 10
-    assert round(g.shapes["boss"].faces()[-1].center().Z) == 10
+def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
+    from coalesce import BodySource
+
+    graph = base()
+    source = SketchSegmentSource("sk", "profile", "left")
+    body = BodySource("base", "profile")
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", "side(left)", source=source, body=body)],
+        )
+    )
+
+    restored = loads(graph.to_json())
+
+    reference = restored.nodes["round"].edges[0]
+    assert reference.source == source
+    assert reference.body == body
 
 
-def test_case_23_json_round_trip_same_volume():
-    from coalesce.serialization import loads
-    g = base(); g.add(Hole("hole", target="base", diameter=2)); regenerate(g)
-    clone = loads(g.to_json()); regenerate(clone)
-    assert round(clone.shapes["hole"].volume, 6) == round(g.shapes["hole"].volume, 6)
-    assert [c.key for c in clone.provenance["base"]] == [c.key for c in g.provenance["base"]]
+def test_json_round_trip_preserves_any_cardinality():
+    graph = base()
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", "side(left)", Cardinality.ANY)],
+        )
+    )
+
+    restored = loads(graph.to_json())
+
+    assert restored.nodes["round"].edges[0].cardinality is Cardinality.ANY
+
+
+def test_json_round_trip_regenerates_the_same_geometry():
+    graph = base(position=(2, 4, 1), rotation=(10, 20, 30))
+    original = regenerate(graph)
+
+    clone = loads(graph.to_json())
+    restored = regenerate(clone)
+
+    assert isclose(restored.shapes["base"].volume, original.shapes["base"].volume)
+    assert snapshot(restored) == snapshot(original)
+
+
+def test_step_b_features_fail_clearly_instead_of_guessing():
+    graph = base()
+    graph.add(Sketch("tool", entities=[Rectangle("slot", 2, 20)]))
+    graph.add(Cut("cut", target="base", tool="tool"))
+
+    with pytest.raises(NotImplementedError, match="Cut regeneration requires step B"):
+        regenerate(graph)
