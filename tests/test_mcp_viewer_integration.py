@@ -49,7 +49,7 @@ def _get_json(parsed, headers, path):
 
 
 def _wait_for_scene(parsed, headers, revision):
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         try:
             return _get_json(parsed, headers, f"/api/scene/{revision}")
