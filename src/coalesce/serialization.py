@@ -6,13 +6,11 @@ from .graph import Circle, Cut, Extrude, Fillet, Graph, Hole, Plane, Rectangle, 
 from .references import (
     BodySource,
     Cardinality,
-    HoleSurfaceSource,
     MaxAlong,
     Normal,
     Position,
     Reference,
-    SketchSegmentSource,
-    ToolCapSource,
+    _source_from_dict,
 )
 
 _TYPES = {cls.__name__: cls for cls in (Sketch, Rectangle, Circle, Extrude, Cut, Hole, Fillet)}
@@ -22,16 +20,7 @@ _FILTERS = {cls.__name__: cls for cls in (Normal, Position, MaxAlong)}
 def _reference(payload: dict[str, Any]) -> Reference:
     value = dict(payload)
     value["cardinality"] = Cardinality(value.get("cardinality", Cardinality.ONE))
-    source = value.get("source")
-    source_types = {
-        "sketch_segment": SketchSegmentSource,
-        "tool_cap": ToolCapSource,
-        "hole_surface": HoleSurfaceSource,
-    }
-    if isinstance(source, dict) and source.get("kind") in source_types:
-        value["source"] = source_types[source["kind"]](
-            **{key: field for key, field in source.items() if key != "kind"}
-        )
+    value["source"] = _source_from_dict(value.get("source"))
     body = value.get("body")
     if isinstance(body, dict) and body.get("kind") == "body_source":
         value["body"] = BodySource(

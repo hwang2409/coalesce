@@ -198,6 +198,74 @@ def test_cut_preserves_unintersected_body_keys() -> None:
         )
 
 
+def test_cut_crossing_two_bodies_assigns_generated_faces_to_each_body() -> None:
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "parts_sketch",
+            entities=[
+                Rectangle("left", 4, 4, position=(-3, 0)),
+                Rectangle("right", 4, 4, position=(3, 0)),
+            ],
+        )
+    )
+    graph.add(Extrude("parts", sketch="parts_sketch", height=5))
+    add_tool_sketch(graph, "tool", "slot", 10, 2, position=(0, 0, 5))
+    graph.add(Cut("cut", target="parts", tool="tool"))
+
+    result = regenerate(graph)
+    walls = result.resolve(
+        Reference("cut", "side(bottom)", Cardinality.ONE_OR_MORE)
+    )
+
+    assert walls.status is Status.OK
+    assert len(walls.candidates) == 2
+    assert {candidate.key.body for candidate in walls.candidates} == {
+        BodySource("parts", "left"),
+        BodySource("parts", "right"),
+    }
+    assert all(isclose(candidate.entity.area, 20) for candidate in walls.candidates)
+
+
+def test_cut_splitting_one_body_keeps_generated_faces_on_original_body() -> None:
+    graph = base_graph()
+    add_slot(graph)
+
+    result = regenerate(graph)
+    walls = result.resolve(
+        Reference("slot", "side(left)", Cardinality.ONE_OR_MORE)
+    )
+
+    assert len(result.shapes["slot"].solids()) == 2
+    assert walls.status is Status.OK
+    assert walls.candidates
+    assert all(
+        candidate.key.body == BodySource("base", "plate")
+        for candidate in walls.candidates
+    )
+
+
+def test_coplanar_dual_history_resolves_both_sources_as_merged() -> None:
+    graph = base_graph()
+    add_tool_sketch(graph, "tool", "corner", 2, 2, position=(-5, -5, 0))
+    graph.add(Cut("touch", target="base", tool="tool", depth=2))
+
+    result = regenerate(graph)
+    target = result.resolve(
+        Reference("base", "cap_start", Cardinality.ONE_OR_MORE)
+    )
+    tool = result.resolve(
+        Reference("touch", "pocket_floor", Cardinality.ONE_OR_MORE)
+    )
+
+    assert target.status is Status.MERGED
+    assert tool.status is Status.MERGED
+    assert len(target.candidates) == 2
+    assert len(tool.candidates) == 1
+    assert target.candidates[0].entity.is_same(tool.candidates[0].entity)
+    assert isclose(result.shapes["touch"].volume, 1000)
+
+
 def test_cut_through_all_cuts_both_sides_of_sketch_plane() -> None:
     graph = base_graph()
     add_tool_sketch(graph, "tool", "slot", 2, 2, position=(0, 0, 5))
