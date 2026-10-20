@@ -538,6 +538,134 @@ async def test_mixed_effect_named_holes_are_atomic_and_name_misses(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_mixed_duplicate_named_hole_is_atomic_and_names_duplicate(tmp_path):
+    path = tmp_path / "duplicate-effect-holes.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+            (
+                "feature",
+                hole(
+                    request_id="existing-hole",
+                    revision=2,
+                    feature_id="existing_hole",
+                    target="plate",
+                    position=(0, 0),
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 3
+    before = path.read_bytes()
+
+    results = await run_server(
+        path,
+        [
+            (
+                "feature",
+                patterned_hole(
+                    request_id="holes",
+                    revision=3,
+                    feature_id="holes",
+                    target="existing_hole",
+                    positions=[
+                        {"name": "duplicate", "point": [0, 0]},
+                        {"name": "hit", "point": [5, 0]},
+                    ],
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert results[0]["error"]["code"] == "HOLE_NO_EFFECT"
+    assert results[0]["error"]["names"] == ["duplicate"]
+    assert results[0]["revision"] == results[1]["revision"] == 3
+    assert path.read_bytes() == before
+
+
+@pytest.mark.anyio
+async def test_mixed_tangent_named_hole_is_atomic_and_names_tangent(tmp_path):
+    path = tmp_path / "tangent-effect-holes.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 2
+    before = path.read_bytes()
+
+    results = await run_server(
+        path,
+        [
+            (
+                "feature",
+                patterned_hole(
+                    request_id="holes",
+                    revision=2,
+                    feature_id="holes",
+                    target="plate",
+                    positions=[
+                        {"name": "hit", "point": [0, 0]},
+                        {"name": "tangent", "point": [11.5, 0]},
+                    ],
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert results[0]["error"]["code"] == "HOLE_NO_EFFECT"
+    assert results[0]["error"]["names"] == ["tangent"]
+    assert results[0]["revision"] == results[1]["revision"] == 2
+    assert path.read_bytes() == before
+
+
+@pytest.mark.anyio
 async def test_all_named_holes_miss_with_whole_feature_error(tmp_path):
     path = tmp_path / "all-miss-holes.coalesce.json"
     setup = await run_server(
