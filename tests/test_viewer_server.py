@@ -43,7 +43,7 @@ def login(server) -> str:
         headers={"Origin": server.origin, "Content-Type": "application/json"},
         body=json.dumps({"token": token_of(server)}),
     )
-    assert status == 204
+    assert status == 200
     cookie = headers["Set-Cookie"]
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
     return cookie.split(";", 1)[0]
@@ -109,8 +109,9 @@ def test_dropped_revision_and_mesh_answer_superseded_not_404(served):
     store.publish(3, [ScenePart("plate", plate(10))])  # the store keeps 2 and 3 only
     cookie = login(server)
 
-    assert call(server, "GET", "/api/scene/1", cookie=cookie)[0] == 204
-    assert call(server, "GET", first_mesh, cookie=cookie)[0] == 204
+    for path in ["/api/scene/1", first_mesh]:
+        status, _, body = call(server, "GET", path, cookie=cookie)
+        assert (status, json.loads(body)) == (200, {"superseded": True})
     assert call(server, "GET", "/api/scene/2", cookie=cookie)[0] == 200
     assert call(server, "GET", "/api/scene/4", cookie=cookie)[0] == 404  # not published yet
 
@@ -191,10 +192,14 @@ def test_rejects_missing_token_bad_origin_and_bad_host(served):
         headers = {"Content-Type": "application/json"}
         if origin:
             headers["Origin"] = origin
-        return call(server, "POST", "/api/session", headers=headers,
-                    body=json.dumps({"token": value}))[0]
+        status, _, body = call(server, "POST", "/api/session", headers=headers,
+                    body=json.dumps({"token": value}))
+        return status if status != 200 else (status, json.loads(body))
 
-    assert session(server.origin, "wrong") == 403
+    # a wrong key is an expected answer, not a browser error
+    assert session(server.origin, "wrong") == (200, {"authorized": False})
+    assert "Set-Cookie" not in call(server, "POST", "/api/session", body=json.dumps({"token": "wrong"}),
+                                    headers={"Origin": server.origin})[1]
     assert session("http://evil.example", token) == 403
     assert session(None, token) == 403
 

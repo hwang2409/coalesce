@@ -121,8 +121,9 @@ class _Handler(BaseHTTPRequestHandler):
                   [("Cache-Control", "no-store")])
 
     def superseded(self):
-        # a 2xx, not 404: catching up past dropped revisions is normal, not a browser error.
-        self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
+        # a 200, not 404 or 204: catching up past dropped revisions is normal, and Chromium
+        # logs every 204 to fetch() as an aborted request.
+        self.json({"superseded": True})
 
     def trusted(self) -> bool:
         origin = self.headers.get("Origin")
@@ -186,10 +187,13 @@ class _Handler(BaseHTTPRequestHandler):
             token = json.loads(self.rfile.read(min(length, 4096)))["token"]
         except (ValueError, KeyError, TypeError):
             return self.send(HTTPStatus.BAD_REQUEST)
-        if not isinstance(token, str) or not hmac.compare_digest(token, self.viewer._token):
-            return self.send(HTTPStatus.FORBIDDEN)
+        if not isinstance(token, str):
+            return self.send(HTTPStatus.BAD_REQUEST)
+        if not hmac.compare_digest(token, self.viewer._token):
+            return self.json({"authorized": False})
         cookie = f"{self.viewer.cookie_name}={self.viewer._token}; Path=/; HttpOnly; SameSite=Strict"
-        self.send(HTTPStatus.NO_CONTENT, headers=[("Set-Cookie", cookie)])
+        self.send(200, b'{"authorized": true}', "application/json",
+                  [("Cache-Control", "no-store"), ("Set-Cookie", cookie)])
 
     def events(self):
         self.send_response(200)

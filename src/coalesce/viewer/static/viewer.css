@@ -157,7 +157,7 @@ button {
   gap: 10px;
   width: 100%;
   min-height: 40px;
-  padding: 0 8px;
+  padding: 8px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -181,6 +181,9 @@ button {
   white-space: nowrap;
   font-weight: 500;
 }
+
+/* a focused row (keyboard or tap) shows its full name */
+.part:focus .part-name { white-space: normal; overflow-wrap: anywhere; }
 
 .part-size { color: var(--mute); font-size: 12px; }
 
@@ -279,16 +282,24 @@ button {
   font-size: 12px;
 }
 
-.failure-error {
+.failure-repair {
   margin-top: 4px;
   color: var(--ink);
   overflow-wrap: anywhere;
   text-wrap: pretty;
 }
 
+.failure-details { margin-top: 4px; color: var(--mute); font-size: 12px; }
+
+.failure-details summary { width: fit-content; cursor: pointer; }
+
+.failure-details p { margin-top: 2px; overflow-wrap: anywhere; }
+
+.failure-code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
 /* not live: the old failure stays readable, but the connection is the news */
 .stage[data-stale] .failure { box-shadow: inset 3px 0 0 var(--rule); }
-.stage[data-stale] :is(.failure-title, .failure-error, .feature-id) { color: var(--mute); }
+.stage[data-stale] :is(.failure-title, .failure-repair, .feature-id) { color: var(--mute); }
 .stage[data-stale] .feature-id { background: rgba(29, 35, 41, 0.06); }
 
 .gizmo {
@@ -377,11 +388,33 @@ button {
 
 .fit:enabled:hover { background: #fff; }
 
+/* the model changed while the human held their own view */
+.fit[data-new]:enabled { background: #fff; }
+.fit[data-new]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--focus);
+  vertical-align: 1px;
+}
+
 .segmented button:enabled:active, .fit:enabled:active { scale: 0.96; }
 
 /* no scene yet, or the link expired: nothing current to aim at, so the controls sit flat and faint */
 .segmented button:disabled, .fit:disabled { color: var(--faint); cursor: not-allowed; }
 .segmented:has(:disabled), .fit:disabled { background: transparent; box-shadow: 0 0 0 1px var(--rule); }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
