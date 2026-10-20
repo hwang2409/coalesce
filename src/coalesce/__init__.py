@@ -16,6 +16,7 @@ from .graph import (
 from .references import (
     BodySource,
     Cardinality,
+    HoleSurfaceSource,
     MaxAlong,
     Normal,
     Position,
@@ -23,6 +24,7 @@ from .references import (
     Resolution,
     SketchSegmentSource,
     Status,
+    ToolCapSource,
 )
 from .regen import RegenResult, regenerate
 
@@ -36,6 +38,7 @@ __all__ = [
     "Graph",
     "GraphError",
     "Hole",
+    "HoleSurfaceSource",
     "MaxAlong",
     "Normal",
     "Parameter",
@@ -48,5 +51,6 @@ __all__ = [
     "Sketch",
     "SketchSegmentSource",
     "Status",
+    "ToolCapSource",
     "regenerate",
 ]

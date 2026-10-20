@@ -36,10 +36,25 @@ class SketchSegmentSource:
 
 
 @dataclass(frozen=True)
+class ToolCapSource:
+    tool: str
+    role: str
+
+
+@dataclass(frozen=True)
+class HoleSurfaceSource:
+    feature: str
+    surface: str
+
+
+ElementSource = SketchSegmentSource | ToolCapSource | HoleSurfaceSource | str
+
+
+@dataclass(frozen=True)
 class ElementKey:
     feature: str
     role: str
-    source: SketchSegmentSource | str | tuple[ElementKey, ...] | None = None
+    source: ElementSource | tuple[ElementKey, ...] | None = None
     body: BodySource | None = None
 
 
@@ -79,7 +94,7 @@ class Reference:
     role: str
     cardinality: Cardinality = Cardinality.ONE
     count: int | None = None
-    source: SketchSegmentSource | str | None = None
+    source: ElementSource | None = None
     body: BodySource | None = None
     filters: list[Filter] = field(default_factory=list)
 
@@ -97,11 +112,7 @@ class Reference:
             "role": self.role,
             "cardinality": self.cardinality.value,
             "count": self.count,
-            "source": (
-                {"kind": "sketch_segment", **asdict(self.source)}
-                if isinstance(self.source, SketchSegmentSource)
-                else self.source
-            ),
+            "source": _source_dict(self.source),
             "body": (
                 {"kind": "body_source", **asdict(self.body)}
                 if self.body is not None
@@ -109,6 +120,17 @@ class Reference:
             ),
             "filters": filters,
         }
+
+
+def _source_dict(source: ElementSource | None) -> dict[str, Any] | str | None:
+    kinds = {
+        SketchSegmentSource: "sketch_segment",
+        ToolCapSource: "tool_cap",
+        HoleSurfaceSource: "hole_surface",
+    }
+    if isinstance(source, str) or source is None:
+        return source
+    return {"kind": kinds[type(source)], **asdict(source)}
 
 
 @dataclass
