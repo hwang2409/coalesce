@@ -97,6 +97,22 @@ def _face_components(faces: list[Face]) -> list[list[Face]]:
     return components
 
 
+def _touches_any(component: list[Face], candidates: list[Face]) -> bool:
+    return any(_adjacent(face, candidate) for face in component for candidate in candidates)
+
+
+def _classify_component(
+    component: list[Face], groups: dict[str, list[Face]], measured: list[str], neutral: list[Face]
+) -> None:
+    touched = {group for group in measured if _touches_any(component, groups[group])}
+    sides = {group.rsplit("_", 1)[1] for group in touched}
+    if len(sides) == 1:
+        for group in touched:
+            groups[group].extend(component)
+    elif not touched and not _touches_any(component, neutral):
+        groups["unclassified"].extend(component)
+
+
 def _classify_boundary_faces(result: Any, base: PcbBase, shape: Shape) -> dict[str, list[Face]]:
     roles = {
         "inner_wall": "wall_inside",
@@ -110,23 +126,7 @@ def _classify_boundary_faces(result: Any, base: PcbBase, shape: Shape) -> dict[s
     neutral = _faces(result, base.id, "rim")
     unclassified = [face for face in shape.faces() if not _same_face(face, [*seeds, *neutral])]
     for component in _face_components(unclassified):
-        touched = {
-            group
-            for group in roles.values()
-            if any(
-                _adjacent(face, seed)
-                for face in component
-                for seed in groups[group]
-            )
-        }
-        sides = {group.rsplit("_", 1)[1] for group in touched}
-        if len(sides) == 1:
-            for group in touched:
-                groups[group].extend(component)
-        elif not touched and not any(
-            _adjacent(face, rim) for face in component for rim in neutral
-        ):
-            groups["unclassified"].extend(component)
+        _classify_component(component, groups, list(roles.values()), neutral)
     return groups
 
 
