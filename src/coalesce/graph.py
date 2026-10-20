@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from math import isfinite
 from typing import Any
@@ -215,12 +216,40 @@ class Graph:
     @staticmethod
     def _dependencies(node: Any) -> list[str]:
         dependencies = list(getattr(node, "depends_on", []))
-        dependencies.extend(
+        direct = (
             getattr(node, field)
             for field in ("sketch", "target", "tool", "board", "base")
             if getattr(node, field, None)
         )
+        references = (
+            dependency
+            for reference in getattr(node, "edges", [])
+            if isinstance(reference, Reference)
+            for value in (reference, reference.source, reference.body)
+            for field in ("feature", "sketch")
+            if (dependency := getattr(value, field, None))
+        )
+        for dependency in (*direct, *references):
+            if dependency not in dependencies:
+                dependencies.append(dependency)
         return dependencies
+
+    def transitive_dependents(
+        self, target: str, lineage_predecessors: Mapping[str, str]
+    ) -> list[Any]:
+        ordered = self.ordered()
+        dependencies = {node.id: set(self._dependencies(node)) for node in ordered}
+        for successor, predecessor in lineage_predecessors.items():
+            dependencies[successor].add(predecessor)
+
+        selected = {target}
+        while additions := {
+            node.id
+            for node in ordered
+            if node.id not in selected and dependencies[node.id] & selected
+        }:
+            selected.update(additions)
+        return [node for node in ordered if node.id in selected and node.id != target]
 
     @staticmethod
     def _validate_node(node: Any) -> None:

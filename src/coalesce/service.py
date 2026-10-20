@@ -585,6 +585,8 @@ class HoleUpdate(_Operation):
         return {*super().wire_fields(), "kind"}
 
 
+DeleteOperation = ImportDelete | SketchDelete | FeatureDelete
+
 MutationOperation = (
     BoardImportOperation
     | ImportDelete
@@ -1305,10 +1307,13 @@ def _board_availability(board: Any) -> dict[str, str]:
 
 
 def _apply_import(
-    graph: Any, operation: BoardImportOperation | ImportDelete
+    graph: Any,
+    operation: BoardImportOperation | ImportDelete,
+    committed: RegenResult | None,
 ) -> str | _DeleteResult:
     if isinstance(operation, ImportDelete):
-        return _apply_delete(graph, operation)
+        assert committed is not None
+        return _apply_delete(graph, operation, committed)
     if operation.format != "kicad_pcb":
         raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
     current = graph.nodes.get(operation.assetId)
@@ -1377,21 +1382,7 @@ def _node_kind(node: Any) -> str:
     }.get(type(node).__name__, type(node).__name__.lower())
 
 
-def _reference_dependencies(node: Any) -> set[str]:
-    dependencies: set[str] = set()
-    for reference in getattr(node, "edges", []):
-        if not isinstance(reference, Reference):
-            continue
-        dependencies.add(reference.feature)
-        for value in (reference.source, reference.body):
-            for field in ("feature", "sketch"):
-                dependency = getattr(value, field, None)
-                if dependency:
-                    dependencies.add(dependency)
-    return dependencies
-
-
-def _delete_target(operation: ImportDelete | SketchDelete | FeatureDelete) -> str:
+def _delete_target(operation: DeleteOperation) -> str:
     if isinstance(operation, ImportDelete):
         return operation.assetId
     if isinstance(operation, SketchDelete):
@@ -1399,51 +1390,30 @@ def _delete_target(operation: ImportDelete | SketchDelete | FeatureDelete) -> st
     return operation.featureId
 
 
+def _delete_target_kind(operation: DeleteOperation) -> tuple[type, str]:
+    if isinstance(operation, ImportDelete):
+        return BoardImport, "board import"
+    if isinstance(operation, SketchDelete):
+        return Sketch, "sketch"
+    return Feature, "feature"
+
+
 def _apply_delete(
-    graph: Any, operation: ImportDelete | SketchDelete | FeatureDelete
+    graph: Any, operation: DeleteOperation, committed: RegenResult
 ) -> _DeleteResult:
     target = _delete_target(operation)
-    node = graph.nodes.get(target)
-    expected = (
-        BoardImport
-        if isinstance(operation, ImportDelete)
-        else Sketch
-        if isinstance(operation, SketchDelete)
-        else object
-    )
-    if node is None or expected is not object and not isinstance(node, expected):
-        noun = (
-            "board import"
-            if isinstance(operation, ImportDelete)
-            else "sketch"
-            if isinstance(operation, SketchDelete)
-            else "feature"
-        )
+    expected, noun = _delete_target_kind(operation)
+    if not isinstance(graph.nodes.get(target), expected):
         raise RequestError("UNKNOWN_ID", f"unknown {noun}: {target}")
-    if isinstance(operation, FeatureDelete) and not isinstance(node, Feature):
-        raise RequestError("UNKNOWN_ID", f"unknown feature: {target}")
 
-    before = regenerate(graph)
-    dependencies = {
-        item.id: set(graph._dependencies(item)) | _reference_dependencies(item)
-        for item in graph.ordered()
-    }
-    for successor, predecessor in before.predecessors.items():
-        dependencies[successor].add(predecessor)
-
-    deleted_ids = {target}
     ordered = graph.ordered()
-    changed = True
-    while changed:
-        changed = False
-        for item in ordered:
-            if item.id not in deleted_ids and dependencies[item.id] & deleted_ids:
-                deleted_ids.add(item.id)
-                changed = True
+    dependent_ids = {
+        item.id for item in graph.transitive_dependents(target, committed.predecessors)
+    }
     dependents = [
         {"id": item.id, "kind": _node_kind(item)}
         for item in ordered
-        if item.id in deleted_ids and item.id != target
+        if item.id in dependent_ids
     ]
     if dependents and not operation.cascade:
         raise RequestError(
@@ -1453,20 +1423,60 @@ def _apply_delete(
             hint="delete the listed dependents first or pass cascade: true",
         )
 
+    deleted_ids = dependent_ids | {target}
     deleted = tuple(
         {"id": item.id, "kind": _node_kind(item)} for item in ordered if item.id in deleted_ids
     )
-    before_parts = _part_state(before)
+    before_parts = _part_state(committed)
     for item in deleted:
         graph.delete(item["id"])
     return _DeleteResult(target, deleted, before_parts)
 
 
+def _applied_result(
+    applied: str | _DeleteResult,
+) -> tuple[str, list[str], _DeleteResult | None]:
+    if isinstance(applied, _DeleteResult):
+        return applied.target_id, [item["id"] for item in applied.deleted], applied
+    return applied, [applied], None
+
+
+def _deletion_result_fields(
+    deletion: _DeleteResult | None, result: RegenResult
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    if deletion is None:
+        return {}, None
+    after_parts = {item["id"]: item for item in _part_state(result)}
+    before_parts = {item["id"]: item for item in deletion.before_parts}
+    removed_parts = [part_id for part_id in before_parts if part_id not in after_parts]
+    changed_parts = [
+        part_id
+        for part_id in before_parts
+        if part_id in after_parts and before_parts[part_id] != after_parts[part_id]
+    ]
+    deleted_ids = [item["id"] for item in deletion.deleted]
+    summary = f"deleted {', '.join(deleted_ids)}"
+    if removed_parts:
+        summary += f"; removed parts {', '.join(removed_parts)}"
+    if changed_parts:
+        summary += f"; changed parts {', '.join(changed_parts)}"
+    fields = {
+        "deleted": list(deletion.deleted),
+        "summary": summary,
+        "partsRemoved": removed_parts,
+        "partsChanged": changed_parts,
+    }
+    return fields, {"featureId": deletion.target_id, "summary": summary}
+
+
 def _apply_sketch(
-    graph: Any, operation: SketchCreate | SketchUpdate | SketchDelete
+    graph: Any,
+    operation: SketchCreate | SketchUpdate | SketchDelete,
+    committed: RegenResult | None,
 ) -> str | _DeleteResult:
     if isinstance(operation, SketchDelete):
-        return _apply_delete(graph, operation)
+        assert committed is not None
+        return _apply_delete(graph, operation, committed)
     if isinstance(operation, SketchCreate):
         if operation.plane.kind != "origin":
             raise RequestError("INVALID_PARAMETER", "only origin planes are supported")
@@ -1784,9 +1794,12 @@ def _apply_port_cutout(
     return _create_port_cutout(graph, operation)
 
 
-def _apply_feature(graph: Any, operation: MutationOperation) -> str | _DeleteResult:
+def _apply_feature(
+    graph: Any, operation: MutationOperation, committed: RegenResult | None
+) -> str | _DeleteResult:
     if isinstance(operation, FeatureDelete):
-        return _apply_delete(graph, operation)
+        assert committed is not None
+        return _apply_delete(graph, operation, committed)
     applier = {
         ExtrudeCreate: _apply_extrude,
         ExtrudeUpdate: _apply_extrude,
@@ -2091,6 +2104,13 @@ class DocumentService:
             hint=hint,
         )
 
+    def _committed_regeneration(self, operation: MutationOperation) -> RegenResult | None:
+        if not isinstance(operation, (ImportDelete, SketchDelete, FeatureDelete)):
+            return None
+        self._ensure_geometry()
+        assert self._regen is not None
+        return self._regen
+
     def publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
         """Show a failed sketch or feature call in the viewer; the last good scene stays."""
         if self._publisher is None:
@@ -2107,7 +2127,9 @@ class DocumentService:
         operation: str,
         payload: dict[str, Any],
         parse: Callable[[dict[str, Any]], MutationOperation],
-        apply: Callable[[Any, MutationOperation], str],
+        apply: Callable[
+            [Any, MutationOperation, RegenResult | None], str | _DeleteResult
+        ],
         response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
     ) -> dict[str, Any]:
         request_id = payload.get("requestId")
@@ -2159,41 +2181,12 @@ class DocumentService:
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
                 graph = loads(dumps(self._document.graph))
-                applied = apply(graph, parsed)
-                deletion = applied if isinstance(applied, _DeleteResult) else None
-                changed_id = deletion.target_id if deletion else applied
+                applied = apply(graph, parsed, self._committed_regeneration(parsed))
+                changed_id, changed_ids, deletion = _applied_result(applied)
                 result = regenerate(graph)
                 self._assert_valid(result)
                 self._assert_effect(parsed, result)
-                changed_ids = (
-                    [item["id"] for item in deletion.deleted] if deletion else [changed_id]
-                )
-                deletion_fields: dict[str, Any] = {}
-                change = None
-                if deletion:
-                    after_parts = {item["id"]: item for item in _part_state(result)}
-                    before_parts = {item["id"]: item for item in deletion.before_parts}
-                    removed_parts = [
-                        part_id for part_id in before_parts if part_id not in after_parts
-                    ]
-                    changed_parts = [
-                        part_id
-                        for part_id in before_parts
-                        if part_id in after_parts and before_parts[part_id] != after_parts[part_id]
-                    ]
-                    deleted_ids = [item["id"] for item in deletion.deleted]
-                    summary = f"deleted {', '.join(deleted_ids)}"
-                    if removed_parts:
-                        summary += f"; removed parts {', '.join(removed_parts)}"
-                    if changed_parts:
-                        summary += f"; changed parts {', '.join(changed_parts)}"
-                    deletion_fields = {
-                        "deleted": list(deletion.deleted),
-                        "summary": summary,
-                        "partsRemoved": removed_parts,
-                        "partsChanged": changed_parts,
-                    }
-                    change = {"featureId": deletion.target_id, "summary": summary}
+                deletion_fields, change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision
                 response = {
                     "ok": True,
