@@ -70,8 +70,9 @@ def derive_edge_candidates(
     for edge in shape.edges():
         keys = _adjacent_keys(edge, faces)
         if len(keys) == 2:
-            key_features = {key.feature for key in keys}
-            edge_feature = keys[0].feature if len(key_features) == 1 else feature
+            edge_feature = (
+                keys[0].feature if keys[0].feature == keys[1].feature else feature
+            )
             result.append(
                 candidate(
                     edge_feature,
