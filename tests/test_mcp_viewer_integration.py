@@ -25,6 +25,7 @@ from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
+KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
 
 
 def _viewer_access(url: str):
@@ -324,6 +325,46 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
         assert _wait_for_scene(parsed, headers, 3, errlog)["parts"][0]["size"] == pytest.approx(
             [60, 40, 10]
         )
+
+
+@pytest.mark.anyio
+async def test_real_stdio_kicad_import_publishes_pcb_reference_to_viewer(tmp_path):
+    path = tmp_path / "board.coalesce.json"
+    errlog = (tmp_path / "server.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        line = next(
+            line for line in errlog.read().splitlines() if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(line.removeprefix("coalesce viewer: "))
+        imported = result_json(
+            await session.call_tool(
+                "import",
+                {
+                    "action": "create",
+                    "expectedRevision": 0,
+                    "requestId": "import-board",
+                    "assetId": "controller_board",
+                    "format": "kicad_pcb",
+                    "path": str(KICAD_FIXTURE.resolve()),
+                },
+            )
+        )
+        assert imported["ok"] is True
+        [part] = _wait_for_scene(parsed, headers, 1, errlog)["parts"]
+        assert part["role"] == "reference"
+        assert part["label"] == "pcb reference"
+        assert part["color"] == "#6f8f72"
+        assert part["visible"] is True
 
 
 class RequestWinsKernelLoader:

@@ -10,8 +10,9 @@ from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
-from .graph import Cut, Extrude, Fillet, Graph, GraphError, Hole, Sketch
+from .graph import BoardImport, Cut, Extrude, Fillet, Graph, GraphError, Hole, Sketch
 from .hole import make_hole_tool
+from .pcb import build_pcb
 from .references import (
     Candidate,
     ElementKey,
@@ -178,7 +179,12 @@ def regenerate(graph: Graph) -> RegenResult:
     for node in ordered:
         if isinstance(node, Sketch):
             continue
-        if isinstance(node, Extrude):
+        if isinstance(node, BoardImport):
+            board = build_pcb(node)
+            shapes[node.id] = board.shape
+            states[node.id] = board.candidates
+            provenance[node.id] = board.candidates
+        elif isinstance(node, Extrude):
             if node.operation == "new_body":
                 prism = extrude_sketch(node, graph.nodes[node.sketch])
                 shapes[node.id] = prism.shape

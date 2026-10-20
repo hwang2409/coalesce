@@ -20,7 +20,7 @@ from .service import DocumentService
 _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
-    "import": "Snapshot mechanical facts from one explicit absolute local kicad_pcb path into a persisted BoardImport asset. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Import records metadata and stable ids only; it does not create board geometry. Use refresh to re-read the persisted path explicitly.",
+    "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh to re-read the persisted path explicitly.",
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
     "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Extrude updates change distance; cut and hole updates change target.featureId.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
@@ -35,8 +35,9 @@ coalesce owns one revisioned document. Start with `query` using `select.kind: re
 Use `import` create with an explicit absolute local `kicad_pcb` path to persist a
 `BoardImport` snapshot. The source must be a readable regular file of 16 MiB or less.
 The import stores the resolved path, SHA-256 digest, parser version, stable mechanics ids,
-availability, warnings, and errors. It does not add geometry, access the network, or resolve
-environment variables in model paths. Later source edits do not affect the document; use
+availability, warnings, and errors. It regenerates the exact board substrate as reference
+geometry from line, arc, circle, cutout, and drill data. It does not access the network or
+resolve environment variables in model paths. Later source edits do not affect the document; use
 `import` refresh to read the persisted path and commit a new snapshot explicitly.
 Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+Y), XZ=(+X,+Z), YZ=(+Y,+Z). Plane offset moves along its normal.
 Plane normals are XY +Z, XZ -Y, YZ +X.
@@ -55,9 +56,13 @@ Ask the user before changing geometry when a dimension is vague, such as "a bit 
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
 idempotent. Supplied update entities replace the full list; omitted entities stay unchanged.
 All lengths are explicit mm quantities. Rectangle angles accept `deg` or `rad`.
-Use `query` with `measurements` for bbox placement, area, volume, and terminal bodies, or
-`select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying on
-the model. Use `export` with the current `expectedRevision` and an explicit absolute new
+Use `query` with `measurements` for bbox placement, area, volume, and terminal bodies. It
+returns manufacturing parts by default; set `select.role: reference` to measure imported PCB
+reference geometry separately. Reference parts remain visible in the viewer but are excluded
+from manufacturing totals. Use `select.kind: feature` with `id` for one node. Use `check`
+with `valid_brep` before relying on the model. It checks terminal manufacturing parts only and
+excludes BoardImport reference geometry; `PASS` with `solidCount: 0` means no manufacturing
+geometry was checked. Use `export` with the current `expectedRevision` and an explicit absolute new
 `path`; export is stateless and does not accept `requestId`. It defaults to all terminal
 manufacturing parts; select stable `partIds` from measurements when needed. BoardImport
 reference geometry is never included. STEP export never overwrites, renames, truncates, or
