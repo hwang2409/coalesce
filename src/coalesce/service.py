@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 from OCP.BRepCheck import BRepCheck_Analyzer
 
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
-from .graph import Extrude, GraphError, Rectangle, Sketch
+from .graph import Circle, Cut, Extrude, GraphError, Hole, Plane, Rectangle, Sketch
 from .references import (
     BodySource,
     Cardinality,
@@ -32,7 +32,7 @@ from .serialization import dumps, loads
 from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
-_ALLOWED_FEATURE_KINDS = ["extrude"]
+_ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole"]
 
 
 class RequestError(ValueError):
@@ -71,6 +71,13 @@ def _quantity(value: Any, unit: str, field: str) -> float:
     return _finite_number(value["value"], field)
 
 
+def _positive_quantity(value: Any, field: str) -> float:
+    number = _quantity(value, "mm", field)
+    if number <= 0:
+        raise RequestError("INVALID_PARAMETER", f"{field} must be positive", field=field)
+    return number
+
+
 def _angle(value: Any) -> float:
     if not isinstance(value, dict) or set(value) != {"value", "unit"}:
         raise RequestError("INVALID_PARAMETER", "angle must contain value and unit")
@@ -107,12 +114,13 @@ class _Operation:
 class SketchPlane:
     kind: str
     name: str
+    offset: float
 
 
 @dataclass(frozen=True)
 class SketchChanges:
     position: tuple[float, float, float] | None
-    entities: tuple[Rectangle, ...] | None
+    entities: tuple[Rectangle | Circle, ...] | None
 
 
 @dataclass(frozen=True)
@@ -130,6 +138,32 @@ class ExtrudeParameters:
 
 
 @dataclass(frozen=True)
+class FeatureTarget:
+    featureId: str
+
+
+@dataclass(frozen=True)
+class SketchTool:
+    sketchId: str
+
+
+@dataclass(frozen=True)
+class CutParameters:
+    target: FeatureTarget
+    tool: SketchTool
+    depth: float | None
+    flip: bool
+
+
+@dataclass(frozen=True)
+class HoleParameters:
+    target: FeatureTarget
+    diameter: float
+    depth: float | None
+    position: tuple[float, float]
+
+
+@dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
 
@@ -141,7 +175,7 @@ class SketchCreate(_Operation):
     requestId: str
     sketchId: str
     plane: SketchPlane
-    entities: tuple[Rectangle, ...]
+    entities: tuple[Rectangle | Circle, ...]
 
 
 @dataclass(frozen=True)
@@ -153,8 +187,17 @@ class SketchUpdate(_Operation):
     set: SketchChanges
 
 
+class _FeatureCreate(_Operation):
+    featureId: str
+    parameters: Any
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
 @dataclass(frozen=True)
-class ExtrudeCreate(_Operation):
+class ExtrudeCreate(_FeatureCreate):
     action: Action
     expectedRevision: float
     requestId: str
@@ -162,9 +205,25 @@ class ExtrudeCreate(_Operation):
     parameters: ExtrudeParameters
     kind: ClassVar[str] = "extrude"
 
-    @classmethod
-    def wire_fields(cls) -> set[str]:
-        return {*super().wire_fields(), "kind"}
+
+@dataclass(frozen=True)
+class CutCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: CutParameters
+    kind: ClassVar[str] = "cut"
+
+
+@dataclass(frozen=True)
+class HoleCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: HoleParameters
+    kind: ClassVar[str] = "hole"
 
 
 @dataclass(frozen=True)
@@ -181,35 +240,47 @@ class ExtrudeUpdate(_Operation):
         return {*super().wire_fields(), "kind"}
 
 
-MutationOperation = SketchCreate | SketchUpdate | ExtrudeCreate | ExtrudeUpdate
+MutationOperation = (
+    SketchCreate | SketchUpdate | ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate
+)
 
 
-def _rectangles(payload: Any) -> tuple[Rectangle, ...]:
+def _entities(payload: Any) -> tuple[Rectangle | Circle, ...]:
     if not isinstance(payload, list) or not payload:
-        raise RequestError("INVALID_PARAMETER", "entities must contain a rectangle")
-    rectangles = []
+        raise RequestError("INVALID_PARAMETER", "entities must not be empty")
+    parsed = []
     for entity in payload:
-        if not isinstance(entity, dict) or entity.get("kind") != "rectangle":
+        if not isinstance(entity, dict) or entity.get("kind") not in {"rectangle", "circle"}:
             raise RequestError(
                 "INVALID_PARAMETER",
-                "only rectangle sketch entities are supported",
-                allowedKinds=["rectangle"],
+                "unknown sketch entity kind",
+                allowedKinds=["rectangle", "circle"],
             )
         center = entity.get("center", [0, 0])
-        rotation = entity.get("rotation", {"value": 0, "unit": "deg"})
-        rectangles.append(
-            Rectangle(
-                id=entity["id"],
-                width=_quantity(entity.get("width"), "mm", "width"),
-                height=_quantity(entity.get("height"), "mm", "height"),
-                position=(
-                    _finite_number(center[0], "center"),
-                    _finite_number(center[1], "center"),
-                ),
-                rotation=_angle(rotation),
+        common = {
+            "id": entity["id"],
+            "position": (
+                _finite_number(center[0], "center"),
+                _finite_number(center[1], "center"),
+            ),
+            "rotation": _angle(entity.get("rotation", {"value": 0, "unit": "deg"})),
+        }
+        if entity["kind"] == "rectangle":
+            parsed.append(
+                Rectangle(
+                    **common,
+                    width=_positive_quantity(entity.get("width"), "width"),
+                    height=_positive_quantity(entity.get("height"), "height"),
+                )
             )
-        )
-    return tuple(rectangles)
+        else:
+            parsed.append(
+                Circle(
+                    **common,
+                    radius=_positive_quantity(entity.get("radius"), "radius"),
+                )
+            )
+    return tuple(parsed)
 
 
 def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate:
@@ -223,8 +294,12 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate:
         plane = payload.get("plane", {})
         return SketchCreate(
             **common,
-            plane=SketchPlane(plane.get("kind"), plane.get("name")),
-            entities=_rectangles(payload.get("entities")),
+            plane=SketchPlane(
+                plane.get("kind"),
+                plane.get("name"),
+                _quantity(plane.get("offset", {"value": 0, "unit": "mm"}), "mm", "offset"),
+            ),
+            entities=_entities(payload.get("entities")),
         )
     changes = payload.get("set")
     if not isinstance(changes, dict) or not changes:
@@ -238,12 +313,12 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate:
                 if position is not None
                 else None
             ),
-            entities=_rectangles(changes["entities"]) if "entities" in changes else None,
+            entities=_entities(changes["entities"]) if "entities" in changes else None,
         ),
     )
 
 
-def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
+def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate:
     kind = payload.get("kind")
     if kind not in _ALLOWED_FEATURE_KINDS:
         raise RequestError(
@@ -257,8 +332,21 @@ def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
         "requestId": payload.get("requestId"),
         "featureId": payload.get("featureId"),
     }
-    if common["action"] is Action.CREATE:
-        parameters = payload.get("parameters", {})
+    if common["action"] is Action.UPDATE:
+        if kind != "extrude":
+            raise RequestError("INVALID_PARAMETER", "only extrude features can be updated")
+        changes = payload.get("set")
+        if not isinstance(changes, dict) or set(changes) != {"distance"}:
+            raise RequestError("INVALID_PARAMETER", "extrude update requires set.distance")
+        return ExtrudeUpdate(
+            **common,
+            set=ExtrudeChanges(
+                distance=_positive_quantity(changes["distance"], "distance")
+            ),
+        )
+
+    parameters = payload.get("parameters", {})
+    if kind == "extrude":
         profile = parameters.get("profile", {})
         return ExtrudeCreate(
             **common,
@@ -267,17 +355,41 @@ def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
                     sketchId=profile.get("sketchId"),
                     profileIds=tuple(profile.get("profileIds", [])),
                 ),
-                distance=_quantity(parameters.get("distance"), "mm", "distance"),
+                distance=_positive_quantity(parameters.get("distance"), "distance"),
                 operation=parameters.get("operation"),
                 direction=parameters.get("direction"),
             ),
         )
-    changes = payload.get("set")
-    if not isinstance(changes, dict) or set(changes) != {"distance"}:
-        raise RequestError("INVALID_PARAMETER", "extrude update requires set.distance")
-    return ExtrudeUpdate(
+    target = FeatureTarget(parameters.get("target", {}).get("featureId"))
+    if kind == "cut":
+        depth = parameters.get("depth", {})
+        return CutCreate(
+            **common,
+            parameters=CutParameters(
+                target=target,
+                tool=SketchTool(parameters.get("tool", {}).get("sketchId")),
+                depth=(
+                    None
+                    if depth.get("kind") == "through_all"
+                    else _positive_quantity(depth.get("distance"), "depth")
+                ),
+                flip=parameters.get("flip"),
+            ),
+        )
+    return HoleCreate(
         **common,
-        set=ExtrudeChanges(distance=_quantity(changes["distance"], "mm", "distance")),
+        parameters=HoleParameters(
+            target=target,
+            diameter=_positive_quantity(parameters.get("diameter"), "diameter"),
+            depth=(
+                _positive_quantity(parameters["depth"], "depth")
+                if "depth" in parameters
+                else None
+            ),
+            position=tuple(
+                _finite_number(value, "position") for value in parameters.get("position", [])
+            ),
+        ),
     )
 
 
@@ -358,9 +470,15 @@ def _reference(payload: dict[str, Any]) -> Reference:
 
 def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
     if isinstance(operation, SketchCreate):
-        if operation.plane != SketchPlane("origin", "XY"):
-            raise RequestError("INVALID_PARAMETER", "only the XY origin plane is supported")
-        graph.add(Sketch(operation.sketchId, entities=list(operation.entities)))
+        if operation.plane.kind != "origin":
+            raise RequestError("INVALID_PARAMETER", "only origin planes are supported")
+        graph.add(
+            Sketch(
+                operation.sketchId,
+                plane=Plane(operation.plane.name, operation.plane.offset),
+                entities=list(operation.entities),
+            )
+        )
     else:
         node = graph.nodes.get(operation.sketchId)
         if not isinstance(node, Sketch):
@@ -372,7 +490,10 @@ def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
     return operation.sketchId
 
 
-def _apply_feature(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
+def _apply_feature(
+    graph: Any,
+    operation: ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate,
+) -> str:
     if isinstance(operation, ExtrudeCreate):
         parameters = operation.parameters
         if parameters.operation != "new_body" or parameters.direction != "normal":
@@ -385,11 +506,33 @@ def _apply_feature(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
                 "INVALID_PARAMETER",
                 "profileIds must list all sketch profiles in graph order",
             )
+        graph.add(Extrude(operation.featureId, sketch=sketch.id, height=parameters.distance))
+    elif isinstance(operation, CutCreate):
+        parameters = operation.parameters
+        if not isinstance(graph.nodes.get(parameters.target.featureId), (Extrude, Cut, Hole)):
+            raise RequestError("UNKNOWN_ID", "cut target feature does not exist")
+        if not isinstance(graph.nodes.get(parameters.tool.sketchId), Sketch):
+            raise RequestError("UNKNOWN_ID", "cut tool sketch does not exist")
         graph.add(
-            Extrude(
+            Cut(
                 operation.featureId,
-                sketch=sketch.id,
-                height=parameters.distance,
+                target=parameters.target.featureId,
+                tool=parameters.tool.sketchId,
+                depth=parameters.depth,
+                flip=parameters.flip,
+            )
+        )
+    elif isinstance(operation, HoleCreate):
+        parameters = operation.parameters
+        if not isinstance(graph.nodes.get(parameters.target.featureId), (Extrude, Cut, Hole)):
+            raise RequestError("UNKNOWN_ID", "hole target feature does not exist")
+        graph.add(
+            Hole(
+                operation.featureId,
+                target=parameters.target.featureId,
+                diameter=parameters.diameter,
+                depth=parameters.depth,
+                position=parameters.position,
             )
         )
     else:
@@ -652,15 +795,23 @@ class DocumentService:
                 return failure
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        entities = payload.get("entities") or payload.get("set", {}).get("entities")
+        response = {"sketchId": payload.get("sketchId")}
+        if entities:
+            response["entitySegments"] = {
+                entity["id"]: (
+                    ["bottom", "right", "top", "left"]
+                    if entity["kind"] == "rectangle"
+                    else ["circle"]
+                )
+                for entity in entities
+            }
         return self._mutate(
             "sketch",
             payload,
             _parse_sketch,
             _apply_sketch,
-            {
-                "sketchId": payload.get("sketchId"),
-                "segmentIds": ["bottom", "right", "top", "left"],
-            },
+            response,
         )
 
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:

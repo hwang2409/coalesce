@@ -18,8 +18,8 @@ from .service import DocumentService
 _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
-    "sketch": "Create or update an XY rectangle sketch. Supplied entities replace the full entity list. Every mutation needs expectedRevision and requestId.",
-    "feature": "Create or update a normal new-body extrude from all profiles in one sketch.",
+    "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
+    "feature": "Create a normal new-body extrude, sketch cut, or global +Z hole. Cut supports through-all or a positive depth and flip; hole depth is optional. Only extrudes can be updated.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
 }
@@ -28,8 +28,11 @@ TOOLS_GUIDE = """# coalesce tools
 
 Start with `coalesce --document part.coalesce.json` or set `COALESCE_DOCUMENT`.
 coalesce owns one revisioned document. Start with `query` using `select.kind: revision`.
-Use `sketch` to create an XY rectangle, then `feature` to extrude it. The rectangle center is
-local X/Y. Extrusion starts at the sketch plane and extends in +Z; it is not centered in Z.
+Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes and normals are:
+XY=(+X,+Y,+Z), XZ=(+X,+Z,-Y), YZ=(+Y,+Z,+X). Plane offset moves along the normal.
+Extrusion starts at the sketch plane and extends along its normal; it is not centered.
+Cuts use a sketch tool and either through-all or a positive depth; `flip` reverses finite cuts.
+Holes use absolute XY positions and global +Z only. Omitted hole depth means through-all.
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
 idempotent. Supplied update entities replace the full list; omitted entities stay unchanged.
@@ -170,8 +173,8 @@ def create_server(service: DocumentService) -> Server:
         version="0.1.0",
         instructions=(
             "Read coalesce://docs/tools and query the current revision before mutations. "
-            "Ask before guessing vague dimensions. Rectangle centers are local X/Y; "
-            "normal XY extrusion starts at the sketch plane and extends in +Z."
+            "Ask before guessing vague dimensions. Sketch centers use plane-local axes; "
+            "extrusions start at the sketch plane and follow its normal. Holes are global +Z."
         ),
     )
 
@@ -218,7 +221,7 @@ def create_server(service: DocumentService) -> Server:
             error = _branch_error(raised)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
-                details["allowedKinds"] = ["extrude"]
+                details["allowedKinds"] = ["extrude", "cut", "hole"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
             failure = {

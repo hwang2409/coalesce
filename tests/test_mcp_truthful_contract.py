@@ -11,9 +11,10 @@ from coalesce.service import DocumentService
 async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations(tmp_path):
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
 
-    assert tools["feature"].inputSchema["properties"]["kind"]["enum"] == ["extrude"]
+    assert tools["feature"].inputSchema["properties"]["kind"]["enum"] == ["extrude", "cut", "hole"]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
-    assert all(kind not in advertised for kind in ("boolean", "hole", "fillet"))
+    assert "fillet" not in advertised
+    assert "boolean" not in tools["feature"].inputSchema["properties"]["kind"]["enum"]
     assert tools["query"].annotations.readOnlyHint is True
     assert tools["query"].annotations.destructiveHint is False
     assert tools["query"].annotations.idempotentHint is True
