@@ -22,7 +22,7 @@ Real headless Chromium captures of the coalesce viewer at PR head `b246c07` (bra
 | long-name-focus | focused part row shows the full name | 7 |
 | orbited / held | human orbit kept on a new revision; "Fit new model" offered | 2 |
 | refit | after "Fit new model" | 2 |
-| reconnecting | brief outage, bounded retry (1280 only: 390 is the same state) | 3 |
+| reconnecting | brief outage, bounded retry, honest "Reconnecting" copy | 3 |
 | ended | after 15 s unreachable: terminal "Viewer ended" with new-link help | 3 |
 
 `new-link.png`: restart on the same port with a new key (401 path) -> "Viewer ended" at once.
