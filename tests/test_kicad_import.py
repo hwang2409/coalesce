@@ -481,6 +481,33 @@ def test_stable_ids_survive_reordering_and_duplicate_references(tmp_path):
     assert len({footprint.id for footprint in left.footprints}) == 2
 
 
+def test_uuid_less_pads_use_stable_local_pose_ids(tmp_path):
+    pads = (
+        '(pad "1" thru_hole circle (at 3 4 15) (size 2 2) (drill 1)) '
+        '(pad "" thru_hole circle (at 6 4 15) (size 2 2) (drill 1)) '
+        '(pad "" thru_hole circle (at 9 4 15) (size 2 2) (drill 1))'
+    )
+    def board_at(pose):
+        return _parse_text(tmp_path, _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]),
+            f'(footprint "Mount" (layer "F.Cu") (at {pose}) ' + pads + ')'))
+    first = board_at("0 0")
+    moved = board_at("10 8 90")
+    assert first.errors == moved.errors == []
+    assert len({hole.id for hole in first.holes}) == 3
+    assert {hole.id for hole in first.holes} == {hole.id for hole in moved.holes}
+
+
+def test_equivalent_circle_encodings_have_one_loop_id(tmp_path):
+    def board_with_circle(end):
+        circle = f'(gr_circle (center 5 5) (end {end[0]} {end[1]}) (layer "Edge.Cuts"))'
+        return _parse_text(tmp_path, _board(circle))
+    first = board_with_circle((8, 5))
+    equivalent = board_with_circle((5, 8))
+    reversed_encoding = board_with_circle((2, 5))
+    assert {loop.id for loop in first.outline} == {loop.id for loop in equivalent.outline}
+    assert {loop.id for loop in first.outline} == {loop.id for loop in reversed_encoding.outline}
+
+
 def test_hole_ids_follow_identity_or_geometry_and_digest_is_raw_bytes(tmp_path):
     via = '(via (at 5 5) (size 2) (drill 1) (layers "F.Cu" "B.Cu"))'
     text = _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]), via)

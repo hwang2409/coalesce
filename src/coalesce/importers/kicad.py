@@ -634,7 +634,7 @@ def _drill(node: list[Any], transform: _FootprintTransform) -> Drill:
     return Drill(shape, width, height, transform.angle(0.0))
 
 
-def _holes(node: list[Any], footprint_id: str, transform: _FootprintTransform, path: str) -> list[Hole]:
+def _holes(node: list[Any], footprint_id: str, footprint_library_id: str, transform: _FootprintTransform, path: str) -> list[Hole]:
     holes: list[Hole] = []
     for index, pad in enumerate(_children(node, "pad")):
         drill_node = _child(pad, "drill")
@@ -649,7 +649,12 @@ def _holes(node: list[Any], footprint_id: str, transform: _FootprintTransform, p
         pad_type = str(pad[2]) if len(pad) > 2 else ""
         pad_number = str(pad[1]) if len(pad) > 1 else ""
         pad_uuid = _uuid(pad)
-        identity = f"footprint:{footprint_id}|pad:{pad_number}|uuid:{pad_uuid or ''}"
+        if pad_uuid:
+            identity = f"footprint:{footprint_id}|pad:{pad_number}|uuid:{pad_uuid}"
+        else:
+            local_pose = (_endpoint_key(hole_position), _ki_round(local_angle * 1_000_000))
+            identity = (f"library:{footprint_library_id}|pad:{pad_number}|pose:{local_pose}"
+                        f"|drill:{drill.shape},{_to_nm(drill.width)},{_to_nm(drill.height)}")
         hole_id = "hole-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
         holes.append(Hole(transform.point(hole_position), drill, pad_type == "thru_hole", footprint_id,
                           hole_id, pad_number))
@@ -676,9 +681,14 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
             str(node[1]), transform.position, transform.rotation, "B" if transform.back else "F",
             courtyard or None, "present" if courtyard else "missing", _models(node),
         ))
-        holes.extend(_holes(node, footprint_id, transform, path))
+        holes.extend(_holes(node, footprint_id, str(node[1]), transform, path))
         edges.extend(_graphics(node, "Edge.Cuts", transform, scope))
-    for index, via in enumerate(_children(root, "via")):
+    return footprints, holes, edges
+
+
+def _extract_vias(root: list[Any]) -> list[Hole]:
+    holes: list[Hole] = []
+    for via in _children(root, "via"):
         position = _point(via, "at")
         drill_node = _child(via, "drill")
         if position is None or drill_node is None:
@@ -687,7 +697,7 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
         identity = f"via|at:{_endpoint_key(position)}|drill:{_to_nm(drill.width)}|shape:{drill.shape}|height:{_to_nm(drill.height)}"
         hole_id = "hole-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
         holes.append(Hole(position, drill, True, None, hole_id, None))
-    return footprints, holes, edges
+    return holes
 
 
 def _open_errors(loops: list[OutlineLoop]) -> tuple[list[str], list[Error]]:
@@ -723,6 +733,11 @@ def _unsupported_geometry(root: list[Any]) -> list[Error]:
 
 
 def _segment_key(segment: Segment) -> tuple[Any, ...]:
+    if segment.kind == "circle":
+        center = _endpoint_key(segment.start)
+        end = _endpoint_key(segment.end)
+        radius_squared = (end[0] - center[0]) ** 2 + (end[1] - center[1]) ** 2
+        return (segment.kind, *center, radius_squared)
     points = tuple(_endpoint_key(point) for point in (segment.start, segment.mid, segment.end) if point is not None)
     return (segment.kind, *points)
 
@@ -744,6 +759,16 @@ def _loop_id(loop: OutlineLoop) -> str:
     return "loop-" + hashlib.sha256(payload.encode()).hexdigest()[:24]
 
 
+def _id_collision_errors(kind: str, ids: list[str]) -> list[Error]:
+    seen: set[str] = set()
+    errors: list[Error] = []
+    for item_id in ids:
+        if item_id in seen:
+            errors.append(Error("id_collision", f"{kind} id collision: {item_id}", [item_id]))
+        seen.add(item_id)
+    return errors
+
+
 def _assign_loop_ids(loops: list[OutlineLoop]) -> list[Error]:
     seen: dict[str, OutlineLoop] = {}
     errors: list[Error] = []
@@ -758,20 +783,13 @@ def _assign_loop_ids(loops: list[OutlineLoop]) -> list[Error]:
 def _parse_board(root: list[Any], source_digest: str = "") -> Board:
     thickness, thickness_source = _thickness(root)
     footprints, holes, footprint_edges = _extract_footprints(root)
+    holes.extend(_extract_vias(root))
     loops = _chain(_graphics(root, "Edge.Cuts") + footprint_edges)
     outline, inner = _classify(loops)
     warnings, errors = _open_errors(loops)
     errors.extend(_assign_loop_ids(outline + inner))
-    seen_footprints: set[str] = set()
-    for footprint in footprints:
-        if footprint.id in seen_footprints:
-            errors.append(Error("id_collision", f"footprint id collision: {footprint.id}", [footprint.id]))
-        seen_footprints.add(footprint.id)
-    seen_holes: set[str] = set()
-    for hole in holes:
-        if hole.id in seen_holes:
-            errors.append(Error("id_collision", f"hole id collision: {hole.id}", [hole.id]))
-        seen_holes.add(hole.id)
+    errors.extend(_id_collision_errors("footprint", [footprint.id for footprint in footprints]))
+    errors.extend(_id_collision_errors("hole", [hole.id for hole in holes]))
     warnings.extend(_unsupported_courtyard_warnings(root))
     errors.extend(_unsupported_geometry(root))
     if not outline and not errors:
