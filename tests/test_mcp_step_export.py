@@ -169,6 +169,38 @@ async def test_step_export_selected_part(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_through_symlinked_parent_reports_resolved_path(tmp_path):
+    document = tmp_path / "symlink-parent.coalesce.json"
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    target = linked_parent / "export.step"
+    await run_server(document, enclosure_calls())
+
+    result = (await run_server(document, [("export", export_request(target))]))[0]
+
+    assert result["ok"] is True
+    assert result["path"] == str(real_parent / "export.step")
+    assert (real_parent / "export.step").exists()
+
+
+@pytest.mark.anyio
+async def test_export_dangling_parent_is_structured_error(tmp_path):
+    document = tmp_path / "dangling-parent.coalesce.json"
+    dangling_parent = tmp_path / "dangling-parent"
+    dangling_parent.symlink_to(tmp_path / "missing-parent", target_is_directory=True)
+    target = dangling_parent / "export.step"
+    await run_server(document, enclosure_calls())
+
+    result = (await run_server(document, [("export", export_request(target))]))[0]
+
+    assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
+    assert "parent directory does not exist or is not writable" in result["error"]["message"]
+    assert not target.exists()
+
+
+@pytest.mark.anyio
 async def test_export_refuses_existing_path_and_symlink_untouched(tmp_path):
     document = tmp_path / "existing.coalesce.json"
     await run_server(document, enclosure_calls())

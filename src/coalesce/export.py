@@ -204,21 +204,31 @@ def _validated_step_bytes(
         shutil.rmtree(temporary_directory)
 
 
-def _open_directory(path: Path) -> int:
+def _open_directory(path: Path) -> tuple[Path, int]:
     if not path.is_absolute():
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
             "export path must be absolute",
             hint="provide an explicit absolute path whose parent directory already exists",
         )
-    parent = path.parent
+    parent = Path(os.path.realpath(path.parent))
     if not parent.is_dir() or parent.stat().st_mode & 0o222 == 0:
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
             "export parent directory does not exist or is not writable",
             hint="create a writable parent directory and retry with a new path",
         )
-    return os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    resolved_path = parent / path.name
+    try:
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as error:
+        raise ExportFailure(
+            "EXPORT_WRITE_FAILED",
+            "export parent directory could not be opened",
+            path=str(resolved_path),
+            hint="check the target directory and retry with a new path",
+        ) from error
+    return resolved_path, directory_fd
 
 
 def _publication_failure(
@@ -234,8 +244,8 @@ def _publication_failure(
     )
 
 
-def _publish_bytes(path: Path, content: bytes, digest: str) -> None:
-    directory_fd = _open_directory(path)
+def _publish_bytes(path: Path, content: bytes, digest: str) -> Path:
+    path, directory_fd = _open_directory(path)
     descriptor: int | None = None
     created = False
     failure: Exception | None = None
@@ -280,7 +290,7 @@ def _publish_bytes(path: Path, content: bytes, digest: str) -> None:
             failure = failure or error
 
     if failure is None:
-        return
+        return path
     if isinstance(failure, ExportFailure):
         raise failure
     if created:
@@ -323,8 +333,8 @@ def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
     shapes = [Solid(part.shape.wrapped, label=part.label) for part in parts]
     expected = _metrics(shapes, [part.label for part in parts])
     content, digest, actual = _validated_step_bytes(shapes, expected)
+    path = _publish_bytes(path, content, digest)
     fields = _export_fields(path, parts, digest, actual)
-    _publish_bytes(path, content, digest)
     return {**fields, "byteCount": len(content)}
 
 

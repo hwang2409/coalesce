@@ -64,8 +64,9 @@ reimports them and compares part and solid counts, bounding boxes, per-part and
 aggregate volume and area, and cylinder radii and axes. The private directory is removed
 after success, validation failure, or timeout. It then creates the final path directly and
 writes the validated in-memory bytes. The final file is briefly visible while it is written.
-Success returns `path`, `sha256`, `byteCount`, and `validation` evidence. An existing path,
-including a symlink, returns `EXPORT_PATH_EXISTS` and is untouched. A failure after path
+Parent directories resolve normally; only the final path component must be new and is protected
+by `O_EXCL | O_NOFOLLOW`. Success returns `path`, `sha256`, `byteCount`, and `validation` evidence.
+An existing path, including a symlink, returns `EXPORT_PATH_EXISTS` and is untouched. A failure after path
 creation returns `EXPORT_WRITE_FAILED` with `path`, `expectedSha256`, and `expectedBytes`:
 the file at path may be incomplete; coalesce leaves it in place; delete it yourself or export to a new path.
 There is no automatic retry or replay. Geometry and STEP
