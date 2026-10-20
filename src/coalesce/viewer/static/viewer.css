@@ -1,0 +1,462 @@
+:root {
+  --ground: #e4e8eb;
+  --panel: #f6f7f8;
+  --ink: #1d2329;
+  --mute: #5d6873;
+  --faint: #8a949d;
+  --rule: rgba(29, 35, 41, 0.1);
+  --live: #2f7d4f;
+  --wait: #8a5a0c;
+  --fail: #b42318;
+  --fail-wash: #fdf1ef;
+  --focus: #2e5f9e;
+  --panel-width: 264px;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  display: grid;
+  grid-template-columns: var(--panel-width) 1fr;
+  background: var(--ground);
+  overflow: hidden;
+}
+
+p, h2, ul { margin: 0; }
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* panel */
+
+.panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  box-shadow: 1px 0 0 var(--rule), 4px 0 16px rgba(29, 35, 41, 0.04);
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 0;
+}
+
+.wordmark {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mute);
+  font-size: 12px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  transition-property: background-color;
+  transition-duration: 200ms;
+}
+
+.link[data-state="live"] .dot { background: var(--live); }
+.link[data-state="lost"] .dot { background: var(--wait); }
+.link[data-state="ended"] .dot, .link[data-state="denied"] .dot { background: var(--fail); }
+.link:is([data-state="lost"], [data-state="ended"], [data-state="denied"]) { color: var(--ink); }
+
+.revision {
+  padding: 20px 16px 16px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.revision-line[hidden], .parts[hidden] { display: none; }
+
+.revision-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.revision-name { color: var(--mute); font-weight: 500; }
+
+.revision-number {
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: -4px;
+  transition-property: background-color;
+  transition-duration: 1200ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.revision-number.fresh {
+  background: rgba(47, 125, 79, 0.16);
+  transition-duration: 0ms;
+}
+
+.revision-number[data-empty] { color: var(--mute); font-weight: 500; }
+
+.revision-change {
+  margin-top: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.revision-meta {
+  margin-top: 2px;
+  color: var(--mute);
+  font-size: 12px;
+}
+
+.parts {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 8px;
+}
+
+.parts h2 {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 8px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.unit { color: var(--mute); font-weight: 400; }
+
+.parts ul { list-style: none; padding: 0; }
+
+.part {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  transition-property: background-color, color;
+  transition-duration: 120ms;
+}
+
+.part:hover { background: rgba(29, 35, 41, 0.05); }
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.part-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+/* a focused row (keyboard or tap) shows its full name */
+.part:focus .part-name { grid-column: 2 / -1; white-space: normal; overflow-wrap: anywhere; }
+
+.part-size { grid-column: 3; color: var(--mute); font-size: 12px; }
+
+/* named holes and the feature chain; narrow screens show it only for the focused row */
+.part-detail {
+  grid-column: 2 / -1;
+  margin-top: -6px;
+  color: var(--mute);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.part[aria-pressed="false"] { color: var(--mute); }
+.part[aria-pressed="false"] .swatch { background: transparent !important; }
+.part[aria-pressed="false"] .part-name { text-decoration: line-through; text-decoration-color: var(--faint); }
+
+.parts-empty { padding: 0 8px; color: var(--mute); }
+
+/* stage */
+
+.stage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.viewport {
+  grid-row: 2; /* stays in the model row while the status row is hidden */
+  position: relative;
+  min-height: 0;
+}
+
+#view {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.notice {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 4px;
+  padding: 24px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.notice[hidden] { display: none; }
+
+.notice-title {
+  font-size: 15px;
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+.notice-body {
+  max-width: 44ch;
+  color: var(--mute);
+  text-wrap: pretty;
+}
+
+/* status row: in the layout flow above the model, so it never covers geometry */
+
+.status {
+  display: grid;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--panel);
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.status:not(:has(> :not([hidden]))) { display: none; }
+
+.stale, .failure { padding-left: 12px; }
+
+.stale {
+  box-shadow: inset 3px 0 0 var(--wait);
+  text-wrap: pretty;
+}
+
+.stale[data-state="ended"] { box-shadow: inset 3px 0 0 var(--fail); }
+
+.stale strong { font-weight: 650; }
+
+.stale code { font-size: 12px; overflow-wrap: anywhere; }
+
+.copy {
+  display: block;
+  min-height: 34px;
+  margin-top: 8px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--rule), 0 1px 2px rgba(29, 35, 41, 0.12);
+  font-weight: 500;
+}
+
+.copy:active { scale: 0.96; }
+
+/* a dropped connection leaves the last scene on screen, visibly not current */
+#view { transition-property: filter; transition-duration: 200ms; }
+.stage[data-stale] #view { filter: grayscale(1) opacity(0.45); }
+
+.failure { box-shadow: inset 3px 0 0 var(--fail); }
+
+.failure-title { color: var(--fail); font-weight: 650; }
+
+.failure-features { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+
+.feature-id {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(180, 35, 24, 0.1);
+  color: var(--fail);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.failure-repair {
+  margin-top: 4px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.failure-details { margin-top: 4px; color: var(--mute); font-size: 12px; }
+
+.failure-details summary { width: fit-content; cursor: pointer; }
+
+.failure-details p { margin-top: 2px; overflow-wrap: anywhere; }
+
+.failure-code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+/* not live: the old failure stays readable, but the connection is the news */
+.stage[data-stale] .failure { box-shadow: inset 3px 0 0 var(--rule); }
+.stage[data-stale] :is(.failure-title, .failure-repair, .feature-id) { color: var(--mute); }
+.stage[data-stale] .feature-id { background: rgba(29, 35, 41, 0.06); }
+
+.gizmo {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: 88px;
+  height: 88px;
+  pointer-events: none;
+}
+
+.gizmo-label {
+  position: absolute;
+  translate: -50% -50%;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+#gx { color: #c0392b; }
+#gy { color: #2e8b57; }
+#gz { color: #2e5f9e; }
+
+.scale {
+  position: absolute;
+  left: 120px;
+  bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mute);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.scale[hidden] { display: none; }
+
+.gizmo[hidden] + .scale { left: 16px; }
+
+.scale-bar {
+  height: 6px;
+  border: 1.5px solid var(--ink);
+  border-top: 0;
+}
+
+.views {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+.segmented {
+  display: flex;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
+}
+
+.segmented button, .fit {
+  min-width: 52px;
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-weight: 500;
+  transition-property: background-color, box-shadow, scale;
+  transition-duration: 120ms;
+}
+
+.segmented button:enabled:hover { background: rgba(29, 35, 41, 0.06); }
+
+.segmented button[aria-pressed="true"]:enabled {
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--rule), 0 1px 2px rgba(29, 35, 41, 0.12);
+}
+
+.fit {
+  height: 40px;
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
+}
+
+.fit:enabled:hover { background: #fff; }
+
+/* the model changed while the human held their own view */
+.fit[data-new]:enabled { background: #fff; }
+.fit[data-new]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--focus);
+  vertical-align: 1px;
+}
+
+.segmented button:enabled:active, .fit:enabled:active { scale: 0.96; }
+
+/* no scene yet, or the link expired: nothing current to aim at, so the controls sit flat and faint */
+.segmented button:disabled, .fit:disabled { color: var(--faint); cursor: not-allowed; }
+.segmented:has(:disabled), .fit:disabled { background: transparent; box-shadow: 0 0 0 1px var(--rule); }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .panel { max-height: 40vh; }
+  .part:not(:focus) .part-detail { display: none; }
+  /* a compact scale above the camera buttons; the grid square is the same length */
+  .scale, .gizmo[hidden] + .scale { left: auto; right: 16px; bottom: 66px; }
+  .scale-grid { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0ms !important; }
+}
