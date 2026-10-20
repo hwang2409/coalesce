@@ -197,6 +197,17 @@ def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
     assert reference.body == body
 
 
+def test_json_round_trip_preserves_cut_depth_and_flip():
+    graph = base()
+    graph.add(Sketch("tool", entities=[Rectangle("pocket", 2, 2)]))
+    graph.add(Cut("cut", target="base", tool="tool", depth=3, flip=True))
+
+    restored = loads(graph.to_json())
+
+    assert restored.nodes["cut"].depth == 3
+    assert restored.nodes["cut"].flip is True
+
+
 def test_json_round_trip_preserves_any_cardinality():
     graph = base()
     graph.add(
@@ -223,10 +234,9 @@ def test_json_round_trip_regenerates_the_same_geometry():
     assert snapshot(restored) == snapshot(original)
 
 
-def test_step_b_features_fail_clearly_instead_of_guessing():
+def test_step_c_feature_fails_clearly_instead_of_guessing():
     graph = base()
-    graph.add(Sketch("tool", entities=[Rectangle("slot", 2, 20)]))
-    graph.add(Cut("cut", target="base", tool="tool"))
+    graph.add(Fillet("round", target="base"))
 
-    with pytest.raises(NotImplementedError, match="Cut regeneration requires step B"):
+    with pytest.raises(NotImplementedError, match="Fillet regeneration requires step C"):
         regenerate(graph)
