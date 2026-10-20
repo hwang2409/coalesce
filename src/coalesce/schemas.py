@@ -463,6 +463,22 @@ QUERY_FEATURE_SCHEMA = {
         },
     },
 }
+EXPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "expectedRevision": {"type": "integer", "minimum": 0},
+        "path": {"type": "string", "minLength": 1},
+        "partIds": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+    },
+    "required": ["expectedRevision", "path"],
+    "additionalProperties": False,
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -491,6 +507,7 @@ TOOL_SCHEMAS = {
     "feature": FEATURE_SCHEMA,
     "query": QUERY_SCHEMA,
     "check": CHECK_SCHEMA,
+    "export": EXPORT_SCHEMA,
 }
 
 ACTION_SCHEMAS = {
