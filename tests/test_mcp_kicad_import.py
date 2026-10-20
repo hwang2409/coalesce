@@ -1,10 +1,12 @@
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 from pathlib import Path
 
 import pytest
+from test_mcp_cut_hole_circle import cut, hole, rectangle_sketch
 from test_mcp_vertical import call_server_tool, run_server
 
 import coalesce.board_import as board_import_module
@@ -28,6 +30,10 @@ def import_request(path: Path | str, **changes):
 
 def document_bytes(path: Path):
     return path.read_bytes() if path.exists() else None
+
+
+def import_in_process(document: str, request: dict, results) -> None:
+    results.put(DocumentService(Path(document)).import_board(request))
 
 
 @pytest.mark.anyio
@@ -84,6 +90,25 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
 
 
 @pytest.mark.anyio
+async def test_import_replay_uses_canonical_path_without_rereading_deleted_source(tmp_path):
+    source_dir = tmp_path / "a"
+    source_dir.mkdir()
+    (source_dir / "sub").mkdir()
+    source = source_dir / "board.kicad_pcb"
+    shutil.copyfile(FIXTURE, source)
+    alias = source_dir / "sub" / ".." / source.name
+    document = tmp_path / "board.coalesce.json"
+    service = DocumentService(document)
+
+    created = await call_server_tool(service, "import", import_request(alias))
+    assert created["boardImport"]["sourcePath"] == str(source.resolve())
+    assert await call_server_tool(service, "import", import_request(source)) == created
+
+    source.unlink()
+    assert await call_server_tool(service, "import", import_request(source)) == created
+
+
+@pytest.mark.anyio
 async def test_import_replay_is_idempotent_and_reuse_or_stale_is_atomic(tmp_path):
     document = tmp_path / "board.coalesce.json"
     service = DocumentService(document)
@@ -106,6 +131,48 @@ async def test_import_replay_is_idempotent_and_reuse_or_stale_is_atomic(tmp_path
         import_request(FIXTURE.resolve(), requestId="import-2", expectedRevision=0),
     )
     assert stale["error"]["code"] == "REVISION_CONFLICT"
+    assert document.read_bytes() == before
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="fifo paths require POSIX")
+@pytest.mark.parametrize("source_kind", ["fifo", "device_symlink"])
+def test_special_import_sources_fail_promptly_and_atomically(tmp_path, source_kind):
+    if source_kind == "device_symlink" and not Path("/dev/zero").exists():
+        pytest.skip("no character device is available")
+
+    document = tmp_path / "board.coalesce.json"
+    service = DocumentService(document)
+    created = service.import_board(import_request(FIXTURE.resolve()))
+    assert created["ok"] is True
+    before = document.read_bytes()
+
+    source = tmp_path / "special.kicad_pcb"
+    if source_kind == "fifo":
+        os.mkfifo(source)
+    else:
+        source.symlink_to("/dev/zero")
+    request = import_request(
+        source,
+        assetId="special_board",
+        expectedRevision=1,
+        requestId=f"import-{source_kind}",
+    )
+    context = multiprocessing.get_context("fork")
+    results = context.Queue()
+    process = context.Process(
+        target=import_in_process,
+        args=(str(document), request, results),
+    )
+    process.start()
+    process.join(timeout=2)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        pytest.fail("import did not complete within 2 seconds")
+
+    result = results.get(timeout=1)
+    assert result["error"]["code"] == "IMPORT_FAILED"
+    assert DocumentService(document).revision == 1
     assert document.read_bytes() == before
 
 
@@ -208,6 +275,62 @@ async def test_source_changes_are_inert_until_explicit_refresh(tmp_path):
     assert refreshed["previousRevision"] == 1
     assert refreshed["boardImport"]["sourceDigest"] != original["sourceDigest"]
     assert refreshed["boardImport"]["mechanics"]["thickness"] == 1.6
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("feature_kind", ["cut", "hole"])
+@pytest.mark.parametrize("target_kind", ["absent", "board_import", "sketch"])
+async def test_subtractive_features_validate_body_targets(
+    tmp_path, feature_kind, target_kind
+):
+    document = tmp_path / f"{feature_kind}-{target_kind}.coalesce.json"
+    service = DocumentService(document)
+    revision = 0
+    if target_kind == "board_import":
+        imported = await call_server_tool(service, "import", import_request(FIXTURE.resolve()))
+        assert imported["ok"] is True
+        target = "controller_board"
+        revision = 1
+    else:
+        target = "target_sketch" if target_kind == "sketch" else "missing"
+
+    sketch = rectangle_sketch(
+        request_id="tool-sketch",
+        revision=revision,
+        sketch_id="target_sketch" if target_kind == "sketch" else "tool_sketch",
+        entity_id="profile",
+        width=2,
+        height=2,
+    )
+    created = await call_server_tool(service, "sketch", sketch)
+    assert created["ok"] is True
+    revision += 1
+    operation = (
+        cut(
+            request_id="invalid-cut",
+            revision=revision,
+            feature_id="invalid_cut",
+            target=target,
+            tool=sketch["sketchId"],
+        )
+        if feature_kind == "cut"
+        else hole(
+            request_id="invalid-hole",
+            revision=revision,
+            feature_id="invalid_hole",
+            target=target,
+            position=(0, 0),
+        )
+    )
+    before = document.read_bytes()
+
+    result = await call_server_tool(service, "feature", operation)
+
+    assert result["error"]["code"] == (
+        "UNKNOWN_ID" if target_kind == "absent" else "INVALID_PARAMETER"
+    )
+    assert service.revision == revision
+    assert document.read_bytes() == before
 
 
 @pytest.mark.anyio

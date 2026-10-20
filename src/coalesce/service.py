@@ -341,6 +341,8 @@ def _parse_import(payload: dict[str, Any]) -> BoardImportOperation:
     path = payload.get("path")
     if action is Action.CREATE and not isinstance(path, str):
         raise RequestError("INVALID_PARAMETER", "create import requires path")
+    if isinstance(path, str) and Path(path).is_absolute():
+        path = str(Path(path).resolve())
     return BoardImportOperation(
         action=action,
         expectedRevision=_finite_number(payload.get("expectedRevision"), "expectedRevision"),
@@ -755,11 +757,11 @@ def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
     return operation.sketchId
 
 
-def _validate_join_target(graph: Any, target: str | None) -> None:
+def _validate_body_target(graph: Any, target: str | None, operation: str) -> None:
     if target not in graph.nodes:
-        raise RequestError("UNKNOWN_ID", "join target feature does not exist")
+        raise RequestError("UNKNOWN_ID", f"{operation} target feature does not exist")
     if not graph.produces_body(target):
-        raise RequestError("INVALID_PARAMETER", "join target must produce a body")
+        raise RequestError("INVALID_PARAMETER", f"{operation} target must produce a body")
 
 
 def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
@@ -775,7 +777,7 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
         raise RequestError("INVALID_PARAMETER", "only normal new_body and join extrudes are supported")
     target = parameters.target.featureId if parameters.target is not None else None
     if parameters.operation == "join":
-        _validate_join_target(graph, target)
+        _validate_body_target(graph, target, "join")
     elif target is not None:
         raise RequestError("INVALID_PARAMETER", "new_body extrudes do not accept a target")
     sketch = graph.nodes.get(parameters.profile.sketchId)
@@ -800,8 +802,7 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
 
 def _apply_cut(graph: Any, operation: CutCreate) -> str:
     parameters = operation.parameters
-    if not isinstance(graph.nodes.get(parameters.target.featureId), (Extrude, Cut, Hole)):
-        raise RequestError("UNKNOWN_ID", "cut target feature does not exist")
+    _validate_body_target(graph, parameters.target.featureId, "cut")
     if not isinstance(graph.nodes.get(parameters.tool.sketchId), Sketch):
         raise RequestError("UNKNOWN_ID", "cut tool sketch does not exist")
     graph.add(
@@ -818,8 +819,7 @@ def _apply_cut(graph: Any, operation: CutCreate) -> str:
 
 def _apply_hole(graph: Any, operation: HoleCreate) -> str:
     parameters = operation.parameters
-    if not isinstance(graph.nodes.get(parameters.target.featureId), (Extrude, Cut, Hole)):
-        raise RequestError("UNKNOWN_ID", "hole target feature does not exist")
+    _validate_body_target(graph, parameters.target.featureId, "hole")
     graph.add(
         Hole(
             operation.featureId,

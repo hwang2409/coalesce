@@ -22,8 +22,11 @@ def read_kicad_board(path: str) -> tuple[Path, Board]:
         raise BoardImportError("KiCad import path must be absolute")
     try:
         resolved = requested.resolve(strict=True)
-        with resolved.open("rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(resolved, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise BoardImportError("KiCad import path must name a regular file")
             raw = stream.read(MAX_KICAD_IMPORT_BYTES + 1)
     except BoardImportError:
