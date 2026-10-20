@@ -360,7 +360,7 @@ async def test_real_stdio_kicad_import_publishes_pcb_reference_to_viewer(tmp_pat
             )
         )
         assert imported["ok"] is True
-        [part] = _wait_for_scene(parsed, headers, 1)["parts"]
+        [part] = _wait_for_scene(parsed, headers, 1, errlog)["parts"]
         assert part["role"] == "reference"
         assert part["label"] == "pcb reference"
         assert part["color"] == "#6f8f72"
