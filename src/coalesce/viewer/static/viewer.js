@@ -303,6 +303,12 @@ function notice(title, body = '') {
 function setLink(state, text) {
   $('link').dataset.state = state;
   $('link-text').textContent = text;
+  const stale = state === 'lost' && current !== null;
+  $('stale').hidden = !stale;
+  $('stale-body').textContent = stale
+    ? `Revision ${current.revision} may be out of date. This page reconnects by itself.`
+    : '';
+  $('view').parentElement.toggleAttribute('data-stale', stale);
 }
 
 function showRevision(sceneData) {
@@ -335,17 +341,20 @@ function showFailure() {
 
 // loads run one at a time, then catch up to the newest announced revision,
 // so the mesh cache is never pruned under an in-flight load.
-let loader = null;
-function loadRevision(revision) {
+let loading = false;
+async function loadRevision(revision) {
   wanted = Math.max(wanted, revision);
-  loader ??= (async () => {
+  if (loading) return;
+  loading = true;
+  try {
     let tried = null;
     while (wanted !== current?.revision && wanted !== tried) {
       tried = wanted;
       await loadOne(tried);
     }
-    loader = null;
-  })();
+  } finally {
+    loading = false;
+  }
 }
 
 async function loadOne(revision) {
@@ -367,6 +376,7 @@ async function loadOne(revision) {
     notice(null);
     if (!fitted) {
       fitted = true;
+      for (const button of document.querySelectorAll('.views button')) button.disabled = false;
       applyView('iso');
     }
     requestRender();

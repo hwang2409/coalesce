@@ -228,14 +228,41 @@ button {
   text-wrap: pretty;
 }
 
-.failure {
+.banners {
   position: absolute;
   top: 16px;
   left: 50%;
   translate: -50% 0;
   width: min(560px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.stale, .failure {
   padding: 12px 14px 12px 16px;
   border-radius: 8px;
+}
+
+.stale {
+  background: #fdf6e9;
+  box-shadow: inset 3px 0 0 var(--wait), 0 0 0 1px rgba(160, 106, 18, 0.24),
+    0 6px 20px rgba(29, 35, 41, 0.1);
+}
+
+.stale[hidden] { display: none; }
+
+.stale-title { color: var(--wait); font-weight: 650; }
+
+.stale-body { color: var(--ink); text-wrap: pretty; }
+
+/* a dropped connection leaves the last scene on screen, visibly not current */
+#view { transition: filter 200ms; }
+.stage[data-stale] #view { filter: grayscale(1) opacity(0.45); }
+
+.failure {
+  pointer-events: auto;
   background: var(--fail-wash);
   box-shadow: inset 3px 0 0 var(--fail), 0 0 0 1px rgba(180, 35, 24, 0.22),
     0 6px 20px rgba(29, 35, 41, 0.1);
@@ -331,7 +358,7 @@ button {
   transition-duration: 120ms;
 }
 
-.segmented button:hover { background: rgba(29, 35, 41, 0.06); }
+.segmented button:enabled:hover { background: rgba(29, 35, 41, 0.06); }
 
 .segmented button[aria-pressed="true"] {
   background: #fff;
@@ -345,9 +372,12 @@ button {
   box-shadow: 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
 }
 
-.fit:hover { background: #fff; }
+.fit:enabled:hover { background: #fff; }
 
-.segmented button:active, .fit:active { scale: 0.96; }
+.segmented button:enabled:active, .fit:enabled:active { scale: 0.96; }
+
+/* no scene yet: nothing to aim at */
+.segmented button:disabled, .fit:disabled { color: var(--faint); cursor: not-allowed; }
 
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }

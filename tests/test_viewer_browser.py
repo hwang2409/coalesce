@@ -53,6 +53,7 @@ def module():
 def test_page_draws_and_follows_revisions_in_a_real_browser(module):
     store = ViewerSceneStore()
     shots = os.environ.get("VIEWER_SCREENSHOTS")
+    restarted = None
     with ViewerServer(store) as server:
         driver = subprocess.Popen(
             ["node", str(SMOKE), module, server.url, *([shots] if shots else [])],
@@ -71,11 +72,13 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
         try:
             empty = step("empty")
             assert empty["label"] == "none" and empty["link"] == "Live"
+            assert empty["disabled"] == [True] * 5  # nothing to aim the camera at yet
             store.publish(1, [ScenePart("plate", plate(6))])
             next_step()
 
             first = step("revision-1")
             assert first["label"] == "1"
+            assert first["disabled"] == [False] * 5
             assert "#token" not in first["url"]  # the token leaves the address bar
             assert first["dark"] > 0.0003  # edge lines of the plate are on the canvas
             store.publish(2, [ScenePart("plate", plate(10))])
@@ -99,6 +102,20 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             front = step("front")
             assert front["pressed"] == "true" and front["dark"] > 0.0003
             assert front["errors"] == []
+            server.close()  # the page stays open on the last scene
+            next_step()
+
+            lost = step("disconnected")
+            assert lost["link"] == "Disconnected, retrying"
+            assert "Revision 2 may be out of date" in lost["banner"]
+            assert "grayscale(1)" in lost["filter"]
+            # same port and key, as after a brief drop: the page must recover by itself
+            restarted = ViewerServer(store, port=server.port)
+            restarted._token = server._token  # test-only: a real restart would print a new key
+            next_step()
+
+            back = step("reconnected")
+            assert (back["link"], back["banner"], back["filter"]) == ("Live", None, "none")
             for revision in range(3, 53):  # back to back, so some loads lose the race
                 store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
             next_step()
@@ -113,3 +130,5 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             assert driver.wait(timeout=30) == 0
         finally:
             driver.kill()
+            if restarted:
+                restarted.close()

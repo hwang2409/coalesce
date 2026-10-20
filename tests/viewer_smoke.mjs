@@ -47,16 +47,28 @@ async function step(name, check) {
 
 const STRESS_LAST = 52; // tests/test_viewer_browser.py publishes revisions 3..52 after 'front'
 const revision = () => page.getByTestId('revision');
+const controls = () => page.locator('.views button').evaluateAll((buttons) => buttons.map((b) => b.disabled));
+const stale = async () => ({
+  link: await page.locator('#link-text').textContent(),
+  banner: (await page.locator('#stale').isVisible()) ? await page.locator('#stale').innerText() : null,
+  filter: await page.locator('#view').evaluate((canvas) => getComputedStyle(canvas).filter),
+});
 const waitRevision = (n) => page.waitForFunction((n) => window.coalesceViewer?.revision === n, n, { timeout: 15000 });
 
 await page.goto(url);
 await step('empty', async () => {
   await page.getByText('Waiting for the first revision').waitFor({ timeout: 15000 });
-  return { label: await revision().textContent(), link: await page.locator('#link-text').textContent() };
+  if (shots) await page.locator('.views').screenshot({ path: `${shots}/controls-disabled.png` });
+  return { label: await revision().textContent(), link: await page.locator('#link-text').textContent(), disabled: await controls() };
 });
 await waitRevision(1);
 await page.waitForTimeout(300);
-await step('revision-1', async () => ({ label: await revision().textContent(), url: page.url(), ...(await drawn()) }));
+await step('revision-1', async () => ({
+  label: await revision().textContent(),
+  url: page.url(),
+  disabled: await controls(),
+  ...(await drawn()),
+}));
 await waitRevision(2);
 await page.waitForTimeout(300);
 await step('revision-2', async () => ({
@@ -73,6 +85,13 @@ await step('failure', async () => ({
 await page.getByRole('button', { name: 'Front' }).click();
 await page.waitForTimeout(300);
 await step('front', async () => ({ pressed: await page.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), ...(await drawn()) }));
+await page.getByRole('button', { name: 'Iso' }).click();
+await page.locator('#stale').waitFor({ state: 'visible', timeout: 15000 });
+await page.waitForTimeout(300); // let the dim transition finish before the screenshot
+await step('disconnected', stale);
+await page.locator('#stale').waitFor({ state: 'hidden', timeout: 15000 });
+await page.waitForTimeout(300);
+await step('reconnected', stale);
 await waitRevision(STRESS_LAST);
 await page.waitForTimeout(300);
 await step('stress', async () => ({ memory: await page.evaluate(() => window.coalesceViewer.memory) }));

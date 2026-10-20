@@ -31,10 +31,16 @@
 <main class="stage">
   <canvas id="view" aria-label="3D view of the current revision"></canvas>
 
-  <div class="failure" id="failure" role="alert" hidden>
-    <p class="failure-title" id="failure-title"></p>
-    <p class="failure-features" id="failure-features"></p>
-    <p class="failure-error" id="failure-error"></p>
+  <div class="banners">
+    <div class="stale" id="stale" role="status" hidden>
+      <p class="stale-title">Not live</p>
+      <p class="stale-body" id="stale-body"></p>
+    </div>
+    <div class="failure" id="failure" role="alert" hidden>
+      <p class="failure-title" id="failure-title"></p>
+      <p class="failure-features" id="failure-features"></p>
+      <p class="failure-error" id="failure-error"></p>
+    </div>
   </div>
 
   <div class="notice" id="notice">
@@ -55,12 +61,12 @@
 
   <nav class="views" aria-label="Camera">
     <div class="segmented" role="group" aria-label="View direction">
-      <button type="button" data-view="iso" aria-pressed="true">Iso</button>
-      <button type="button" data-view="front" aria-pressed="false">Front</button>
-      <button type="button" data-view="right" aria-pressed="false">Right</button>
-      <button type="button" data-view="top" aria-pressed="false">Top</button>
+      <button type="button" data-view="iso" aria-pressed="false" disabled>Iso</button>
+      <button type="button" data-view="front" aria-pressed="false" disabled>Front</button>
+      <button type="button" data-view="right" aria-pressed="false" disabled>Right</button>
+      <button type="button" data-view="top" aria-pressed="false" disabled>Top</button>
     </div>
-    <button type="button" class="fit" id="fit">Fit</button>
+    <button type="button" class="fit" id="fit" disabled>Fit</button>
   </nav>
 </main>
 </body>
