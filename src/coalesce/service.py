@@ -26,6 +26,7 @@ from .graph import (
     Hole,
     HolePosition,
     PcbBase,
+    PcbLid,
     Plane,
     Rectangle,
     Sketch,
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
     from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
-_ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole", "pcb_base", "standoffs"]
+_ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole", "pcb_base", "standoffs", "pcb_lid"]
 
 
 class _KernelLoaderInterface(Protocol):
@@ -279,6 +280,20 @@ class StandoffsParameters:
 
 
 @dataclass(frozen=True)
+class LidLip:
+    depth: float
+    width: float
+
+
+@dataclass(frozen=True)
+class PcbLidParameters:
+    base: FeatureTarget
+    thickness: float
+    fitGap: float
+    lip: LidLip | None
+
+
+@dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
 
@@ -297,6 +312,13 @@ class StandoffsChanges:
     minimumDiameter: float | None = None
     bossDiameter: float | None = None
     pilotDiameter: float | None = None
+
+
+@dataclass(frozen=True)
+class PcbLidChanges:
+    thickness: float | None = None
+    fitGap: float | None = None
+    lip: LidLip | None = None
 
 
 @dataclass(frozen=True)
@@ -383,6 +405,16 @@ class StandoffsCreate(_FeatureCreate):
 
 
 @dataclass(frozen=True)
+class PcbLidCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: PcbLidParameters
+    kind: ClassVar[str] = "pcb_lid"
+
+
+@dataclass(frozen=True)
 class ExtrudeUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -418,6 +450,20 @@ class StandoffsUpdate(_Operation):
     featureId: str
     set: StandoffsChanges
     kind: ClassVar[str] = "standoffs"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class PcbLidUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: PcbLidChanges
+    kind: ClassVar[str] = "pcb_lid"
 
     @classmethod
     def wire_fields(cls) -> set[str]:
@@ -461,9 +507,11 @@ MutationOperation = (
     | HoleCreate
     | PcbBaseCreate
     | StandoffsCreate
+    | PcbLidCreate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
+    | PcbLidUpdate
     | CutUpdate
     | HoleUpdate
 )
@@ -770,6 +818,73 @@ def _parse_standoffs(
     )
 
 
+def _parse_lid_lip(value: Any, feature: str) -> LidLip:
+    if not isinstance(value, dict) or set(value) != {"depth", "width"}:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "pcb_lid lip requires depth and width",
+            feature=feature,
+            parameter="lip",
+        )
+    return LidLip(
+        depth=_feature_quantity(value["depth"], "lip.depth", feature),
+        width=_feature_quantity(value["width"], "lip.width", feature),
+    )
+
+
+def _parse_pcb_lid(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> PcbLidCreate | PcbLidUpdate:
+    values = payload.get("set" if common["action"] is Action.UPDATE else "parameters", {})
+    if common["action"] is Action.UPDATE:
+        if not isinstance(values, dict) or not values or not set(values) <= {
+            "thickness",
+            "fitGap",
+            "lip",
+        }:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "pcb_lid update requires thickness, fitGap, or lip",
+            )
+        return PcbLidUpdate(
+            **common,
+            set=PcbLidChanges(
+                thickness=(
+                    _feature_quantity(values["thickness"], "thickness", common["featureId"])
+                    if "thickness" in values
+                    else None
+                ),
+                fitGap=(
+                    _feature_quantity(values["fitGap"], "fitGap", common["featureId"])
+                    if "fitGap" in values
+                    else None
+                ),
+                lip=(
+                    _parse_lid_lip(values["lip"], common["featureId"])
+                    if "lip" in values
+                    else None
+                ),
+            ),
+        )
+    return PcbLidCreate(
+        **common,
+        parameters=PcbLidParameters(
+            base=FeatureTarget(values.get("base", {}).get("featureId")),
+            thickness=_feature_quantity(
+                values.get("thickness"), "thickness", common["featureId"]
+            ),
+            fitGap=_feature_quantity(
+                values.get("fitGap"), "fitGap", common["featureId"]
+            ),
+            lip=(
+                _parse_lid_lip(values["lip"], common["featureId"])
+                if "lip" in values
+                else None
+            ),
+        ),
+    )
+
+
 def _parse_feature(
     payload: dict[str, Any],
 ) -> (
@@ -778,9 +893,11 @@ def _parse_feature(
     | HoleCreate
     | PcbBaseCreate
     | StandoffsCreate
+    | PcbLidCreate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
+    | PcbLidUpdate
     | CutUpdate
     | HoleUpdate
 ):
@@ -791,6 +908,7 @@ def _parse_feature(
         "hole": _parse_hole,
         "pcb_base": _parse_pcb_base,
         "standoffs": _parse_standoffs,
+        "pcb_lid": _parse_pcb_lid,
     }.get(kind)
     if parser is None:
         raise RequestError(
@@ -1230,6 +1348,42 @@ def _apply_standoffs(
     return operation.featureId
 
 
+def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
+    if isinstance(operation, PcbLidUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, PcbLid):
+            raise RequestError("UNKNOWN_ID", f"unknown pcb_lid: {operation.featureId}")
+        if operation.set.thickness is not None:
+            node.thickness = operation.set.thickness
+        if operation.set.fitGap is not None:
+            node.fit_gap = operation.set.fitGap
+        if operation.set.lip is not None:
+            node.lip_depth = operation.set.lip.depth
+            node.lip_width = operation.set.lip.width
+        return operation.featureId
+
+    parameters = operation.parameters
+    base = graph.nodes.get(parameters.base.featureId)
+    if not isinstance(base, PcbBase):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "pcb_lid base must reference a pcb_base",
+            feature=operation.featureId,
+            parameter="base",
+        )
+    graph.add(
+        PcbLid(
+            operation.featureId,
+            base=base.id,
+            thickness=parameters.thickness,
+            fit_gap=parameters.fitGap,
+            lip_depth=parameters.lip.depth if parameters.lip else None,
+            lip_width=parameters.lip.width if parameters.lip else None,
+        )
+    )
+    return operation.featureId
+
+
 def _apply_feature(graph: Any, operation: MutationOperation) -> str:
     applier = {
         ExtrudeCreate: _apply_extrude,
@@ -1242,6 +1396,8 @@ def _apply_feature(graph: Any, operation: MutationOperation) -> str:
         PcbBaseUpdate: _apply_pcb_base,
         StandoffsCreate: _apply_standoffs,
         StandoffsUpdate: _apply_standoffs,
+        PcbLidCreate: _apply_pcb_lid,
+        PcbLidUpdate: _apply_pcb_lid,
     }[type(operation)]
     return applier(graph, operation)
 
@@ -1267,6 +1423,8 @@ def _kind(node: Any) -> str:
         return "pcb base"
     if isinstance(node, Standoffs):
         return "standoffs"
+    if isinstance(node, PcbLid):
+        return "pcb lid"
     if isinstance(node, BoardImport):
         return "board import"
     return type(node).__name__.lower()

@@ -100,6 +100,15 @@ class Standoffs(Feature):
 
 
 @dataclass
+class PcbLid(Feature):
+    base: str = ""
+    thickness: float = 2
+    fit_gap: float = 0.25
+    lip_depth: float | None = None
+    lip_width: float | None = None
+
+
+@dataclass
 class Cut(Feature):
     target: str = ""
     tool: str = ""
@@ -195,7 +204,7 @@ class Graph:
         dependencies = list(getattr(node, "depends_on", []))
         dependencies.extend(
             getattr(node, field)
-            for field in ("sketch", "target", "tool", "board")
+            for field in ("sketch", "target", "tool", "board", "base")
             if getattr(node, field, None)
         )
         return dependencies

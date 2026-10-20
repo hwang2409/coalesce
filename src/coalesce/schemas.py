@@ -366,6 +366,23 @@ STANDOFF_SELECTION = {
     ],
     "additionalProperties": False,
 }
+PCB_LIP = {
+    "type": "object",
+    "properties": {"depth": POSITIVE_QUANTITY, "width": POSITIVE_QUANTITY},
+    "required": ["depth", "width"],
+    "additionalProperties": False,
+}
+PCB_LID_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "base": FEATURE_TARGET,
+        "thickness": POSITIVE_QUANTITY,
+        "fitGap": POSITIVE_QUANTITY,
+        "lip": PCB_LIP,
+    },
+    "required": ["base", "thickness", "fitGap"],
+    "additionalProperties": False,
+}
 STANDOFFS_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -385,12 +402,13 @@ FEATURE_PARAMETERS = {
         HOLE_PARAMETERS,
         PCB_BASE_PARAMETERS,
         STANDOFFS_PARAMETERS,
+        PCB_LID_PARAMETERS,
     ]
 }
 FEATURE_PROPERTIES = {
     **MUTATION_PROPERTIES,
     "featureId": {"type": "string", "minLength": 1},
-    "kind": {"enum": ["extrude", "cut", "hole", "pcb_base", "standoffs"]},
+    "kind": {"enum": ["extrude", "cut", "hole", "pcb_base", "standoffs", "pcb_lid"]},
 }
 FEATURE_CREATE_SCHEMA = {
     "type": "object",
@@ -436,12 +454,30 @@ STANDOFFS_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+PCB_LID_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "thickness": POSITIVE_QUANTITY,
+        "fitGap": POSITIVE_QUANTITY,
+        "lip": PCB_LIP,
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
 FEATURE_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "update"},
         **FEATURE_PROPERTIES,
-        "set": {"oneOf": [EXTRUDE_UPDATE_SET, TARGET_UPDATE_SET]},
+        "set": {
+            "oneOf": [
+                EXTRUDE_UPDATE_SET,
+                TARGET_UPDATE_SET,
+                PCB_BASE_UPDATE_SET,
+                STANDOFFS_UPDATE_SET,
+                PCB_LID_UPDATE_SET,
+            ]
+        },
     },
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
@@ -461,6 +497,7 @@ FEATURE_ACTION_SCHEMAS = {
         "hole": HOLE_PARAMETERS,
         "pcb_base": PCB_BASE_PARAMETERS,
         "standoffs": STANDOFFS_PARAMETERS,
+        "pcb_lid": PCB_LID_PARAMETERS,
     }.items()
 }
 for kind, changes in {
@@ -469,6 +506,7 @@ for kind, changes in {
     "hole": TARGET_UPDATE_SET,
     "pcb_base": PCB_BASE_UPDATE_SET,
     "standoffs": STANDOFFS_UPDATE_SET,
+    "pcb_lid": PCB_LID_UPDATE_SET,
 }.items():
     FEATURE_ACTION_SCHEMAS[("update", kind)] = {
         **FEATURE_UPDATE_SCHEMA,
@@ -483,7 +521,7 @@ FEATURE_SCHEMA = {
     "properties": {
         "action": {
             "enum": ["create", "update"],
-            "description": "Use create with parameters; use update with set. Updates accept extrude distance, cut or hole target.featureId, and numeric pcb_base or standoff parameters.",
+            "description": "Use create with parameters; use update with set. Updates accept extrude distance, cut or hole target.featureId, and enclosure dimensions.",
         },
         **FEATURE_PROPERTIES,
         "parameters": {
@@ -492,7 +530,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create. Accepts extrude distance, cut or hole target.featureId, and numeric pcb_base or standoff parameters.",
+            "description": "Required for update; not allowed for create. Accepts extrude distance, cut or hole target.featureId, and enclosure dimensions.",
         },
     },
     "required": ["action", *FEATURE_PROPERTIES],

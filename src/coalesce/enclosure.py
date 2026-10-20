@@ -11,7 +11,7 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
 from .boolean import cut_shape, fuse_shape, join_contact_failures
-from .graph import BoardImport, GraphError, PcbBase, Standoffs
+from .graph import BoardImport, GraphError, PcbBase, PcbLid, Standoffs
 from .pcb import board_loop_wire
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate
@@ -42,6 +42,30 @@ def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -
             value=distance,
         )
     return outward
+
+
+def _offset_inward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
+    original_area = Face(wire).area
+    wires = []
+    for signed_distance in (distance, -distance):
+        try:
+            offset = wire.offset_2d(signed_distance)
+            candidate_wire = offset if isinstance(offset, Wire) else Wire([offset])
+            area = Face(candidate_wire).area
+            if 0 < area < original_area:
+                wires.append(candidate_wire)
+        except RuntimeError:
+            continue
+    inward = min(wires, key=lambda item: Face(item).area, default=None)
+    if inward is None:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {feature} {parameter} leaves no space inside the walls",
+            feature=feature,
+            parameter=parameter,
+            value=distance,
+        )
+    return inward
 
 
 def _prism(
@@ -130,6 +154,72 @@ def build_pcb_base(node: PcbBase, board: BoardImport) -> EnclosureResult:
         kind="semantic",
     )
     return EnclosureResult(result.shape, result.candidates)
+
+
+def build_pcb_lid(node: PcbLid, base: PcbBase, board: BoardImport) -> EnclosureResult:
+    loop_id, inner, outer = _base_wires(base, board)
+    rim_z = board.mechanics["thickness"] + base.wall_height_above_board
+    body = BodySource(node.id, loop_id)
+    slab = _prism(
+        node.id,
+        outer,
+        rim_z,
+        node.thickness,
+        body,
+        node.base,
+        "underside",
+        "top",
+        "edge",
+    )
+    if node.lip_depth is None or node.lip_width is None:
+        return slab
+
+    clearance = rim_z - node.lip_depth - board.mechanics["thickness"]
+    if clearance <= 1e-9:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} lip bottom must stay above the board top",
+            feature=node.id,
+            parameter="lip.depth",
+            measuredDistance=clearance,
+            unit="mm",
+            conflict="board_top",
+        )
+    lip_outer = _offset_inward(inner, node.fit_gap, node.id, "fitGap")
+    lip_inner = _offset_inward(lip_outer, node.lip_width, node.id, "lip.width")
+    lip_z = rim_z - node.lip_depth
+    outer_prism = _prism(
+        node.id,
+        lip_outer,
+        lip_z,
+        node.lip_depth,
+        body,
+        node.base,
+        "lip_bottom",
+        "lip_join",
+        "lip_outer",
+    )
+    inner_tool = _prism(
+        node.id,
+        lip_inner,
+        lip_z - 1,
+        node.lip_depth + 2,
+        body,
+        node.base,
+        "lip_tool_bottom",
+        "lip_tool_top",
+        "lip_inner",
+    )
+    ring = cut_shape(
+        node.id,
+        outer_prism.shape,
+        outer_prism.candidates,
+        inner_tool.shape,
+        inner_tool.candidates,
+        kind="semantic",
+    )
+    joined = fuse_shape(node.id, slab.shape, slab.candidates, ring.shape, ring.candidates)
+    return EnclosureResult(joined.shape, joined.candidates)
 
 
 def selected_holes(node: Standoffs, board: BoardImport) -> list[dict]:

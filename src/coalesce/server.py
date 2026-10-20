@@ -22,7 +22,7 @@ _LOG = logging.getLogger(__name__)
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh to re-read the persisted path explicitly.",
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
-    "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, semantic pcb_base, or semantic standoffs. pcb_base derives its cavity from the selected board outline; standoffs derive axes from stable board hole ids and join the base. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Updates change numeric pcb_base and standoff parameters, extrude distance, or cut and hole targets.",
+    "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, semantic pcb_base, semantic standoffs, or a separate semantic pcb_lid. pcb_base derives its cavity from the selected board outline; standoffs derive axes from stable board hole ids and join the base; pcb_lid derives its rim and optional locating lip from a pcb_base without consuming it. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Updates change numeric enclosure parameters, extrude distance, or cut and hole targets.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
     "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path and current expectedRevision. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. A fresh Python process validates STEP bytes in a private directory before direct publication. The final file is briefly visible while written; failed writes stay in place for manual recovery.",
@@ -66,9 +66,20 @@ sits on the boss tops. `pilotDiameter` must be smaller than `bossDiameter`, and 
 must fit fully on the cavity floor without crossing a wall. Board refresh recomputes the
 base and standoff positions; a missing explicit hole id fails the refresh atomically.
 
-Short enclosure sequence: `import` the board, create `pcb_base`, create `standoffs`, run
-`check` with `valid_brep`, then `export` the terminal enclosure. Export excludes the board
-reference geometry.
+Create `pcb_lid` with `base` set to the `pcb_base` id, positive `thickness` and
+`fitGap` quantities, and an optional `lip` containing positive `depth` and `width`.
+The lid is a separate terminal manufacturing part. Its underside sits on the base rim and
+its outer outline follows the base outer outline. The lip outer faces follow the base inner
+wall inward by the radial `fitGap`; the lip extends another `width` inward, and outline arcs
+remain arcs. The lip bottom must stay above both the board top and any standoff top. A lid
+reads but does not consume the base, so later features can still target the current base
+lineage. Base edits and board refresh regenerate the lid. Updates accept `thickness`,
+`fitGap`, or a complete replacement `lip`. Provenance exposes `top`, `underside`,
+`lip_outer`, `lip_inner`, and `edge`, linked to the base id.
+
+Short enclosure sequence: `import` the board, create `pcb_base`, create `standoffs`, create
+`pcb_lid`, run `check` with `valid_brep`, then `export` the two terminal manufacturing parts.
+Export excludes the board reference geometry.
 
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is

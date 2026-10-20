@@ -8,7 +8,7 @@ from build123d import Edge, Shape
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
-from .enclosure import build_pcb_base, build_standoffs
+from .enclosure import build_pcb_base, build_pcb_lid, build_standoffs
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
 from .graph import (
@@ -20,6 +20,7 @@ from .graph import (
     GraphError,
     Hole,
     PcbBase,
+    PcbLid,
     Sketch,
     Standoffs,
 )
@@ -178,14 +179,47 @@ def _join_extrude(
     )
 
 
+def _regenerate_pcb_lid(
+    node: PcbLid,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+) -> None:
+    base_node = graph.nodes[node.base]
+    if not isinstance(base_node, PcbBase):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} base must reference a pcb_base",
+            feature=node.id,
+            parameter="base",
+        )
+    board_node = graph.nodes[base_node.board]
+    if not isinstance(board_node, BoardImport):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} base must reference a valid board import",
+            feature=node.id,
+            parameter="base",
+        )
+    lid = build_pcb_lid(node, base_node, board_node)
+    shapes[node.id] = lid.shape
+    states[node.id] = lid.candidates
+    provenance[node.id] = lid.candidates
+
+
 def _regenerate_enclosure(
-    node: PcbBase | Standoffs,
+    node: PcbBase | PcbLid | Standoffs,
     graph: Graph,
     shapes: dict[str, Shape],
     states: dict[str, list[Candidate]],
     provenance: dict[str, list[Candidate]],
     joined_material: dict[str, bool],
 ) -> None:
+    if isinstance(node, PcbLid):
+        _regenerate_pcb_lid(node, graph, shapes, states, provenance)
+        return
+
     board_node = graph.nodes[node.board]
     if isinstance(node, PcbBase):
         if not isinstance(board_node, BoardImport):
@@ -240,7 +274,7 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = board.shape
             states[node.id] = board.candidates
             provenance[node.id] = board.candidates
-        elif isinstance(node, (PcbBase, Standoffs)):
+        elif isinstance(node, (PcbBase, PcbLid, Standoffs)):
             _regenerate_enclosure(
                 node,
                 graph,
