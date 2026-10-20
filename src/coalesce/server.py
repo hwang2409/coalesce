@@ -11,7 +11,7 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from .schemas import TOOL_SCHEMAS
+from .schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
 from .service import DocumentService
 
 _LOG = logging.getLogger(__name__)
@@ -54,16 +54,8 @@ def _tool_result(payload: dict[str, Any]) -> types.CallToolResult:
     )
 
 
-def _schema_for_action(schema: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
-    action = arguments.get("action")
-    return next(
-        (
-            branch
-            for branch in schema.get("oneOf", [])
-            if branch.get("properties", {}).get("action", {}).get("const") == action
-        ),
-        schema,
-    )
+def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return ACTION_SCHEMAS.get(name, {}).get(arguments.get("action"), TOOL_SCHEMAS[name])
 
 
 def create_server(service: DocumentService) -> Server:
@@ -104,7 +96,7 @@ def create_server(service: DocumentService) -> Server:
         try:
             validate(
                 instance=arguments,
-                schema=_schema_for_action(TOOL_SCHEMAS[name], arguments),
+                schema=_schema_for_action(name, arguments),
             )
         except ValidationError as error:
             details: dict[str, Any] = {}

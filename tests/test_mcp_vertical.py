@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import os
@@ -9,7 +10,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
-from coalesce.schemas import TOOL_SCHEMAS
+from coalesce.schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
 from coalesce.server import create_server
 from coalesce.service import (
     DocumentService,
@@ -77,6 +78,17 @@ async def run_server(path: Path, calls):
     async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         return [result_json(await session.call_tool(name, arguments)) for name, arguments in calls]
+
+
+async def list_server_tools(path: Path):
+    server = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        return (await session.list_tools()).tools
 
 
 @pytest.mark.anyio
@@ -276,6 +288,16 @@ def test_request_id_tombstone_survives_full_receipt_eviction(tmp_path):
     assert reused["error"]["code"] == "REQUEST_ID_REUSED"
 
 
+@pytest.mark.anyio
+async def test_real_stdio_publishes_root_object_schemas_without_combinators(tmp_path):
+    tools = await list_server_tools(tmp_path / "schemas.coalesce.json")
+
+    assert tools
+    for tool in tools:
+        assert tool.inputSchema["type"] == "object"
+        assert not ({"oneOf", "anyOf", "allOf"} & tool.inputSchema.keys())
+
+
 def test_mutation_schema_fields_match_typed_operations():
     operation_types = {
         "sketch": {"create": SketchCreate, "update": SketchUpdate},
@@ -283,13 +305,47 @@ def test_mutation_schema_fields_match_typed_operations():
     }
 
     for tool, actions in operation_types.items():
-        branches = {
-            branch["properties"]["action"]["const"]: branch
-            for branch in TOOL_SCHEMAS[tool]["oneOf"]
-        }
-        assert set(branches) == set(actions)
+        published = TOOL_SCHEMAS[tool]
+        assert set(published["properties"]["action"]["enum"]) == set(actions)
+        expected_fields = set().union(*(operation.wire_fields() for operation in actions.values()))
+        assert set(published["properties"]) == expected_fields
         for action, operation_type in actions.items():
-            assert set(branches[action]["properties"]) == operation_type.wire_fields()
+            private = ACTION_SCHEMAS[tool][action]
+            assert set(private["properties"]) == operation_type.wire_fields()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", [pytest.param(math.nan, id="NaN"), pytest.param(math.inf, id="Infinity"), pytest.param(1e400, id="1e400")])
+@pytest.mark.parametrize("field", ["width", "center", "rotation"])
+async def test_call_tool_rejects_non_finite_numbers_without_mutation(tmp_path, field, value):
+    path = tmp_path / f"{field}.coalesce.json"
+    service = DocumentService(path)
+    assert (await call_server_tool(service, "sketch", SKETCH))["ok"] is True
+    before = path.read_bytes()
+    entity = copy.deepcopy(SKETCH["entities"][0])
+    if field == "width":
+        entity["width"]["value"] = value
+    elif field == "center":
+        entity["center"][0] = value
+    else:
+        entity["rotation"]["value"] = value
+
+    result = await call_server_tool(
+        service,
+        "sketch",
+        {
+            "action": "update",
+            "expectedRevision": 1,
+            "requestId": f"bad-{field}",
+            "sketchId": "plate_profile",
+            "set": {"entities": [entity]},
+        },
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["field"] == field
+    assert service.revision == 1
+    assert path.read_bytes() == before
 
 
 @pytest.mark.anyio

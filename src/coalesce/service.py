@@ -40,9 +40,21 @@ class RequestError(ValueError):
         super().__init__(message)
 
 
-def _quantity(value: Any, unit: str) -> float:
+def _finite_number(value: Any, field: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise RequestError(
+            "INVALID_PARAMETER", f"{field} must be a finite number", field=field
+        ) from None
+    if not math.isfinite(number):
+        raise RequestError("INVALID_PARAMETER", f"{field} must be finite", field=field)
+    return number
+
+
+def _quantity(value: Any, unit: str, field: str) -> float:
     if not isinstance(value, dict) or set(value) != {"value", "unit"}:
-        raise RequestError("INVALID_PARAMETER", "quantity must contain value and unit")
+        raise RequestError("INVALID_PARAMETER", "quantity must contain value and unit", field=field)
     if value["unit"] != unit:
         raise RequestError(
             "UNIT_MISMATCH",
@@ -51,8 +63,10 @@ def _quantity(value: Any, unit: str) -> float:
             actual=value["unit"],
         )
     if not isinstance(value["value"], (int, float)):
-        raise RequestError("INVALID_PARAMETER", "quantity value must be a number")
-    return float(value["value"])
+        raise RequestError(
+            "INVALID_PARAMETER", "quantity value must be a number", field=field
+        )
+    return _finite_number(value["value"], field)
 
 
 def _angle(value: Any) -> float:
@@ -66,8 +80,8 @@ def _angle(value: Any) -> float:
             actual=value["unit"],
         )
     if not isinstance(value["value"], (int, float)):
-        raise RequestError("INVALID_PARAMETER", "angle value must be a number")
-    angle = float(value["value"])
+        raise RequestError("INVALID_PARAMETER", "angle value must be a number", field="rotation")
+    angle = _finite_number(value["value"], "rotation")
     return math.degrees(angle) if value["unit"] == "rad" else angle
 
 
@@ -183,9 +197,12 @@ def _rectangles(payload: Any) -> tuple[Rectangle, ...]:
         rectangles.append(
             Rectangle(
                 id=entity["id"],
-                width=_quantity(entity.get("width"), "mm"),
-                height=_quantity(entity.get("height"), "mm"),
-                position=(float(center[0]), float(center[1])),
+                width=_quantity(entity.get("width"), "mm", "width"),
+                height=_quantity(entity.get("height"), "mm", "height"),
+                position=(
+                    _finite_number(center[0], "center"),
+                    _finite_number(center[1], "center"),
+                ),
                 rotation=_angle(rotation),
             )
         )
@@ -195,7 +212,7 @@ def _rectangles(payload: Any) -> tuple[Rectangle, ...]:
 def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate:
     common = {
         "action": Action(payload.get("action")),
-        "expectedRevision": float(payload.get("expectedRevision")),
+        "expectedRevision": _finite_number(payload.get("expectedRevision"), "expectedRevision"),
         "requestId": payload.get("requestId"),
         "sketchId": payload.get("sketchId"),
     }
@@ -213,7 +230,11 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate:
     return SketchUpdate(
         **common,
         set=SketchChanges(
-            position=tuple(float(value) for value in position) if position is not None else None,
+            position=(
+                tuple(_finite_number(value, "position") for value in position)
+                if position is not None
+                else None
+            ),
             entities=_rectangles(changes["entities"]) if "entities" in changes else None,
         ),
     )
@@ -235,7 +256,7 @@ def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
         )
     common = {
         "action": Action(payload.get("action")),
-        "expectedRevision": float(payload.get("expectedRevision")),
+        "expectedRevision": _finite_number(payload.get("expectedRevision"), "expectedRevision"),
         "requestId": payload.get("requestId"),
         "featureId": payload.get("featureId"),
     }
@@ -249,7 +270,7 @@ def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
                     sketchId=profile.get("sketchId"),
                     profileIds=tuple(profile.get("profileIds", [])),
                 ),
-                distance=_quantity(parameters.get("distance"), "mm"),
+                distance=_quantity(parameters.get("distance"), "mm", "distance"),
                 operation=parameters.get("operation"),
                 direction=parameters.get("direction"),
             ),
@@ -259,7 +280,7 @@ def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
         raise RequestError("INVALID_PARAMETER", "extrude update requires set.distance")
     return ExtrudeUpdate(
         **common,
-        set=ExtrudeChanges(distance=_quantity(changes["distance"], "mm")),
+        set=ExtrudeChanges(distance=_quantity(changes["distance"], "mm", "distance")),
     )
 
 
@@ -278,7 +299,9 @@ def _canonical(value: Any) -> Any:
 def _hash(operation: MutationOperation) -> str:
     intent = {"type": type(operation).__name__, **asdict(operation)}
     return hashlib.sha256(
-        json.dumps(_canonical(intent), sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            _canonical(intent), sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
     ).hexdigest()
 
 

@@ -59,7 +59,9 @@ class DocumentStore:
             "receipts": document.receipts[-MAX_RECEIPTS:],
             "requestHashes": document.request_hashes[-MAX_REQUEST_HASHES:],
         }
-        encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+        encoded = (
+            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode()
         temporary: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(

@@ -162,7 +162,30 @@ SKETCH_UPDATE_SCHEMA = {
     "required": ["action", *SKETCH_PROPERTIES, "set"],
     "additionalProperties": False,
 }
-SKETCH_SCHEMA = {"oneOf": [SKETCH_CREATE_SCHEMA, SKETCH_UPDATE_SCHEMA]}
+SKETCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "enum": ["create", "update"],
+            "description": "Use create with plane and entities; use update with set.",
+        },
+        **SKETCH_PROPERTIES,
+        "plane": {
+            **SKETCH_CREATE_SCHEMA["properties"]["plane"],
+            "description": "Required for create; not allowed for update.",
+        },
+        "entities": {
+            **SKETCH_CREATE_SCHEMA["properties"]["entities"],
+            "description": "Required for create; not allowed for update.",
+        },
+        "set": {
+            **SKETCH_UPDATE_SCHEMA["properties"]["set"],
+            "description": "Required for update; not allowed for create.",
+        },
+    },
+    "required": ["action", *SKETCH_PROPERTIES],
+    "additionalProperties": False,
+}
 
 PROFILE = {
     "type": "object",
@@ -214,7 +237,26 @@ FEATURE_UPDATE_SCHEMA = {
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
 }
-FEATURE_SCHEMA = {"oneOf": [FEATURE_CREATE_SCHEMA, FEATURE_UPDATE_SCHEMA]}
+FEATURE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "enum": ["create", "update"],
+            "description": "Use create with parameters; use update with set.",
+        },
+        **FEATURE_PROPERTIES,
+        "parameters": {
+            **FEATURE_CREATE_SCHEMA["properties"]["parameters"],
+            "description": "Required for create; not allowed for update.",
+        },
+        "set": {
+            **FEATURE_UPDATE_SCHEMA["properties"]["set"],
+            "description": "Required for update; not allowed for create.",
+        },
+    },
+    "required": ["action", *FEATURE_PROPERTIES],
+    "additionalProperties": False,
+}
 QUERY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -268,4 +310,9 @@ TOOL_SCHEMAS = {
     "feature": FEATURE_SCHEMA,
     "query": QUERY_SCHEMA,
     "check": CHECK_SCHEMA,
+}
+
+ACTION_SCHEMAS = {
+    "sketch": {"create": SKETCH_CREATE_SCHEMA, "update": SKETCH_UPDATE_SCHEMA},
+    "feature": {"create": FEATURE_CREATE_SCHEMA, "update": FEATURE_UPDATE_SCHEMA},
 }
