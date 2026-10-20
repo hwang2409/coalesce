@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from build123d import Compound, Face, Shape
+from build123d import Align, Box, Compound, Face, Location, Shape
 from jsonschema import validate
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from test_mcp_truthful_contract import list_server_tools
@@ -221,11 +221,26 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
         {"id": "front-id", "closed": True, "segments": footprint["courtyard"]}
     )
     courtyard_box = courtyard.bounding_box()
+    connector_envelope = Box(
+        opening_box["max"][0] - opening_box["min"][0],
+        courtyard_box.max.Y - courtyard_box.min.Y,
+        2,
+        align=(Align.MIN, Align.MIN, Align.MIN),
+    ).moved(
+        Location(
+            (
+                opening_box["min"][0],
+                courtyard_box.min.Y,
+                board_box["max"][2] + 1,
+            )
+        )
+    )
+    envelope_box = _bbox(connector_envelope)
     measured_clearances = (
-        courtyard_box.min.Y - opening_box["min"][1],
-        opening_box["max"][1] - courtyard_box.max.Y,
-        board_box["max"][2] + 1 - opening_box["min"][2],
-        opening_box["max"][2] - (board_box["max"][2] + 3),
+        envelope_box["min"][1] - opening_box["min"][1],
+        opening_box["max"][1] - envelope_box["max"][1],
+        envelope_box["min"][2] - opening_box["min"][2],
+        opening_box["max"][2] - envelope_box["max"][2],
     )
     assert _value(port["clearance"]["min"]) == pytest.approx(min(measured_clearances), abs=1e-6)
     assert _value(port["clearance"]["max"]) == pytest.approx(max(measured_clearances), abs=1e-6)
