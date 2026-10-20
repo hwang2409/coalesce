@@ -11,7 +11,13 @@ from coalesce.service import DocumentService
 async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations(tmp_path):
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
 
-    assert tools["feature"].inputSchema["properties"]["kind"]["enum"] == ["extrude", "cut", "hole"]
+    assert tools["feature"].inputSchema["properties"]["kind"]["enum"] == [
+        "extrude",
+        "cut",
+        "hole",
+        "pcb_base",
+        "standoffs",
+    ]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
     assert "fillet" not in advertised
     assert "boolean" not in tools["feature"].inputSchema["properties"]["kind"]["enum"]
@@ -128,5 +134,8 @@ def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup()
     assert "flip=true" in guide
     assert "positive sketch normal" in guide
     assert "flip has no effect for through-all" in guide
+    assert "pcb_base" in guide
+    assert "stable `holeids`" in guide
+    assert "import` the board, create `pcb_base`, create `standoffs`" in guide
     assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE
     assert '"mcpServers"' in TOOLS_GUIDE

@@ -47,7 +47,7 @@ def _wire(edges: list[Edge]) -> tuple[Wire, list[Edge]]:
     return Wire(builder.Wire()), built
 
 
-def _loop_wire(loop: dict[str, Any]) -> tuple[Wire, list[tuple[str, Edge]]]:
+def board_loop_wire(loop: dict[str, Any]) -> tuple[Wire, list[tuple[str, Edge]]]:
     if not loop.get("closed"):
         raise GraphError(
             "INVALID_BOARD",
@@ -192,7 +192,7 @@ def _cutout_subtractions(
 ) -> dict[str, list[_Subtraction]]:
     assigned: dict[str, list[_Subtraction]] = {region.source: [] for region in regions}
     for loop in node.mechanics.get("innerCutouts", []):
-        wire, edges = _loop_wire(loop)
+        wire, edges = board_loop_wire(loop)
         cutout = Face(wire)
         parents = [region for region in regions if _contains_face(region.face, cutout)]
         if not parents:
@@ -240,7 +240,7 @@ def _apply_subtractions(
 def _planar_regions(node: BoardImport) -> list[_PlanarRegion]:
     regions: list[_PlanarRegion] = []
     for loop in node.mechanics.get("outline", []):
-        wire, edges = _loop_wire(loop)
+        wire, edges = board_loop_wire(loop)
         regions.append(
             _PlanarRegion(
                 Face(wire),
