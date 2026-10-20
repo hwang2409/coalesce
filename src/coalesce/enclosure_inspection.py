@@ -250,20 +250,23 @@ def _directional_clearance(
 
 def _board_fit(
     board_id: str, board_shape: Shape, base_part: TerminalPart
-) -> tuple[dict[str, float], Any]:
+) -> tuple[dict[str, float], dict[str, float], Any]:
     box = board_shape.bounding_box()
-    interference = _interference(
-        board_shape, base_part.shape, [board_id, base_part.part_id]
-    )
-    if interference is not None:
-        return dict.fromkeys(("left", "right", "front", "back"), 0.0), interference
     clearances = {
         "left": _directional_clearance(board_shape, base_part.shape, "X", box.min.X, -1),
         "right": _directional_clearance(board_shape, base_part.shape, "X", box.max.X, 1),
         "front": _directional_clearance(board_shape, base_part.shape, "Y", box.min.Y, -1),
         "back": _directional_clearance(board_shape, base_part.shape, "Y", box.max.Y, 1),
     }
-    return clearances, None
+    interference = _interference(
+        board_shape, base_part.shape, [board_id, base_part.part_id]
+    )
+    reported = (
+        dict.fromkeys(("left", "right", "front", "back"), 0.0)
+        if interference is not None
+        else clearances
+    )
+    return clearances, reported, interference
 
 
 def _lid_measurement(
@@ -528,10 +531,10 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     assembled = Compound(children=[part.shape for part in enclosure_parts])
     board_shape = result.shapes[board.id]
     board_box = board_shape.bounding_box()
-    inner_walls = _faces(result, base.id, "inner_wall")
-    inner_box = Compound(children=inner_walls).bounding_box()
     wall_thickness, floor_thickness = _as_built_thicknesses(result, base, base_part.shape)
-    board_clearance, board_interference = _board_fit(board.id, board_shape, base_part)
+    wall_clearance, board_clearance, board_interference = _board_fit(
+        board.id, board_shape, base_part
+    )
     ports = _ports(graph, result, base, board, board_shape, base_part.shape, assembled)
     warnings = _warnings(graph, board, parts, enclosure_parts, ports)
 
@@ -551,8 +554,16 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
         },
         "cavity": {
             "innerSize": {
-                "x": _quantity(inner_box.max.X - inner_box.min.X),
-                "y": _quantity(inner_box.max.Y - inner_box.min.Y),
+                "x": _quantity(
+                    board_box.max.X - board_box.min.X
+                    + wall_clearance["left"]
+                    + wall_clearance["right"]
+                ),
+                "y": _quantity(
+                    board_box.max.Y - board_box.min.Y
+                    + wall_clearance["front"]
+                    + wall_clearance["back"]
+                ),
             },
             "boardClearance": {
                 direction: _quantity(distance) for direction, distance in board_clearance.items()
