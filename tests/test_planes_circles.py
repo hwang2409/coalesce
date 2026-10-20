@@ -25,12 +25,6 @@ from coalesce import (
 from coalesce.serialization import loads
 
 
-def origin_plane(name: str, offset: float = 0) -> Plane:
-    plane = Plane(name)
-    plane.offset = offset
-    return plane
-
-
 @pytest.mark.parametrize(
     ("plane", "expected_min", "expected_max"),
     [
@@ -48,7 +42,7 @@ def test_circle_extrudes_along_origin_plane_normal_with_exact_bounds(
     graph.add(
         Sketch(
             "circle_sketch",
-            plane=origin_plane(plane, offset=3),
+            plane=Plane(plane, offset=3),
             entities=[Circle("circle", radius=2)],
         )
     )
@@ -69,7 +63,7 @@ def test_circle_boss_is_a_separate_body_under_existing_new_body_rules() -> None:
     graph.add(
         Sketch(
             "boss_sketch",
-            plane=origin_plane("XY", offset=2),
+            plane=Plane("XY", offset=2),
             entities=[Circle("boss", radius=3)],
         )
     )
@@ -92,7 +86,7 @@ def test_xz_rectangle_cuts_through_box_wall_with_segment_roles() -> None:
     graph.add(
         Sketch(
             "opening_sketch",
-            plane=origin_plane("XZ", offset=-5),
+            plane=Plane("XZ", offset=-5),
             entities=[Rectangle("opening", 2, 4, position=(0, 5))],
         )
     )
@@ -159,7 +153,7 @@ def test_plane_offset_and_circle_round_trip_through_json() -> None:
     graph.add(
         Sketch(
             "sketch",
-            plane=origin_plane("YZ", offset=7.5),
+            plane=Plane("YZ", offset=7.5),
             entities=[Circle("circle", radius=2.5, position=(1, -2))],
         )
     )
@@ -178,7 +172,7 @@ def test_plane_offset_and_circle_round_trip_through_json() -> None:
         (
             Sketch(
                 "sketch",
-                plane=origin_plane("XY", offset=float("inf")),
+                plane=Plane("XY", offset=float("inf")),
                 entities=[Circle("circle", 2)],
             ),
             "non_finite_value",
@@ -209,7 +203,7 @@ def _circle_snapshot(graph: Graph) -> dict[str, object]:
     result = regenerate(graph)
     candidates = [
         {
-            "key": asdict(candidate.key),
+            "key": json.loads(json.dumps(asdict(candidate.key))),
             "center": [round(value, 9) for value in candidate.descriptor["center"]],
             "measure": round(
                 candidate.descriptor.get("area", candidate.descriptor.get("length", 0)),
@@ -223,7 +217,10 @@ def _circle_snapshot(graph: Graph) -> dict[str, object]:
         "candidates": candidates,
         "resolution": {
             "status": resolution.status.value,
-            "keys": [asdict(candidate.key) for candidate in resolution.candidates],
+            "keys": [
+                json.loads(json.dumps(asdict(candidate.key)))
+                for candidate in resolution.candidates
+            ],
         },
     }
 
@@ -233,7 +230,7 @@ def test_circle_on_xz_is_deterministic_across_processes() -> None:
     graph.add(
         Sketch(
             "sketch",
-            plane=origin_plane("XZ", offset=3),
+            plane=Plane("XZ", offset=3),
             entities=[Circle("circle", radius=2, position=(1, -2))],
         )
     )
