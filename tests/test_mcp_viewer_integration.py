@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,7 @@ from mcp.client.stdio import stdio_client
 from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
 from test_viewer_browser import playwright_module
 
+import coalesce.service as service_module
 from coalesce.document_store import Document, DocumentStore
 from coalesce.graph import Cut, Extrude, Graph, Hole, HolePosition, Plane, Rectangle, Sketch
 from coalesce.service import DocumentService
@@ -324,6 +326,21 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
         )
 
 
+class RequestWinsKernelLoader:
+    def __init__(self):
+        self.startup_waiting = threading.Event()
+        self.release_startup = threading.Event()
+
+    def start(self):
+        service_module._KERNEL_LOADER.start()
+
+    def wait(self):
+        service_module._KERNEL_LOADER.wait()
+        if threading.current_thread().name == "coalesce-kernel":
+            self.startup_waiting.set()
+            self.release_startup.wait()
+
+
 @pytest.mark.parametrize("with_feature", [False, True])
 def test_existing_document_is_published_on_startup(tmp_path, with_feature):
     path = tmp_path / "plate.coalesce.json"
@@ -344,6 +361,30 @@ def test_existing_document_is_published_on_startup(tmp_path, with_feature):
         assert scene["parts"][0]["size"] == pytest.approx([60, 40, 6])
     else:
         assert scene["parts"] == []
+
+
+def test_query_that_wins_startup_race_still_publishes_persisted_scene(tmp_path):
+    path = tmp_path / "plate.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=3))
+    DocumentStore(path).save(Document(graph, revision=2))
+    store = ViewerSceneStore()
+    loader = RequestWinsKernelLoader()
+    service = DocumentService(
+        path, scene_store=store, warmup=False, kernel_loader=loader
+    )
+
+    try:
+        service.start_kernel_warmup()
+        assert loader.startup_waiting.wait(2)
+        assert service.query({"select": {"kind": "measurements"}})["ok"]
+        deadline = time.monotonic() + 5
+        while store.current_revision != 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert store.scene(2) is not None
+    finally:
+        loader.release_startup.set()
 
 
 @pytest.fixture(scope="module")

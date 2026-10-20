@@ -1136,6 +1136,8 @@ class DocumentService:
                 raise
             self._assert_valid(result)
             self._regen = result
+            if self._publisher is not None and self._document.revision > 0:
+                self._publisher.publish(self._document.revision, result)
 
     def _geometry_failure(self, operation: str) -> dict[str, Any] | None:
         try:
