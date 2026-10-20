@@ -3,6 +3,7 @@ import json
 import multiprocessing
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,12 @@ def document_bytes(path: Path):
     return path.read_bytes() if path.exists() else None
 
 
-def import_in_process(document: str, request: dict, results) -> None:
-    results.put(DocumentService(Path(document)).import_board(request))
+def import_in_process(document: str, request: dict, ready, results) -> None:
+    ready.send(None)
+    ready.close()
+    started = time.monotonic()
+    result = DocumentService(Path(document)).import_board(request)
+    results.put((result, time.monotonic() - started))
 
 
 @pytest.mark.anyio
@@ -158,22 +163,42 @@ def test_special_import_sources_fail_promptly_and_atomically(tmp_path, source_ki
         requestId=f"import-{source_kind}",
     )
     context = multiprocessing.get_context("spawn")
+    ready_receiver, ready_sender = context.Pipe(duplex=False)
     results = context.Queue()
     process = context.Process(
         target=import_in_process,
-        args=(str(document), request, results),
+        args=(str(document), request, ready_sender, results),
     )
+    process_started = time.monotonic()
     process.start()
+    ready_sender.close()
+    if not ready_receiver.poll(30):
+        process.terminate()
+        process.join()
+        pytest.fail("spawned import worker did not start within 30 seconds")
+    ready_receiver.recv()
+    ready_receiver.close()
+    startup_seconds = time.monotonic() - process_started
+    operation_started = time.monotonic()
     process.join(timeout=5)
+    operation_seconds = time.monotonic() - operation_started
     if process.is_alive():
         process.terminate()
         process.join()
-        pytest.fail("import did not complete within 5 seconds")
+        pytest.fail(
+            f"import did not complete within 5 seconds "
+            f"(process startup {startup_seconds:.3f}s, operation {operation_seconds:.3f}s)"
+        )
 
-    result = results.get(timeout=1)
-    assert result["error"]["code"] == "IMPORT_FAILED"
-    assert DocumentService(document).revision == 1
-    assert document.read_bytes() == before
+    result, child_operation_seconds = results.get(timeout=1)
+    diagnostics = {
+        "processStartupSeconds": startup_seconds,
+        "parentOperationSeconds": operation_seconds,
+        "childOperationSeconds": child_operation_seconds,
+    }
+    assert result["error"]["code"] == "IMPORT_FAILED", diagnostics
+    assert DocumentService(document).revision == 1, diagnostics
+    assert document.read_bytes() == before, diagnostics
 
 
 @pytest.mark.anyio
