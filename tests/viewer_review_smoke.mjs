@@ -41,6 +41,25 @@ async function snapshot() {
     repair: await shown('#failure-repair'),
     code: await page.locator('#failure-code').textContent(),
     scene: await page.evaluate(() => window.coalesceViewer.drawn),
+    expanded: await page.locator('#parts .part').evaluateAll((rows) => rows.map((row) => row.getAttribute('aria-expanded'))),
+    // each part row's boxes in page pixels, to check the swatch and hint line up with the row
+    rows: await page.locator('#parts li').evaluateAll((items) => items.map((item) => {
+      const box = (el) => (el && el.checkVisibility() ? el.getBoundingClientRect().toJSON() : null);
+      const hint = item.querySelector('.disclosure');
+      return {
+        row: box(item),
+        toggle: box(item.querySelector('.visibility')),
+        part: box(item.querySelector('.part')),
+        swatch: box(item.querySelector('.swatch')),
+        name: box(item.querySelector('.part-name')),
+        hint: box(hint),
+        hintColor: hint && getComputedStyle(hint).color,
+      };
+    })),
+    focus: await page.evaluate(() => {
+      const style = getComputedStyle(document.activeElement);
+      return { className: document.activeElement.className, outline: `${style.outlineStyle} ${style.outlineWidth}` };
+    }),
   };
 }
 
@@ -91,6 +110,20 @@ async function act(action) {
   if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
   if ('blur' in action) await page.evaluate(() => document.activeElement?.blur());
+  // the drawn edge-line corners on one circle (center x, y and radius in mm), counted per height
+  if ('circle' in action) {
+    return page.evaluate(async ({ mesh, center: [cx, cy], radius }) => {
+      const buffer = await (await fetch(mesh.url)).arrayBuffer();
+      const lines = new Float32Array(buffer, (mesh.vertexCount + mesh.triangleCount) * 12, mesh.edgeVertexCount * 3);
+      const levels = {};
+      for (let i = 0; i < lines.length; i += 3) {
+        if (Math.abs(Math.hypot(lines[i] - cx, lines[i + 1] - cy) - radius) > 1e-3) continue;
+        const z = lines[i + 2].toFixed(3);
+        (levels[z] ??= new Set()).add(`${lines[i].toFixed(4)},${lines[i + 1].toFixed(4)}`);
+      }
+      return { corners: Object.values(levels).map((corners) => corners.size) };
+    }, action.circle);
+  }
   if ('goto' in action) {
     await page.goto(action.goto);
     await page.waitForFunction((n) => window.coalesceViewer?.revision === n, action.revision, { timeout: 15000 });

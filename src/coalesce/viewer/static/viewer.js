@@ -353,6 +353,13 @@ function partTitles(parts) {
   });
 }
 
+// narrow screens show a part's detail line only while its row has focus: say so to screen readers
+function syncExpanded(button) {
+  if (narrow.matches) button.setAttribute('aria-expanded', String(document.activeElement === button));
+  else button.removeAttribute('aria-expanded');
+}
+narrow.addEventListener('change', () => document.querySelectorAll('.part.has-detail').forEach(syncExpanded));
+
 function renderPartList(parts) {
   const list = $('parts');
   list.replaceChildren();
@@ -392,17 +399,28 @@ function renderPartList(parts) {
     name.textContent = titles[index];
     name.classList.toggle('collides', titles[index] !== part.label);
     name.title = part.name;
+    const title = document.createElement('span');
+    title.className = 'part-title';
+    title.append(name);
     const size = document.createElement('span');
     size.className = 'part-size';
     size.textContent = formatSize(part);
-    button.append(name, size);
+    button.append(title, size);
     const detail = partDetail(part);
     if (detail) {
+      const hint = document.createElement('span');
+      hint.className = 'disclosure';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = '\u25BE';
+      title.append(hint);
       const line = document.createElement('span');
       line.className = 'part-detail';
       line.textContent = detail;
       button.append(line);
       button.classList.add('has-detail');
+      button.addEventListener('focus', () => syncExpanded(button));
+      button.addEventListener('blur', () => syncExpanded(button));
+      syncExpanded(button);
     }
     button.addEventListener('click', () => button.focus()); // safari does not focus a clicked button; focus shows the detail line
     item.append(toggle, button);
