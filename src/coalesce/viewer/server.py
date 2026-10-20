@@ -157,13 +157,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/session":
             return self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
         if match := _SCENE.fullmatch(path):
-            revision = int(match[1])
-            if scene := self.viewer.store.scene(revision):
-                return self.json(scene)
-            current = self.viewer.store.current_revision
-            if current is not None and revision < current:
-                return self.superseded()
-            return self.send(HTTPStatus.NOT_FOUND)
+            return self.scene(int(match[1]))
         mesh = self.viewer.store.mesh(_MESH.fullmatch(path)[1])
         if mesh is None:
             # ids are content hashes, so an unknown one is a mesh the store no longer keeps.
@@ -171,6 +165,14 @@ class _Handler(BaseHTTPRequestHandler):
         # content-addressed: unchanged parts are never downloaded twice.
         self.send(200, mesh, "application/octet-stream",
                   [("Cache-Control", "private, max-age=31536000, immutable")])
+
+    def scene(self, revision: int):
+        if scene := self.viewer.store.scene(revision):
+            return self.json(scene)
+        current = self.viewer.store.current_revision
+        if current is not None and revision < current:
+            return self.superseded()
+        self.send(HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
         if self.path != "/api/session":
