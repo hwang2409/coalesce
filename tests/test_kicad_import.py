@@ -1,7 +1,7 @@
 import json
 import math
-from pathlib import Path
 import random
+from pathlib import Path
 
 import pytest
 
@@ -263,22 +263,23 @@ def test_present_malformed_position_reports_its_node_path(tmp_path, footprint, p
 
 def test_half_nanometre_uses_kicad_rounding_and_does_not_close(tmp_path):
     board = _parse_text(tmp_path, _board(
-        _line((0, 0), (0.000001, 0)),
-        _line((0.0000005, 0), (0, 0)),
+        _line((0, 0), (1, 0)),
+        _line((1, 0), (0.0000005, 0)),
     ))
     assert [error.kind for error in board.errors] == ["open_outline"]
 
 
 def test_non_cardinal_footprint_rotation_uses_integer_nanometres(tmp_path):
     footprint = """(footprint "Rotated" (layer "F.Cu") (at 0 0 45)
-      (fp_line (start 0 0) (end 0.000001 0) (layer "Edge.Cuts")))"""
+      (fp_line (start 0 0) (end 0.000001 0) (layer "Edge.Cuts") (uuid rotated-edge)))"""
     board = _parse_text(tmp_path, _board(
         footprint,
         _line((0.000001, 0.000001), (0, 0.000001)),
         _line((0, 0.000001), (0, 0)),
     ))
     assert board.errors == []
-    assert board.outline[0].segments[0].end == (0.000001, 0.000001)
+    rotated = next(segment for segment in board.outline[0].segments if segment.id == "rotated-edge")
+    assert {rotated.start, rotated.end} == {(0.0, 0.0), (0.000001, 0.000001)}
 
 
 def test_arc_seam_y_uses_half_open_vertex_ownership(tmp_path):
@@ -345,12 +346,12 @@ def test_seeded_random_nested_rotated_geometry(tmp_path):
         points = [rotate((radius, 0), degrees), rotate((0, radius), degrees),
                   rotate((-radius, 0), degrees), rotate((0, -radius), degrees)]
         return [
-            f'(gr_arc (start {points[0][0]:.12f} {points[0][1]:.12f}) '
-            f'(mid {points[1][0]:.12f} {points[1][1]:.12f}) '
-            f'(end {points[2][0]:.12f} {points[2][1]:.12f}) (layer "Edge.Cuts"))',
-            f'(gr_arc (start {points[2][0]:.12f} {points[2][1]:.12f}) '
-            f'(mid {points[3][0]:.12f} {points[3][1]:.12f}) '
-            f'(end {points[0][0]:.12f} {points[0][1]:.12f}) (layer "Edge.Cuts"))',
+            (f'(gr_arc (start {points[0][0]:.12f} {points[0][1]:.12f}) '
+             f'(mid {points[1][0]:.12f} {points[1][1]:.12f}) '
+             f'(end {points[2][0]:.12f} {points[2][1]:.12f}) (layer "Edge.Cuts"))'),
+            (f'(gr_arc (start {points[2][0]:.12f} {points[2][1]:.12f}) '
+             f'(mid {points[3][0]:.12f} {points[3][1]:.12f}) '
+             f'(end {points[0][0]:.12f} {points[0][1]:.12f}) (layer "Edge.Cuts"))'),
         ]
 
     for case in range(200):
@@ -359,16 +360,17 @@ def test_seeded_random_nested_rotated_geometry(tmp_path):
             ["rectangle", "circle", "arcs"]
         )
 
-        def shape(kind, size):
+        def shape(kind, size, rotation):
             if kind == "rectangle":
-                return _polygon(rectangle(size, degrees))
+                return _polygon(rectangle(size, rotation))
             if kind == "circle":
-                edge = rotate((size, 0), degrees)
-                return [f'(gr_circle (center 0 0) (end {edge[0]:.12f} {edge[1]:.12f}) '
-                        '(layer "Edge.Cuts"))']
-            return arc_circle(size, degrees)
+                edge = rotate((size, 0), rotation)
+                return [(f'(gr_circle (center 0 0) (end {edge[0]:.12f} {edge[1]:.12f}) '
+                         '(layer "Edge.Cuts"))')]
+            return arc_circle(size, rotation)
 
-        board = _parse_text(tmp_path, _board(*shape(outer_kind, 10), *shape(inner_kind, 2)))
+        board = _parse_text(tmp_path, _board(*shape(outer_kind, 10, degrees),
+                                             *shape(inner_kind, 2, degrees)))
         assert board.errors == [], case
         assert (len(board.outline), len(board.inner_cutouts)) == (1, 1), case
 

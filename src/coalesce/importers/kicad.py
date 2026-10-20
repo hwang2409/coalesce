@@ -1,12 +1,50 @@
 """Dependency-free reader for the mechanical part of KiCad PCB files."""
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+_NM_PER_MM = 1_000_000
+
+
+def _ki_round(value: float) -> int:
+    """Match KiCad KiROUND: round halfway cases away from zero."""
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
+def _to_nm(value: float) -> int:
+    return _ki_round(value * _NM_PER_MM)
+
+
+def _from_nm(value: int) -> float:
+    return value / _NM_PER_MM
+
+
+def _canonical_point(point: tuple[float, float]) -> tuple[float, float]:
+    return _from_nm(_to_nm(point[0])), _from_nm(_to_nm(point[1]))
+
+
+def _rotate_point(point: tuple[float, float], degrees: float) -> tuple[float, float]:
+    x, y = _to_nm(point[0]), _to_nm(point[1])
+    angle = degrees % 360.0
+    if angle == 0.0:
+        rotated = x, y
+    elif angle == 90.0:
+        rotated = -y, x
+    elif angle == 180.0:
+        rotated = -x, -y
+    elif angle == 270.0:
+        rotated = y, -x
+    else:
+        radians = math.radians(angle)
+        rotated = (_ki_round(x * math.cos(radians) - y * math.sin(radians)),
+                   _ki_round(x * math.sin(radians) + y * math.cos(radians)))
+    return _from_nm(rotated[0]), _from_nm(rotated[1])
 
 
 @dataclass
@@ -109,15 +147,13 @@ class _FootprintTransform:
 
     def point(self, point: tuple[float, float]) -> tuple[float, float]:
         x, y = point
-        # KiCad flips footprints across their local X axis before board rotation:
-        # https://gitlab.com/kicad/code/kicad/-/blob/master/pcbnew/footprint.cpp (FOOTPRINT::Flip).
+        # KiCad flips footprints across local X, then rotates integer coordinates with KiROUND:
+        # https://gitlab.com/kicad/code/kicad/-/blob/9.0.0/pcbnew/footprint.cpp
+        # https://gitlab.com/kicad/code/kicad/-/blob/9.0.0/libs/kimath/src/trigo.cpp
         if self.back:
             y = -y
-        angle = math.radians(self.rotation)
-        return (
-            self.position[0] + x * math.cos(angle) - y * math.sin(angle),
-            self.position[1] + x * math.sin(angle) + y * math.cos(angle),
-        )
+        x, y = _rotate_point((x, y), self.rotation)
+        return _canonical_point((self.position[0] + x, self.position[1] + y))
 
     def angle(self, local: float) -> float:
         return (self.rotation + (-local if self.back else local)) % 360.0
@@ -129,7 +165,6 @@ _GRAPHICS = {
     "fp_line", "fp_arc", "fp_circle", "fp_rect", "fp_poly",
 }
 _UNSUPPORTED_GRAPHICS = {"gr_curve", "fp_curve"}
-_ENDPOINT_GRID_MM = 1e-6  # KiCad's one-nanometre coordinate grid; applied after transforms.
 
 
 def _expression(tokens: list[str], index: int) -> tuple[Any, int]:
@@ -206,7 +241,7 @@ def _point(node: list[Any], name: str) -> tuple[float, float] | None:
         return None
     if len(value) < 3:
         raise ValueError(f"{name} requires x and y")
-    return _number(value[1]), _number(value[2])
+    return _canonical_point((_number(value[1]), _number(value[2])))
 
 
 def _uuid(node: list[Any]) -> str | None:
@@ -253,7 +288,8 @@ def _outline_item(item: list[Any]) -> list[Segment]:
         pts = _child(item, "pts")
         if pts is None:
             raise ValueError(f"{kind} requires pts")
-        points = [(_number(point[1]), _number(point[2])) for point in _children(pts, "xy") if len(point) >= 3]
+        points = [_canonical_point((_number(point[1]), _number(point[2])))
+                  for point in _children(pts, "xy") if len(point) >= 3]
         if len(points) < 3 or len(points) != len(_children(pts, "xy")):
             raise ValueError(f"{kind}.pts requires at least three xy points")
         return [Segment("line", point, points[(index + 1) % len(points)], id=ident)
@@ -268,11 +304,15 @@ def _outline_item(item: list[Any]) -> list[Segment]:
         start, end = _point(item, "start"), _point(item, "end")
         if start is None or end is None:
             raise ValueError(f"{kind} requires start and end")
+        if start == end:
+            raise ValueError(f"{kind} has zero length")
         return [Segment("line", start, end, id=ident)]
     if kind in {"gr_arc", "fp_arc"}:
         start, mid, end = _point(item, "start"), _point(item, "mid"), _point(item, "end")
         if start is None or mid is None or end is None:
             raise ValueError(f"{kind} requires start, mid, and end")
+        if len({start, mid, end}) < 3:
+            raise ValueError(f"{kind} has zero length")
         segment = Segment("arc", start, end, mid, ident)
         _arc_geometry(segment)
         return [segment]
@@ -280,6 +320,8 @@ def _outline_item(item: list[Any]) -> list[Segment]:
         center, end = _point(item, "center"), _point(item, "end")
         if center is None or end is None:
             raise ValueError(f"{kind} requires center and end")
+        if center == end:
+            raise ValueError(f"{kind} has zero radius")
         return [Segment("circle", center, end, id=ident)]
     return []
 
@@ -328,12 +370,13 @@ def _segment_extrema(segment: Segment) -> list[tuple[float, float]]:
     points = [segment.start, segment.end]
     for angle in (0.0, math.pi / 2, math.pi, 3 * math.pi / 2):
         if _angle_on_arc(angle, start, end, ccw):
-            points.append((center[0] + radius * math.cos(angle), center[1] + radius * math.sin(angle)))
+            points.append(_canonical_point((center[0] + radius * math.cos(angle),
+                                            center[1] + radius * math.sin(angle))))
     return points
 
 
 def _endpoint_key(point: tuple[float, float]) -> tuple[int, int]:
-    return round(point[0] / _ENDPOINT_GRID_MM), round(point[1] / _ENDPOINT_GRID_MM)
+    return _to_nm(point[0]), _to_nm(point[1])
 
 
 def _chain(segments: list[Segment]) -> list[OutlineLoop]:
@@ -360,62 +403,89 @@ def _chain(segments: list[Segment]) -> list[OutlineLoop]:
     return loops
 
 
-def _line_winding(segment: Segment, point: tuple[float, float]) -> float:
+def _line_crossings(segment: Segment, y: float) -> list[tuple[float, float]]:
     y1, y2 = segment.start[1], segment.end[1]
-    if y1 == y2 or not min(y1, y2) <= point[1] <= max(y1, y2):
-        return 0.0
-    ratio = (point[1] - y1) / (y2 - y1)
-    crossing_x = segment.start[0] + ratio * (segment.end[0] - segment.start[0])
-    if crossing_x <= point[0]:
-        return 0.0
-    weight = 0.5 if ratio in {0.0, 1.0} else 1.0
-    return math.copysign(weight, y2 - y1)
+    if not ((y1 <= y < y2) or (y2 <= y < y1)):
+        return []
+    ratio = (y - y1) / (y2 - y1)
+    x = segment.start[0] + ratio * (segment.end[0] - segment.start[0])
+    return [(x, math.copysign(1.0, y2 - y1))]
 
 
-def _arc_winding(segment: Segment, point: tuple[float, float]) -> float:
+def _arc_contains_angle(angle: float, start: float, end: float, ccw: bool) -> bool:
+    sweep = (end - start) % math.tau if ccw else (start - end) % math.tau
+    progress = (angle - start) % math.tau if ccw else (start - angle) % math.tau
+    tolerance = 1e-12
+    if math.isclose(progress, 0.0, abs_tol=tolerance):
+        return True
+    if math.isclose(progress, sweep, abs_tol=tolerance):
+        return False
+    return progress < sweep
+
+
+def _arc_crossings(segment: Segment, y: float) -> list[tuple[float, float]]:
     center, radius, start, end, ccw = _arc_geometry(segment)
-    relative_y = (point[1] - center[1]) / radius
+    relative_y = (y - center[1]) / radius
     if not -1.0 <= relative_y <= 1.0:
-        return 0.0
-    first = math.asin(relative_y)
-    candidates = (first, math.pi - first)
-    winding = 0.0
+        return []
+    first = math.asin(max(-1.0, min(1.0, relative_y)))
+    crossings: list[tuple[float, float]] = []
     direction = 1.0 if ccw else -1.0
-    for angle in candidates:
+    for angle in (first, math.pi - first):
         angle %= math.tau
-        if not _angle_on_arc(angle, start, end, ccw):
-            continue
-        crossing_x = center[0] + radius * math.cos(angle)
         derivative = direction * radius * math.cos(angle)
-        if crossing_x <= point[0] or math.isclose(derivative, 0.0, abs_tol=1e-12):
-            continue
-        endpoint = math.isclose((angle - start) % math.tau, 0.0, abs_tol=1e-12) or math.isclose(
-            (angle - end) % math.tau, 0.0, abs_tol=1e-12
-        )
-        winding += math.copysign(0.5 if endpoint else 1.0, derivative)
-    return winding
+        if (_arc_contains_angle(angle, start, end, ccw)
+                and not math.isclose(derivative, 0.0, abs_tol=1e-12)):
+            crossings.append((center[0] + radius * math.cos(angle), math.copysign(1.0, derivative)))
+    return crossings
 
 
-def _circle_winding(segment: Segment, point: tuple[float, float]) -> float:
+def _circle_crossings(segment: Segment, y: float) -> list[tuple[float, float]]:
     center, edge = segment.start, segment.end
     radius = math.dist(center, edge)
-    relative_y = (point[1] - center[1]) / radius
+    relative_y = (y - center[1]) / radius
     if not -1.0 < relative_y < 1.0:
-        return 0.0
-    crossing_x = center[0] + radius * math.sqrt(1.0 - relative_y * relative_y)
-    return 1.0 if crossing_x > point[0] else 0.0
+        return []
+    offset = radius * math.sqrt(1.0 - relative_y * relative_y)
+    return [(center[0] - offset, -1.0), (center[0] + offset, 1.0)]
+
+
+def _crossings(loop: OutlineLoop, y: float) -> list[tuple[float, float]]:
+    output: list[tuple[float, float]] = []
+    for segment in loop.segments:
+        if segment.kind == "arc":
+            output.extend(_arc_crossings(segment, y))
+        elif segment.kind == "circle":
+            output.extend(_circle_crossings(segment, y))
+        else:
+            output.extend(_line_crossings(segment, y))
+    return output
 
 
 def _contains(loop: OutlineLoop, point: tuple[float, float]) -> bool:
-    winding = 0.0
-    for segment in loop.segments:
-        if segment.kind == "arc":
-            winding += _arc_winding(segment, point)
-        elif segment.kind == "circle":
-            winding += _circle_winding(segment, point)
-        else:
-            winding += _line_winding(segment, point)
-    return abs(winding) > 0.5
+    winding = sum(direction for x, direction in _crossings(loop, point[1]) if x > point[0])
+    return winding != 0.0
+
+
+def _interior_point(loop: OutlineLoop, loops: list[OutlineLoop]) -> tuple[float, float]:
+    critical_y = sorted({point[1] for candidate in loops for segment in candidate.segments
+                         for point in _segment_extrema(segment)})
+    best: tuple[int, tuple[float, float]] | None = None
+    for low, high in itertools.pairwise(critical_y):
+        if low == high:
+            continue
+        y = (low + high) / 2
+        boundary_x = sorted(x for candidate in loops for x, _ in _crossings(candidate, y))
+        for left, right in itertools.pairwise(boundary_x):
+            if math.isclose(left, right):
+                continue
+            point = ((left + right) / 2, y)
+            if not _contains(loop, point):
+                continue
+            depth = sum(_contains(other, point) for other in loops if other is not loop)
+            if best is None or depth < best[0]:
+                best = depth, point
+    return best[1] if best is not None else loop.segments[0].start
 
 
 def _classify(loops: list[OutlineLoop]) -> tuple[list[OutlineLoop], list[OutlineLoop]]:
@@ -423,11 +493,18 @@ def _classify(loops: list[OutlineLoop]) -> tuple[list[OutlineLoop], list[Outline
     outer: list[OutlineLoop] = []
     inner: list[OutlineLoop] = []
     for loop in closed:
-        point = loop.segments[0].start
+        point = _interior_point(loop, closed)
         depth = sum(_contains(other, point) for other in closed if other is not loop)
         classified = OutlineLoop(loop.segments, True, depth % 2 == 1)
         (inner if classified.inner else outer).append(classified)
     return outer, inner
+
+
+def _positive_dimension(value: Any, name: str) -> float:
+    dimension = _number(value)
+    if dimension <= 0:
+        raise ValueError(f"{name} must be positive")
+    return dimension
 
 
 def _thickness(root: list[Any]) -> tuple[float | None, str]:
@@ -436,17 +513,17 @@ def _thickness(root: list[Any]) -> tuple[float | None, str]:
     if value:
         if len(value) < 2:
             raise ValueError("general thickness requires a value")
-        return _number(value[1]), "general.thickness"
+        return _positive_dimension(value[1], "general thickness"), "general.thickness"
     setup = _child(root, "setup")
     stackup = _child(setup, "stackup") if setup else None
     value = _child(stackup, "thickness") if stackup else None
     if value:
-        return _number(value[1]), "setup.stackup.thickness"
+        return _positive_dimension(value[1], "stackup thickness"), "setup.stackup.thickness"
     if stackup:
         dielectric = next((layer for layer in _children(stackup, "layer") if len(layer) > 1 and "dielectric" in str(layer[1]).lower()), None)
         value = _child(dielectric, "thickness") if dielectric else None
         if value:
-            return _number(value[1]), "setup.stackup.dielectric"
+            return _positive_dimension(value[1], "dielectric thickness"), "setup.stackup.dielectric"
     return None, "unavailable"
 
 
@@ -457,7 +534,7 @@ def _position(node: list[Any], path: str) -> tuple[tuple[float, float], float]:
     if len(at) < 3:
         raise ValueError(f"{path}: requires x and y")
     try:
-        return (_number(at[1]), _number(at[2])), _number(at[3]) if len(at) > 3 else 0.0
+        return _canonical_point((_number(at[1]), _number(at[2]))), _number(at[3]) if len(at) > 3 else 0.0
     except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
 
@@ -509,8 +586,8 @@ def _drill(node: list[Any], transform: _FootprintTransform) -> Drill:
     required = 2 if shape == "oval" else 1
     if len(dimensions) < required:
         raise ValueError(f"{shape} drill requires {required} dimension(s)")
-    width = _number(dimensions[0])
-    height = _number(dimensions[1]) if shape == "oval" else width
+    width = _positive_dimension(dimensions[0], "drill width")
+    height = _positive_dimension(dimensions[1], "drill height") if shape == "oval" else width
     return Drill(shape, width, height, transform.angle(0.0))
 
 
@@ -524,10 +601,8 @@ def _holes(node: list[Any], footprint_id: str, transform: _FootprintTransform, p
         drill = _drill(drill_node, transform)
         drill.rotation = transform.angle(local_angle)
         offset = _point(drill_node, "offset") or (0.0, 0.0)
-        angle = math.radians(local_angle)
-        rotated_offset = (offset[0] * math.cos(angle) - offset[1] * math.sin(angle),
-                          offset[0] * math.sin(angle) + offset[1] * math.cos(angle))
-        hole_position = (local[0] + rotated_offset[0], local[1] + rotated_offset[1])
+        rotated_offset = _rotate_point(offset, local_angle)
+        hole_position = _canonical_point((local[0] + rotated_offset[0], local[1] + rotated_offset[1]))
         pad_type = str(pad[2]) if len(pad) > 2 else ""
         holes.append(Hole(transform.point(hole_position), drill, pad_type == "thru_hole", footprint_id))
     return holes
@@ -562,6 +637,16 @@ def _open_errors(loops: list[OutlineLoop]) -> tuple[list[str], list[Error]]:
     return warnings, errors
 
 
+def _unsupported_courtyard_warnings(root: list[Any]) -> list[str]:
+    warnings: list[str] = []
+    for footprint in _children(root, "footprint"):
+        for item in footprint[1:]:
+            if (isinstance(item, list) and item and item[0] in _UNSUPPORTED_GRAPHICS
+                    and any(layer.endswith("CrtYd") for layer in _layer_names(item))):
+                warnings.append(f"unsupported courtyard geometry: {item[0]}")
+    return warnings
+
+
 def _unsupported_geometry(root: list[Any]) -> list[Error]:
     errors: list[Error] = []
     scopes = [(root, "board")]
@@ -582,6 +667,7 @@ def _parse_board(root: list[Any]) -> Board:
     loops = _chain(_graphics(root, "Edge.Cuts") + footprint_edges)
     outline, inner = _classify(loops)
     warnings, errors = _open_errors(loops)
+    warnings.extend(_unsupported_courtyard_warnings(root))
     errors.extend(_unsupported_geometry(root))
     if not outline and not errors:
         errors.append(Error("missing_outline", "no recognized closed Edge.Cuts outline"))
