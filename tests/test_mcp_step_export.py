@@ -1,5 +1,4 @@
 import hashlib
-import multiprocessing
 import os
 import subprocess
 
@@ -123,29 +122,6 @@ def export_request(path, part_ids=None, revision=7):
     if part_ids is not None:
         request["partIds"] = part_ids
     return request
-
-
-def validation_timeout_worker(temporary_directory):
-    from build123d import Box
-
-    shape = Box(1, 1, 1)
-    expected = export_module._metrics([shape], ["box"])
-
-    def make_temporary_directory():
-        temporary_directory.mkdir(mode=0o700)
-        return str(temporary_directory)
-
-    def time_out(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired("STEP verifier", 120)
-
-    export_module.tempfile.mkdtemp = make_temporary_directory
-    export_module.subprocess.run = time_out
-    try:
-        export_module._validated_step_bytes([shape], expected)
-    except export_module.ExportFailure as error:
-        assert error.code == "EXPORT_VALIDATION_FAILED"
-    else:
-        raise AssertionError("validation timeout unexpectedly succeeded")
 
 
 @pytest.mark.anyio
@@ -277,16 +253,31 @@ async def test_validation_failure_removes_private_directory(tmp_path, monkeypatc
     assert not target.exists()
 
 
-def test_private_validation_directory_removed_after_timeout_in_fresh_process(tmp_path):
+@pytest.mark.anyio
+async def test_fresh_process_timeout_is_structured_and_removes_private_directory(
+    tmp_path, monkeypatch
+):
+    document = tmp_path / "timeout.coalesce.json"
+    target = tmp_path / "timeout.step"
     private = tmp_path / "private-validation"
-    process = multiprocessing.get_context("spawn").Process(
-        target=validation_timeout_worker, args=(private,)
-    )
-    process.start()
-    process.join(timeout=60)
+    await run_server(document, enclosure_calls())
 
-    assert process.exitcode == 0
+    def make_temporary_directory():
+        private.mkdir(mode=0o700)
+        return str(private)
+
+    def time_out(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("STEP verifier", 120)
+
+    monkeypatch.setattr(export_module.tempfile, "mkdtemp", make_temporary_directory)
+    monkeypatch.setattr(export_module.subprocess, "run", time_out)
+    result = await call_server_tool(
+        DocumentService(document), "export", export_request(target)
+    )
+
+    assert result["error"]["code"] == "EXPORT_VALIDATION_FAILED"
     assert not private.exists()
+    assert not target.exists()
 
 
 @pytest.mark.anyio
