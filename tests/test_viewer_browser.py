@@ -20,8 +20,14 @@ from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 SMOKE = Path(__file__).with_name("viewer_smoke.mjs")
 # chromium logs every request to a stopped server, whatever sent it; no page code can avoid it
-# a stopped server refuses new connections or resets ones in flight
-OUTAGE_ERRORS = ("net::ERR_CONNECTION_REFUSED", "net::ERR_CONNECTION_RESET")
+# a stopped server can refuse a new socket, reset one in flight, disconnect it before use,
+# or abort the bounded authorization probe that decides when the outage becomes terminal
+OUTAGE_ERRORS = (
+    "net::ERR_ABORTED",
+    "net::ERR_CONNECTION_REFUSED",
+    "net::ERR_CONNECTION_RESET",
+    "net::ERR_SOCKET_NOT_CONNECTED",
+)
 
 
 def plate(height: float) -> Box:
