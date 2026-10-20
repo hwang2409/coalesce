@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from build123d import Face, Shape
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.TopAbs import TopAbs_FACE
 
 from .graph import GraphError
@@ -24,6 +25,14 @@ class BooleanResult:
     removed_material: bool
 
 
+@dataclass
+class FuseResult:
+    shape: Shape
+    candidates: list[Candidate]
+    algorithm: BRepAlgoAPI_Fuse
+    joined_material: bool
+
+
 def _same(shape: Shape, candidates: list[Shape]) -> bool:
     return any(shape.is_same(other) for other in candidates)
 
@@ -34,7 +43,7 @@ def _result_faces(shapes) -> list[Face]:
 
 def _history_faces(
     feature: str,
-    algorithm: BRepAlgoAPI_Cut,
+    algorithm: BRepAlgoAPI_Cut | BRepAlgoAPI_Fuse,
     source: Candidate,
     output_faces: list[Face],
 ) -> list[Face]:
@@ -209,3 +218,119 @@ def cut_shape(
         output_faces,
     )
     return BooleanResult(result, [*result_faces, *edges], algorithm, removed_material)
+
+
+def _join_body(feature: str, target_candidates: list[Candidate]) -> BodySource:
+    bodies = {candidate.key.body for candidate in target_candidates}
+    if len(bodies) != 1 or None in bodies:
+        raise GraphError(
+            "join_target_body",
+            f"join extrude {feature} target must contain exactly one body",
+            feature=feature,
+            bodies=sorted(str(body) for body in bodies),
+        )
+    body = bodies.pop()
+    assert body is not None
+    return body
+
+
+def _solid_candidates(solid: Shape, candidates: list[Candidate]) -> list[Candidate]:
+    return [
+        source
+        for source in candidates
+        if isinstance(source.entity, Face) and _same(source.entity, solid.faces())
+    ]
+
+
+def _ordered_tool_solids(
+    tool: Shape,
+    tool_candidates: list[Candidate],
+) -> list[tuple[tuple[str, ...], Shape]]:
+    solids = []
+    for solid in tool.solids():
+        entities = tuple(
+            sorted(
+                {
+                    source.key.body.entity
+                    for source in _solid_candidates(solid, tool_candidates)
+                    if source.key.body is not None
+                }
+            )
+        )
+        solids.append((entities, solid))
+    return sorted(solids, key=lambda item: item[0])
+
+
+def join_contact_failures(
+    feature: str,
+    target: Shape,
+    tool: Shape,
+    tool_candidates: list[Candidate],
+) -> tuple[list[str], list[str]]:
+    accumulated = target
+    unjoined: list[str] = []
+    non_manifold: list[str] = []
+    for entities, solid in _ordered_tool_solids(tool, tool_candidates):
+        algorithm = BRepAlgoAPI_Fuse(accumulated.wrapped, solid.wrapped)
+        algorithm.Build()
+        if not algorithm.IsDone():
+            raise GraphError(
+                "boolean_failed",
+                f"join extrude {feature} contact check failed",
+                feature=feature,
+            )
+        result = Shape.cast(algorithm.Shape())
+        if len(result.solids()) <= len(accumulated.solids()):
+            accumulated = result
+            continue
+        distance = BRepExtrema_DistShapeShape(solid.wrapped, accumulated.wrapped)
+        destination = non_manifold if distance.Value() == 0 else unjoined
+        destination.extend(entities)
+    return sorted(unjoined), sorted(non_manifold)
+
+
+def fuse_shape(
+    feature: str,
+    target: Shape,
+    target_candidates: list[Candidate],
+    tool: Shape,
+    tool_candidates: list[Candidate],
+) -> FuseResult:
+    body = _join_body(feature, target_candidates)
+    algorithm = BRepAlgoAPI_Fuse(target.wrapped, tool.wrapped)
+    algorithm.Build()
+    if not algorithm.IsDone():
+        raise GraphError("boolean_failed", f"join extrude {feature} failed", feature=feature)
+    algorithm.SimplifyResult()
+
+    result = Shape.cast(algorithm.Shape())
+    output_faces = result.faces()
+    mapped: list[Candidate] = []
+    for source in target_candidates:
+        if not isinstance(source.entity, Face):
+            continue
+        for face in _history_faces(feature, algorithm, source, output_faces):
+            mapped.append(Candidate(source.key, face, descriptor(face), source.merged_from))
+    for source in tool_candidates:
+        if not isinstance(source.entity, Face):
+            continue
+        for face in _history_faces(feature, algorithm, source, output_faces):
+            key = source.key
+            mapped.append(
+                candidate(
+                    key.feature,
+                    key.role,
+                    key.source,
+                    face,
+                    body=body,
+                )
+            )
+
+    result_faces = _deduplicate(feature, result, mapped)
+    edges = derive_edge_candidates(feature, result, result_faces)
+    return FuseResult(
+        result,
+        [*result_faces, *edges],
+        algorithm,
+        True,
+    )

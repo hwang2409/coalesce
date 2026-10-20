@@ -62,6 +62,8 @@ class Feature:
 class Extrude(Feature):
     sketch: str = ""
     height: float = 1
+    operation: str = "new_body"
+    target: str | None = None
 
 
 @dataclass

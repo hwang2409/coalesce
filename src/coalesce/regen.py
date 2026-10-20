@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from build123d import Edge, Shape
 
-from .boolean import cut_shape
+from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
@@ -31,6 +31,7 @@ class RegenResult:
     ordered_features: list[str]
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = field(default_factory=dict)
     removed_material: dict[str, bool] = field(default_factory=dict)
+    joined_material: dict[str, bool] = field(default_factory=dict)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
@@ -118,6 +119,52 @@ def _resolve_fillet_edges(
     return unique
 
 
+def _join_extrude(
+    node: Extrude,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+) -> FuseResult:
+    if node.target is None:
+        raise GraphError(
+            "join_target_required",
+            f"join extrude {node.id} requires a target",
+            feature=node.id,
+        )
+    prism = extrude_sketch(node, graph.nodes[node.sketch])
+    unjoined_entities, non_manifold_entities = join_contact_failures(
+        node.id,
+        shapes[node.target],
+        prism.shape,
+        prism.candidates,
+    )
+    if unjoined_entities:
+        raise GraphError(
+            "JOIN_NO_CONTACT",
+            f"join extrude {node.id} has profiles that do not contact target {node.target}",
+            feature=node.id,
+            target=node.target,
+            entities=unjoined_entities,
+        )
+    if non_manifold_entities:
+        entity = non_manifold_entities[0]
+        raise GraphError(
+            "JOIN_NON_MANIFOLD",
+            f"join extrude {node.id} profile {entity} only touches target {node.target} along an edge or point",
+            feature=node.id,
+            target=node.target,
+            entity=entity,
+            hint="extend the profile so faces overlap or touch",
+        )
+    return fuse_shape(
+        node.id,
+        shapes[node.target],
+        states[node.target],
+        prism.shape,
+        prism.candidates,
+    )
+
+
 def regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
@@ -125,16 +172,32 @@ def regenerate(graph: Graph) -> RegenResult:
     states: dict[str, list[Candidate]] = {}
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = {}
     removed_material: dict[str, bool] = {}
+    joined_material: dict[str, bool] = {}
     ordered_features = [node.id for node in ordered]
 
     for node in ordered:
         if isinstance(node, Sketch):
             continue
         if isinstance(node, Extrude):
-            result = extrude_sketch(node, graph.nodes[node.sketch])
+            if node.operation == "new_body":
+                prism = extrude_sketch(node, graph.nodes[node.sketch])
+                shapes[node.id] = prism.shape
+                states[node.id] = prism.candidates
+                provenance[node.id] = prism.candidates
+                continue
+            if node.operation != "join":
+                raise GraphError(
+                    "invalid_extrude_operation",
+                    f"extrude {node.id} has unknown operation {node.operation}",
+                    feature=node.id,
+                    operation=node.operation,
+                )
+            result = _join_extrude(node, graph, shapes, states)
+            joined_material[node.id] = result.joined_material
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
-            provenance[node.id] = result.candidates
+            assert node.target is not None
+            _replace_provenance(provenance, states[node.target], result.candidates)
         elif isinstance(node, Cut):
             tool_sketch = graph.nodes[node.tool]
             if not isinstance(tool_sketch, Sketch):
@@ -190,4 +253,5 @@ def regenerate(graph: Graph) -> RegenResult:
         ordered_features,
         consumed,
         removed_material,
+        joined_material,
     )
