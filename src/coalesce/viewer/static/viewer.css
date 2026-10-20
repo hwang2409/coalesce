@@ -175,7 +175,8 @@ button {
   background: transparent;
 }
 
-/* touch screens keep :hover after a tap; only a real pointer gets the hover wash */
+/* touch screens keep :hover after a tap; only a hover-capable primary input (mouse,
+   trackpad, some pens) gets the hover wash */
 @media (hover: hover) {
   .visibility:hover, .part:hover { background: rgba(29, 35, 41, 0.05); }
 }
