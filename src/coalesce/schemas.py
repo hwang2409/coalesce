@@ -179,6 +179,16 @@ SKETCH_CREATE_SCHEMA = {
     "required": ["action", *SKETCH_PROPERTIES, "plane", "entities"],
     "additionalProperties": False,
 }
+SKETCH_DELETE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "delete"},
+        **SKETCH_PROPERTIES,
+        "cascade": {"type": "boolean", "default": False},
+    },
+    "required": ["action", *SKETCH_PROPERTIES],
+    "additionalProperties": False,
+}
 SKETCH_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -201,8 +211,8 @@ SKETCH_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {
-            "enum": ["create", "update"],
-            "description": "Use create with plane and entities; use update with set.",
+            "enum": ["create", "update", "delete"],
+            "description": "Use create with plane and entities, update to change it, or delete to remove it. Delete fails when features use the sketch unless cascade is true.",
         },
         **SKETCH_PROPERTIES,
         "plane": {
@@ -215,8 +225,9 @@ SKETCH_SCHEMA = {
         },
         "set": {
             **SKETCH_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create.",
+            "description": "Required for update; not allowed for create or delete.",
         },
+        "cascade": {"type": "boolean", "default": False},
     },
     "required": ["action", *SKETCH_PROPERTIES],
     "additionalProperties": False,
@@ -527,6 +538,17 @@ PCB_LID_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+FEATURE_DELETE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "delete"},
+        **MUTATION_PROPERTIES,
+        "featureId": FEATURE_PROPERTIES["featureId"],
+        "cascade": {"type": "boolean", "default": False},
+    },
+    "required": ["action", *MUTATION_PROPERTIES, "featureId"],
+    "additionalProperties": False,
+}
 FEATURE_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -547,23 +569,26 @@ FEATURE_UPDATE_SCHEMA = {
     "additionalProperties": False,
 }
 FEATURE_ACTION_SCHEMAS = {
-    ("create", kind): {
-        **FEATURE_CREATE_SCHEMA,
-        "properties": {
-            **FEATURE_CREATE_SCHEMA["properties"],
-            "kind": {"const": kind},
-            "parameters": parameters,
-        },
-    }
-    for kind, parameters in {
-        "extrude": EXTRUDE_PARAMETERS,
-        "cut": CUT_PARAMETERS,
-        "hole": HOLE_PARAMETERS,
-        "pcb_base": PCB_BASE_PARAMETERS,
-        "standoffs": STANDOFFS_PARAMETERS,
-        "pcb_lid": PCB_LID_PARAMETERS,
-        "port_cutout": PORT_CUTOUT_PARAMETERS,
-    }.items()
+    ("delete", None): FEATURE_DELETE_SCHEMA,
+    **{
+        ("create", kind): {
+            **FEATURE_CREATE_SCHEMA,
+            "properties": {
+                **FEATURE_CREATE_SCHEMA["properties"],
+                "kind": {"const": kind},
+                "parameters": parameters,
+            },
+        }
+        for kind, parameters in {
+            "extrude": EXTRUDE_PARAMETERS,
+            "cut": CUT_PARAMETERS,
+            "hole": HOLE_PARAMETERS,
+            "pcb_base": PCB_BASE_PARAMETERS,
+            "standoffs": STANDOFFS_PARAMETERS,
+            "pcb_lid": PCB_LID_PARAMETERS,
+            "port_cutout": PORT_CUTOUT_PARAMETERS,
+        }.items()
+    },
 }
 for kind, changes in {
     "extrude": EXTRUDE_UPDATE_SET,
@@ -586,8 +611,8 @@ FEATURE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {
-            "enum": ["create", "update"],
-            "description": "Use create with parameters; use update with set. Updates accept extrude distance, cut or hole target.featureId, and enclosure dimensions.",
+            "enum": ["create", "update", "delete"],
+            "description": "Use create with parameters, update to change a feature, or delete to remove it. Delete fails when dependents exist unless cascade is true.",
         },
         **FEATURE_PROPERTIES,
         "parameters": {
@@ -596,10 +621,11 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create. Accepts extrude distance, cut or hole target.featureId, and enclosure dimensions.",
+            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, and enclosure dimensions.",
         },
+        "cascade": {"type": "boolean", "default": False},
     },
-    "required": ["action", *FEATURE_PROPERTIES],
+    "required": ["action", *MUTATION_PROPERTIES, "featureId"],
     "additionalProperties": False,
 }
 IMPORT_PROPERTIES = {
@@ -621,6 +647,17 @@ IMPORT_CREATE_SCHEMA = {
     "required": ["action", *IMPORT_PROPERTIES, "path"],
     "additionalProperties": False,
 }
+IMPORT_DELETE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "delete"},
+        **MUTATION_PROPERTIES,
+        "assetId": IMPORT_PROPERTIES["assetId"],
+        "cascade": {"type": "boolean", "default": False},
+    },
+    "required": ["action", *MUTATION_PROPERTIES, "assetId"],
+    "additionalProperties": False,
+}
 IMPORT_REFRESH_SCHEMA = {
     "type": "object",
     "properties": {"action": {"const": "refresh"}, **IMPORT_PROPERTIES},
@@ -630,14 +667,15 @@ IMPORT_REFRESH_SCHEMA = {
 IMPORT_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"enum": ["create", "refresh"]},
+        "action": {"enum": ["create", "refresh", "delete"]},
         **IMPORT_PROPERTIES,
         "path": {
             **IMPORT_CREATE_SCHEMA["properties"]["path"],
             "description": "Required for create; refresh re-reads the persisted resolved path.",
         },
+        "cascade": {"type": "boolean", "default": False},
     },
-    "required": ["action", *IMPORT_PROPERTIES],
+    "required": ["action", *MUTATION_PROPERTIES, "assetId"],
     "additionalProperties": False,
 }
 
@@ -729,7 +767,19 @@ TOOL_SCHEMAS = {
 }
 
 ACTION_SCHEMAS = {
-    "import": {"create": IMPORT_CREATE_SCHEMA, "refresh": IMPORT_REFRESH_SCHEMA},
-    "sketch": {"create": SKETCH_CREATE_SCHEMA, "update": SKETCH_UPDATE_SCHEMA},
-    "feature": {"create": FEATURE_CREATE_SCHEMA, "update": FEATURE_UPDATE_SCHEMA},
+    "import": {
+        "create": IMPORT_CREATE_SCHEMA,
+        "refresh": IMPORT_REFRESH_SCHEMA,
+        "delete": IMPORT_DELETE_SCHEMA,
+    },
+    "sketch": {
+        "create": SKETCH_CREATE_SCHEMA,
+        "update": SKETCH_UPDATE_SCHEMA,
+        "delete": SKETCH_DELETE_SCHEMA,
+    },
+    "feature": {
+        "create": FEATURE_CREATE_SCHEMA,
+        "update": FEATURE_UPDATE_SCHEMA,
+        "delete": FEATURE_DELETE_SCHEMA,
+    },
 }

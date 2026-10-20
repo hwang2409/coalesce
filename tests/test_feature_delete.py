@@ -1,12 +1,12 @@
+import asyncio
 import json
 import time
-from pathlib import Path
 
 import pytest
 from build123d import import_step
 from test_mcp_cut_hole_circle import hole
 from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, run_server
-from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
+from test_pcb_enclosure import FIXTURES, base_request, import_request, standoffs_request
 from test_port_cutout import port_request
 
 from coalesce.service import DocumentService
@@ -81,11 +81,11 @@ async def test_harness_duplicate_base_cleanup_updates_query_viewer_and_step(tmp_
     assert len(import_step(str(target)).solids()) == 1
     deadline = time.monotonic() + 10
     while store.current_revision != 6 and time.monotonic() < deadline:
-        time.sleep(0.02)
+        await asyncio.sleep(0.02)
     scene = store.scene(6)
-    assert [part["terminalFeatureId"] for part in scene["parts"] if part["role"] == "manufacturing"] == [
-        "mounts2"
-    ]
+    assert [
+        part["terminalFeatureId"] for part in scene["parts"] if part["role"] == "manufacturing"
+    ] == ["mounts2"]
     assert "deleted base" in scene["change"]["summary"]
 
 
@@ -152,9 +152,9 @@ async def test_deleting_mid_chain_requires_successor_removal_and_restores_prior_
     assert blocked["error"]["code"] == "HAS_DEPENDENTS"
     assert blocked["error"]["dependents"] == [{"id": "port", "kind": "port_cutout"}]
 
-    assert (
-        await call_server_tool(service, "feature", delete_feature("port", 5, "delete-port"))
-    )["ok"]
+    assert (await call_server_tool(service, "feature", delete_feature("port", 5, "delete-port")))[
+        "ok"
+    ]
     removed_hole = await call_server_tool(
         service, "feature", delete_feature("generic-hole", 6, "delete-hole")
     )
@@ -180,10 +180,56 @@ async def test_sketch_delete_cascade_and_reference_queries_have_no_deleted_prove
     reference = await call_server_tool(
         service,
         "query",
-        {"select": {"kind": "reference", "reference": {"feature": "plate_extrude", "role": "cap_end"}}},
+        {
+            "select": {
+                "kind": "reference",
+                "reference": {"feature": "plate_extrude", "role": "cap_end"},
+            }
+        },
     )
-    assert reference["error"]["code"] == "EMPTY"
+    assert reference["status"] == "EMPTY"
+    assert reference["error"]["status"] == "EMPTY"
     assert service.query({"select": {"kind": "measurements"}})["parts"] == []
+
+
+@pytest.mark.anyio
+async def test_import_delete_uses_the_same_dependency_and_cascade_rules(tmp_path):
+    service = DocumentService(tmp_path / "import-delete.coalesce.json")
+    assert (
+        await call_server_tool(
+            service, "import", import_request(FIXTURES / "features.kicad_pcb")
+        )
+    )["ok"]
+    assert (await call_server_tool(service, "feature", base_request()))["ok"]
+
+    blocked = await call_server_tool(
+        service,
+        "import",
+        {
+            "action": "delete",
+            "expectedRevision": 2,
+            "requestId": "blocked-board-delete",
+            "assetId": "controller_board",
+        },
+    )
+    assert blocked["error"]["code"] == "HAS_DEPENDENTS"
+    assert blocked["error"]["dependents"] == [{"id": "base", "kind": "pcb_base"}]
+
+    deleted = await call_server_tool(
+        service,
+        "import",
+        {
+            "action": "delete",
+            "expectedRevision": 2,
+            "requestId": "cascade-board-delete",
+            "assetId": "controller_board",
+            "cascade": True,
+        },
+    )
+    assert deleted["deleted"] == [
+        {"id": "controller_board", "kind": "board_import"},
+        {"id": "base", "kind": "pcb_base"},
+    ]
 
 
 @pytest.mark.anyio
@@ -221,5 +267,8 @@ def test_published_roots_are_plain_objects_and_delete_schemas_are_action_specifi
         root = TOOL_SCHEMAS[name]
         assert root["type"] == "object"
         assert not ({"oneOf", "anyOf", "allOf"} & root.keys())
-    validate(delete_feature("base", 1, "schema-delete", cascade=True), FEATURE_ACTION_SCHEMAS[("delete", None)])
+    validate(
+        delete_feature("base", 1, "schema-delete", cascade=True),
+        FEATURE_ACTION_SCHEMAS[("delete", None)],
+    )
     validate(delete_sketch("profile", 1, "schema-sketch"), ACTION_SCHEMAS["sketch"]["delete"])

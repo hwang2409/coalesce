@@ -84,6 +84,16 @@ async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
             },
             schema,
         )
+    validate(
+        {
+            "action": "delete",
+            "expectedRevision": 0,
+            "requestId": "schema-delete",
+            "featureId": "obsolete-feature",
+            "cascade": True,
+        },
+        schema,
+    )
 
 
 @pytest.mark.anyio
