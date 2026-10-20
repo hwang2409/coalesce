@@ -138,7 +138,7 @@ class Graph:
         return result
 
     def resolve(self, ref: Reference) -> Resolution:
-        if ref.feature not in self.nodes:
+        if ref.feature not in self.nodes and ref.feature not in self.provenance:
             return Resolution(
                 Status.EMPTY,
                 error={
