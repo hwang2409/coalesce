@@ -7,8 +7,8 @@ from coalesce import (
     Extrude,
     Graph,
     Hole,
-    MaxAlong,
     HoleSurfaceSource,
+    MaxAlong,
     Rectangle,
     Reference,
     Sketch,
@@ -170,10 +170,10 @@ def test_cut_preserves_unintersected_body_keys() -> None:
     }
 
     assert updated.keys() == original.keys()
-    for key in original:
-        assert updated[key]["center"] == original[key]["center"]
-        assert updated[key].get("area", updated[key].get("length")) == original[key].get(
-            "area", original[key].get("length")
+    for key, descriptor in original.items():
+        assert updated[key]["center"] == descriptor["center"]
+        assert updated[key].get("area", updated[key].get("length")) == descriptor.get(
+            "area", descriptor.get("length")
         )
 
 
