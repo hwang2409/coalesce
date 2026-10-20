@@ -584,3 +584,20 @@ def test_lowering_blocked_opening_repairs_lid_conflict(tmp_path):
 
     assert repaired["ok"] is True
     assert service._regen.metadata["port"]["opening"]["top"]["value"] < 2.2
+
+
+def test_body_lineage_divergence_keeps_its_public_error_code():
+    from coalesce.graph import GraphError
+    from coalesce.service import _graph_error_response
+
+    error = GraphError(
+        "BODY_LINEAGE_DIVERGED",
+        "target base does not resolve to one current body terminal",
+        target="base",
+        terminalFeatureIds=["a", "b"],
+        hint="target a feature whose bodies share one terminal",
+    )
+    response = _graph_error_response(3, "r1", "feature", error)
+    assert response["error"]["code"] == "BODY_LINEAGE_DIVERGED"
+    assert response["error"]["terminalFeatureIds"] == ["a", "b"]
+    assert response["error"]["hint"] == "target a feature whose bodies share one terminal"

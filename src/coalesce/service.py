@@ -1155,6 +1155,7 @@ def _graph_error_response(
         "HOLE_NO_EFFECT",
         "TARGET_ALREADY_CONSUMED",
         "PORT_BLOCKED_BY_LID",
+        "BODY_LINEAGE_DIVERGED",
         "INVALID_PARAMETER",
         "MISSING",
     }
