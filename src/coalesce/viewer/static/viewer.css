@@ -125,6 +125,13 @@ button {
 
 .revision-number[data-empty] { color: var(--mute); font-weight: 500; }
 
+.revision-change {
+  margin-top: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
 .revision-meta {
   margin-top: 2px;
   color: var(--mute);
@@ -186,6 +193,15 @@ button {
 .part:focus .part-name { grid-column: 2 / -1; white-space: normal; overflow-wrap: anywhere; }
 
 .part-size { grid-column: 3; color: var(--mute); font-size: 12px; }
+
+/* named holes and the feature chain; narrow screens show it only for the focused row */
+.part-detail {
+  grid-column: 2 / -1;
+  margin-top: -6px;
+  color: var(--mute);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 
 .part[aria-pressed="false"] { color: var(--mute); }
 .part[aria-pressed="false"] .swatch { background: transparent !important; }
@@ -262,6 +278,22 @@ button {
 .stale[data-state="ended"] { box-shadow: inset 3px 0 0 var(--fail); }
 
 .stale strong { font-weight: 650; }
+
+.stale code { font-size: 12px; overflow-wrap: anywhere; }
+
+.copy {
+  display: block;
+  min-height: 34px;
+  margin-top: 8px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--rule), 0 1px 2px rgba(29, 35, 41, 0.12);
+  font-weight: 500;
+}
+
+.copy:active { scale: 0.96; }
 
 /* a dropped connection leaves the last scene on screen, visibly not current */
 #view { transition-property: filter; transition-duration: 200ms; }
@@ -419,7 +451,10 @@ button {
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .panel { max-height: 40vh; }
-  .scale { display: none; }
+  .part:not(:focus) .part-detail { display: none; }
+  /* a compact scale above the camera buttons; the grid square is the same length */
+  .scale, .gizmo[hidden] + .scale { left: auto; right: 16px; bottom: 66px; }
+  .scale-grid { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

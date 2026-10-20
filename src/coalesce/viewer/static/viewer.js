@@ -116,7 +116,10 @@ function render() {
 
 new ResizeObserver(requestRender).observe(canvas);
 
-// ---- scale bar: a round length of about 100 px at the current zoom
+// ---- scale bar: a round length of about 100 px at the current zoom (48 px on narrow screens)
+
+const narrow = matchMedia('(max-width: 720px)');
+const scalePx = () => (narrow.matches ? 48 : 100);
 
 function niceLength(target) {
   const power = 10 ** Math.floor(Math.log10(target));
@@ -128,9 +131,10 @@ function updateScale(height) {
   $('scale').hidden = !model.children.length;
   if (!model.children.length) return;
   const pxPerMm = (height * camera.zoom) / (camera.top - camera.bottom);
-  const mm = niceLength(100 / pxPerMm);
+  const mm = niceLength(scalePx() / pxPerMm);
   $('scale-bar').style.width = `${mm * pxPerMm}px`;
-  $('scale-text').textContent = `${formatMm(mm)} mm, grid ${formatMm(gridStep)} mm`;
+  $('scale-text').textContent = `${formatMm(mm)} mm`;
+  $('scale-grid').textContent = `, grid ${formatMm(gridStep)} mm`;
 }
 
 function formatMm(value) {
@@ -139,13 +143,25 @@ function formatMm(value) {
 
 const formatSize = (part) => part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
 
+// named holes and the features that built the part, so the human can check what the agent made
+function partDetail(part) {
+  const holes = part.features.filter((feature) => feature.holes).map(({ holes }) => {
+    const count = `${holes.length} ${holes.length === 1 ? 'hole' : 'holes'}`;
+    const names = holes.filter(Boolean);
+    return names.length ? `${count}: ${names.join(', ')}` : count;
+  });
+  const chain = part.features.map((feature) => feature.id).join(' › ');
+  return [...holes, chain && `Built by ${chain}`].filter(Boolean).join('. ');
+}
+
 // the canvas's accessible description: what is drawn and how the camera frames it
 function describeView() {
   const parts = current?.parts ?? [];
   const framing = activeView ? `${activeView} view, fitted to the model` : 'camera moved by hand';
+  const change = current?.change ? ` Latest change: ${current.change.summary}.` : '';
   $('view-description').textContent = parts.length
-    ? `Revision ${current.revision}, ${framing}. `
-      + parts.map((part) => `${part.label}, ${formatSize(part)} mm`).join('; ') + '.'
+    ? `Revision ${current.revision}, ${framing}.${change} `
+      + parts.map((part) => [`${part.label}, ${formatSize(part)} mm`, partDetail(part)].filter(Boolean).join(', ')).join('; ') + '.'
     : 'No parts to show.';
 }
 
@@ -187,7 +203,7 @@ function setView(name) {
   }
   activeView = name;
   // the grid square is the scale bar's length right after a fit: one scale for both
-  gridStep = niceLength(100 / ((canvas.clientHeight || 1) / (camera.top - camera.bottom)));
+  gridStep = niceLength(scalePx() / ((canvas.clientHeight || 1) / (camera.top - camera.bottom)));
   rebuildHelpers(current.bbox);
   userMoved = false;
   showRefit(false);
@@ -296,16 +312,18 @@ async function loadMesh(mesh) {
   geometries.set(mesh.id, { surface, edges });
 }
 
-function partObject(part, { surface, edges }) {
+function partObject(part, { surface, edges }, index) {
   const group = new THREE.Group();
   group.name = part.name;
   group.add(new THREE.Mesh(surface, new THREE.MeshStandardMaterial({
     color: part.color,
     roughness: 0.85,
     metalness: 0,
+    // a different depth offset per part: where parts overlap, coincident faces show the earlier
+    // part instead of z-fighting into triangle-shaped stripes
     polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
+    polygonOffsetFactor: 1 + index,
+    polygonOffsetUnits: 1 + index * 16,
   })));
   group.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: EDGE })));
   group.visible = hiddenByUser.get(part.name) ?? part.visible;
@@ -341,7 +359,15 @@ function renderPartList(parts) {
     size.className = 'part-size';
     size.textContent = formatSize(part);
     button.append(swatch, name, size);
+    const detail = partDetail(part);
+    if (detail) {
+      const line = document.createElement('span');
+      line.className = 'part-detail';
+      line.textContent = detail;
+      button.append(line);
+    }
     button.addEventListener('click', () => {
+      button.focus(); // safari does not focus a clicked button; focus shows the detail line
       object.visible = !object.visible;
       hiddenByUser.set(part.name, object.visible);
       button.setAttribute('aria-pressed', String(object.visible));
@@ -365,9 +391,29 @@ function notice(title, body = '') {
 }
 
 const ENDED = 'Viewer ended';
-const ENDED_HELP = 'This page cannot reconnect. If coalesce runs again, open the new link it printed: '
-  + 'the line that starts with \u201ccoalesce viewer:\u201d in its error output (stderr), '
-  + 'or ask your agent to call query with select server.';
+const ENDED_HELP = 'This page cannot reconnect. If coalesce runs again, open the new link it printed '
+  + 'to its error output (stderr), on a line like this:';
+const ENDED_LINE = 'coalesce viewer: http://127.0.0.1:<port>/#token=<key>';
+const ENDED_ASK = 'Or ask your agent to call query with select server.';
+const ENDED_COPY = 'The coalesce viewer I had open has ended. Call the coalesce query tool with '
+  + '{"select": {"kind": "server"}} and give me the viewerUrl it returns.';
+
+// the ended page's one action: a message to paste into the agent chat
+function copyButton() {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'copy';
+  button.textContent = 'Copy request for your agent';
+  button.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(ENDED_COPY);
+      button.textContent = 'Copied. Paste it to your agent';
+    } catch {
+      button.textContent = 'Could not copy. Ask your agent to call query with select server';
+    }
+  });
+  return button;
+}
 
 // states: connecting, live, lost (retrying for a bounded time), ended (terminal), denied
 function setLink(state, text) {
@@ -381,7 +427,9 @@ function setLink(state, text) {
     enableCamera(false);
     const title = document.createElement('strong');
     title.textContent = `${ENDED}. Revision ${current?.revision} is the last one this page saw.`;
-    line.replaceChildren(title, ` ${ENDED_HELP}`);
+    const sample = document.createElement('code');
+    sample.textContent = ENDED_LINE;
+    line.replaceChildren(title, ` ${ENDED_HELP} `, sample, ` ${ENDED_ASK} `, copyButton());
   } else {
     line.textContent = stale ? `Revision ${current.revision} may be out of date. Reconnecting to coalesce.` : '';
   }
@@ -405,6 +453,9 @@ function showRevision(sceneData) {
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const count = sceneData.parts.length;
   $('revision-meta').textContent = `${count} ${count === 1 ? 'part' : 'parts'}, shown at ${time}`;
+  // what the agent's commit did, apart from the number; none for a document opened from disk
+  $('change').hidden = !sceneData.change;
+  $('change').textContent = sceneData.change ? capitalize(sceneData.change.summary) : '';
 }
 
 // what to do next, in words; the stable code and raw message stay under "Error details"
@@ -481,7 +532,7 @@ async function loadOne(revision) {
     await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     clearGroup(model, { ownsGeometry: false });
-    for (const part of data.parts) model.add(partObject(part, geometries.get(part.mesh.id)));
+    data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), index)));
     current = data;
     renderPartList(data.parts);
     showRevision(data);
@@ -578,7 +629,7 @@ async function lost() {
     listen();
   } else {
     setLink('ended', ENDED);
-    if (!current) notice(ENDED, ENDED_HELP);
+    if (!current) notice(ENDED, `${ENDED_HELP} \u201c${ENDED_LINE}\u201d. ${ENDED_ASK}`);
   }
 }
 
