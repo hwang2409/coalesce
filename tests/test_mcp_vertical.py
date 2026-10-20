@@ -11,7 +11,13 @@ from mcp.client.stdio import stdio_client
 
 from coalesce.schemas import TOOL_SCHEMAS
 from coalesce.server import create_server
-from coalesce.service import DocumentService
+from coalesce.service import (
+    DocumentService,
+    ExtrudeCreate,
+    ExtrudeUpdate,
+    SketchCreate,
+    SketchUpdate,
+)
 
 SKETCH = {
     "action": "create",
@@ -191,6 +197,33 @@ def test_replay_hash_applies_operation_defaults_and_rejects_different_intent(tmp
     assert different["error"]["code"] == "REQUEST_ID_REUSED"
 
 
+@pytest.mark.parametrize(
+    ("field", "negative", "positive"),
+    [
+        ("position", [-0.0, 0.0], [0.0, 0.0]),
+        ("quantity", {"value": -0.0, "unit": "mm"}, {"value": 0.0, "unit": "mm"}),
+        ("angle", {"value": -0.0, "unit": "deg"}, {"value": 0.0, "unit": "deg"}),
+    ],
+)
+def test_replay_hash_normalizes_signed_zero(tmp_path, field, negative, positive):
+    service = DocumentService(tmp_path / f"{field}.coalesce.json")
+    negative_entity = {**SKETCH["entities"][0]}
+    positive_entity = {**SKETCH["entities"][0]}
+    if field == "position":
+        negative_entity["center"] = negative
+        positive_entity["center"] = positive
+    elif field == "quantity":
+        negative_entity["width"] = negative
+        positive_entity["width"] = positive
+    else:
+        negative_entity["rotation"] = negative
+        positive_entity["rotation"] = positive
+
+    created = service.sketch({**SKETCH, "entities": [negative_entity]})
+
+    assert service.sketch({**SKETCH, "entities": [positive_entity]}) == created
+
+
 def test_replay_hash_normalizes_numeric_forms_and_angles(tmp_path):
     service = DocumentService(tmp_path / "plate.coalesce.json")
     request = {
@@ -243,64 +276,80 @@ def test_request_id_tombstone_survives_full_receipt_eviction(tmp_path):
     assert reused["error"]["code"] == "REQUEST_ID_REUSED"
 
 
-def _schema_fields(schema, prefix=""):
-    fields = set()
-    for name, subschema in schema.get("properties", {}).items():
-        path = f"{prefix}.{name}" if prefix else name
-        fields.add(path)
-        fields.update(_schema_fields(subschema, path))
-    if "items" in schema:
-        fields.update(_schema_fields(schema["items"], f"{prefix}[]"))
-    for subschema in schema.get("oneOf", []):
-        fields.update(_schema_fields(subschema, prefix))
-    return fields
-
-
-def test_public_schemas_only_accept_consumed_fields():
-    consumed = {
-        "sketch": {
-            "action", "expectedRevision", "requestId", "sketchId", "plane", "plane.kind",
-            "plane.name", "entities", "entities[].id", "entities[].kind", "entities[].center",
-            "entities[].width", "entities[].width.value", "entities[].width.unit",
-            "entities[].height", "entities[].height.value", "entities[].height.unit",
-            "entities[].rotation", "entities[].rotation.value", "entities[].rotation.unit", "set",
-            "set.position", "set.entities", "set.entities[].id", "set.entities[].kind",
-            "set.entities[].center", "set.entities[].width", "set.entities[].width.value",
-            "set.entities[].width.unit", "set.entities[].height", "set.entities[].height.value",
-            "set.entities[].height.unit", "set.entities[].rotation",
-            "set.entities[].rotation.value", "set.entities[].rotation.unit",
-        },
-        "feature": {
-            "action", "expectedRevision", "requestId", "featureId", "kind", "parameters",
-            "parameters.profile", "parameters.profile.sketchId", "parameters.profile.profileIds",
-            "parameters.distance", "parameters.distance.value", "parameters.distance.unit",
-            "parameters.operation", "parameters.direction", "set", "set.distance",
-            "set.distance.value", "set.distance.unit",
-        },
-        "query": {
-            "revision", "select", "select.kind", "select.reference", "select.reference.feature",
-            "select.reference.role", "select.reference.cardinality", "select.reference.count",
-            "select.reference.source", "select.reference.source.kind",
-            "select.reference.source.sketch", "select.reference.source.entity",
-            "select.reference.source.segment", "select.reference.body", "select.reference.body.kind",
-            "select.reference.body.feature", "select.reference.body.entity",
-            "select.reference.filters", "select.reference.filters[].kind",
-            "select.reference.filters[].direction", "select.reference.filters[].tolerance",
-            "select.reference.filters[].value",
-        },
-        "check": {
-            "action", "revision", "requirements", "requirements[].id", "requirements[].kind",
-        },
+def test_mutation_schema_fields_match_typed_operations():
+    operation_types = {
+        "sketch": {"create": SketchCreate, "update": SketchUpdate},
+        "feature": {"create": ExtrudeCreate, "update": ExtrudeUpdate},
     }
 
-    assert {name: _schema_fields(schema) for name, schema in TOOL_SCHEMAS.items()} == consumed
+    for tool, actions in operation_types.items():
+        branches = {
+            branch["properties"]["action"]["const"]: branch
+            for branch in TOOL_SCHEMAS[tool]["oneOf"]
+        }
+        assert set(branches) == set(actions)
+        for action, operation_type in actions.items():
+            assert set(branches[action]["properties"]) == operation_type.wire_fields()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "payload", "field"),
+    [
+        ("sketch", {**SKETCH, "set": {"position": [1, 2, 3]}}, "set"),
+        (
+            "sketch",
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": "sketch-update-plane",
+                "sketchId": "plate_profile",
+                "set": {"position": [1, 2, 3]},
+                "plane": {"kind": "origin", "name": "XY"},
+            },
+            "plane",
+        ),
+        (
+            "sketch",
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": "sketch-update-entities",
+                "sketchId": "plate_profile",
+                "set": {"position": [1, 2, 3]},
+                "entities": SKETCH["entities"],
+            },
+            "entities",
+        ),
+        ("feature", {**FEATURE, "set": {"distance": {"value": 9, "unit": "mm"}}}, "set"),
+        (
+            "feature",
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": "feature-update-parameters",
+                "featureId": "plate_extrude",
+                "kind": "extrude",
+                "set": {"distance": {"value": 9, "unit": "mm"}},
+                "parameters": FEATURE["parameters"],
+            },
+            "parameters",
+        ),
+    ],
+)
+async def test_action_schemas_reject_inapplicable_fields(tmp_path, tool, payload, field):
+    result = await call_server_tool(
+        DocumentService(tmp_path / f"{tool}-{field}.coalesce.json"), tool, payload
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert field not in result["error"]["allowedFields"]
 
 
 @pytest.mark.anyio
 async def test_schemas_reject_deferred_fields_with_allowed_list(tmp_path):
     service = DocumentService(tmp_path / "plate.coalesce.json")
-    allowed = set(SKETCH) - {"entities", "plane"}
-    allowed.update({"entities", "plane", "set"})
+    allowed = set(SKETCH)
     for field, value in (
         ("partId", "plate"),
         ("constraints", [{"id": "c1", "kind": "coincident", "entities": ["a", "b"]}]),

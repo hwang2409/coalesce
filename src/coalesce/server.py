@@ -54,6 +54,18 @@ def _tool_result(payload: dict[str, Any]) -> types.CallToolResult:
     )
 
 
+def _schema_for_action(schema: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
+    action = arguments.get("action")
+    return next(
+        (
+            branch
+            for branch in schema.get("oneOf", [])
+            if branch.get("properties", {}).get("action", {}).get("const") == action
+        ),
+        schema,
+    )
+
+
 def create_server(service: DocumentService) -> Server:
     server = Server(
         "coalesce",
@@ -90,7 +102,10 @@ def create_server(service: DocumentService) -> Server:
                 }
             )
         try:
-            validate(instance=arguments, schema=TOOL_SCHEMAS[name])
+            validate(
+                instance=arguments,
+                schema=_schema_for_action(TOOL_SCHEMAS[name], arguments),
+            )
         except ValidationError as error:
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:

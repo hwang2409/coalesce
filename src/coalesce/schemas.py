@@ -120,13 +120,19 @@ REFERENCE = {
     "additionalProperties": False,
 }
 
-SKETCH_SCHEMA = {
+MUTATION_PROPERTIES = {
+    "expectedRevision": {"type": "integer", "minimum": 0},
+    "requestId": {"type": "string", "minLength": 1},
+}
+SKETCH_PROPERTIES = {
+    **MUTATION_PROPERTIES,
+    "sketchId": {"type": "string", "minLength": 1},
+}
+SKETCH_CREATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"enum": ["create", "update"]},
-        "expectedRevision": {"type": "integer", "minimum": 0},
-        "requestId": {"type": "string", "minLength": 1},
-        "sketchId": {"type": "string", "minLength": 1},
+        "action": {"const": "create"},
+        **SKETCH_PROPERTIES,
         "plane": {
             "type": "object",
             "properties": {"kind": {"const": "origin"}, "name": {"const": "XY"}},
@@ -134,6 +140,15 @@ SKETCH_SCHEMA = {
             "additionalProperties": False,
         },
         "entities": {"type": "array", "items": RECTANGLE, "minItems": 1},
+    },
+    "required": ["action", *SKETCH_PROPERTIES, "plane", "entities"],
+    "additionalProperties": False,
+}
+SKETCH_UPDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "update"},
+        **SKETCH_PROPERTIES,
         "set": {
             "type": "object",
             "properties": {
@@ -141,11 +156,13 @@ SKETCH_SCHEMA = {
                 "entities": {"type": "array", "items": RECTANGLE, "minItems": 1},
             },
             "additionalProperties": False,
+            "minProperties": 1,
         },
     },
-    "required": ["action", "expectedRevision", "requestId", "sketchId"],
+    "required": ["action", *SKETCH_PROPERTIES, "set"],
     "additionalProperties": False,
 }
+SKETCH_SCHEMA = {"oneOf": [SKETCH_CREATE_SCHEMA, SKETCH_UPDATE_SCHEMA]}
 
 PROFILE = {
     "type": "object",
@@ -167,24 +184,37 @@ EXTRUDE_PARAMETERS = {
     "required": ["profile", "distance", "operation", "direction"],
     "additionalProperties": False,
 }
-FEATURE_SCHEMA = {
+FEATURE_PROPERTIES = {
+    **MUTATION_PROPERTIES,
+    "featureId": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["extrude", "boolean", "hole", "fillet"]},
+}
+FEATURE_CREATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"enum": ["create", "update"]},
-        "expectedRevision": {"type": "integer", "minimum": 0},
-        "requestId": {"type": "string", "minLength": 1},
-        "featureId": {"type": "string", "minLength": 1},
-        "kind": {"enum": ["extrude", "boolean", "hole", "fillet"]},
+        "action": {"const": "create"},
+        **FEATURE_PROPERTIES,
         "parameters": EXTRUDE_PARAMETERS,
+    },
+    "required": ["action", *FEATURE_PROPERTIES, "parameters"],
+    "additionalProperties": False,
+}
+FEATURE_UPDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "update"},
+        **FEATURE_PROPERTIES,
         "set": {
             "type": "object",
             "properties": {"distance": QUANTITY},
+            "required": ["distance"],
             "additionalProperties": False,
         },
     },
-    "required": ["action", "expectedRevision", "requestId", "featureId", "kind"],
+    "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
 }
+FEATURE_SCHEMA = {"oneOf": [FEATURE_CREATE_SCHEMA, FEATURE_UPDATE_SCHEMA]}
 QUERY_SCHEMA = {
     "type": "object",
     "properties": {
