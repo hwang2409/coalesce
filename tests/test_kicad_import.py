@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -174,3 +175,101 @@ def test_existing_outline_forms_and_cutout_regressions():
     assert circle.outline[0].bbox == {"min_x": 2.0, "min_y": 2.0, "max_x": 8.0, "max_y": 8.0}
     cutout = parse_kicad_pcb(FIXTURES / "cutout.kicad_pcb")
     assert len(cutout.outline) == len(cutout.inner_cutouts) == 1
+
+
+def test_polygon_edges_are_supported_and_curves_are_explicitly_rejected(tmp_path):
+    polygon = """(gr_poly (pts (xy 0 0) (xy 10 0) (xy 10 5) (xy 0 5))
+      (layer "Edge.Cuts"))"""
+    board = _parse_text(tmp_path, _board(polygon))
+    assert len(board.outline) == 1
+    assert len(board.outline[0].segments) == 4
+    assert board.errors == []
+
+    curve = """(gr_curve (pts (xy 0 0) (xy 1 0) (xy 1 1) (xy 0 1))
+      (layer "Edge.Cuts") (uuid curve-id))"""
+    board = _parse_text(tmp_path, _board(curve))
+    error = next(error for error in board.errors if error.kind == "unsupported_geometry")
+    assert error.item_ids == ["curve-id"]
+    assert "gr_curve" in error.message
+
+
+def test_board_without_a_recognized_closed_outline_is_an_error(tmp_path):
+    board = _parse_text(tmp_path, _board('(gr_text "not an outline" (at 0 0) (layer "F.SilkS"))'))
+    assert board.outline == []
+    assert any(error.kind == "missing_outline" for error in board.errors)
+
+
+def test_transformed_endpoints_use_one_nanometre_canonical_keys(tmp_path):
+    footprint = """(footprint "Quarter" (layer "F.Cu") (at 0 0 90)
+      (fp_line (start 0 0) (end 1 0) (layer "Edge.Cuts")))"""
+    closed = _parse_text(tmp_path, _board(footprint,
+                                           _line((0, 1), (-1, 1)),
+                                           _line((-1, 1), (-1, 0)),
+                                           _line((-1, 0), (0, 0))))
+    assert len(closed.outline) == 1
+    assert closed.errors == []
+
+    gap = _parse_text(tmp_path, _board(footprint,
+                                        _line((0.001, 1), (-1, 1)),
+                                        _line((-1, 1), (-1, 0)),
+                                        _line((-1, 0), (0, 0))))
+    assert [error.kind for error in gap.errors] == ["open_outline"]
+    assert gap.errors[0].endpoints[0] == pytest.approx((0.0, 1.0))
+    assert gap.errors[0].endpoints[1] == (0.001, 1.0)
+
+
+def test_drill_offsets_follow_pad_rotation_and_back_mirroring(tmp_path):
+    def footprint(name, layer, position, rotation):
+        return f"""(footprint "{name}" (layer "{layer}") (at {position[0]} {position[1]} {rotation})
+          (pad "1" np_thru_hole circle (at 3 4 30) (size 2 2)
+            (drill 1 (offset 1 2))))"""
+
+    board = _parse_text(tmp_path, _board(*_polygon([(0, 0), (50, 0), (50, 50), (0, 50)]),
+                                                footprint("Front", "F.Cu", (10, 20), 90),
+                                                footprint("Back", "B.Cu", (30, 40), 90)))
+    # Offset (1, 2) rotates 30 degrees around the pad, then the footprint transform is applied.
+    offset_x = 1 * 3**0.5 / 2 - 2 * 0.5
+    offset_y = 1 * 0.5 + 2 * 3**0.5 / 2
+    assert board.holes[0].position == pytest.approx((10 - (4 + offset_y), 20 + 3 + offset_x))
+    assert board.holes[1].position == pytest.approx((30 + (4 + offset_y), 40 + 3 + offset_x))
+
+
+def test_arc_containment_uses_the_true_curve_not_ten_degree_chords(tmp_path):
+    upper = """(gr_arc (start 10 0) (mid 0 10) (end -10 0) (layer "Edge.Cuts"))"""
+    lower = """(gr_arc (start -10 0) (mid 0 -10) (end 10 0) (layer "Edge.Cuts"))"""
+    triangle = [(9.98 * math.cos(math.radians(angle)), 9.98 * math.sin(math.radians(angle)))
+                for angle in (4.8, 5.2)]
+    triangle.append((9.97 * math.cos(math.radians(5)), 9.97 * math.sin(math.radians(5))))
+    board = _parse_text(tmp_path, _board(upper, lower, *_polygon(triangle)))
+    assert len(board.outline) == 1
+    assert len(board.inner_cutouts) == 1
+
+
+@pytest.mark.parametrize(
+    ("footprint", "path"),
+    [
+        ('(footprint "Bad" (layer "F.Cu") (at 10))', "footprint[0].at"),
+        ('(footprint "Bad" (layer "F.Cu") (at nope 2))', "footprint[0].at"),
+        ('(footprint "Bad" (layer "F.Cu") (pad "1" np_thru_hole circle (at 4) (drill 1)))',
+         "footprint[0].pad[0].at"),
+    ],
+)
+def test_present_malformed_position_reports_its_node_path(tmp_path, footprint, path):
+    board = _parse_text(tmp_path, _board(*_polygon([(0, 0), (10, 0), (10, 10), (0, 10)]), footprint))
+    assert board.errors[0].kind == "parse"
+    assert path in board.errors[0].message
+
+
+def test_generated_usb_c_hub_fixture_records_public_mechanical_facts():
+    board = parse_kicad_pcb(FIXTURES / "usb_c_hub_generated.kicad_pcb")
+    assert board.thickness == 1.6
+    assert board.errors == []
+    assert len(board.outline) == 1
+    assert len(board.outline[0].segments) == 8
+    assert board.outline[0].bbox == pytest.approx(
+        {"min_x": 53.086, "min_y": 80.772, "max_x": 110.49, "max_y": 108.712}
+    )
+    assert len(board.footprints) == len(board.holes) == 32
+    assert board.holes[0].position == (106.68, 84.582)
+    assert board.holes[1].position == (56.896, 104.902)
+    assert board.holes[0].drill.width == board.holes[1].drill.width == 3.2

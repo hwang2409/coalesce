@@ -20,5 +20,17 @@ The other fixtures are small, hand-written files for isolated syntax and geometr
 cases. `kicad6_legacy_text.kicad_pcb` covers KiCad 6 `fp_text reference` and
 `fp_text value`. `rounded.kicad_pcb` uses valid three-point arcs.
 
-The USB hub board previously used for manual checks has no license file in its
-upstream repository, so none of its source is redistributed here.
+## generated USB-C hub regression
+
+`usb_c_hub_generated.kicad_pcb` is original, generated KiCad 8 syntax. It does
+not copy board content from the unlicensed upstream repository. Its mechanical
+facts were independently recorded from
+[`Hugoyhu/SL2.1A-Type-C-Hub`](https://github.com/Hugoyhu/SL2.1A-Type-C-Hub):
+1.6 mm thickness; one four-line, four-arc rounded outline bounded by x 53.086 to
+110.49 mm and y 80.772 to 108.712 mm; 32 footprints and holes; and 3.2 mm
+mounting holes at `(106.68, 84.582)` and `(56.896, 104.902)`. The remaining
+fixture footprint names, positions, and one-millimetre drills are generated test
+data and do not represent upstream content.
+
+The upstream repository has no license file, so none of its file content is
+redistributed here.
