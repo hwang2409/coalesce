@@ -385,6 +385,45 @@ FEATURE_SCHEMA = {
     "required": ["action", *FEATURE_PROPERTIES],
     "additionalProperties": False,
 }
+IMPORT_PROPERTIES = {
+    **MUTATION_PROPERTIES,
+    "assetId": {"type": "string", "minLength": 1},
+    "format": {"const": "kicad_pcb"},
+}
+IMPORT_CREATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "create"},
+        **IMPORT_PROPERTIES,
+        "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Explicit absolute path to one local regular file, at most 16 MiB.",
+        },
+    },
+    "required": ["action", *IMPORT_PROPERTIES, "path"],
+    "additionalProperties": False,
+}
+IMPORT_REFRESH_SCHEMA = {
+    "type": "object",
+    "properties": {"action": {"const": "refresh"}, **IMPORT_PROPERTIES},
+    "required": ["action", *IMPORT_PROPERTIES],
+    "additionalProperties": False,
+}
+IMPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"enum": ["create", "refresh"]},
+        **IMPORT_PROPERTIES,
+        "path": {
+            **IMPORT_CREATE_SCHEMA["properties"]["path"],
+            "description": "Required for create; refresh re-reads the persisted resolved path.",
+        },
+    },
+    "required": ["action", *IMPORT_PROPERTIES],
+    "additionalProperties": False,
+}
+
 QUERY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -447,6 +486,7 @@ CHECK_SCHEMA = {
 }
 
 TOOL_SCHEMAS = {
+    "import": IMPORT_SCHEMA,
     "sketch": SKETCH_SCHEMA,
     "feature": FEATURE_SCHEMA,
     "query": QUERY_SCHEMA,
@@ -454,6 +494,7 @@ TOOL_SCHEMAS = {
 }
 
 ACTION_SCHEMAS = {
+    "import": {"create": IMPORT_CREATE_SCHEMA, "refresh": IMPORT_REFRESH_SCHEMA},
     "sketch": {"create": SKETCH_CREATE_SCHEMA, "update": SKETCH_UPDATE_SCHEMA},
     "feature": {"create": FEATURE_CREATE_SCHEMA, "update": FEATURE_UPDATE_SCHEMA},
 }

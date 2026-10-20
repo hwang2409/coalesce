@@ -20,6 +20,7 @@ from .service import DocumentService
 _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
+    "import": "Snapshot mechanical facts from one explicit absolute local kicad_pcb path into a persisted BoardImport asset. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Import records metadata and stable ids only; it does not create board geometry. Use refresh to re-read the persisted path explicitly.",
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
     "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Only extrudes can be updated.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
@@ -30,6 +31,12 @@ TOOLS_GUIDE = """# coalesce tools
 
 Start with `coalesce --document part.coalesce.json` or set `COALESCE_DOCUMENT`.
 coalesce owns one revisioned document. Start with `query` using `select.kind: revision`.
+Use `import` create with an explicit absolute local `kicad_pcb` path to persist a
+`BoardImport` snapshot. The source must be a readable regular file of 16 MiB or less.
+The import stores the resolved path, SHA-256 digest, parser version, stable mechanics ids,
+availability, warnings, and errors. It does not add geometry, access the network, or resolve
+environment variables in model paths. Later source edits do not affect the document; use
+`import` refresh to read the persisted path and commit a new snapshot explicitly.
 Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+Y), XZ=(+X,+Z), YZ=(+Y,+Z). Plane offset moves along its normal.
 Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
@@ -204,7 +211,7 @@ def create_server(service: DocumentService) -> Server:
                 inputSchema=schema,
                 annotations=types.ToolAnnotations(
                     readOnlyHint=name in {"query", "check"},
-                    destructiveHint=name in {"sketch", "feature"},
+                    destructiveHint=name in {"import", "sketch", "feature"},
                     idempotentHint=True,
                     openWorldHint=False,
                 ),
@@ -258,7 +265,7 @@ def create_server(service: DocumentService) -> Server:
                 service.publish_failure(arguments, failure)
             return _tool_result(failure)
         try:
-            handler = getattr(service, name)
+            handler = service.import_board if name == "import" else getattr(service, name)
             return _tool_result(handler(arguments))
         except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
             _LOG.exception("unexpected failure during %s", name)

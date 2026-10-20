@@ -2,7 +2,19 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from .graph import Circle, Cut, Extrude, Fillet, Graph, Hole, HolePosition, Plane, Rectangle, Sketch
+from .graph import (
+    BoardImport,
+    Circle,
+    Cut,
+    Extrude,
+    Fillet,
+    Graph,
+    Hole,
+    HolePosition,
+    Plane,
+    Rectangle,
+    Sketch,
+)
 from .references import (
     BodySource,
     Cardinality,
@@ -13,7 +25,10 @@ from .references import (
     _source_from_dict,
 )
 
-_TYPES = {cls.__name__: cls for cls in (Sketch, Rectangle, Circle, Extrude, Cut, Hole, Fillet)}
+_TYPES = {
+    cls.__name__: cls
+    for cls in (BoardImport, Sketch, Rectangle, Circle, Extrude, Cut, Hole, Fillet)
+}
 _FILTERS = {cls.__name__: cls for cls in (Normal, Position, MaxAlong)}
 
 
@@ -57,6 +72,19 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _node_payload(node: Any) -> dict[str, Any]:
     payload = asdict(node)
+    if isinstance(node, BoardImport):
+        return {
+            "type": "BoardImport",
+            "id": node.id,
+            "format": "kicad_pcb",
+            "sourcePath": node.source_path,
+            "sourceDigest": node.source_digest,
+            "parserVersion": node.parser_version,
+            "mechanics": node.mechanics,
+            "availability": node.availability,
+            "warnings": node.warnings,
+            "errors": node.errors,
+        }
     if isinstance(node, Sketch):
         payload["entities"] = [
             {"type": entity.__class__.__name__, **asdict(entity)}
@@ -89,7 +117,13 @@ def loads(value: str) -> Graph:
         cls = _TYPES.get(kind)
         if cls is None:
             raise ValueError(f"unknown node type: {kind}")
-        if cls is Sketch:
+        if cls is BoardImport:
+            if payload.pop("format", None) != "kicad_pcb":
+                raise ValueError("BoardImport format must be kicad_pcb")
+            payload["source_path"] = payload.pop("sourcePath")
+            payload["source_digest"] = payload.pop("sourceDigest")
+            payload["parser_version"] = payload.pop("parserVersion")
+        elif cls is Sketch:
             payload = _sketch(payload)
         elif cls is Hole:
             payload["position"] = tuple(payload.get("position", (0, 0)))
