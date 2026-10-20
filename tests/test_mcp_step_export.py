@@ -1,3 +1,5 @@
+import errno
+import hashlib
 import os
 
 import pytest
@@ -130,11 +132,13 @@ def export_request(path, request_id="export-all", part_ids=None, revision=7):
 async def test_step_export_all_selected_restart_and_replay(tmp_path):
     document = tmp_path / "enclosure.coalesce.json"
     first_path = tmp_path / "enclosure.step"
-    results = await run_server(
-        document,
-        enclosure_calls() + [("export", export_request(first_path))],
-    )
-    exported = results[-1]
+    await run_server(document, enclosure_calls())
+    document_bytes = document.read_bytes()
+    exported = (
+        await run_server(document, [("export", export_request(first_path))])
+    )[0]
+
+    assert document.read_bytes() == document_bytes
 
     assert exported["ok"] is True
     assert exported["revision"] == 7
@@ -172,6 +176,7 @@ async def test_step_export_all_selected_restart_and_replay(tmp_path):
     assert selected["partIds"] == ["plate/plate"]
     assert selected["validation"]["reimport"]["partCount"] == 1
     assert selected["validation"]["reimport"]["solidCount"] == 1
+    assert document.read_bytes() == document_bytes
 
     second_path = tmp_path / "enclosure-restarted.step"
     restarted = (
@@ -181,17 +186,30 @@ async def test_step_export_all_selected_restart_and_replay(tmp_path):
         )
     )[0]
     assert restarted["validation"] == exported["validation"]
+    assert document.read_bytes() == document_bytes
 
     replay = (
         await run_server(document, [("export", export_request(first_path))])
     )[0]
     assert replay == exported
+    assert document.read_bytes() == document_bytes
+
+    journal = document.with_name(f"{document.name}.exports.jsonl")
+    with journal.open("ab") as stream:
+        stream.write(b'{"requestId":"torn')
+    with pytest.warns(RuntimeWarning, match="torn export journal line"):
+        replay_after_torn_line = (
+            await run_server(document, [("export", export_request(first_path))])
+        )[0]
+    assert replay_after_torn_line == exported
+    assert document.read_bytes() == document_bytes
 
 
 @pytest.mark.anyio
 async def test_export_rejects_existing_stale_unknown_and_bad_parent(tmp_path):
     document = tmp_path / "errors.coalesce.json"
     await run_server(document, enclosure_calls())
+    document_bytes = document.read_bytes()
     existing = tmp_path / "existing.step"
     existing.write_bytes(b"keep me")
     missing_parent = tmp_path / "missing" / "part.step"
@@ -226,12 +244,14 @@ async def test_export_rejects_existing_stale_unknown_and_bad_parent(tmp_path):
     assert not (tmp_path / "stale.step").exists()
     assert not (tmp_path / "unknown.step").exists()
     assert not missing_parent.exists()
+    assert document.read_bytes() == document_bytes
 
 
 @pytest.mark.anyio
 async def test_export_rejects_unwritable_parent(tmp_path):
     document = tmp_path / "unwritable.coalesce.json"
     await run_server(document, enclosure_calls())
+    document_bytes = document.read_bytes()
     parent = tmp_path / "locked"
     parent.mkdir()
     parent.chmod(0o500)
@@ -248,12 +268,14 @@ async def test_export_rejects_unwritable_parent(tmp_path):
 
     assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
     assert not target.exists()
+    assert document.read_bytes() == document_bytes
 
 
 @pytest.mark.anyio
 async def test_validation_mismatch_removes_temporary_and_final_files(tmp_path, monkeypatch):
     document = tmp_path / "mismatch.coalesce.json"
     await run_server(document, enclosure_calls())
+    document_bytes = document.read_bytes()
     target = tmp_path / "mismatch.step"
     service = DocumentService(document)
 
@@ -277,6 +299,66 @@ async def test_validation_mismatch_removes_temporary_and_final_files(tmp_path, m
     assert result["error"]["code"] == "EXPORT_VALIDATION_FAILED"
     assert not target.exists()
     assert not list(tmp_path.glob(".mismatch.step.*.tmp"))
+    assert document.read_bytes() == document_bytes
+
+
+@pytest.mark.anyio
+async def test_publish_hashes_validated_inode_and_preserves_replacement(tmp_path, monkeypatch):
+    document = tmp_path / "replacement.coalesce.json"
+    await run_server(document, enclosure_calls())
+    document_bytes = document.read_bytes()
+    target = tmp_path / "replacement.step"
+    replacement = b"replacement from another process"
+
+    def replace_after_link(directory_fd, destination_name, _linked_stat):
+        os.unlink(destination_name, dir_fd=directory_fd)
+        fd = os.open(
+            destination_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            os.write(fd, replacement)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(export_module, "_after_link", replace_after_link)
+    result = await call_server_tool(
+        DocumentService(document),
+        "export",
+        export_request(target, request_id="replacement"),
+    )
+
+    assert result["ok"] is True
+    assert result["sha256"] != hashlib.sha256(replacement).hexdigest()
+    assert target.read_bytes() == replacement
+    assert not list(tmp_path.glob(".replacement.step.*.tmp"))
+    assert document.read_bytes() == document_bytes
+
+
+@pytest.mark.anyio
+async def test_link_permission_failure_is_structured_and_cleans_temp(tmp_path, monkeypatch):
+    document = tmp_path / "permission.coalesce.json"
+    await run_server(document, enclosure_calls())
+    document_bytes = document.read_bytes()
+    target = tmp_path / "permission.step"
+
+    def denied_link(*_args, **_kwargs):
+        raise OSError(errno.EPERM, "hard links not permitted")
+
+    monkeypatch.setattr(export_module.os, "link", denied_link)
+    result = await call_server_tool(
+        DocumentService(document),
+        "export",
+        export_request(target, request_id="permission"),
+    )
+
+    assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
+    assert not target.exists()
+    assert not list(tmp_path.glob(".permission.step.*.tmp"))
+    assert document.read_bytes() == document_bytes
 
 
 @pytest.mark.anyio
