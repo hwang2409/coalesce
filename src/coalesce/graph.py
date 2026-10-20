@@ -22,12 +22,16 @@ class Rectangle:
     id: str
     width: float
     height: float
+    position: tuple[float, float] = (0.0, 0.0)
+    rotation: float = 0.0
 
 
 @dataclass
 class Circle:
     id: str
     radius: float
+    position: tuple[float, float] = (0.0, 0.0)
+    rotation: float = 0.0
 
 
 @dataclass

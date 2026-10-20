@@ -37,6 +37,22 @@ def _reference(payload: dict[str, Any]) -> Reference:
     return Reference(**value)
 
 
+def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["plane"] = Plane(**payload.get("plane", {}))
+    payload["position"] = tuple(payload.get("position", (0, 0, 0)))
+    payload["rotation"] = tuple(payload.get("rotation", (0, 0, 0)))
+    entities = []
+    for raw_entity in payload.get("entities", []):
+        entity = dict(raw_entity)
+        entity_type = _TYPES.get(entity.pop("type", None))
+        if entity_type not in (Rectangle, Circle):
+            raise ValueError("sketch entity must be a Rectangle or Circle")
+        entity["position"] = tuple(entity.get("position", (0, 0)))
+        entities.append(entity_type(**entity))
+    payload["entities"] = entities
+    return payload
+
+
 def dumps(graph: Graph) -> str:
     nodes = []
     for node in graph.nodes.values():
@@ -62,17 +78,7 @@ def loads(value: str) -> Graph:
         if cls is None:
             raise ValueError(f"unknown node type: {kind}")
         if cls is Sketch:
-            payload["plane"] = Plane(**payload.get("plane", {}))
-            payload["position"] = tuple(payload.get("position", (0, 0, 0)))
-            payload["rotation"] = tuple(payload.get("rotation", (0, 0, 0)))
-            entities = []
-            for raw_entity in payload.get("entities", []):
-                entity = dict(raw_entity)
-                entity_type = _TYPES.get(entity.pop("type", None))
-                if entity_type not in (Rectangle, Circle):
-                    raise ValueError("sketch entity must be a Rectangle or Circle")
-                entities.append(entity_type(**entity))
-            payload["entities"] = entities
+            payload = _sketch(payload)
         elif cls is Fillet:
             payload["edges"] = [_reference(item) for item in payload.get("edges", [])]
         graph.add(cls(**payload))

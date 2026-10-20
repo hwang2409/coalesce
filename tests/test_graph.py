@@ -14,8 +14,8 @@ from coalesce import (
     Rectangle,
     Reference,
     Sketch,
-    Status,
     SketchSegmentSource,
+    Status,
     regenerate,
 )
 from coalesce.serialization import loads
