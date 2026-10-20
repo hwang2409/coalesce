@@ -213,11 +213,6 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
             for candidate in service._regen.provenance["mounts"]
             if candidate.key.role == "standoff_side" and candidate.key.source == item["holeId"]
         ]
-        [pilot] = [
-            candidate.entity
-            for candidate in service._regen.provenance["mounts"]
-            if candidate.key.role == "pilot_wall" and candidate.key.source == item["holeId"]
-        ]
         side_box = side.bounding_box()
         assert (item["axis"]["x"], item["axis"]["y"], item["axis"]["z"]) == pytest.approx(
             (
@@ -228,9 +223,12 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
             abs=1e-6,
         )
         assert item["axis"]["unit"] == "mm"
-        assert _value(item["bossDiameter"]) == pytest.approx(side.radius * 2, abs=1e-6)
-        assert _value(item["pilotDiameter"]) == pytest.approx(pilot.radius * 2, abs=1e-6)
-        assert _value(item["topZ"]) == pytest.approx(side_box.max.Z, abs=1e-6)
+        assert item["classification"] == "intact"
+        assert _value(item["designed"]["bossDiameter"]) == pytest.approx(
+            side.radius * 2, abs=1e-6
+        )
+        assert _value(item["designed"]["pilotDiameter"]) == pytest.approx(1.6, abs=1e-6)
+        assert _value(item["measured"]["topZ"]) == pytest.approx(side_box.max.Z, abs=1e-6)
         assert _value(item["boardUndersideZ"]) == pytest.approx(board_box["min"][2], abs=1e-6)
 
     assert len(result["lids"]) == 1
@@ -385,6 +383,7 @@ def test_enclosure_query_measures_wall_pocket_from_terminal_solid(tmp_path):
             target=terminal,
             tool="wall_pocket",
             depth=1.5,
+            flip=True,
         )
     )["ok"]
 
@@ -405,16 +404,22 @@ def test_enclosure_query_reports_board_and_lid_interference_from_joined_rib(tmp_
         center=(10, 5),
     )["ok"]
     assert service.feature(
-        _join("rib", revision + 1, "rib", "rib", terminal, 10)
+        _join("rib-join", revision + 1, "rib_join", "rib", terminal, 10)
     )["ok"]
 
     result = service.query({"select": {"kind": "enclosure", "base": "base"}})
 
-    assert _value(result["cavity"]["boardInterference"]["volume"]) > 0
+    board_interference = result["cavity"]["boardInterference"]
+    assert board_interference["volume"]["unit"] == "mm^3"
+    assert board_interference["volume"]["value"] == pytest.approx(4.8)
+    assert board_interference["parts"][0] == "controller_board"
     assert all(
         _value(clearance) <= 0 for clearance in result["cavity"]["boardClearance"].values()
     )
-    assert _value(result["lids"][0]["interference"]["volume"]) > 0
+    lid_interference = result["lids"][0]["interference"]
+    assert lid_interference["volume"]["unit"] == "mm^3"
+    assert lid_interference["volume"]["value"] == pytest.approx(8)
+    assert len(lid_interference["parts"]) == 2
     assert _value(result["lids"][0]["fitGap"]["min"]) <= 0
 
 
@@ -495,7 +500,12 @@ def test_enclosure_query_warns_about_unclassified_board_holes(tmp_path):
     result = service.query({"select": {"kind": "enclosure", "base": "base"}})
 
     warning = next(item for item in result["warnings"] if item["code"] == "UNCLASSIFIED_BOARD_HOLES")
-    assert warning["holeIds"] == [FEATURE_HOLES[0]]
+    custom_hole = next(
+        hole
+        for hole in service._document.graph.nodes["controller_board"].mechanics["holes"]
+        if hole["position"] == [2.0, 3.0]
+    )
+    assert warning["holeIds"] == [custom_hole["id"]]
 
 
 @pytest.mark.anyio

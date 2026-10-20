@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from build123d import Align, Box, Compound, Face, Location, Shape
+from build123d import Align, Box, Compound, Cylinder, Face, Location, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
@@ -56,6 +56,58 @@ def _positive_distance(first: Shape, others: list[Shape]) -> float:
     return min(positive or distances)
 
 
+def _overlaps(first: Face, second: Face, axes: str) -> bool:
+    first_box = first.bounding_box()
+    second_box = second.bounding_box()
+    return all(
+        min(getattr(first_box.max, axis), getattr(second_box.max, axis))
+        - max(getattr(first_box.min, axis), getattr(second_box.min, axis))
+        > _TOLERANCE
+        for axis in axes
+    )
+
+
+def _planar_coordinate(face: Face, axis: str) -> float | None:
+    box = face.bounding_box()
+    low = getattr(box.min, axis)
+    high = getattr(box.max, axis)
+    return low if high - low <= _TOLERANCE else None
+
+
+def _thickness_from_face(face: Face, shape: Shape, axis: str, outward: int) -> float:
+    coordinate = _planar_coordinate(face, axis)
+    if coordinate is None:
+        raise ValueError("thickness identity face is not axis-aligned")
+    tangent_axes = "YZ" if axis == "X" else "XZ" if axis == "Y" else "XY"
+    distances = []
+    for candidate in shape.faces():
+        candidate_coordinate = _planar_coordinate(candidate, axis)
+        if candidate_coordinate is None or not _overlaps(face, candidate, tangent_axes):
+            continue
+        distance = (candidate_coordinate - coordinate) * outward
+        if distance > _TOLERANCE:
+            distances.append(distance)
+    if not distances:
+        raise ValueError("terminal solid has no opposite thickness face")
+    return min(distances)
+
+
+def _as_built_thicknesses(result: Any, base: PcbBase, shape: Shape) -> tuple[float, float]:
+    box = shape.bounding_box()
+    center_x = (box.min.X + box.max.X) / 2
+    center_y = (box.min.Y + box.max.Y) / 2
+    walls = []
+    for face in _faces(result, base.id, "inner_wall"):
+        x = _planar_coordinate(face, "X")
+        y = _planar_coordinate(face, "Y")
+        if x is not None:
+            walls.append(_thickness_from_face(face, shape, "X", -1 if x < center_x else 1))
+        elif y is not None:
+            walls.append(_thickness_from_face(face, shape, "Y", -1 if y < center_y else 1))
+    floors = [_thickness_from_face(face, shape, "Z", -1) for face in _faces(result, base.id, "floor")]
+    return min(walls), min(floors)
+
+
 def _part_for(parts: list[TerminalPart], source_feature: str) -> TerminalPart:
     matches = [part for part in parts if part.source_body.feature == source_feature]
     if len(matches) != 1:
@@ -76,61 +128,147 @@ def _mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
     ]
 
 
-def _standoffs(graph: Any, result: Any, base: PcbBase, board_shape: Shape) -> dict[str, Any]:
+def _standoff_probe(node: Standoffs, hole: dict[str, Any], bottom: float, top: float) -> Shape:
+    x, y = hole["position"]
+    height = top - bottom
+    boss = Cylinder(
+        node.boss_diameter / 2,
+        height,
+        align=(Align.CENTER, Align.CENTER, Align.MIN),
+    ).moved(Location((x, y, bottom)))
+    pilot = Cylinder(
+        node.pilot_diameter / 2,
+        height,
+        align=(Align.CENTER, Align.CENTER, Align.MIN),
+    ).moved(Location((x, y, bottom)))
+    return boss - pilot
+
+
+def _classify_standoff(expected: Shape, remaining: Shape) -> str:
+    if remaining.volume <= _TOLERANCE:
+        return "missing"
+    if abs(expected.volume - remaining.volume) <= max(_TOLERANCE, expected.volume * 1e-7):
+        return "intact"
+    return "partial"
+
+
+def _measure_standoff(
+    node: Standoffs, hole: dict[str, Any], base_shape: Shape, bottom: float, top: float
+) -> dict[str, Any]:
+    expected = _standoff_probe(node, hole, bottom, top)
+    remaining = _common_shape(expected, base_shape)
+    classification = _classify_standoff(expected, remaining)
+    x, y = hole["position"]
+    return {
+        "holeId": hole["id"],
+        "axis": _point((x, y, bottom)),
+        "classification": classification,
+        "measured": {
+            "remainingVolume": {**_quantity(remaining.volume), "unit": "mm^3"},
+            "topZ": _quantity(remaining.bounding_box().max.Z) if remaining.volume > _TOLERANCE else None,
+        },
+        "designed": {
+            "bossDiameter": _quantity(node.boss_diameter),
+            "pilotDiameter": _quantity(node.pilot_diameter),
+            "topZ": _quantity(top),
+        },
+        "boardUndersideZ": _quantity(top),
+    }
+
+
+def _standoffs(
+    graph: Any, result: Any, base: PcbBase, board_shape: Shape, base_shape: Shape
+) -> dict[str, Any]:
+    board = graph.nodes[base.board]
+    holes = _mounting_holes(board)
+    holes_by_id = {hole["id"]: hole for hole in holes}
+    board_bottom = board_shape.bounding_box().min.Z
+    floor_top = min(face.bounding_box().min.Z for face in _faces(result, base.id, "floor"))
     nodes = [
         node for node in graph.ordered() if isinstance(node, Standoffs) and node.target == base.id
     ]
-    items = []
-    covered = []
-    board_bottom = board_shape.bounding_box().min.Z
-    for node in nodes:
-        sources = sorted(
-            {
-                candidate.key.source
-                for candidate in result.provenance.get(node.id, [])
-                if candidate.key.role == "standoff_side"
-            }
-        )
-        for source in sources:
-            [boss] = [
-                candidate.entity
-                for candidate in result.provenance[node.id]
-                if candidate.key.role == "standoff_side" and candidate.key.source == source
-            ]
-            [pilot] = [
-                candidate.entity
-                for candidate in result.provenance[node.id]
-                if candidate.key.role == "pilot_wall" and candidate.key.source == source
-            ]
-            box = boss.bounding_box()
-            items.append(
-                {
-                    "holeId": source,
-                    "axis": _point(
-                        ((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2, box.min.Z)
-                    ),
-                    "bossDiameter": _quantity(boss.radius * 2),
-                    "pilotDiameter": _quantity(pilot.radius * 2),
-                    "topZ": _quantity(box.max.Z),
-                    "boardUndersideZ": _quantity(board_bottom),
-                }
-            )
-            covered.append(source)
-    holes = _mounting_holes(graph.nodes[base.board])
+    items = [
+        _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
+        for node in nodes
+        for source in node.hole_ids
+        if source in holes_by_id
+    ]
+    intact = {item["holeId"] for item in items if item["classification"] == "intact"}
     hole_ids = [hole["id"] for hole in holes]
     return {
         "count": len(items),
         "mountingHoleCount": len(holes),
-        "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in covered],
-        "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in covered],
+        "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
+        "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
         "items": items,
     }
 
 
+def _parallel_gap(reference: Face, shape: Shape) -> float | None:
+    axes = [axis for axis in "XYZ" if _planar_coordinate(reference, axis) is not None]
+    if len(axes) != 1:
+        return None
+    axis = axes[0]
+    tangent_axes = "YZ" if axis == "X" else "XZ" if axis == "Y" else "XY"
+    candidates = [
+        face
+        for face in shape.faces()
+        if _planar_coordinate(face, axis) is not None and _overlaps(reference, face, tangent_axes)
+    ]
+    return _positive_distance(reference, candidates)
+
+
+def _interference(first: Shape, second: Shape, parts: list[str]) -> dict[str, Any] | None:
+    volume = _common_volume(first, second)
+    if volume <= _TOLERANCE:
+        return None
+    return {"volume": {"value": round(volume, 12), "unit": "mm^3"}, "parts": parts}
+
+
+def _directional_clearance(
+    board_shape: Shape, base_shape: Shape, axis: str, coordinate: float, outward: int
+) -> float:
+    tangent_axes = "YZ" if axis == "X" else "XZ"
+    board_faces = [
+        face
+        for face in board_shape.faces()
+        if (value := _planar_coordinate(face, axis)) is not None
+        and abs(value - coordinate) <= _TOLERANCE
+    ]
+    distances = [
+        (candidate_coordinate - coordinate) * outward
+        for board_face in board_faces
+        for candidate in base_shape.faces()
+        if (candidate_coordinate := _planar_coordinate(candidate, axis)) is not None
+        and _overlaps(board_face, candidate, tangent_axes)
+        and (candidate_coordinate - coordinate) * outward >= -_TOLERANCE
+    ]
+    if not distances:
+        raise ValueError("terminal base has no wall beside board")
+    return max(0.0, min(distances))
+
+
+def _board_fit(
+    board_id: str, board_shape: Shape, base_part: TerminalPart
+) -> tuple[dict[str, float], Any]:
+    box = board_shape.bounding_box()
+    interference = _interference(
+        board_shape, base_part.shape, [board_id, base_part.part_id]
+    )
+    if interference is not None:
+        return dict.fromkeys(("left", "right", "front", "back"), 0.0), interference
+    clearances = {
+        "left": _directional_clearance(board_shape, base_part.shape, "X", box.min.X, -1),
+        "right": _directional_clearance(board_shape, base_part.shape, "X", box.max.X, 1),
+        "front": _directional_clearance(board_shape, base_part.shape, "Y", box.min.Y, -1),
+        "back": _directional_clearance(board_shape, base_part.shape, "Y", box.max.Y, 1),
+    }
+    return clearances, None
+
+
 def _lids(
-    graph: Any, result: Any, parts: list[TerminalPart], base: PcbBase
+    graph: Any, result: Any, parts: list[TerminalPart], base: PcbBase, base_part: TerminalPart
 ) -> list[dict[str, Any]]:
-    inner_walls = _faces(result, base.id, "inner_wall")
     inspected = []
     for node in graph.ordered():
         if not isinstance(node, PcbLid) or node.base != base.id:
@@ -138,7 +276,12 @@ def _lids(
         part = _part_for(parts, node.id)
         undersides = _faces(result, node.id, "underside")
         lips = _faces(result, node.id, "lip_outer")
-        gaps = [_positive_distance(lip, inner_walls) for lip in lips]
+        interference = _interference(
+            base_part.shape, part.shape, [base_part.part_id, part.part_id]
+        )
+        gaps = [gap for lip in lips if (gap := _parallel_gap(lip, base_part.shape)) is not None]
+        if interference is not None:
+            gaps = [0.0]
         lip_box = Compound(children=lips).bounding_box() if lips else None
         inspected.append(
             {
@@ -149,6 +292,7 @@ def _lids(
                 "fitGap": (
                     {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))} if gaps else None
                 ),
+                "interference": interference,
                 "lipDepth": (
                     _quantity(lip_box.max.Z - lip_box.min.Z) if lip_box is not None else None
                 ),
@@ -174,10 +318,36 @@ def _opening_rectangle(tool: Shape, wall: str) -> dict[str, Any]:
     }
 
 
+def _wall_slab(base_shape: Shape, inner_walls: list[Face], wall: str) -> Shape:
+    outer = base_shape.bounding_box()
+    inner = Compound(children=inner_walls).bounding_box()
+    if wall == "left":
+        size = (inner.min.X - outer.min.X, inner.max.Y - inner.min.Y, inner.max.Z - inner.min.Z)
+        origin = (outer.min.X, inner.min.Y, inner.min.Z)
+    elif wall == "right":
+        size = (outer.max.X - inner.max.X, inner.max.Y - inner.min.Y, inner.max.Z - inner.min.Z)
+        origin = (inner.max.X, inner.min.Y, inner.min.Z)
+    elif wall == "front":
+        size = (inner.max.X - inner.min.X, inner.min.Y - outer.min.Y, inner.max.Z - inner.min.Z)
+        origin = (inner.min.X, outer.min.Y, inner.min.Z)
+    else:
+        size = (inner.max.X - inner.min.X, outer.max.Y - inner.max.Y, inner.max.Z - inner.min.Z)
+        origin = (inner.min.X, inner.max.Y, inner.min.Z)
+    return Box(*size, align=(Align.MIN, Align.MIN, Align.MIN)).moved(Location(origin))
+
+
+def _actual_opening(base_shape: Shape, inner_walls: list[Face], tool: Shape, wall: str) -> Shape:
+    void = _wall_slab(base_shape, inner_walls, wall) - base_shape
+    matches = [solid for solid in void.solids() if solid.distance_to(tool) <= _TOLERANCE]
+    if not matches:
+        raise ValueError("terminal base has no aperture for port")
+    return max(matches, key=lambda solid: solid.volume)
+
+
 def _port_clearances(
-    node: PortCutout, board: BoardImport, board_shape: Shape, tool: Shape, wall: str
+    node: PortCutout, board: BoardImport, board_shape: Shape, opening: Shape, wall: str
 ) -> list[float]:
-    metadata_box = tool.bounding_box()
+    metadata_box = opening.bounding_box()
     footprint = next(
         footprint
         for footprint in board.mechanics.get("footprints", [])
@@ -236,12 +406,16 @@ def _port_clearances(
     ]
 
 
-def _common_volume(first: Shape, second: Shape) -> float:
+def _common_shape(first: Shape, second: Shape) -> Shape:
     operation = BRepAlgoAPI_Common(first.wrapped, second.wrapped)
     operation.Build()
     if not operation.IsDone():
-        raise ValueError("port blockage measurement failed")
-    return Shape.cast(operation.Shape()).volume
+        raise ValueError("solid intersection measurement failed")
+    return Shape.cast(operation.Shape())
+
+
+def _common_volume(first: Shape, second: Shape) -> float:
+    return _common_shape(first, second).volume
 
 
 def _ports(
@@ -250,31 +424,94 @@ def _ports(
     base: PcbBase,
     board: BoardImport,
     board_shape: Shape,
+    base_shape: Shape,
     assembled: Shape,
 ) -> list[dict[str, Any]]:
     inspected = []
+    inner_walls = _faces(result, base.id, "inner_wall")
     for node in graph.ordered():
         if not isinstance(node, PortCutout) or node.base != base.id:
             continue
         metadata = result.metadata[node.id]
         wall = metadata["wall"]
-        tool = result.opening_tools[node.id]
-        clearances = _port_clearances(node, board, board_shape, tool, wall)
+        opening = _actual_opening(base_shape, inner_walls, result.opening_tools[node.id], wall)
+        clearances = _port_clearances(node, board, board_shape, opening, wall)
         inspected.append(
             {
                 "featureId": node.id,
                 "footprintId": metadata["footprintId"],
                 "reference": metadata["reference"],
                 "wall": wall,
-                "opening": _opening_rectangle(tool, wall),
+                "opening": _opening_rectangle(opening, wall),
                 "clearance": {
                     "min": _quantity(min(clearances)),
                     "max": _quantity(max(clearances)),
                 },
-                "blocked": _common_volume(tool, assembled) > _TOLERANCE,
+                "blocked": _common_volume(opening, assembled) > _TOLERANCE,
             }
         )
     return inspected
+
+
+def _same_board_sources(graph: Any, board_id: str) -> set[str]:
+    bases = {
+        node.id for node in graph.ordered() if isinstance(node, PcbBase) and node.board == board_id
+    }
+    lids = {
+        node.id
+        for node in graph.ordered()
+        if isinstance(node, PcbLid)
+        and isinstance(graph.nodes.get(node.base), PcbBase)
+        and graph.nodes[node.base].board == board_id
+    }
+    return bases | lids
+
+
+def _other_body_warnings(
+    graph: Any,
+    board: BoardImport,
+    parts: list[TerminalPart],
+    enclosure_parts: list[TerminalPart],
+) -> list[dict[str, Any]]:
+    selected_ids = {part.part_id for part in enclosure_parts}
+    sources = _same_board_sources(graph, board.id)
+    return [
+        {
+            "code": "OTHER_MANUFACTURING_BODY",
+            "featureId": part.terminal_feature,
+            "partId": part.part_id,
+        }
+        for part in parts
+        if part.part_id not in selected_ids and part.source_body.feature in sources
+    ]
+
+
+def _unclassified_hole_ids(board: BoardImport) -> list[str]:
+    mounting_ids = {hole["id"] for hole in _mounting_holes(board)}
+    return [
+        hole["id"] for hole in board.mechanics.get("holes", []) if hole["id"] not in mounting_ids
+    ]
+
+
+def _warnings(
+    graph: Any,
+    board: BoardImport,
+    parts: list[TerminalPart],
+    enclosure_parts: list[TerminalPart],
+    ports: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    warnings = _other_body_warnings(graph, board, parts, enclosure_parts)
+    if ports and board.availability.get("models") != "available":
+        warnings.append(
+            {
+                "code": "CONNECTOR_HEIGHT_UNRESOLVED",
+                "footprintIds": [port["footprintId"] for port in ports],
+            }
+        )
+    unclassified_ids = _unclassified_hole_ids(board)
+    if unclassified_ids:
+        warnings.append({"code": "UNCLASSIFIED_BOARD_HOLES", "holeIds": unclassified_ids})
+    return warnings
 
 
 def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
@@ -295,39 +532,11 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     board_shape = result.shapes[board.id]
     board_box = board_shape.bounding_box()
     inner_walls = _faces(result, base.id, "inner_wall")
-    outer_walls = _faces(result, base.id, "outer_wall")
-    floor_faces = _faces(result, base.id, "floor")
-    floor_bottoms = _faces(result, base.id, "floor_bottom")
     inner_box = Compound(children=inner_walls).bounding_box()
-
-    selected_ids = {part.part_id for part in enclosure_parts}
-    same_board_sources = {
-        node.id for node in graph.ordered() if isinstance(node, PcbBase) and node.board == board.id
-    }
-    same_board_sources.update(
-        node.id
-        for node in graph.ordered()
-        if isinstance(node, PcbLid)
-        and isinstance(graph.nodes.get(node.base), PcbBase)
-        and graph.nodes[node.base].board == board.id
-    )
-    warnings = [
-        {
-            "code": "OTHER_MANUFACTURING_BODY",
-            "featureId": part.terminal_feature,
-            "partId": part.part_id,
-        }
-        for part in parts
-        if part.part_id not in selected_ids and part.source_body.feature in same_board_sources
-    ]
-    ports = _ports(graph, result, base, board, board_shape, assembled)
-    if ports and board.availability.get("models") != "available":
-        warnings.append(
-            {
-                "code": "CONNECTOR_HEIGHT_UNRESOLVED",
-                "footprintIds": [port["footprintId"] for port in ports],
-            }
-        )
+    wall_thickness, floor_thickness = _as_built_thicknesses(result, base, base_part.shape)
+    board_clearance, board_interference = _board_fit(board.id, board_shape, base_part)
+    ports = _ports(graph, result, base, board, board_shape, base_part.shape, assembled)
+    warnings = _warnings(graph, board, parts, enclosure_parts, ports)
 
     return {
         "baseId": base.id,
@@ -340,12 +549,8 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
             "partId": base_part.part_id,
             "outerBBox": _bbox(base_part.shape),
             "outerSize": _size(base_part.shape),
-            "minimumWallThickness": _quantity(
-                min(_positive_distance(inner, outer_walls) for inner in inner_walls)
-            ),
-            "floorThickness": _quantity(
-                min(floor.distance_to(bottom) for floor in floor_faces for bottom in floor_bottoms)
-            ),
+            "minimumWallThickness": _quantity(wall_thickness),
+            "floorThickness": _quantity(floor_thickness),
         },
         "cavity": {
             "innerSize": {
@@ -353,14 +558,12 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
                 "y": _quantity(inner_box.max.Y - inner_box.min.Y),
             },
             "boardClearance": {
-                "left": _quantity(board_box.min.X - inner_box.min.X),
-                "right": _quantity(inner_box.max.X - board_box.max.X),
-                "front": _quantity(board_box.min.Y - inner_box.min.Y),
-                "back": _quantity(inner_box.max.Y - board_box.max.Y),
+                direction: _quantity(distance) for direction, distance in board_clearance.items()
             },
+            "boardInterference": board_interference,
         },
-        "standoffs": _standoffs(graph, result, base, board_shape),
-        "lids": _lids(graph, result, parts, base),
+        "standoffs": _standoffs(graph, result, base, board_shape, base_part.shape),
+        "lids": _lids(graph, result, parts, base, base_part),
         "ports": ports,
         "assembled": {"bbox": _bbox(assembled), "size": _size(assembled)},
         "terminalParts": [
