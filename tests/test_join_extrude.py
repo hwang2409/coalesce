@@ -161,8 +161,7 @@ def test_circle_boss_joins_plate() -> None:
 
 
 def split_body_graph(
-    join_profile: Rectangle,
-    *,
+    *join_profiles: Rectangle,
     join_position: tuple[float, float, float] = (0, 0, 4),
 ) -> Graph:
     graph = Graph()
@@ -173,7 +172,7 @@ def split_body_graph(
     graph.add(
         Sketch(
             "join_sketch",
-            entities=[join_profile],
+            entities=list(join_profiles),
             position=join_position,
         )
     )
@@ -221,6 +220,74 @@ def test_disjoint_join_next_to_split_body_is_structured_error() -> None:
         regenerate(graph)
 
     assert caught.value.error["code"] == "JOIN_NO_CONTACT"
+
+
+def test_split_body_join_names_disjoint_profile_when_another_attaches() -> None:
+    graph = split_body_graph(
+        Rectangle("attached_profile", 2, 2, position=(-5, 0)),
+        Rectangle("disjoint_profile", 2, 2, position=(20, 0)),
+    )
+
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+
+    assert caught.value.error["code"] == "JOIN_NO_CONTACT"
+    assert caught.value.error["entities"] == ["disjoint_profile"]
+
+
+def containment_graph(*, target_inside_tool: bool) -> Graph:
+    graph = Graph()
+    target_size, target_z = ((2, 1) if target_inside_tool else (10, 0))
+    tool_size, tool_z = ((10, 0) if target_inside_tool else (2, 1))
+    graph.add(
+        Sketch(
+            "target_sketch",
+            entities=[Rectangle("target_profile", target_size, target_size)],
+            position=(0, 0, target_z),
+        )
+    )
+    graph.add(Extrude("target", sketch="target_sketch", height=1 if target_inside_tool else 3))
+    graph.add(
+        Sketch(
+            "tool_sketch",
+            entities=[Rectangle("tool_profile", tool_size, tool_size)],
+            position=(0, 0, tool_z),
+        )
+    )
+    graph.add(
+        Extrude(
+            "join",
+            sketch="tool_sketch",
+            height=3 if target_inside_tool else 1,
+            operation="join",
+            target="target",
+        )
+    )
+    return graph
+
+
+def test_join_accepts_tool_fully_inside_target() -> None:
+    result = regenerate(containment_graph(target_inside_tool=False))
+
+    assert isclose(result.shapes["join"].volume, result.shapes["target"].volume)
+    assert result.joined_material["join"] is True
+    assert result.resolve(Reference("target", "cap_end")).status is Status.OK
+    assert result.resolve(Reference("join", "cap_end")).status is Status.EMPTY
+
+
+def test_join_accepts_target_fully_inside_tool() -> None:
+    result = regenerate(containment_graph(target_inside_tool=True))
+    shape = result.shapes["join"]
+
+    assert isclose(shape.volume, 10 * 10 * 3)
+    assert len(shape.solids()) == 1
+    assert result.joined_material["join"] is True
+    assert result.resolve(Reference("join", "cap_end")).status is Status.OK
+    assert {
+        candidate.key.body
+        for candidates in result.provenance.values()
+        for candidate in candidates
+    } == {BodySource("target", "target_profile")}
 
 
 def join_contact_graph(*profiles: Rectangle | Circle) -> Graph:
