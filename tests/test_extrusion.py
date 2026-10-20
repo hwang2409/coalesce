@@ -2,6 +2,7 @@ from math import isclose, pi
 
 import pytest
 from build123d import Face
+from OCP.BRepCheck import BRepCheck_Analyzer
 
 from coalesce.extrusion import extrude_sketch
 from coalesce.graph import Circle, Extrude, GraphError, Rectangle, Sketch
@@ -68,6 +69,7 @@ def test_nested_profile_is_a_hole_in_one_solid():
 
     assert len(result.shape.solids()) == 1
     assert isclose(result.shape.volume, (100 - pi * 4) * 3, rel_tol=1e-7)
+    assert BRepCheck_Analyzer(result.shape.wrapped).IsValid()
     assert len(by_role(result, "side(hole)")) == 1
 
 
@@ -97,6 +99,73 @@ def test_overlapping_non_nested_profiles_are_a_structured_error():
 
     assert caught.value.error["code"] == "overlapping_profiles"
     assert set(caught.value.error["entities"]) == {"wide", "tall"}
+
+
+def test_internally_tangent_profile_is_a_structured_error():
+    sketch = Sketch(
+        "sk",
+        entities=[Rectangle("box", 10, 10), Circle("hole", 5)],
+    )
+
+    with pytest.raises(GraphError) as caught:
+        extrude_sketch(Extrude("part", sketch="sk", height=3), sketch)
+
+    assert caught.value.error["code"] == "touching_profiles"
+    assert set(caught.value.error["entities"]) == {"box", "hole"}
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        Rectangle("corner", 2, 2, position=(2, 2)),
+        Rectangle("edge", 2, 2, position=(2, 0)),
+    ],
+    ids=["external-tangency", "shared-edge"],
+)
+def test_touching_disjoint_profiles_are_a_structured_error(second):
+    sketch = Sketch("sk", entities=[Rectangle("first", 2, 2), second])
+
+    with pytest.raises(GraphError) as caught:
+        extrude_sketch(Extrude("parts", sketch="sk", height=3), sketch)
+
+    assert caught.value.error["code"] == "touching_profiles"
+    assert set(caught.value.error["entities"]) == {"first", second.id}
+
+
+def test_gap_above_tolerance_creates_valid_disjoint_solids():
+    sketch = Sketch(
+        "sk",
+        entities=[
+            Rectangle("a", 2, 2),
+            Rectangle("b", 2, 2, position=(2.00001, 0)),
+        ],
+    )
+
+    result = extrude_sketch(Extrude("parts", sketch="sk", height=3), sketch)
+
+    assert len(result.shape.solids()) == 2
+    assert all(BRepCheck_Analyzer(solid.wrapped).IsValid() for solid in result.shape.solids())
+
+
+def test_disjoint_profiles_have_distinct_body_identity_and_scope():
+    from coalesce.references import BodySource, Reference, Status, resolve
+
+    sketch = Sketch(
+        "sk",
+        entities=[Rectangle("a", 2, 2), Rectangle("b", 2, 2, position=(4, 0))],
+    )
+
+    result = extrude_sketch(Extrude("parts", sketch="sk", height=3), sketch)
+    bodies = {candidate.key.body for candidate in result.candidates}
+
+    assert bodies == {BodySource("parts", "a"), BodySource("parts", "b")}
+    selected = resolve(
+        Reference("parts", "cap_end", body=BodySource("parts", "b")),
+        {"parts": result.candidates},
+    )
+    assert selected.status is Status.OK
+    assert len(selected.candidates) == 1
+    assert isclose(selected.candidates[0].entity.center().X, 4)
 
 
 def test_segment_sources_include_sketch_entity_and_segment_ids():

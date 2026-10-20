@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from math import isclose
 
 from build123d import Compound, Edge, Face, Location, Shape, Wire
@@ -18,6 +19,14 @@ from .references import Candidate, SketchSegmentSource
 class ExtrusionResult:
     shape: Shape
     candidates: list[Candidate]
+
+
+class _ProfileRelation(Enum):
+    DISJOINT = "disjoint"
+    LEFT_IN_RIGHT = "left_in_right"
+    RIGHT_IN_LEFT = "right_in_left"
+    TOUCHING = "touching"
+    OVERLAP = "overlap"
 
 
 @dataclass
@@ -69,27 +78,50 @@ def _intersection_area(left: Face, right: Face) -> float:
     return sum(face.area for face in intersection or [])
 
 
+def _profile_relation(left: _Profile, right: _Profile) -> _ProfileRelation:
+    tolerance = 1e-7
+    overlap = _intersection_area(left.face, right.face)
+    left_inside = isclose(overlap, left.face.area, rel_tol=1e-9, abs_tol=tolerance)
+    right_inside = isclose(overlap, right.face.area, rel_tol=1e-9, abs_tol=tolerance)
+    boundaries_touch = left.wire.distance_to(right.wire) <= tolerance
+    if left_inside != right_inside:
+        if boundaries_touch:
+            return _ProfileRelation.TOUCHING
+        return _ProfileRelation.LEFT_IN_RIGHT if left_inside else _ProfileRelation.RIGHT_IN_LEFT
+    if isclose(overlap, 0.0, abs_tol=tolerance):
+        return _ProfileRelation.TOUCHING if boundaries_touch else _ProfileRelation.DISJOINT
+    return _ProfileRelation.OVERLAP
+
+
+def _pair_error(sketch: Sketch, left: _Profile, right: _Profile, relation: _ProfileRelation) -> None:
+    if relation not in (_ProfileRelation.TOUCHING, _ProfileRelation.OVERLAP):
+        return
+    code = "touching_profiles" if relation is _ProfileRelation.TOUCHING else "overlapping_profiles"
+    message = (
+        "sketch profile boundaries touch"
+        if relation is _ProfileRelation.TOUCHING
+        else "sketch profiles overlap without nesting"
+    )
+    raise GraphError(
+        code,
+        message,
+        sketch=sketch.id,
+        entities=sorted([left.entity.id, right.entity.id]),
+    )
+
+
 def _organize_profiles(sketch: Sketch, location: Location) -> list[_Profile]:
     profiles = [_profile(entity, location) for entity in sketch.entities]
     containers: list[list[int]] = [[] for _ in profiles]
     for left_index, left in enumerate(profiles):
         for right_index in range(left_index + 1, len(profiles)):
             right = profiles[right_index]
-            overlap = _intersection_area(left.face, right.face)
-            if isclose(overlap, 0.0, abs_tol=1e-7):
-                continue
-            left_inside = isclose(overlap, left.face.area, rel_tol=1e-9, abs_tol=1e-7)
-            right_inside = isclose(overlap, right.face.area, rel_tol=1e-9, abs_tol=1e-7)
-            if left_inside != right_inside:
-                inner, outer = (left_index, right_index) if left_inside else (right_index, left_index)
-                containers[inner].append(outer)
-                continue
-            raise GraphError(
-                "overlapping_profiles",
-                "sketch profiles overlap without nesting",
-                sketch=sketch.id,
-                entities=sorted([left.entity.id, right.entity.id]),
-            )
+            relation = _profile_relation(left, right)
+            _pair_error(sketch, left, right, relation)
+            if relation is _ProfileRelation.LEFT_IN_RIGHT:
+                containers[left_index].append(right_index)
+            elif relation is _ProfileRelation.RIGHT_IN_LEFT:
+                containers[right_index].append(left_index)
 
     for index, profile in enumerate(profiles):
         profile.depth = len(containers[index])
