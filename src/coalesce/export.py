@@ -310,14 +310,16 @@ def _publish_step(
             hint="check that the absolute parent directory is writable and retry with a new path",
         ) from error
     finally:
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-        if temporary_fd is not None:
-            os.close(temporary_fd)
-        os.close(directory_fd)
+        try:
+            if temporary_name is not None:
+                try:
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            os.close(directory_fd)
 
 
 def _export_fields(
