@@ -234,9 +234,15 @@ def test_json_round_trip_regenerates_the_same_geometry():
     assert snapshot(restored) == snapshot(original)
 
 
-def test_step_c_feature_fails_clearly_instead_of_guessing():
+def test_fillet_requires_an_edge_reference():
     graph = base()
     graph.add(Fillet("round", target="base"))
 
-    with pytest.raises(NotImplementedError, match="Fillet regeneration requires step C"):
+    with pytest.raises(GraphError) as caught:
         regenerate(graph)
+
+    assert caught.value.error == {
+        "code": "empty_fillet_edges",
+        "message": "fillet round requires at least one edge reference",
+        "feature": "round",
+    }

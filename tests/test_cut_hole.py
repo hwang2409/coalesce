@@ -245,6 +245,27 @@ def test_cut_splitting_one_body_keeps_generated_faces_on_original_body() -> None
     )
 
 
+def test_coplanar_dual_history_resolves_both_sources_as_merged() -> None:
+    graph = base_graph()
+    add_tool_sketch(graph, "tool", "corner", 2, 2, position=(-5, -5, 0))
+    graph.add(Cut("touch", target="base", tool="tool", depth=2))
+
+    result = regenerate(graph)
+    target = result.resolve(
+        Reference("base", "cap_start", Cardinality.ONE_OR_MORE)
+    )
+    tool = result.resolve(
+        Reference("touch", "pocket_floor", Cardinality.ONE_OR_MORE)
+    )
+
+    assert target.status is Status.MERGED
+    assert tool.status is Status.MERGED
+    assert len(target.candidates) == 2
+    assert len(tool.candidates) == 1
+    assert target.candidates[0].entity.is_same(tool.candidates[0].entity)
+    assert isclose(result.shapes["touch"].volume, 1000)
+
+
 def test_cut_through_all_cuts_both_sides_of_sketch_plane() -> None:
     graph = base_graph()
     add_tool_sketch(graph, "tool", "slot", 2, 2, position=(0, 0, 5))
