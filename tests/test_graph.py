@@ -11,6 +11,7 @@ from coalesce import (
     Extrude,
     Fillet,
     Graph,
+    GraphError,
     Rectangle,
     Reference,
     Sketch,
@@ -57,6 +58,28 @@ def snapshot(result):
             ],
         },
     }
+
+
+def test_duplicate_sketch_entity_ids_fail_graph_validation_before_regen():
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "sk",
+            entities=[
+                Rectangle("dup", 2, 2),
+                Rectangle("dup", 2, 2, position=(4, 0)),
+            ],
+        )
+    )
+    graph.add(Extrude("parts", sketch="sk", height=3))
+
+    with pytest.raises(GraphError) as caught:
+        graph.validate()
+
+    assert caught.value.error["code"] == "duplicate_entity_id"
+    assert caught.value.error["sketch"] == "sk"
+    assert caught.value.error["entity"] == "dup"
+
 
 
 def test_case_1_cap_end_height_geometry():
@@ -152,14 +175,17 @@ def test_anti_guessing_rotated_rectangle_uses_constructed_segment_history():
     assert isclose(wall.center().Y, -5.5)
 
 
-def test_json_round_trip_preserves_typed_segment_source():
+def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
+    from coalesce import BodySource
+
     graph = base()
     source = SketchSegmentSource("sk", "profile", "left")
+    body = BodySource("base", "profile")
     graph.add(
         Fillet(
             "round",
             target="base",
-            edges=[Reference("base", "side(left)", source=source)],
+            edges=[Reference("base", "side(left)", source=source, body=body)],
         )
     )
 
@@ -167,6 +193,7 @@ def test_json_round_trip_preserves_typed_segment_source():
 
     reference = restored.nodes["round"].edges[0]
     assert reference.source == source
+    assert reference.body == body
 
 
 def test_json_round_trip_regenerates_the_same_geometry():
