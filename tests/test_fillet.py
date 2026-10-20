@@ -162,6 +162,41 @@ def test_fillet_accepts_edge_adjacent_to_cut_generated_wall_and_floor() -> None:
     assert result.shapes["pocket_round"].volume > result.shapes["pocket"].volume
 
 
+@pytest.mark.parametrize(
+    ("graph", "reference", "status"),
+    [
+        (base_graph(), Reference("base", "missing"), Status.EMPTY),
+        (
+            Graph(),
+            Reference("parts", "between(side(bottom),cap_end)"),
+            Status.AMBIGUOUS,
+        ),
+    ],
+)
+def test_fillet_rejects_unresolved_or_ambiguous_edge_reference(
+    graph: Graph, reference: Reference, status: Status
+) -> None:
+    if status is Status.AMBIGUOUS:
+        graph.add(
+            Sketch(
+                "parts_sketch",
+                entities=[
+                    Rectangle("left", 2, 2, position=(-2, 0)),
+                    Rectangle("right", 2, 2, position=(2, 0)),
+                ],
+            )
+        )
+        graph.add(Extrude("parts", sketch="parts_sketch", height=2))
+    graph.add(Fillet("round", target=reference.feature, edges=[reference], radius=0.25))
+
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+
+    assert caught.value.error["code"] == "reference_failed"
+    assert caught.value.error["resolution"]["status"] == status.value
+    assert caught.value.error["resolution"]["reference"] == reference.to_dict()
+
+
 def test_fillet_radius_too_large_is_structured_without_kernel_wording() -> None:
     graph = base_graph()
     graph.add(Fillet("round", target="base", edges=[top_bottom_edge()], radius=100))

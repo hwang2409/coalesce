@@ -54,7 +54,7 @@ ElementSource = SketchSegmentSource | ToolCapSource | HoleSurfaceSource | str
 class ElementKey:
     feature: str
     role: str
-    source: ElementSource | tuple[ElementKey, ...] | None = None
+    source: ElementSource | ElementKey | tuple[ElementKey, ...] | None = None
     body: BodySource | None = None
 
 
@@ -94,7 +94,7 @@ class Reference:
     role: str
     cardinality: Cardinality = Cardinality.ONE
     count: int | None = None
-    source: ElementSource | None = None
+    source: ElementSource | ElementKey | None = None
     body: BodySource | None = None
     filters: list[Filter] = field(default_factory=list)
 
@@ -221,13 +221,24 @@ def _filter(candidates: list[Candidate], predicate: Filter) -> _FilterResult:
     return _FilterResult(selected, tied=len(selected) > 1)
 
 
+def reference_matches_key(ref: Reference, key: ElementKey) -> bool:
+    return (
+        key.feature == ref.feature
+        and key.role == ref.role
+        and (ref.source is None or key.source == ref.source)
+        and (ref.body is None or key.body == ref.body)
+    )
+
+
 def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> _FilterResult:
     candidates = [
         candidate
-        for candidate in provenance.get(ref.feature, [])
-        if candidate.key.role == ref.role
-        and (ref.source is None or candidate.key.source == ref.source)
-        and (ref.body is None or candidate.key.body == ref.body)
+        for feature_candidates in provenance.values()
+        for candidate in feature_candidates
+        if any(
+            reference_matches_key(ref, key)
+            for key in (candidate.key, *candidate.merged_from)
+        )
     ]
     tied = False
     for predicate in ref.filters:
