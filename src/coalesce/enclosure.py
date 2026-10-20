@@ -376,7 +376,20 @@ def _opening_xy_bounds(
     return bounds, span
 
 
-def _opening_tool(
+@dataclass(frozen=True)
+class _OpeningBounds:
+    minimum_x: float
+    maximum_x: float
+    minimum_y: float
+    maximum_y: float
+    bottom: float
+    top: float
+    width: float
+    height: float
+    cuts_floor: bool
+
+
+def _opening_bounds(
     node: PortCutout,
     footprint: dict,
     wall: str,
@@ -386,7 +399,7 @@ def _opening_tool(
     board_top: float,
     floor_top: float,
     target_candidates: list[Candidate],
-) -> tuple[Shape, list[Candidate], dict]:
+) -> _OpeningBounds:
     if footprint_bounds is None:
         center_x, center_y = footprint["position"]
         width = node.envelope_width
@@ -412,7 +425,7 @@ def _opening_tool(
             hint="raise bottomOffset or reduce clearance",
         )
 
-    (minimum_x, maximum_x, minimum_y, maximum_y), wall_span = _opening_xy_bounds(
+    bounds, wall_span = _opening_xy_bounds(
         wall,
         center_x,
         center_y,
@@ -421,6 +434,7 @@ def _opening_tool(
         outer,
         target_candidates,
     )
+    minimum_x, maximum_x, minimum_y, maximum_y = bounds
     tangent_min = minimum_y if wall in {"left", "right"} else minimum_x
     tangent_max = maximum_y if wall in {"left", "right"} else maximum_x
     if wall_span is None:
@@ -442,20 +456,58 @@ def _opening_tool(
             openingSpan=[tangent_min, tangent_max],
             wallSpan=[straight_min, straight_max],
         )
+    return _OpeningBounds(
+        minimum_x,
+        maximum_x,
+        minimum_y,
+        maximum_y,
+        bottom,
+        top,
+        opening_width,
+        opening_height,
+        envelope_bottom < floor_top,
+    )
 
+
+def _opening_tool(
+    node: PortCutout,
+    footprint: dict,
+    wall: str,
+    footprint_bounds: tuple[float, float, float, float] | None,
+    inner: Wire,
+    outer: Wire,
+    board_top: float,
+    floor_top: float,
+    target_candidates: list[Candidate],
+) -> tuple[Shape, list[Candidate], dict]:
+    bounds = _opening_bounds(
+        node,
+        footprint,
+        wall,
+        footprint_bounds,
+        inner,
+        outer,
+        board_top,
+        floor_top,
+        target_candidates,
+    )
     tool = Box(
-        maximum_x - minimum_x,
-        maximum_y - minimum_y,
-        top - bottom,
+        bounds.maximum_x - bounds.minimum_x,
+        bounds.maximum_y - bounds.minimum_y,
+        bounds.top - bounds.bottom,
         align=(Align.MIN, Align.MIN, Align.MIN),
-    ).moved(Location((minimum_x, minimum_y, bottom)))
+    ).moved(Location((bounds.minimum_x, bounds.minimum_y, bounds.bottom)))
     tool_body = BodySource(node.id, footprint["id"])
     candidates = []
     for face in tool.faces():
         box = face.bounding_box()
-        if math.isclose(box.min.Z, bottom, abs_tol=1e-7) and math.isclose(box.max.Z, bottom, abs_tol=1e-7):
+        if math.isclose(box.min.Z, bounds.bottom, abs_tol=1e-7) and math.isclose(
+            box.max.Z, bounds.bottom, abs_tol=1e-7
+        ):
             role = "port_bottom"
-        elif math.isclose(box.min.Z, top, abs_tol=1e-7) and math.isclose(box.max.Z, top, abs_tol=1e-7):
+        elif math.isclose(box.min.Z, bounds.top, abs_tol=1e-7) and math.isclose(
+            box.max.Z, bounds.top, abs_tol=1e-7
+        ):
             role = "port_top"
         else:
             role = "port_side"
@@ -466,14 +518,14 @@ def _opening_tool(
         "wall": wall,
         "envelopeSource": node.envelope_source,
         "opening": {
-            "width": {"value": round(opening_width, 12), "unit": "mm"},
-            "height": {"value": round(opening_height, 12), "unit": "mm"},
-            "bottom": {"value": round(bottom, 12), "unit": "mm"},
-            "top": {"value": round(top, 12), "unit": "mm"},
+            "width": {"value": round(bounds.width, 12), "unit": "mm"},
+            "height": {"value": round(bounds.height, 12), "unit": "mm"},
+            "bottom": {"value": round(bounds.bottom, 12), "unit": "mm"},
+            "top": {"value": round(bounds.top, 12), "unit": "mm"},
         },
-        "cutsBelowBoardTop": bottom < board_top,
+        "cutsBelowBoardTop": bounds.bottom < board_top,
     }
-    if envelope_bottom < floor_top:
+    if bounds.cuts_floor:
         metadata["cutsFloor"] = True
     return tool, candidates, metadata
 
