@@ -101,11 +101,9 @@ def wait_for(store, revision):
     return store.scene(revision)
 
 
-@pytest.mark.parametrize(
-    ("target", "lineages"),
-    [("holes", [[*BASE, HOLES, PORT]]), ("wall", [[*BASE, HOLES], [*BASE, PORT]])],
-)
-def test_scene_names_the_change_and_the_features_of_each_part(tmp_path, target, lineages):
+def test_scene_names_the_change_and_the_features_of_each_part(tmp_path):
+    target = "holes"
+    lineages = [[*BASE, HOLES, PORT]]
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
     changes = []
@@ -118,7 +116,6 @@ def test_scene_names_the_change_and_the_features_of_each_part(tmp_path, target, 
         {"featureId": arguments.get("featureId") or arguments["sketchId"], "summary": text.format(target=target)}
         for (_, arguments), text in zip(enclosure(target), CHANGES, strict=True)
     ]
-    # the fork leaves two coincident 60 x 40 x 25 bodies; the features tell them apart
     parts = scene["parts"]
     assert [part["features"] for part in parts] == lineages
     assert all(part["size"] == pytest.approx([60, 40, 25]) for part in parts)
@@ -264,32 +261,26 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         assert kernel["repair"].startswith("These values do not make valid geometry")
         assert "BRep" not in kernel["status"]
 
-        # the review's fork: a second cut into a body another cut already consumed
+        # Continue the terminal lineage; body forks are rejected by graph validation.
         slot = rectangle_sketch(request_id="slot-sketch", revision=revision, sketch_id="slot_sketch",
                                 entity_id="slot", width=20, height=3, center=(0, -8))
         revision = commit("sketch", slot)
         revision = commit("feature", cut(request_id="slot", revision=revision, feature_id="slot_cut",
-                                         target="holes", tool="slot_sketch"))
-        fork = step("fork-top", wait={"revision": revision}, do=[{"click": "Top"}],
-                    flat={"fx": [0.25, 0.75], "fy": [0.55, 0.75]})
-        assert len(fork["parts"]) == 2
-        # the floor of both bodies lies in one plane: it must read as one flat color, not
-        # z-fighting triangles
-        assert fork["flat"]["pixels"] > 1000, fork["flat"]
-        assert fork["flat"]["off"] <= fork["flat"]["pixels"] * 0.002, fork["flat"]
-        step("fork-iso", do=[{"click": "Iso"}])
-        # the two bodies of the fork have the same label: each title adds the feature that ends it
-        names = ["plate_extrude \u00b7 portcut", "plate_extrude \u00b7 slot_cut"]
+                                         target="portcut", tool="slot_sketch"))
+        model = step("slot-top", wait={"revision": revision}, do=[{"click": "Top"}])
+        assert len(model["parts"]) == 1
+        step("slot-iso", do=[{"click": "Iso"}])
+        names = ["plate_extrude"]
         # a real tap (touch on narrow) on a row shows its details and does not hide the part
-        tapped = step("fork-tap", do=[{"blur": True}, {"tapPart": 1}])
-        assert tapped["pressed"] == ["true", "true"] and tapped["scene"]["visible"] == [True, True]
-        assert tapped["details"][1] == "4 holes: nw, ne, sw, se. Built by plate_extrude \u203a wall \u203a holes \u203a slot_cut"
+        tapped = step("slot-tap", do=[{"blur": True}, {"tapPart": 0}])
+        assert tapped["pressed"] == ["true"] and tapped["scene"]["visible"] == [True]
+        assert tapped["details"][0] == "4 holes: nw, ne, sw, se. Built by plate_extrude \u203a wall \u203a holes \u203a portcut \u203a slot_cut"
         assert tapped["names"] == names
-        # the swatch is the show/hide control, for that part only
-        hidden = step("fork-hide", do=[{"toggle": 1}])
-        assert hidden["pressed"] == ["true", "false"] and hidden["scene"]["visible"] == [True, False]
-        shown = step("fork-show", do=[{"toggle": 1}, {"blur": True}])
-        assert shown["pressed"] == ["true", "true"] and shown["scene"]["visible"] == [True, True]
+        # the swatch is the show/hide control.
+        hidden = step("slot-hide", do=[{"toggle": 0}])
+        assert hidden["pressed"] == ["false"] and hidden["scene"]["visible"] == [False]
+        shown = step("slot-show", do=[{"toggle": 0}, {"blur": True}])
+        assert shown["pressed"] == ["true"] and shown["scene"]["visible"] == [True]
 
         # keyboard only: tab from the page start to a part row, then to a view button
         keys = step("keyboard-part", do=[{"blur": True}, {"tabTo": names[0]}])
