@@ -83,6 +83,7 @@ const settledAfter = (frames) => page.waitForFunction(
   { timeout: 15000 },
 );
 const settled = () => page.waitForFunction(() => window.coalesceViewer.drawn.settled, null, { timeout: 15000 });
+const currentFrames = () => page.evaluate(() => window.coalesceViewer.drawn.frames);
 
 await page.goto(url);
 await step('empty', async () => {
@@ -109,17 +110,19 @@ const second = await step('revision-2', async () => ({
 }));
 await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
 await settledAfter(second.scene.frames);
-const failed = await step('failure', async () => ({
+await step('failure', async () => ({
   label: await revision().textContent(),
   failure: await page.locator('#failure').innerText(),
   failureColor: await page.locator('#failure-title').evaluate((el) => getComputedStyle(el).color),
   ...(await drawn()),
 }));
+const beforeFront = await currentFrames();
 await page.getByRole('button', { name: 'Front' }).click();
-await settledAfter(failed.scene.frames);
-const front = await step('front', async () => ({ pressed: await page.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), ...(await drawn()) }));
+await settledAfter(beforeFront);
+await step('front', async () => ({ pressed: await page.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), ...(await drawn()) }));
+const beforeIso = await currentFrames();
 await page.getByRole('button', { name: 'Iso' }).click();
-await settledAfter(front.scene.frames);
+await settledAfter(beforeIso);
 const iso = await drawn(); // the model's place before the connection drops
 await page.locator('#stale').waitFor({ state: 'visible', timeout: 15000 });
 await settledAfter(iso.scene.frames);
