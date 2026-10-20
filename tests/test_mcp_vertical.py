@@ -10,6 +10,8 @@ import pytest
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+from coalesce.document_store import Document, DocumentStore
+from coalesce.graph import Extrude, Graph, Hole, Rectangle, Sketch
 from coalesce.schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
 from coalesce.server import create_server
 from coalesce.service import (
@@ -129,6 +131,25 @@ async def test_real_stdio_path_builds_plate_and_survives_restart(tmp_path):
     )
     assert restarted[0] == first[2]
     assert restarted[1] == first[3]
+
+
+def test_measurements_include_only_terminal_bodies(tmp_path):
+    graph = Graph()
+    graph.add(Sketch("plate_profile", entities=[Rectangle("outline", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_profile", height=6))
+    graph.add(Hole("mounting_hole", target="plate", diameter=10, depth=None))
+    path = tmp_path / "plate.coalesce.json"
+    DocumentStore(path).save(Document(graph, revision=2, receipts=[]))
+
+    measurements = DocumentService(path).query({"select": {"kind": "measurements"}})
+
+    assert measurements["solidCount"] == 1
+    assert measurements["volume"]["value"] == pytest.approx(14400 - 150 * math.pi)
+    assert measurements["bbox"] == {
+        "x": {"value": 60, "unit": "mm"},
+        "y": {"value": 40, "unit": "mm"},
+        "z": {"value": 6, "unit": "mm"},
+    }
 
 
 def test_replay_conflict_and_stale_revision_are_atomic(tmp_path):

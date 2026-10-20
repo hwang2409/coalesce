@@ -31,8 +31,10 @@ Use `sketch` to create an XY rectangle, then `feature` to extrude it. Mutations 
 current `expectedRevision` and a unique `requestId`. Full replay receipts cover the last
 100 mutations; compact request-id/hash tombstones reject changed reuse for the last 10,000.
 All lengths are explicit mm quantities. Rectangle angles accept `deg` or `rad`.
-Use `query` with `measurements` for bbox, area, volume, and solid count. Use `check` with
-`valid_brep` before relying on the model. Domain failures have `ok: false` and a stable code.
+Use `query` with `measurements` for bbox, area, volume, and solid count. `query` with
+`server` returns the full viewer link, including its fragment access token, so the agent can
+show the link to the user. Use `check` with `valid_brep` before relying on the model.
+Domain failures have `ok: false` and a stable code.
 """
 
 PLATE_EXAMPLE = """# 60 x 40 x 6 mm plate

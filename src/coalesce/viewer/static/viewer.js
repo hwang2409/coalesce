@@ -388,7 +388,7 @@ function showFailure() {
     return chip;
   }));
   ids.hidden = !failure.featureIds.length;
-  $('failure-error').textContent = failure.error;
+  $('failure-error').textContent = `${failure.error.code}: ${failure.error.message}`;
 }
 
 // loads run one at a time, then catch up to the newest announced revision,
@@ -466,6 +466,9 @@ async function connect() {
   }
   if (await authorized() !== true) {
     setLink('denied', 'No access');
+    document.querySelector('.revision-line').hidden = true;
+    document.querySelector('.parts').hidden = true;
+    $('revision-meta').textContent = 'Open the link printed as “coalesce viewer:” to see the current model';
     notice('Open the viewer link that coalesce printed',
       'This page needs the access key from that link. The key is part of the address after #token=.');
     return;

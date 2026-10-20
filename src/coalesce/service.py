@@ -6,8 +6,9 @@ import hashlib
 import json
 import logging
 import math
+import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
@@ -28,6 +29,7 @@ from .references import (
 )
 from .regen import RegenResult, regenerate
 from .serialization import dumps, loads
+from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
 _ALLOWED_FEATURE_KINDS = ["extrude", "boolean", "hole", "fillet"]
@@ -404,15 +406,77 @@ def _apply_feature(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     return operation.featureId
 
 
+def _terminal_shapes(result: RegenResult) -> list[tuple[str, Any]]:
+    consumed = {
+        node.target
+        for node in result.graph.nodes.values()
+        if getattr(node, "target", None) in result.shapes
+    }
+    return [(feature, shape) for feature, shape in result.shapes.items() if feature not in consumed]
+
+
+def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
+    for feature, shape in _terminal_shapes(result):
+        source = feature
+        while target := getattr(result.graph.nodes[source], "target", None):
+            source = target
+        bodies = []
+        for candidates in result.provenance.values():
+            for candidate in candidates:
+                body = candidate.key.body
+                if body is not None and body.feature == source and body not in bodies:
+                    bodies.append(body)
+        for index, solid in enumerate(shape.solids()):
+            body_name = bodies[index].entity if index < len(bodies) else str(index + 1)
+            yield ScenePart(f"{feature}/{body_name}", solid)
+
+
+class _ScenePublisher:
+    """Moves committed scene work off the MCP response path, in commit order."""
+
+    def __init__(self, store: ViewerSceneStore):
+        self._store = store
+        self._jobs: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue()
+        threading.Thread(target=self._run, name="coalesce-viewer-publisher", daemon=True).start()
+
+    def publish(self, revision: int, result: RegenResult) -> None:
+        self._jobs.put(("publish", (revision, result)))
+
+    def publish_failure(self, feature_ids: list[str], error: dict[str, str]) -> None:
+        self._jobs.put(("publish_failure", (feature_ids, error)))
+
+    def _run(self) -> None:
+        while True:
+            method, arguments = self._jobs.get()
+            try:
+                if method == "publish":
+                    revision, result = arguments
+                    self._store.publish(revision, _scene_parts(result))
+                else:
+                    self._store.publish_failure(*arguments)
+            except Exception:  # noqa: BLE001 - viewer work must not affect document calls.
+                _LOG.exception("viewer publish failed")
+
+
 class DocumentService:
     """The only writer for one persisted, revisioned document."""
 
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        scene_store: ViewerSceneStore | None = None,
+        viewer_url: str | None = None,
+    ):
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
         self._regen = regenerate(self._document.graph)
         self._assert_valid(self._regen)
+        self._viewer_url = viewer_url
+        self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
+        if self._publisher is not None and self._regen.shapes:
+            self._publisher.publish(self._document.revision, self._regen)
 
     @property
     def revision(self) -> int:
@@ -421,6 +485,16 @@ class DocumentService:
     def _assert_valid(self, result: RegenResult) -> None:
         if any(not BRepCheck_Analyzer(shape.wrapped).IsValid() for shape in result.shapes.values()):
             raise RequestError("INVALID_BREP", "regeneration produced invalid geometry")
+
+    def _publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
+        if self._publisher is None:
+            return
+        feature_id = payload.get("featureId") or payload.get("sketchId")
+        error = result["error"]
+        self._publisher.publish_failure(
+            [feature_id] if isinstance(feature_id, str) else [],
+            {"code": error["code"], "message": error["message"]},
+        )
 
     def _mutate(
         self,
@@ -510,13 +584,15 @@ class DocumentService:
                 durable = self.store.save(document)
                 self._document = document
                 self._regen = result
+                if self._publisher is not None:
+                    self._publisher.publish(document.revision, result)
                 if not durable:
                     _LOG.warning(
                         "document rename committed but directory fsync failed; durability is unconfirmed"
                     )
                 return response
             except RequestError as error:
-                return _safe_error(
+                failure = _safe_error(
                     self._document.revision,
                     request_id,
                     error.code,
@@ -525,6 +601,8 @@ class DocumentService:
                     retryable=error.code == "REVISION_CONFLICT",
                     **error.details,
                 )
+                self._publish_failure(payload, failure)
+                return failure
             except GraphError as error:
                 code = error.error["code"].upper()
                 known = {
@@ -537,22 +615,26 @@ class DocumentService:
                     "MERGED",
                     "AMBIGUOUS",
                 }
-                return _safe_error(
+                failure = _safe_error(
                     self._document.revision,
                     request_id,
                     code if code in known else "KERNEL_OPERATION_FAILED",
                     "the modeling operation could not produce valid geometry",
                     operation=operation,
                 )
+                self._publish_failure(payload, failure)
+                return failure
             except Exception:  # noqa: BLE001 - translate all kernel failures at this seam.
                 _LOG.exception("kernel failure during %s", operation)
-                return _safe_error(
+                failure = _safe_error(
                     self._document.revision,
                     request_id,
                     "KERNEL_OPERATION_FAILED",
                     "the modeling operation could not produce valid geometry",
                     operation=operation,
                 )
+                self._publish_failure(payload, failure)
+                return failure
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._mutate(
@@ -593,6 +675,8 @@ class DocumentService:
                 return {**base, "graph": json.loads(dumps(self._document.graph))}
             if kind == "revision":
                 return base
+            if kind == "server":
+                return {**base, "viewerUrl": self._viewer_url}
             if kind == "measurements":
                 return {**base, **self._metrics()}
             if kind == "reference":
@@ -635,7 +719,7 @@ class DocumentService:
             )
 
     def _metrics(self) -> dict[str, Any]:
-        shapes = list(self._regen.shapes.values())
+        shapes = [shape for _, shape in _terminal_shapes(self._regen)]
         if not shapes:
             dimensions = (0.0, 0.0, 0.0)
         else:

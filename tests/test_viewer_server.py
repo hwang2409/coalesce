@@ -151,11 +151,18 @@ def test_failure_event_keeps_last_good_scene(served):
     stream = EventStream(server, cookie)
     assert stream.next() == ("revision", {"revision": 1})
 
-    store.publish_failure(["edge_fillet"], "fillet radius too large")
+    store.publish_failure(
+        ["edge_fillet"],
+        {"code": "INVALID_PARAMETER", "message": "fillet radius too large"},
+    )
 
     assert stream.next() == (
         "failure",
-        {"revision": 1, "featureIds": ["edge_fillet"], "error": "fillet radius too large"},
+        {
+            "revision": 1,
+            "featureIds": ["edge_fillet"],
+            "error": {"code": "INVALID_PARAMETER", "message": "fillet radius too large"},
+        },
     )
     stream.close()
     status, _, body = call(server, "GET", "/api/scene/1", cookie=cookie)

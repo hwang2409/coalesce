@@ -272,6 +272,7 @@ QUERY_SCHEMA = {
                         "timeline",
                         "measurements",
                         "reference",
+                        "server",
                     ]
                 },
                 "reference": REFERENCE,
