@@ -282,13 +282,27 @@ def _on_layer(node: list[Any], name: str) -> bool:
     return name in _layer_names(node)
 
 
-def _validated_segments(kind: str, segments: list[Segment]) -> list[Segment]:
-    if any(segment.kind == "line" and segment.start == segment.end for segment in segments):
-        raise ValueError(f"{kind} has a zero-length segment")
+def _validated_segments(context: str, segments: list[Segment]) -> list[Segment]:
+    for segment in segments:
+        if segment.kind == "line" and segment.start == segment.end:
+            raise ValueError(f"{context} has a zero-length segment")
+        if segment.kind == "circle" and segment.start == segment.end:
+            raise ValueError(f"{context} has zero radius")
+        if segment.kind == "arc":
+            if segment.mid is None or len({segment.start, segment.mid, segment.end}) < 3:
+                raise ValueError(f"{context} has zero length")
+            points = [(_to_nm(x), _to_nm(y)) for x, y in (segment.start, segment.mid, segment.end)]
+            if ((points[1][0] - points[0][0]) * (points[2][1] - points[0][1])
+                    == (points[1][1] - points[0][1]) * (points[2][0] - points[0][0])):
+                raise ValueError(f"{context}: arc points are collinear")
+            try:
+                _arc_geometry(segment)
+            except ValueError as exc:
+                raise ValueError(f"{context}: {exc}") from exc
     return segments
 
 
-def _outline_item(item: list[Any]) -> list[Segment]:
+def _outline_item(item: list[Any], context: str) -> list[Segment]:
     kind = str(item[0])
     ident = _uuid(item)
     if kind in {"gr_poly", "fp_poly"}:
@@ -300,7 +314,7 @@ def _outline_item(item: list[Any]) -> list[Segment]:
         if len(points) < 3 or len(points) != len(_children(pts, "xy")):
             raise ValueError(f"{kind}.pts requires at least three xy points")
         return _validated_segments(
-            kind,
+            context,
             [Segment("line", point, points[(index + 1) % len(points)], id=ident)
              for index, point in enumerate(points)],
         )
@@ -310,34 +324,28 @@ def _outline_item(item: list[Any]) -> list[Segment]:
             raise ValueError(f"{kind} requires start and end")
         points = [start, (end[0], start[1]), end, (start[0], end[1])]
         return _validated_segments(
-            kind,
+            context,
             [Segment("line", points[index], points[(index + 1) % 4], id=ident) for index in range(4)],
         )
     if kind in {"gr_line", "fp_line"}:
         start, end = _point(item, "start"), _point(item, "end")
         if start is None or end is None:
             raise ValueError(f"{kind} requires start and end")
-        return _validated_segments(kind, [Segment("line", start, end, id=ident)])
+        return _validated_segments(context, [Segment("line", start, end, id=ident)])
     if kind in {"gr_arc", "fp_arc"}:
         start, mid, end = _point(item, "start"), _point(item, "mid"), _point(item, "end")
         if start is None or mid is None or end is None:
             raise ValueError(f"{kind} requires start, mid, and end")
-        if len({start, mid, end}) < 3:
-            raise ValueError(f"{kind} has zero length")
-        segment = Segment("arc", start, end, mid, ident)
-        _arc_geometry(segment)
-        return [segment]
+        return _validated_segments(context, [Segment("arc", start, end, mid, ident)])
     if kind in {"gr_circle", "fp_circle"}:
         center, end = _point(item, "center"), _point(item, "end")
         if center is None or end is None:
             raise ValueError(f"{kind} requires center and end")
-        if center == end:
-            raise ValueError(f"{kind} has zero radius")
-        return [Segment("circle", center, end, id=ident)]
+        return _validated_segments(context, [Segment("circle", center, end, id=ident)])
     return []
 
 
-def _transform_segment(segment: Segment, transform: _FootprintTransform) -> Segment:
+def _transform_segment(segment: Segment, transform: _FootprintTransform, context: str) -> Segment:
     transformed = Segment(
         segment.kind,
         transform.point(segment.start),
@@ -345,7 +353,7 @@ def _transform_segment(segment: Segment, transform: _FootprintTransform) -> Segm
         transform.point(segment.mid) if segment.mid else None,
         segment.id,
     )
-    return _validated_segments(segment.kind, [transformed])[0]
+    return _validated_segments(context, [transformed])[0]
 
 
 def _arc_geometry(segment: Segment) -> tuple[tuple[float, float], float, float, float, bool]:
@@ -437,6 +445,8 @@ def _arc_contains_angle(angle: float, start: float, end: float, ccw: bool) -> bo
 
 def _arc_crossings(segment: Segment, y: float) -> list[tuple[float, float]]:
     center, radius, start, end, ccw = _arc_geometry(segment)
+    if radius == 0:
+        raise ValueError("arc has zero radius")
     relative_y = (y - center[1]) / radius
     if not -1.0 <= relative_y <= 1.0:
         return []
@@ -455,6 +465,8 @@ def _arc_crossings(segment: Segment, y: float) -> list[tuple[float, float]]:
 def _circle_crossings(segment: Segment, y: float) -> list[tuple[float, float]]:
     center, edge = segment.start, segment.end
     radius = math.dist(center, edge)
+    if radius == 0:
+        raise ValueError("circle has zero radius")
     relative_y = (y - center[1]) / radius
     if not -1.0 < relative_y < 1.0:
         return []
@@ -558,24 +570,36 @@ def _footprint_transform(node: list[Any], path: str) -> _FootprintTransform:
     return _FootprintTransform(position, rotation, back)
 
 
-def _graphics(node: list[Any], layer: str, transform: _FootprintTransform | None = None) -> list[Segment]:
+def _graphics(
+    node: list[Any],
+    layer: str,
+    transform: _FootprintTransform | None = None,
+    scope: str = "board",
+) -> list[Segment]:
     output: list[Segment] = []
-    for item in node[1:]:
+    for index, item in enumerate(node[1:]):
         if not isinstance(item, list) or not item or item[0] not in _GRAPHICS or not _on_layer(item, layer):
             continue
-        segments = _outline_item(item)
-        output.extend(_transform_segment(segment, transform) for segment in segments) if transform else output.extend(segments)
+        context = f"{scope} {item[0]} {_uuid(item) or f'item[{index}]'}"
+        segments = _outline_item(item, context)
+        if transform:
+            output.extend(_transform_segment(segment, transform, context) for segment in segments)
+        else:
+            output.extend(segments)
     return output
 
 
-def _courtyard(node: list[Any], transform: _FootprintTransform) -> list[Segment]:
+def _courtyard(node: list[Any], transform: _FootprintTransform, scope: str) -> list[Segment]:
     output: list[Segment] = []
-    for item in node[1:]:
+    for index, item in enumerate(node[1:]):
         if not isinstance(item, list) or not item or item[0] not in _GRAPHICS:
             continue
         if not any(layer.endswith("CrtYd") for layer in _layer_names(item)):
             continue
-        output.extend(_transform_segment(segment, transform) for segment in _outline_item(item))
+        context = f"{scope} {item[0]} {_uuid(item) or f'item[{index}]'}"
+        output.extend(
+            _transform_segment(segment, transform, context) for segment in _outline_item(item, context)
+        )
     return output
 
 
@@ -630,14 +654,15 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
             raise ValueError(f"{path}: requires a library id")
         transform = _footprint_transform(node, path)
         footprint_id = _uuid(node) or f"footprint-{len(footprints)}"
-        courtyard = _courtyard(node, transform)
+        scope = f"{path} {node[1]!r}"
+        courtyard = _courtyard(node, transform, scope)
         footprints.append(Footprint(
             footprint_id, _property(node, "Reference", "reference"), _property(node, "Value", "value"),
             str(node[1]), transform.position, transform.rotation, "B" if transform.back else "F",
             courtyard or None, "present" if courtyard else "missing", _models(node),
         ))
         holes.extend(_holes(node, footprint_id, transform, path))
-        edges.extend(_graphics(node, "Edge.Cuts", transform))
+        edges.extend(_graphics(node, "Edge.Cuts", transform, scope))
     return footprints, holes, edges
 
 

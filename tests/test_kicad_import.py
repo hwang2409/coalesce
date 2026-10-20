@@ -328,6 +328,36 @@ def test_zero_length_outline_geometry_is_a_structured_parse_error(tmp_path, inva
     assert board.outline == []
 
 
+@pytest.mark.parametrize("with_other_loop", [False, True])
+def test_footprint_circle_collapsed_by_transform_is_a_named_parse_error(tmp_path, with_other_loop):
+    footprint = """(footprint "CollapsedCircle" (layer "F.Cu") (at 0 0 9)
+      (fp_circle (center -0.000003 -0.000003) (end -0.000003 -0.000002)
+        (layer "Edge.Cuts") (uuid collapsed-circle)))"""
+    items = [footprint]
+    if with_other_loop:
+        items.extend(_polygon([(0, 0), (10, 0), (10, 10), (0, 10)]))
+
+    board = _parse_text(tmp_path, _board(*items))
+
+    assert [error.kind for error in board.errors] == ["parse"]
+    assert "CollapsedCircle" in board.errors[0].message
+    assert "collapsed-circle" in board.errors[0].message
+    assert board.outline == []
+
+
+def test_footprint_arc_collapsed_by_transform_is_a_named_parse_error(tmp_path):
+    footprint = """(footprint "CollapsedArc" (layer "F.Cu") (at 0 0 9)
+      (fp_arc (start -0.000004 -0.000004) (mid -0.000004 -0.000003)
+        (end -0.000003 -0.000001) (layer "Edge.Cuts") (uuid collapsed-arc)))"""
+
+    board = _parse_text(tmp_path, _board(footprint))
+
+    assert [error.kind for error in board.errors] == ["parse"]
+    assert "CollapsedArc" in board.errors[0].message
+    assert "collapsed-arc" in board.errors[0].message
+    assert board.outline == []
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
