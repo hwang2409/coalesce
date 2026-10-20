@@ -127,6 +127,7 @@ def test_cut_can_target_the_hole_that_consumed_the_body():
 def test_join_cannot_consume_an_already_consumed_target():
     graph = base()
     graph.add(Hole("holes", target="base", diameter=2))
+    graph.add(Fillet("round", target="holes"))
     graph.add(Sketch("boss", entities=[Rectangle("boss_profile", 2, 2)]))
     graph.add(
         Extrude(
@@ -139,7 +140,7 @@ def test_join_cannot_consume_an_already_consumed_target():
     )
 
     _assert_consumed_target_error(
-        graph, target="base", consumer="holes", terminal="holes"
+        graph, target="base", consumer="holes", terminal="round"
     )
 
 
