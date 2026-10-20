@@ -653,8 +653,8 @@ def _holes(node: list[Any], footprint_id: str, footprint_library_id: str, transf
             identity = f"footprint:{footprint_id}|pad:{pad_number}|uuid:{pad_uuid}"
         else:
             local_pose = (_endpoint_key(hole_position), _ki_round(local_angle * 1_000_000))
-            identity = (f"library:{footprint_library_id}|pad:{pad_number}|pose:{local_pose}"
-                        f"|drill:{drill.shape},{_to_nm(drill.width)},{_to_nm(drill.height)}")
+            identity = (f"footprint:{footprint_id}|library:{footprint_library_id}|pad:{pad_number}"
+                        f"|pose:{local_pose}|drill:{drill.shape},{_to_nm(drill.width)},{_to_nm(drill.height)}")
         hole_id = "hole-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
         holes.append(Hole(transform.point(hole_position), drill, pad_type == "thru_hole", footprint_id,
                           hole_id, pad_number))

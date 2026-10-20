@@ -489,7 +489,7 @@ def test_uuid_less_pads_use_stable_local_pose_ids(tmp_path):
     )
     def board_at(pose):
         return _parse_text(tmp_path, _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]),
-            f'(footprint "Mount" (layer "F.Cu") (at {pose}) ' + pads + ')'))
+            f'(footprint "Mount" (layer "F.Cu") (at {pose}) (uuid fp-a) ' + pads + ')'))
     first = board_at("0 0")
     moved = board_at("10 8 90")
     assert first.errors == moved.errors == []
