@@ -1,3 +1,4 @@
+import hashlib
 import json
 import multiprocessing
 import os
@@ -152,6 +153,7 @@ async def test_step_export_all_selected_restart_and_replay(tmp_path):
     assert exported["partIds"] == ["plate/plate", "lid/lid"]
     assert exported["path"] == str(first_path)
     assert len(exported["sha256"]) == 64
+    assert hashlib.sha256(first_path.read_bytes()).hexdigest() == exported["sha256"]
     assert exported["tolerance"] == {"relative": 1e-07, "absolute": 1e-07}
     assert exported["validation"]["geometry"]["status"] == "passed"
     assert exported["validation"]["geometry"]["freshProcess"] is True
