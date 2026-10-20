@@ -21,6 +21,12 @@ class ExtrusionResult:
     candidates: list[Candidate]
 
 
+_LINEAR_BOUNDARY_TOLERANCE = 1e-7
+_AREA_RELATIVE_TOLERANCE = 1e-9
+# Keep an absolute floor for floating-point noise without imposing a linear tolerance on areas.
+_AREA_TOLERANCE_FLOOR = 1e-18
+
+
 class _ProfileRelation(Enum):
     DISJOINT = "disjoint"
     LEFT_IN_RIGHT = "left_in_right"
@@ -79,16 +85,31 @@ def _intersection_area(left: Face, right: Face) -> float:
 
 
 def _profile_relation(left: _Profile, right: _Profile) -> _ProfileRelation:
-    tolerance = 1e-7
     overlap = _intersection_area(left.face, right.face)
-    left_inside = isclose(overlap, left.face.area, rel_tol=1e-9, abs_tol=tolerance)
-    right_inside = isclose(overlap, right.face.area, rel_tol=1e-9, abs_tol=tolerance)
-    boundaries_touch = left.wire.distance_to(right.wire) <= tolerance
+    area_tolerance = max(
+        min(left.face.area, right.face.area) * _AREA_RELATIVE_TOLERANCE,
+        _AREA_TOLERANCE_FLOOR,
+    )
+    left_inside = isclose(
+        overlap,
+        left.face.area,
+        rel_tol=_AREA_RELATIVE_TOLERANCE,
+        abs_tol=area_tolerance,
+    )
+    right_inside = isclose(
+        overlap,
+        right.face.area,
+        rel_tol=_AREA_RELATIVE_TOLERANCE,
+        abs_tol=area_tolerance,
+    )
+    boundaries_touch = (
+        left.wire.distance_to(right.wire) <= _LINEAR_BOUNDARY_TOLERANCE
+    )
     if left_inside != right_inside:
         if boundaries_touch:
             return _ProfileRelation.TOUCHING
         return _ProfileRelation.LEFT_IN_RIGHT if left_inside else _ProfileRelation.RIGHT_IN_LEFT
-    if isclose(overlap, 0.0, abs_tol=tolerance):
+    if isclose(overlap, 0.0, abs_tol=area_tolerance):
         return _ProfileRelation.TOUCHING if boundaries_touch else _ProfileRelation.DISJOINT
     return _ProfileRelation.OVERLAP
 

@@ -40,6 +40,27 @@ def _between_role(roles: list[str]) -> str:
     return f"between({ordered[0]},{ordered[1]})"
 
 
+def _adjacent_keys(edge: Shape, faces: list[Candidate]) -> list[ElementKey]:
+    adjacent = [
+        face
+        for face in faces
+        if any(edge.is_same(face_edge) for face_edge in face.entity.edges())
+    ]
+    return sorted(
+        {face.key for face in adjacent},
+        key=lambda key: (key.feature, key.role, str(key.source)),
+    )
+
+
+def _same_body(keys: list[ElementKey]) -> BodySource:
+    bodies = {key.body for key in keys}
+    if len(bodies) != 1 or None in bodies:
+        raise RuntimeError("an edge must be bounded by faces from one body")
+    body = bodies.pop()
+    assert body is not None
+    return body
+
+
 def derive_edge_candidates(
     feature: str,
     shape: Shape,
@@ -47,26 +68,15 @@ def derive_edge_candidates(
 ) -> list[Candidate]:
     result: list[Candidate] = []
     for edge in shape.edges():
-        adjacent = [
-            face
-            for face in faces
-            if any(edge.is_same(face_edge) for face_edge in face.entity.edges())
-        ]
-        keys = sorted(
-            {face.key for face in adjacent},
-            key=lambda key: (key.feature, key.role, str(key.source)),
-        )
+        keys = _adjacent_keys(edge, faces)
         if len(keys) == 2:
-            bodies = {key.body for key in keys}
-            if len(bodies) != 1 or None in bodies:
-                raise RuntimeError("an edge must be bounded by faces from one body")
             result.append(
                 candidate(
                     feature,
                     _between_role([key.role for key in keys]),
                     tuple(keys),
                     edge,
-                    body=bodies.pop(),
+                    body=_same_body(keys),
                 )
             )
     return result

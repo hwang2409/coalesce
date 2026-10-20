@@ -7,6 +7,7 @@ from math import isclose
 import pytest
 
 from coalesce import (
+    Cardinality,
     Cut,
     Extrude,
     Fillet,
@@ -194,6 +195,21 @@ def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
     reference = restored.nodes["round"].edges[0]
     assert reference.source == source
     assert reference.body == body
+
+
+def test_json_round_trip_preserves_any_cardinality():
+    graph = base()
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", "side(left)", Cardinality.ANY)],
+        )
+    )
+
+    restored = loads(graph.to_json())
+
+    assert restored.nodes["round"].edges[0].cardinality is Cardinality.ANY
 
 
 def test_json_round_trip_regenerates_the_same_geometry():

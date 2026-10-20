@@ -107,21 +107,25 @@ class Graph:
         )
         return dependencies
 
-    def validate(self) -> None:
+    @staticmethod
+    def _validate_node(node: Any) -> None:
+        if not isinstance(node, Sketch):
+            return
+        entity_ids = [entity.id for entity in node.entities]
+        duplicate = next(
+            (entity_id for entity_id in entity_ids if entity_ids.count(entity_id) > 1),
+            None,
+        )
+        if duplicate is not None:
+            raise GraphError(
+                "duplicate_entity_id",
+                f"duplicate sketch entity id: {duplicate}",
+                sketch=node.id,
+                entity=duplicate,
+            )
+
+    def _validate_dependencies(self) -> None:
         for node in self.nodes.values():
-            if isinstance(node, Sketch):
-                entity_ids = [entity.id for entity in node.entities]
-                duplicate = next(
-                    (entity_id for entity_id in entity_ids if entity_ids.count(entity_id) > 1),
-                    None,
-                )
-                if duplicate is not None:
-                    raise GraphError(
-                        "duplicate_entity_id",
-                        f"duplicate sketch entity id: {duplicate}",
-                        sketch=node.id,
-                        entity=duplicate,
-                    )
             for dependency in self._dependencies(node):
                 if dependency not in self.nodes:
                     raise GraphError(
@@ -146,6 +150,11 @@ class Graph:
 
         for key in self.nodes:
             visit(key)
+
+    def validate(self) -> None:
+        for node in self.nodes.values():
+            self._validate_node(node)
+        self._validate_dependencies()
 
     def ordered(self) -> list[Any]:
         self.validate()

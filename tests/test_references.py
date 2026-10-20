@@ -61,6 +61,23 @@ def test_cardinality_reports_split_with_structured_candidates():
     assert accepted_split.candidates == pieces
 
 
+def test_any_cardinality_accepts_empty_and_non_empty_topology():
+    empty = resolve(
+        Reference("base", "cap_end", Cardinality.ANY),
+        {"base": []},
+    )
+    pieces = [candidate("cap_end", "top"), candidate("cap_end", "top")]
+    non_empty = resolve(
+        Reference("base", "cap_end", Cardinality.ANY),
+        {"base": pieces},
+    )
+
+    assert empty.status is Status.EMPTY
+    assert empty.error is None
+    assert non_empty.status is Status.SPLIT
+    assert non_empty.error is None
+
+
 def test_filters_only_reduce_the_selected_provenance_set():
     candidates = {
         "base": [

@@ -73,6 +73,19 @@ def test_nested_profile_is_a_hole_in_one_solid():
     assert len(by_role(result, "side(hole)")) == 1
 
 
+def test_small_nested_profile_is_a_valid_hole_in_one_solid():
+    sketch = Sketch(
+        "sk",
+        entities=[Circle("outer", 1e-4), Circle("hole", 5e-5)],
+    )
+
+    result = extrude_sketch(Extrude("part", sketch="sk", height=1), sketch)
+
+    assert len(result.shape.solids()) == 1
+    assert isclose(result.shape.volume, 2.356194490192346e-08, rel_tol=1e-9)
+    assert BRepCheck_Analyzer(result.shape.wrapped).IsValid()
+
+
 def test_disjoint_profiles_are_separate_solids_of_one_extrusion():
     from coalesce.references import Cardinality, Reference, Status, resolve
 

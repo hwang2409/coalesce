@@ -10,6 +10,7 @@ class Cardinality(str, Enum):
     ONE = "one"
     ONE_OR_MORE = "one_or_more"
     EXACTLY = "exactly"
+    ANY = "any"
 
 
 class Status(str, Enum):
@@ -228,6 +229,8 @@ def _classify(result: _FilterResult) -> Status:
 
 
 def _violates_cardinality(ref: Reference, count: int) -> bool:
+    if ref.cardinality is Cardinality.ANY:
+        return False
     if ref.cardinality is Cardinality.ONE:
         return count != 1
     if ref.cardinality is Cardinality.ONE_OR_MORE:
