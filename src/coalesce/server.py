@@ -22,9 +22,10 @@ _LOG = logging.getLogger(__name__)
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh to re-read the persisted path explicitly.",
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
-    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Only extrudes can be updated.",
+    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Extrude updates change distance; cut and hole updates change target.featureId.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
+    "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path and current expectedRevision. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. A fresh Python process validates STEP bytes in a private directory before direct publication. The final file is briefly visible while written; failed writes stay in place for manual recovery.",
 }
 
 TOOLS_GUIDE = """# coalesce tools
@@ -42,6 +43,8 @@ Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+
 Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
 Use operation `join` with an explicit target feature to add material to one contacting body.
+A join, cut, hole, or fillet must target the current terminal feature of its body lineage.
+Use `feature` update with `set.target.featureId` to retarget an existing cut or hole.
 For finite cuts, `flip=false` cuts along the negative sketch normal and `flip=true` cuts
 along the positive sketch normal. Through-all cuts are bidirectional, and flip has no effect for through-all cuts.
 Holes use absolute XY positions and global +Z only. Omitted hole depth means through-all.
@@ -57,7 +60,23 @@ Use `query` with `measurements` for bbox placement, area, volume, and terminal b
 returns manufacturing parts by default; set `select.role: reference` to measure imported PCB
 reference geometry separately. Reference parts remain visible in the viewer but are excluded
 from manufacturing totals. Use `select.kind: feature` with `id` for one node. Use `check`
-with `valid_brep` before relying on the model. Domain failures have `ok: false` and a stable code.
+with `valid_brep` before relying on the model. Use `export` with the current `expectedRevision` and an explicit absolute new
+`path`; export is stateless and does not accept `requestId`. It defaults to all terminal
+manufacturing parts; select stable `partIds` from measurements when needed. BoardImport
+reference geometry is never included. STEP export never overwrites, renames, truncates, or
+removes a destination. It validates bytes in a private directory. A fresh Python process
+reimports them and compares part and solid counts, bounding boxes, per-part and
+aggregate volume and area, and cylinder radii and axes. The private directory is removed
+after success, validation failure, or timeout. It then creates the final path directly and
+writes the validated in-memory bytes. The final file is briefly visible while it is written.
+Parent directories resolve normally; only the final path component must be new and is protected
+by `O_EXCL | O_NOFOLLOW`. Success returns `path`, `sha256`, `byteCount`, and `validation` evidence.
+An existing path, including a symlink, returns `EXPORT_PATH_EXISTS` and is untouched. A failure after path
+creation returns `EXPORT_WRITE_FAILED` with `path`, `expectedSha256`, and `expectedBytes`:
+the file at path may be incomplete; coalesce leaves it in place; delete it yourself or export to a new path.
+There is no automatic retry or replay. Geometry and STEP
+product-label preservation are reported separately. Domain failures have `ok: false` and a
+stable code.
 
 ## Claude Code
 
@@ -181,6 +200,24 @@ def _branch_error(error: ValidationError) -> ValidationError:
     return best_match([union])
 
 
+def _prefer_unknown_field(error: ValidationError) -> ValidationError:
+    if error.validator != "required" or not isinstance(error.schema, dict):
+        return error
+    properties = error.schema.get("properties", {})
+    unknown = sorted(set(error.instance) - set(properties)) if isinstance(error.instance, dict) else []
+    if unknown:
+        return ValidationError(
+            "unexpected fields",
+            validator="additionalProperties",
+            validator_value=False,
+            instance=error.instance,
+            schema=error.schema,
+            path=error.absolute_path,
+            schema_path=error.absolute_schema_path,
+        )
+    return error
+
+
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "feature":
         return FEATURE_ACTION_SCHEMAS.get(
@@ -216,7 +253,7 @@ def create_server(service: DocumentService) -> Server:
                     readOnlyHint=name in {"query", "check"},
                     destructiveHint=name in {"import", "sketch", "feature"},
                     idempotentHint=True,
-                    openWorldHint=False,
+                    openWorldHint=name in {"import", "export"},
                 ),
             )
             for name, schema in TOOL_SCHEMAS.items()
@@ -246,6 +283,8 @@ def create_server(service: DocumentService) -> Server:
             )
         except ValidationError as raised:
             error = _branch_error(raised)
+            if name == "feature" and arguments.get("action") == "update":
+                error = _prefer_unknown_field(error)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
                 details["allowedKinds"] = ["extrude", "cut", "hole"]

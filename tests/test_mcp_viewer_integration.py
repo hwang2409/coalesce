@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,8 +18,9 @@ from mcp.client.stdio import stdio_client
 from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
 from test_viewer_browser import playwright_module
 
+import coalesce.service as service_module
 from coalesce.document_store import Document, DocumentStore
-from coalesce.graph import Cut, Extrude, Graph, Rectangle, Sketch
+from coalesce.graph import Cut, Extrude, Graph, Hole, HolePosition, Plane, Rectangle, Sketch
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
@@ -49,8 +51,8 @@ def _get_json(parsed, headers, path):
         return json.load(response)
 
 
-def _wait_for_scene(parsed, headers, revision):
-    deadline = time.monotonic() + 5
+def _wait_for_scene(parsed, headers, revision, errlog):
+    deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         try:
             return _get_json(parsed, headers, f"/api/scene/{revision}")
@@ -58,7 +60,219 @@ def _wait_for_scene(parsed, headers, revision):
             if error.code != 404:
                 raise
         time.sleep(0.02)
-    raise AssertionError(f"viewer did not publish revision {revision}")
+    try:
+        viewer_state = _next_viewer_event(parsed, headers)
+    except TimeoutError:
+        viewer_state = "no revision or failure event"
+    errlog.flush()
+    errlog.seek(0)
+    raise AssertionError(
+        f"viewer did not publish revision {revision}; "
+        f"viewer store state: {viewer_state!r}; server stderr:\n{errlog.read()}"
+    )
+
+
+def _next_viewer_event(parsed, headers):
+    request = urllib.request.Request(
+        f"{parsed.scheme}://{parsed.netloc}/events", headers=headers
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        event = response.readline().decode().strip()
+        data = response.readline().decode().strip()
+    return event.removeprefix("event: "), json.loads(data.removeprefix("data: "))
+
+
+@pytest.mark.anyio
+async def test_persisted_hole_publishes_viewer_scene_after_restart(tmp_path):
+    path = tmp_path / "hole.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=3))
+    graph.add(Hole("hole", target="plate", diameter=3, position=(0, 0)))
+    DocumentStore(path).save(Document(graph, revision=3))
+    errlog = (tmp_path / "hole.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        measurements = result_json(
+            await session.call_tool("query", {"select": {"kind": "measurements"}})
+        )
+        assert measurements["ok"]
+        errlog.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 3, errlog)
+
+    assert scene["revision"] == 3
+    assert scene["parts"][0]["terminalFeatureId"] == "hole"
+
+
+@pytest.mark.anyio
+async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_path):
+    path = tmp_path / "fork.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=3))
+    graph.add(
+        Sketch(
+            "wall_sketch",
+            plane=Plane("XY", 3),
+            entities=[Rectangle("outer", 60, 40), Rectangle("inner", 54, 34)],
+        )
+    )
+    graph.add(
+        Extrude(
+            "wall",
+            sketch="wall_sketch",
+            height=22,
+            operation="join",
+            target="plate",
+        )
+    )
+    graph.add(
+        Hole(
+            "holes",
+            target="wall",
+            diameter=3,
+            positions=[HolePosition("center", (0, 17))],
+        )
+    )
+    graph.add(
+        Sketch(
+            "port_sketch",
+            plane=Plane("XZ", -20),
+            position=(0, 14, 0),
+            entities=[Rectangle("port", 10, 8)],
+        )
+    )
+    graph.add(Cut("portcut", target="wall", tool="port_sketch"))
+    DocumentStore(path).save(Document(graph, revision=7))
+    before = path.read_bytes()
+    errlog = (tmp_path / "server.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+
+        measurements = result_json(
+            await session.call_tool("query", {"select": {"kind": "measurements"}})
+        )
+        graph_error = {
+            "code": "TARGET_ALREADY_CONSUMED",
+            "message": "target wall is already consumed by holes",
+            "retryable": False,
+            "operation": "query",
+            "feature": "portcut",
+            "target": "wall",
+            "consumer": "holes",
+            "terminalFeatureId": "holes",
+            "hint": "target holes to apply this after holes",
+        }
+        assert measurements["error"] == graph_error
+        reference = result_json(
+            await session.call_tool(
+                "query",
+                {
+                    "select": {
+                        "kind": "reference",
+                        "reference": {"feature": "holes", "role": "cap_end"},
+                    }
+                },
+            )
+        )
+        assert reference["error"] == graph_error
+        checked = result_json(
+            await session.call_tool("check", {"action": "evaluate"})
+        )
+        assert checked["error"] == {**graph_error, "operation": "check"}
+
+        event, failure = await asyncio.to_thread(_next_viewer_event, parsed, headers)
+        assert event == "failure"
+        assert failure["error"]["code"] == "TARGET_ALREADY_CONSUMED"
+        assert failure["error"]["hint"] == "target holes to apply this after holes"
+
+        unrelated = result_json(
+            await session.call_tool(
+                "feature",
+                {
+                    "action": "update",
+                    "expectedRevision": 7,
+                    "requestId": "unrelated",
+                    "featureId": "plate",
+                    "kind": "extrude",
+                    "set": {"distance": {"value": 4, "unit": "mm"}},
+                },
+            )
+        )
+        assert unrelated["error"]["code"] == "TARGET_ALREADY_CONSUMED"
+        assert unrelated["revision"] == 7
+        assert path.read_bytes() == before
+
+        repaired = result_json(
+            await session.call_tool(
+                "feature",
+                {
+                    "action": "update",
+                    "expectedRevision": 7,
+                    "requestId": "repair-portcut",
+                    "featureId": "portcut",
+                    "kind": "cut",
+                    "set": {"target": {"featureId": "holes"}},
+                },
+            )
+        )
+        assert repaired["revision"] == 8
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8, errlog)
+        assert len(scene["parts"]) == 1
+        assert scene["parts"][0]["terminalFeatureId"] == "portcut"
+
+    restart_log = (tmp_path / "restart.stderr").open("w+")
+    async with stdio_client(parameters, errlog=restart_log) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        measurements = result_json(
+            await session.call_tool("query", {"select": {"kind": "measurements"}})
+        )
+        assert measurements["ok"]
+        restart_log.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in restart_log.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+        restarted_scene = await asyncio.to_thread(
+            _wait_for_scene, parsed, headers, 8, restart_log
+        )
+
+    assert restarted_scene["revision"] == 8
+    assert restarted_scene["parts"][0]["terminalFeatureId"] == "portcut"
+    assert restarted_scene["parts"][0]["mesh"]["id"] == scene["parts"][0]["mesh"]["id"]
 
 
 @pytest.mark.anyio
@@ -86,7 +300,7 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
 
         assert result_json(await session.call_tool("sketch", SKETCH))["revision"] == 1
         assert result_json(await session.call_tool("feature", FEATURE))["revision"] == 2
-        scene = _wait_for_scene(parsed, headers, 2)
+        scene = _wait_for_scene(parsed, headers, 2, errlog)
         assert scene["revision"] == 2
         assert len(scene["parts"]) == 1
         assert scene["parts"][0]["size"] == pytest.approx([60, 40, 6])
@@ -108,7 +322,7 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
             "set": {"distance": {"value": 10, "unit": "mm"}},
         }
         assert result_json(await session.call_tool("feature", updated))["revision"] == 3
-        assert _wait_for_scene(parsed, headers, 3)["parts"][0]["size"] == pytest.approx(
+        assert _wait_for_scene(parsed, headers, 3, errlog)["parts"][0]["size"] == pytest.approx(
             [60, 40, 10]
         )
 
@@ -153,6 +367,21 @@ async def test_real_stdio_kicad_import_publishes_pcb_reference_to_viewer(tmp_pat
         assert part["visible"] is True
 
 
+class RequestWinsKernelLoader:
+    def __init__(self):
+        self.startup_waiting = threading.Event()
+        self.release_startup = threading.Event()
+
+    def start(self):
+        service_module._KERNEL_LOADER.start()
+
+    def wait(self):
+        service_module._KERNEL_LOADER.wait()
+        if threading.current_thread().name == "coalesce-kernel":
+            self.startup_waiting.set()
+            self.release_startup.wait()
+
+
 @pytest.mark.parametrize("with_feature", [False, True])
 def test_existing_document_is_published_on_startup(tmp_path, with_feature):
     path = tmp_path / "plate.coalesce.json"
@@ -173,6 +402,30 @@ def test_existing_document_is_published_on_startup(tmp_path, with_feature):
         assert scene["parts"][0]["size"] == pytest.approx([60, 40, 6])
     else:
         assert scene["parts"] == []
+
+
+def test_query_that_wins_startup_race_still_publishes_persisted_scene(tmp_path):
+    path = tmp_path / "plate.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=3))
+    DocumentStore(path).save(Document(graph, revision=2))
+    store = ViewerSceneStore()
+    loader = RequestWinsKernelLoader()
+    service = DocumentService(
+        path, scene_store=store, warmup=False, kernel_loader=loader
+    )
+
+    try:
+        service.start_kernel_warmup()
+        assert loader.startup_waiting.wait(2)
+        assert service.query({"select": {"kind": "measurements"}})["ok"]
+        deadline = time.monotonic() + 5
+        while store.current_revision != 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert store.scene(2) is not None
+    finally:
+        loader.release_startup.set()
 
 
 @pytest.fixture(scope="module")

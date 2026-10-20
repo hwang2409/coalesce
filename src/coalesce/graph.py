@@ -197,6 +197,14 @@ class Graph:
                 entity=duplicate,
             )
 
+    @staticmethod
+    def _body_target(node: Any) -> str | None:
+        if isinstance(node, (Cut, Hole, Fillet)):
+            return node.target
+        if isinstance(node, Extrude) and node.operation == "join":
+            return node.target
+        return None
+
     def _validate_dependencies(self) -> None:
         for node in self.nodes.values():
             for dependency in self._dependencies(node):
@@ -224,10 +232,39 @@ class Graph:
         for key in self.nodes:
             visit(key)
 
+    def _validate_body_targets(self) -> None:
+        consumers: dict[str, str] = {}
+        conflict: tuple[Any, str, str] | None = None
+        for node in self.nodes.values():
+            target = self._body_target(node)
+            if target is None:
+                continue
+            if target in consumers:
+                conflict = conflict or (node, target, consumers[target])
+            else:
+                consumers[target] = node.id
+
+        if conflict is None:
+            return
+        node, target, consumer = conflict
+        terminal = consumer
+        while terminal in consumers:
+            terminal = consumers[terminal]
+        raise GraphError(
+            "target_already_consumed",
+            f"target {target} is already consumed by {consumer}",
+            feature=node.id,
+            target=target,
+            consumer=consumer,
+            terminalFeatureId=terminal,
+            hint=f"target {terminal} to apply this after {consumer}",
+        )
+
     def validate(self) -> None:
         for node in self.nodes.values():
             self._validate_node(node)
         self._validate_dependencies()
+        self._validate_body_targets()
 
     def ordered(self) -> list[Any]:
         self.validate()

@@ -328,17 +328,24 @@ FEATURE_CREATE_SCHEMA = {
     "required": ["action", *FEATURE_PROPERTIES, "parameters"],
     "additionalProperties": False,
 }
+EXTRUDE_UPDATE_SET = {
+    "type": "object",
+    "properties": {"distance": QUANTITY},
+    "required": ["distance"],
+    "additionalProperties": False,
+}
+TARGET_UPDATE_SET = {
+    "type": "object",
+    "properties": {"target": FEATURE_TARGET},
+    "required": ["target"],
+    "additionalProperties": False,
+}
 FEATURE_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "update"},
         **FEATURE_PROPERTIES,
-        "set": {
-            "type": "object",
-            "properties": {"distance": QUANTITY},
-            "required": ["distance"],
-            "additionalProperties": False,
-        },
+        "set": {"oneOf": [EXTRUDE_UPDATE_SET, TARGET_UPDATE_SET]},
     },
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
@@ -358,19 +365,25 @@ FEATURE_ACTION_SCHEMAS = {
         "hole": HOLE_PARAMETERS,
     }.items()
 }
-FEATURE_ACTION_SCHEMAS[("update", "extrude")] = {
-    **FEATURE_UPDATE_SCHEMA,
-    "properties": {
-        **FEATURE_UPDATE_SCHEMA["properties"],
-        "kind": {"const": "extrude"},
-    },
-}
+for kind, changes in {
+    "extrude": EXTRUDE_UPDATE_SET,
+    "cut": TARGET_UPDATE_SET,
+    "hole": TARGET_UPDATE_SET,
+}.items():
+    FEATURE_ACTION_SCHEMAS[("update", kind)] = {
+        **FEATURE_UPDATE_SCHEMA,
+        "properties": {
+            **FEATURE_UPDATE_SCHEMA["properties"],
+            "kind": {"const": kind},
+            "set": changes,
+        },
+    }
 FEATURE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {
             "enum": ["create", "update"],
-            "description": "Use create with parameters; use update with set.",
+            "description": "Use create with parameters; use update with set. For update, extrude sets distance; cut and hole set target.featureId.",
         },
         **FEATURE_PROPERTIES,
         "parameters": {
@@ -379,7 +392,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create.",
+            "description": "Required for update; not allowed for create. For extrude, set distance; for cut and hole, set target.featureId.",
         },
     },
     "required": ["action", *FEATURE_PROPERTIES],
@@ -464,6 +477,22 @@ QUERY_FEATURE_SCHEMA = {
         },
     },
 }
+EXPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "expectedRevision": {"type": "integer", "minimum": 0},
+        "path": {"type": "string", "minLength": 1},
+        "partIds": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+    },
+    "required": ["expectedRevision", "path"],
+    "additionalProperties": False,
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -492,6 +521,7 @@ TOOL_SCHEMAS = {
     "feature": FEATURE_SCHEMA,
     "query": QUERY_SCHEMA,
     "check": CHECK_SCHEMA,
+    "export": EXPORT_SCHEMA,
 }
 
 ACTION_SCHEMAS = {

@@ -369,13 +369,13 @@ def test_request_id_tombstone_survives_full_receipt_eviction(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_real_stdio_publishes_root_object_schemas_without_combinators(tmp_path):
+async def test_real_stdio_publishes_root_object_schemas(tmp_path):
     tools = await list_server_tools(tmp_path / "schemas.coalesce.json")
 
     assert tools
     for tool in tools:
         assert tool.inputSchema["type"] == "object"
-        assert not ({"oneOf", "anyOf", "allOf"} & tool.inputSchema.keys())
+        assert not ({"anyOf", "allOf", "oneOf"} & tool.inputSchema.keys())
 
 
 def test_mutation_schema_fields_match_typed_operations():
