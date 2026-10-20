@@ -18,24 +18,40 @@ from .service import DocumentService
 _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
-    "sketch": "Create or update one rectangle sketch. Every mutation needs expectedRevision and requestId.",
-    "feature": "Create or update an extrude. Boolean, hole, and fillet are reserved but not yet available.",
-    "query": "Read the current graph, revision, exact mm metrics, or resolve a typed reference.",
+    "sketch": "Create or update an XY rectangle sketch. Supplied entities replace the full entity list. Every mutation needs expectedRevision and requestId.",
+    "feature": "Create or update a normal new-body extrude from all profiles in one sketch.",
+    "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
 }
 
-TOOLS_GUIDE = """# coalesce slice 1 tools
+TOOLS_GUIDE = """# coalesce tools
 
 Start with `coalesce --document part.coalesce.json` or set `COALESCE_DOCUMENT`.
 coalesce owns one revisioned document. Start with `query` using `select.kind: revision`.
-Use `sketch` to create an XY rectangle, then `feature` to extrude it. Mutations need the
-current `expectedRevision` and a unique `requestId`. Full replay receipts cover the last
-100 mutations; compact request-id/hash tombstones reject changed reuse for the last 10,000.
+Use `sketch` to create an XY rectangle, then `feature` to extrude it. The rectangle center is
+local X/Y. Extrusion starts at the sketch plane and extends in +Z; it is not centered in Z.
+Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
+Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
+idempotent. Supplied update entities replace the full list; omitted entities stay unchanged.
 All lengths are explicit mm quantities. Rectangle angles accept `deg` or `rad`.
-Use `query` with `measurements` for bbox, area, volume, and solid count. `query` with
-`server` returns the full viewer link, including its fragment access token, so the agent can
-show the link to the user. Use `check` with `valid_brep` before relying on the model.
-Domain failures have `ok: false` and a stable code.
+Use `query` with `measurements` for bbox placement, area, volume, and terminal bodies, or
+`select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying
+on the model. Domain failures have `ok: false` and a stable code.
+
+## Claude Code
+
+```json
+{"mcpServers":{"coalesce":{"type":"stdio","command":"coalesce","args":["--document","part.coalesce.json"]}}}
+```
+
+## Codex
+
+```toml
+[mcp_servers.coalesce]
+command = "coalesce"
+args = ["--document", "part.coalesce.json"]
+default_tools_approval_mode = "approve"
+```
 """
 
 PLATE_EXAMPLE = """# 60 x 40 x 6 mm plate
@@ -44,7 +60,8 @@ PLATE_EXAMPLE = """# 60 x 40 x 6 mm plate
    height 40 mm, center [0, 0], on the XY origin plane.
 2. `feature`: create extrude `plate_extrude` at revision 1 with profile `outline`, distance
    6 mm, operation `new_body`, and direction `normal`.
-3. `query`: select `measurements`; expect bbox 60 x 40 x 6 mm and volume 14400 mm^3.
+3. `query`: select `measurements`; expect bbox min [-30, -20, 0], max [30, 20, 6],
+   center [0, 0, 3] mm, and volume 14400 mm^3.
 4. `check`: evaluate a `valid_brep` requirement.
 """
 
@@ -151,7 +168,11 @@ def create_server(service: DocumentService) -> Server:
     server = Server(
         "coalesce",
         version="0.1.0",
-        instructions="Read coalesce://docs/tools, then use query before mutations.",
+        instructions=(
+            "Read coalesce://docs/tools and query the current revision before mutations. "
+            "Ask before guessing vague dimensions. Rectangle centers are local X/Y; "
+            "normal XY extrusion starts at the sketch plane and extends in +Z."
+        ),
     )
 
     @server.list_tools()
@@ -161,6 +182,12 @@ def create_server(service: DocumentService) -> Server:
                 name=name,
                 description=_TOOL_DESCRIPTIONS[name],
                 inputSchema=schema,
+                annotations=types.ToolAnnotations(
+                    readOnlyHint=name in {"query", "check"},
+                    destructiveHint=name in {"sketch", "feature"},
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
             )
             for name, schema in TOOL_SCHEMAS.items()
         ]
@@ -191,7 +218,7 @@ def create_server(service: DocumentService) -> Server:
             error = _branch_error(raised)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
-                details["allowedKinds"] = ["extrude", "boolean", "hole", "fillet"]
+                details["allowedKinds"] = ["extrude"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
             failure = {

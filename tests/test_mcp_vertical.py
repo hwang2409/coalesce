@@ -118,6 +118,9 @@ async def test_real_stdio_path_builds_plate_and_survives_restart(tmp_path):
         "x": {"value": 60, "unit": "mm"},
         "y": {"value": 40, "unit": "mm"},
         "z": {"value": 6, "unit": "mm"},
+        "min": {"x": -30, "y": -20, "z": 0, "unit": "mm"},
+        "max": {"x": 30, "y": 20, "z": 6, "unit": "mm"},
+        "center": {"x": 0, "y": 0, "z": 3, "unit": "mm"},
     }
     assert first[3]["volume"] == {"value": 14400, "unit": "mm^3"}
     assert first[4]["results"][0]["status"] == "PASS"
@@ -149,6 +152,9 @@ def test_measurements_include_only_terminal_bodies(tmp_path):
         "x": {"value": 60, "unit": "mm"},
         "y": {"value": 40, "unit": "mm"},
         "z": {"value": 6, "unit": "mm"},
+        "min": {"x": -30, "y": -20, "z": 0, "unit": "mm"},
+        "max": {"x": 30, "y": 20, "z": 6, "unit": "mm"},
+        "center": {"x": 0, "y": 0, "z": 3, "unit": "mm"},
     }
 
 
@@ -538,7 +544,7 @@ def test_unknown_feature_kind_and_kernel_failure_are_safe(tmp_path):
         }
     )
     assert unknown["error"]["code"] == "INVALID_PARAMETER"
-    assert unknown["error"]["allowedKinds"] == ["extrude", "boolean", "hole", "fillet"]
+    assert unknown["error"]["allowedKinds"] == ["extrude"]
 
     service.sketch(
         {
