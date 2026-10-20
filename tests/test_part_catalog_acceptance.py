@@ -91,6 +91,13 @@ async def test_split_parts_have_stable_suffixes_after_restart_and_unrelated_edit
     assert all("#" in part_id for part_id in ids)
     restarted = (await run_server(path, [("query", {"select": {"kind": "measurements"}})]))[0]
     assert sorted(part["partId"] for part in restarted["parts"]) == ids
+    edited = await run_server(path, [
+        ("sketch", rectangle_sketch(request_id="lid-s", revision=4, sketch_id="lid_sketch", entity_id="lid", width=8, height=8)),
+        ("feature", extrude(request_id="lid", revision=5, feature_id="lid", sketch_id="lid_sketch", profile_ids=["lid"], distance=2)),
+        ("feature", {"action": "update", "expectedRevision": 6, "requestId": "lid-edit", "featureId": "lid", "kind": "extrude", "set": {"distance": {"value": 3, "unit": "mm"}}}),
+        ("query", {"select": {"kind": "measurements"}}),
+    ])
+    assert {part["partId"] for part in edited[-1]["parts"] if "#" in part["partId"]} == set(ids)
 
 
 @pytest.mark.anyio
