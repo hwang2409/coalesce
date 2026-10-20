@@ -1,6 +1,7 @@
 import json
 import math
 from pathlib import Path
+import random
 
 import pytest
 
@@ -258,6 +259,118 @@ def test_present_malformed_position_reports_its_node_path(tmp_path, footprint, p
     board = _parse_text(tmp_path, _board(*_polygon([(0, 0), (10, 0), (10, 10), (0, 10)]), footprint))
     assert board.errors[0].kind == "parse"
     assert path in board.errors[0].message
+
+
+def test_half_nanometre_uses_kicad_rounding_and_does_not_close(tmp_path):
+    board = _parse_text(tmp_path, _board(
+        _line((0, 0), (0.000001, 0)),
+        _line((0.0000005, 0), (0, 0)),
+    ))
+    assert [error.kind for error in board.errors] == ["open_outline"]
+
+
+def test_non_cardinal_footprint_rotation_uses_integer_nanometres(tmp_path):
+    footprint = """(footprint "Rotated" (layer "F.Cu") (at 0 0 45)
+      (fp_line (start 0 0) (end 0.000001 0) (layer "Edge.Cuts")))"""
+    board = _parse_text(tmp_path, _board(
+        footprint,
+        _line((0.000001, 0.000001), (0, 0.000001)),
+        _line((0, 0.000001), (0, 0)),
+    ))
+    assert board.errors == []
+    assert board.outline[0].segments[0].end == (0.000001, 0.000001)
+
+
+def test_arc_seam_y_uses_half_open_vertex_ownership(tmp_path):
+    upper = """(gr_arc (start 9.945218953683 1.045284632677)
+      (mid -1.045284632677 9.945218953683) (end -9.945218953683 -1.045284632677)
+      (layer "Edge.Cuts"))"""
+    lower = """(gr_arc (start -9.945218953683 -1.045284632677)
+      (mid 1.045284632677 -9.945218953683) (end 9.945218953683 1.045284632677)
+      (layer "Edge.Cuts"))"""
+    triangle = [(0, 1.045284632677), (0.1, 1.145284632677), (-0.1, 1.145284632677)]
+    board = _parse_text(tmp_path, _board(upper, lower, *_polygon(triangle)))
+    assert len(board.outline) == 1
+    assert len(board.inner_cutouts) == 1
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        _line((1, 1), (1, 1)),
+        '(gr_arc (start 1 0) (mid 0 1) (end 1 0) (layer "Edge.Cuts"))',
+        '(gr_circle (center 1 1) (end 1 1) (layer "Edge.Cuts"))',
+    ],
+)
+def test_zero_length_outline_geometry_is_a_structured_parse_error(tmp_path, invalid):
+    board = _parse_text(tmp_path, _board(invalid))
+    assert [error.kind for error in board.errors] == ["parse"]
+    assert board.outline == []
+
+
+def test_footprint_curve_courtyard_warns_explicitly(tmp_path):
+    footprint = """(footprint "Curve" (layer "F.Cu")
+      (fp_curve (pts (xy 0 0) (xy 1 0) (xy 1 1) (xy 0 1)) (layer "F.CrtYd")))"""
+    board = _parse_text(tmp_path, _board(*_polygon([(0, 0), (2, 0), (2, 2), (0, 2)]), footprint))
+    assert board.errors == []
+    assert any("unsupported courtyard geometry: fp_curve" in warning for warning in board.warnings)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "(general (thickness 0))",
+        "(general (thickness -1))",
+        '(footprint "Drill" (layer "F.Cu") (pad "1" np_thru_hole circle (drill 0)))',
+        '(footprint "Drill" (layer "F.Cu") (pad "1" np_thru_hole oval (drill oval 1 -2)))',
+    ],
+)
+def test_nonpositive_dimensions_are_structured_parse_errors(tmp_path, item):
+    board = _parse_text(tmp_path, _board(*_polygon([(0, 0), (2, 0), (2, 2), (0, 2)]), item))
+    assert [error.kind for error in board.errors] == ["parse"]
+
+
+def test_seeded_random_nested_rotated_geometry(tmp_path):
+    rng = random.Random(2409)
+
+    def rotate(point, degrees):
+        angle = math.radians(degrees)
+        return (point[0] * math.cos(angle) - point[1] * math.sin(angle),
+                point[0] * math.sin(angle) + point[1] * math.cos(angle))
+
+    def rectangle(size, degrees):
+        return [rotate(point, degrees) for point in [(-size, -size), (size, -size), (size, size), (-size, size)]]
+
+    def arc_circle(radius, degrees):
+        points = [rotate((radius, 0), degrees), rotate((0, radius), degrees),
+                  rotate((-radius, 0), degrees), rotate((0, -radius), degrees)]
+        return [
+            f'(gr_arc (start {points[0][0]:.12f} {points[0][1]:.12f}) '
+            f'(mid {points[1][0]:.12f} {points[1][1]:.12f}) '
+            f'(end {points[2][0]:.12f} {points[2][1]:.12f}) (layer "Edge.Cuts"))',
+            f'(gr_arc (start {points[2][0]:.12f} {points[2][1]:.12f}) '
+            f'(mid {points[3][0]:.12f} {points[3][1]:.12f}) '
+            f'(end {points[0][0]:.12f} {points[0][1]:.12f}) (layer "Edge.Cuts"))',
+        ]
+
+    for case in range(200):
+        degrees = rng.uniform(-180, 180)
+        outer_kind, inner_kind = rng.choice(["rectangle", "circle", "arcs"]), rng.choice(
+            ["rectangle", "circle", "arcs"]
+        )
+
+        def shape(kind, size):
+            if kind == "rectangle":
+                return _polygon(rectangle(size, degrees))
+            if kind == "circle":
+                edge = rotate((size, 0), degrees)
+                return [f'(gr_circle (center 0 0) (end {edge[0]:.12f} {edge[1]:.12f}) '
+                        '(layer "Edge.Cuts"))']
+            return arc_circle(size, degrees)
+
+        board = _parse_text(tmp_path, _board(*shape(outer_kind, 10), *shape(inner_kind, 2)))
+        assert board.errors == [], case
+        assert (len(board.outline), len(board.inner_cutouts)) == (1, 1), case
 
 
 def test_generated_usb_c_hub_fixture_records_public_mechanical_facts():
