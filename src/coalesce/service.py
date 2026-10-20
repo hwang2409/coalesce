@@ -22,6 +22,7 @@ from .graph import (
     Circle,
     Cut,
     Extrude,
+    Feature,
     GraphError,
     Hole,
     HolePosition,
@@ -186,6 +187,7 @@ class Action(str, Enum):
     CREATE = "create"
     UPDATE = "update"
     REFRESH = "refresh"
+    DELETE = "delete"
 
 
 class _Operation:
@@ -206,6 +208,33 @@ class BoardImportOperation(_Operation):
     assetId: str
     format: str
     path: str | None = None
+
+
+@dataclass(frozen=True)
+class ImportDelete(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    assetId: str
+    cascade: bool = False
+
+
+@dataclass(frozen=True)
+class SketchDelete(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    sketchId: str
+    cascade: bool = False
+
+
+@dataclass(frozen=True)
+class FeatureDelete(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    cascade: bool = False
 
 
 @dataclass(frozen=True)
@@ -556,10 +585,15 @@ class HoleUpdate(_Operation):
         return {*super().wire_fields(), "kind"}
 
 
+DeleteOperation = ImportDelete | SketchDelete | FeatureDelete
+
 MutationOperation = (
     BoardImportOperation
+    | ImportDelete
     | SketchCreate
     | SketchUpdate
+    | SketchDelete
+    | FeatureDelete
     | ExtrudeCreate
     | CutCreate
     | HoleCreate
@@ -577,8 +611,24 @@ MutationOperation = (
 )
 
 
-def _parse_import(payload: dict[str, Any]) -> BoardImportOperation:
+def _parse_delete(
+    payload: dict[str, Any],
+    operation: type[ImportDelete | SketchDelete | FeatureDelete],
+    id_field: str,
+) -> ImportDelete | SketchDelete | FeatureDelete:
+    return operation(
+        action=Action(payload.get("action")),
+        expectedRevision=_finite_number(payload.get("expectedRevision"), "expectedRevision"),
+        requestId=payload.get("requestId"),
+        **{id_field: payload.get(id_field)},
+        cascade=payload.get("cascade", False),
+    )
+
+
+def _parse_import(payload: dict[str, Any]) -> BoardImportOperation | ImportDelete:
     action = Action(payload.get("action"))
+    if action is Action.DELETE:
+        return _parse_delete(payload, ImportDelete, "assetId")
     path = payload.get("path")
     if action is Action.CREATE and not isinstance(path, str):
         raise RequestError("INVALID_PARAMETER", "create import requires path")
@@ -632,7 +682,9 @@ def _entities(payload: Any) -> tuple[Rectangle | Circle, ...]:
     return tuple(parsed)
 
 
-def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate:
+def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | SketchDelete:
+    if payload.get("action") == "delete":
+        return _parse_delete(payload, SketchDelete, "sketchId")
     common = {
         "action": Action(payload.get("action")),
         "expectedRevision": _finite_number(payload.get("expectedRevision"), "expectedRevision"),
@@ -1067,7 +1119,10 @@ def _parse_feature(
     | PortCutoutUpdate
     | CutUpdate
     | HoleUpdate
+    | FeatureDelete
 ):
+    if payload.get("action") == "delete":
+        return _parse_delete(payload, FeatureDelete, "featureId")
     kind = payload.get("kind")
     parser = {
         "extrude": _parse_extrude,
@@ -1153,6 +1208,7 @@ def _graph_error_response(
         "JOIN_NON_MANIFOLD",
         "HOLES_INTERSECT",
         "HOLE_NO_EFFECT",
+        "HAS_DEPENDENTS",
         "TARGET_ALREADY_CONSUMED",
         "PORT_BLOCKED_BY_LID",
         "BODY_LINEAGE_DIVERGED",
@@ -1250,7 +1306,14 @@ def _board_availability(board: Any) -> dict[str, str]:
     }
 
 
-def _apply_import(graph: Any, operation: BoardImportOperation) -> str:
+def _apply_import(
+    graph: Any,
+    operation: BoardImportOperation | ImportDelete,
+    committed: RegenResult | None,
+) -> str | _DeleteResult:
+    if isinstance(operation, ImportDelete):
+        assert committed is not None
+        return _apply_delete(graph, operation, committed)
     if operation.format != "kicad_pcb":
         raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
     current = graph.nodes.get(operation.assetId)
@@ -1291,7 +1354,129 @@ def _apply_import(graph: Any, operation: BoardImportOperation) -> str:
     return operation.assetId
 
 
-def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
+@dataclass(frozen=True)
+class _DeleteResult:
+    target_id: str
+    deleted: tuple[dict[str, str], ...]
+    before_parts: tuple[dict[str, Any], ...]
+
+
+def _part_state(result: RegenResult) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        {
+            "id": part.part_id,
+            "terminalFeatureId": part.terminal_feature,
+            "volume": part.shape.volume,
+            "area": part.shape.area,
+        }
+        for part in terminal_parts(result, role=None)
+    )
+
+
+def _node_kind(node: Any) -> str:
+    return {
+        "BoardImport": "board_import",
+        "PcbBase": "pcb_base",
+        "PcbLid": "pcb_lid",
+        "PortCutout": "port_cutout",
+    }.get(type(node).__name__, type(node).__name__.lower())
+
+
+def _delete_target(operation: DeleteOperation) -> str:
+    if isinstance(operation, ImportDelete):
+        return operation.assetId
+    if isinstance(operation, SketchDelete):
+        return operation.sketchId
+    return operation.featureId
+
+
+def _delete_target_kind(operation: DeleteOperation) -> tuple[type, str]:
+    if isinstance(operation, ImportDelete):
+        return BoardImport, "board import"
+    if isinstance(operation, SketchDelete):
+        return Sketch, "sketch"
+    return Feature, "feature"
+
+
+def _apply_delete(
+    graph: Any, operation: DeleteOperation, committed: RegenResult
+) -> _DeleteResult:
+    target = _delete_target(operation)
+    expected, noun = _delete_target_kind(operation)
+    if not isinstance(graph.nodes.get(target), expected):
+        raise RequestError("UNKNOWN_ID", f"unknown {noun}: {target}")
+
+    ordered = graph.ordered()
+    dependent_ids = {
+        item.id for item in graph.transitive_dependents(target, committed.predecessors)
+    }
+    dependents = [
+        {"id": item.id, "kind": _node_kind(item)}
+        for item in ordered
+        if item.id in dependent_ids
+    ]
+    if dependents and not operation.cascade:
+        raise RequestError(
+            "HAS_DEPENDENTS",
+            f"{target} has dependents",
+            dependents=dependents,
+            hint="delete the listed dependents first or pass cascade: true",
+        )
+
+    deleted_ids = dependent_ids | {target}
+    deleted = tuple(
+        {"id": item.id, "kind": _node_kind(item)} for item in ordered if item.id in deleted_ids
+    )
+    before_parts = _part_state(committed)
+    for item in deleted:
+        graph.delete(item["id"])
+    return _DeleteResult(target, deleted, before_parts)
+
+
+def _applied_result(
+    applied: str | _DeleteResult,
+) -> tuple[str, list[str], _DeleteResult | None]:
+    if isinstance(applied, _DeleteResult):
+        return applied.target_id, [item["id"] for item in applied.deleted], applied
+    return applied, [applied], None
+
+
+def _deletion_result_fields(
+    deletion: _DeleteResult | None, result: RegenResult
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    if deletion is None:
+        return {}, None
+    after_parts = {item["id"]: item for item in _part_state(result)}
+    before_parts = {item["id"]: item for item in deletion.before_parts}
+    removed_parts = [part_id for part_id in before_parts if part_id not in after_parts]
+    changed_parts = [
+        part_id
+        for part_id in before_parts
+        if part_id in after_parts and before_parts[part_id] != after_parts[part_id]
+    ]
+    deleted_ids = [item["id"] for item in deletion.deleted]
+    summary = f"deleted {', '.join(deleted_ids)}"
+    if removed_parts:
+        summary += f"; removed parts {', '.join(removed_parts)}"
+    if changed_parts:
+        summary += f"; changed parts {', '.join(changed_parts)}"
+    fields = {
+        "deleted": list(deletion.deleted),
+        "summary": summary,
+        "partsRemoved": removed_parts,
+        "partsChanged": changed_parts,
+    }
+    return fields, {"featureId": deletion.target_id, "summary": summary}
+
+
+def _apply_sketch(
+    graph: Any,
+    operation: SketchCreate | SketchUpdate | SketchDelete,
+    committed: RegenResult | None,
+) -> str | _DeleteResult:
+    if isinstance(operation, SketchDelete):
+        assert committed is not None
+        return _apply_delete(graph, operation, committed)
     if isinstance(operation, SketchCreate):
         if operation.plane.kind != "origin":
             raise RequestError("INVALID_PARAMETER", "only origin planes are supported")
@@ -1609,7 +1794,12 @@ def _apply_port_cutout(
     return _create_port_cutout(graph, operation)
 
 
-def _apply_feature(graph: Any, operation: MutationOperation) -> str:
+def _apply_feature(
+    graph: Any, operation: MutationOperation, committed: RegenResult | None
+) -> str | _DeleteResult:
+    if isinstance(operation, FeatureDelete):
+        assert committed is not None
+        return _apply_delete(graph, operation, committed)
     applier = {
         ExtrudeCreate: _apply_extrude,
         ExtrudeUpdate: _apply_extrude,
@@ -1766,10 +1956,15 @@ class _ScenePublisher:
         threading.Thread(target=self._run, name="coalesce-viewer-publisher", daemon=True).start()
 
     def publish(
-        self, revision: int, result: RegenResult, before: Any = None, changed_id: str | None = None
+        self,
+        revision: int,
+        result: RegenResult,
+        before: Any = None,
+        changed_id: str | None = None,
+        change: dict[str, str] | None = None,
     ) -> None:
-        """``before`` and ``changed_id`` describe the commit; none for a document opened from disk."""
-        self._jobs.put(("publish", (revision, result, before, changed_id)))
+        """Describe the commit when supplied; disk startup publishes without a change."""
+        self._jobs.put(("publish", (revision, result, before, changed_id, change)))
 
     def publish_failure(self, feature_ids: list[str], error: dict[str, str]) -> None:
         self._jobs.put(("publish_failure", (feature_ids, error)))
@@ -1779,8 +1974,9 @@ class _ScenePublisher:
             method, arguments = self._jobs.get()
             try:
                 if method == "publish":
-                    revision, result, before, changed_id = arguments
-                    change = _change(before, result.graph, changed_id) if changed_id else None
+                    revision, result, before, changed_id, change = arguments
+                    if change is None and changed_id:
+                        change = _change(before, result.graph, changed_id)
                     self._store.publish(revision, _scene_parts(result), change)
                 else:
                     self._store.publish_failure(*arguments)
@@ -1908,6 +2104,13 @@ class DocumentService:
             hint=hint,
         )
 
+    def _committed_regeneration(self, operation: MutationOperation) -> RegenResult | None:
+        if not isinstance(operation, (ImportDelete, SketchDelete, FeatureDelete)):
+            return None
+        self._ensure_geometry()
+        assert self._regen is not None
+        return self._regen
+
     def publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
         """Show a failed sketch or feature call in the viewer; the last good scene stays."""
         if self._publisher is None:
@@ -1924,7 +2127,9 @@ class DocumentService:
         operation: str,
         payload: dict[str, Any],
         parse: Callable[[dict[str, Any]], MutationOperation],
-        apply: Callable[[Any, MutationOperation], str],
+        apply: Callable[
+            [Any, MutationOperation, RegenResult | None], str | _DeleteResult
+        ],
         response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
     ) -> dict[str, Any]:
         request_id = payload.get("requestId")
@@ -1976,10 +2181,12 @@ class DocumentService:
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
                 graph = loads(dumps(self._document.graph))
-                changed_id = apply(graph, parsed)
+                applied = apply(graph, parsed, self._committed_regeneration(parsed))
+                changed_id, changed_ids, deletion = _applied_result(applied)
                 result = regenerate(graph)
                 self._assert_valid(result)
                 self._assert_effect(parsed, result)
+                deletion_fields, change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision
                 response = {
                     "ok": True,
@@ -1987,9 +2194,10 @@ class DocumentService:
                     "previousRevision": previous,
                     "requestId": request_id,
                     "units": "mm",
-                    "changedFeatureIds": [changed_id],
+                    "changedFeatureIds": changed_ids,
                     "regeneration": {"status": "OK", "valid": True},
                     "warnings": [],
+                    **deletion_fields,
                     **response_fields(graph, result, changed_id),
                 }
                 receipt = {
@@ -2013,7 +2221,7 @@ class DocumentService:
                 self._regen = result
                 self._graph_error = None
                 if self._publisher is not None:
-                    self._publisher.publish(document.revision, result, before, changed_id)
+                    self._publisher.publish(document.revision, result, before, changed_id, change)
                 if not durable:
                     _LOG.warning(
                         "document rename committed but directory fsync failed; durability is unconfirmed"
@@ -2130,6 +2338,8 @@ class DocumentService:
 
     def import_board(self, payload: dict[str, Any]) -> dict[str, Any]:
         def response(graph: Any, result: RegenResult, changed_id: str) -> dict[str, Any]:
+            if changed_id not in graph.nodes:
+                return {"assetId": changed_id}
             node = next(
                 item
                 for item in json.loads(dumps(graph))["nodes"]
@@ -2149,7 +2359,9 @@ class DocumentService:
         entities = payload.get("entities") or payload.get("set", {}).get("entities")
 
         def response(graph: Any, result: RegenResult, changed_id: str) -> dict[str, Any]:
-            fields = {"sketchId": changed_id, **self._node_metadata(graph, result, changed_id)}
+            fields = {"sketchId": changed_id}
+            if changed_id in graph.nodes:
+                fields.update(self._node_metadata(graph, result, changed_id))
             if entities:
                 fields["entitySegments"] = _entity_segments(entities)
             return fields
@@ -2170,7 +2382,11 @@ class DocumentService:
             _apply_feature,
             lambda graph, result, changed_id: {
                 "featureId": changed_id,
-                **self._node_metadata(graph, result, changed_id),
+                **(
+                    self._node_metadata(graph, result, changed_id)
+                    if changed_id in graph.nodes
+                    else {}
+                ),
             },
         )
 

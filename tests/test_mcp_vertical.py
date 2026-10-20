@@ -21,7 +21,9 @@ from coalesce.service import (
     DocumentService,
     ExtrudeCreate,
     ExtrudeUpdate,
+    FeatureDelete,
     SketchCreate,
+    SketchDelete,
     SketchUpdate,
 )
 
@@ -380,8 +382,16 @@ async def test_real_stdio_publishes_root_object_schemas(tmp_path):
 
 def test_mutation_schema_fields_match_typed_operations():
     operation_types = {
-        "sketch": {"create": SketchCreate, "update": SketchUpdate},
-        "feature": {"create": ExtrudeCreate, "update": ExtrudeUpdate},
+        "sketch": {
+            "create": SketchCreate,
+            "update": SketchUpdate,
+            "delete": SketchDelete,
+        },
+        "feature": {
+            "create": ExtrudeCreate,
+            "update": ExtrudeUpdate,
+            "delete": FeatureDelete,
+        },
     }
 
     for tool, actions in operation_types.items():
