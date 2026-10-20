@@ -1,13 +1,10 @@
-import math
 
 import pytest
-
-from coalesce.document_store import Document, DocumentStore
-from coalesce.graph import Extrude, Graph, Hole, Rectangle, Sketch
-from coalesce.service import DocumentService
-from coalesce.viewer import ViewerSceneStore
 from test_mcp_cut_hole_circle import cut, extrude, hole, rectangle_sketch
 from test_mcp_vertical import run_server
+
+from coalesce.service import DocumentService
+from coalesce.viewer import ViewerSceneStore
 
 
 def plate_setup():
