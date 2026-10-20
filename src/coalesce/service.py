@@ -854,7 +854,7 @@ class DocumentService:
         error = result["error"]
         self._publisher.publish_failure(
             [feature_id] if isinstance(feature_id, str) else [],
-            {"code": error["code"], "message": error["message"]},
+            {k: error[k] for k in ("code", "message", "hint") if k in error},
         )
 
     def _mutate(

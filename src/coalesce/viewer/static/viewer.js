@@ -32,7 +32,7 @@ scene.add(camera, new THREE.HemisphereLight(0xffffff, 0x7d868f, 2.6));
 
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = false;
-controls.addEventListener('change', () => { markCustomView(); requestRender(); });
+controls.addEventListener('change', () => { markUserMoved(); requestRender(); });
 
 const model = new THREE.Group();
 const helpers = new THREE.Group();
@@ -125,10 +125,10 @@ function niceLength(target) {
 }
 
 function updateScale(height) {
-  if (!current) return;
+  $('scale').hidden = !model.children.length;
+  if (!model.children.length) return;
   const pxPerMm = (height * camera.zoom) / (camera.top - camera.bottom);
   const mm = niceLength(100 / pxPerMm);
-  $('scale').hidden = false;
   $('scale-bar').style.width = `${mm * pxPerMm}px`;
   $('scale-text').textContent = `${formatMm(mm)} mm, grid ${formatMm(gridStep)} mm`;
 }
@@ -137,9 +137,20 @@ function formatMm(value) {
   return Number(value.toPrecision(6)).toString();
 }
 
+const formatSize = (part) => part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
+
+// the canvas's accessible description: what is drawn and how the camera frames it
+function describeView() {
+  const parts = current?.parts ?? [];
+  const framing = activeView ? `${activeView} view, fitted to the model` : 'camera moved by hand';
+  $('view-description').textContent = parts.length
+    ? `Revision ${current.revision}, ${framing}. `
+      + parts.map((part) => `${part.label}, ${formatSize(part)} mm`).join('; ') + '.'
+    : 'No parts to show.';
+}
+
 // ---- views
 
-let fitted = false;
 let gridStep = 10;
 
 function visibleBox() {
@@ -152,17 +163,21 @@ function visibleBox() {
   return box;
 }
 
+// fits the visible parts; a null name keeps the current view direction
 function setView(name) {
   const box = visibleBox();
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1);
-  const direction = new THREE.Vector3(...(VIEWS[name] ?? VIEWS.iso)).normalize();
+  const direction = name ? new THREE.Vector3(...VIEWS[name]) : camera.position.clone().sub(controls.target);
+  direction.normalize();
   camera.position.copy(center).addScaledVector(direction, radius * 6);
   camera.near = radius * 0.01;
   camera.far = radius * 20;
-  camera.top = radius * 1.15;
-  camera.bottom = -radius * 1.15;
+  // a portrait canvas is narrower than tall: fit the width, not just the height
+  const half = radius * 1.15 * Math.max(1, canvas.clientHeight / (canvas.clientWidth || 1));
+  camera.top = half;
+  camera.bottom = -half;
   camera.zoom = 1;
   controls.target.copy(center);
   controls.update();
@@ -171,15 +186,25 @@ function setView(name) {
     button.setAttribute('aria-pressed', String(button.dataset.view === name));
   }
   activeView = name;
+  // the grid square is the scale bar's length right after a fit: one scale for both
+  gridStep = niceLength(100 / ((canvas.clientHeight || 1) / (camera.top - camera.bottom)));
+  rebuildHelpers(current.bbox);
+  userMoved = false;
+  showRefit(false);
+  describeView();
   requestRender();
 }
 
-let activeView = 'iso';
+let activeView = 'iso'; // null after an orbit, pan or zoom
+let userMoved = false; // the camera moved by hand since the last fit: new revisions keep it
 let settingView = false;
-function markCustomView() {
-  if (settingView || !activeView) return;
+function markUserMoved() {
+  if (settingView) return;
+  userMoved = true;
+  if (!activeView) return;
   activeView = null;
   for (const button of document.querySelectorAll('[data-view]')) button.setAttribute('aria-pressed', 'false');
+  describeView();
 }
 
 function applyView(name) {
@@ -188,10 +213,16 @@ function applyView(name) {
   settingView = false;
 }
 
+// a new revision arrived while the human held their own view: offer the fit, do not force it
+function showRefit(on) {
+  $('fit').toggleAttribute('data-new', on);
+  $('fit-text').textContent = on ? 'Fit new model' : 'Fit';
+}
+
 for (const button of document.querySelectorAll('[data-view]')) {
   button.addEventListener('click', () => applyView(button.dataset.view));
 }
-$('fit').addEventListener('click', () => applyView(activeView ?? 'iso'));
+$('fit').addEventListener('click', () => applyView(activeView));
 
 // off before the first scene and once the link expired: nothing current to aim at
 function enableCamera(on) {
@@ -225,9 +256,10 @@ function pruneGeometries() {
 
 function rebuildHelpers(bbox) {
   clearGroup(helpers, { ownsGeometry: true });
-  const extent = Math.max(...bbox.max.map((v, i) => Math.abs(v)), ...bbox.min.map((v) => Math.abs(v)), 1);
-  gridStep = niceLength(extent / 6);
-  const cells = Math.ceil((extent * 1.6) / gridStep) * 2;
+  const extent = Math.max(...bbox.max.map((v) => Math.abs(v)), ...bbox.min.map((v) => Math.abs(v)), 1);
+  // shortcut: a model far from the origin for its size gets a grid that stops short of it;
+  // center the grid on the model if that case turns up.
+  const cells = Math.min(Math.ceil((extent * 1.6) / gridStep) * 2, 2000);
   const grid = new THREE.GridHelper(cells * gridStep, cells, 0x9aa3ab, 0xc9cfd4);
   grid.rotateX(Math.PI / 2); // GridHelper lies in XZ; CAD ground is XY with Z up
   grid.material.transparent = true;
@@ -244,14 +276,14 @@ function rebuildHelpers(bbox) {
 const geometries = new Map(); // mesh id -> {surface, edges}; parts borrow these
 const hiddenByUser = new Map(); // part name -> visible override
 
-// the server answers 204 for a revision or mesh it dropped for a newer one
+// the server answers {"superseded": true} for a revision or mesh it dropped for a newer one
 class Superseded extends Error {}
 
 async function loadMesh(mesh) {
   if (geometries.has(mesh.id)) return;
   const response = await fetch(mesh.url);
-  if (response.status === 204) throw new Superseded();
   if (!response.ok) throw new Error(`mesh ${mesh.id}: HTTP ${response.status}`);
+  if (response.headers.get('Content-Type') === 'application/json') throw new Superseded(); // meshes are binary
   const buffer = await response.arrayBuffer();
   const v = mesh.vertexCount * 3;
   const t = mesh.triangleCount * 3;
@@ -307,7 +339,7 @@ function renderPartList(parts) {
     name.title = part.name;
     const size = document.createElement('span');
     size.className = 'part-size';
-    size.textContent = part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
+    size.textContent = formatSize(part);
     button.append(swatch, name, size);
     button.addEventListener('click', () => {
       object.visible = !object.visible;
@@ -332,12 +364,12 @@ function notice(title, body = '') {
   $('notice-body').textContent = body;
 }
 
-const NEW_LINK = 'Open the new viewer link';
-const NEW_LINK_HELP = 'coalesce restarted with a new access key and printed the new link to its '
-  + 'error output (stderr): your terminal, or your agent\'s MCP server log. '
-  + 'The line starts with \u201ccoalesce viewer:\u201d.';
+const ENDED = 'Viewer ended';
+const ENDED_HELP = 'This page cannot reconnect. If coalesce runs again, open the new link it printed: '
+  + 'the line that starts with \u201ccoalesce viewer:\u201d in its error output (stderr), '
+  + 'or ask your agent to call query with select server.';
 
-// states: connecting, live, lost (retrying), ended (server has a new key), denied
+// states: connecting, live, lost (retrying for a bounded time), ended (terminal), denied
 function setLink(state, text) {
   $('link').dataset.state = state;
   $('link-text').textContent = text;
@@ -348,10 +380,10 @@ function setLink(state, text) {
   if (state === 'ended') {
     enableCamera(false);
     const title = document.createElement('strong');
-    title.textContent = `Revision ${current?.revision} is stale.`;
-    line.replaceChildren(title, ` ${NEW_LINK}. ${NEW_LINK_HELP}`);
+    title.textContent = `${ENDED}. Revision ${current?.revision} is the last one this page saw.`;
+    line.replaceChildren(title, ` ${ENDED_HELP}`);
   } else {
-    line.textContent = stale ? `Revision ${current.revision} may be out of date. This page reconnects by itself.` : '';
+    line.textContent = stale ? `Revision ${current.revision} may be out of date. Reconnecting to coalesce.` : '';
   }
   $('stage').toggleAttribute('data-stale', stale);
   syncGizmo();
@@ -360,7 +392,7 @@ function setLink(state, text) {
 // orientation means nothing without a model, or once the page can no longer follow it
 function syncGizmo() {
   const state = $('link').dataset.state;
-  $('gizmo').hidden = !current || state === 'ended' || state === 'denied';
+  $('gizmo').hidden = !model.children.length || state === 'ended' || state === 'denied';
   requestRender();
 }
 
@@ -374,6 +406,24 @@ function showRevision(sceneData) {
   const count = sceneData.parts.length;
   $('revision-meta').textContent = `${count} ${count === 1 ? 'part' : 'parts'}, shown at ${time}`;
 }
+
+// what to do next, in words; the stable code and raw message stay under "Error details"
+const REFERENCE_CODES = new Set(['EMPTY', 'SPLIT', 'MERGED', 'AMBIGUOUS']);
+function repair({ code, message, hint }) {
+  if (hint) return `${capitalize(message)}. Ask your agent to ${hint}.`;
+  if (code === 'UNIT_MISMATCH') return `A value has the wrong unit (${message}). Ask your agent to send it in the expected unit.`;
+  if (code === 'INVALID_PARAMETER') return `A value in the edit is not valid: ${message}. Ask your agent to correct it.`;
+  if (code === 'REVISION_CONFLICT') return 'The edit was based on an older revision. Ask your agent to read the current revision and try again.';
+  if (code === 'UNKNOWN_ID') return `The edit names something that does not exist: ${message}. Ask your agent to check the id.`;
+  if (code === 'DUPLICATE_ID') return `An id in the edit is already in use: ${message}. Ask your agent to pick a new id.`;
+  if (code === 'CYCLE' || code === 'ORDER') return 'The edit makes a feature depend on itself or on a later feature. Ask your agent to reorder the features.';
+  if (REFERENCE_CODES.has(code)) return 'A stored face or edge reference no longer matches exactly one piece of geometry. Ask your agent to select it again.';
+  if (code === 'KERNEL_OPERATION_FAILED' || code === 'INVALID_BREP') {
+    return 'These values do not make valid geometry. Check that every size and distance is greater than 0 mm and that each feature meets the part it changes.';
+  }
+  return `${capitalize(message)}.`;
+}
+const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 function showFailure() {
   $('failure').hidden = !failure;
@@ -389,7 +439,9 @@ function showFailure() {
     return chip;
   }));
   ids.hidden = !failure.featureIds.length;
-  $('failure-error').textContent = `${failure.error.code}: ${failure.error.message}`;
+  $('failure-repair').textContent = repair(failure.error);
+  $('failure-code').textContent = failure.error.code;
+  $('failure-message').textContent = failure.error.message;
 }
 
 // loads run one at a time, then catch up to the newest announced revision,
@@ -423,24 +475,27 @@ async function loadOne(revision) {
   else $('revision-meta').textContent = `Loading revision ${revision}`;
   try {
     const response = await fetch(`/api/scene/${revision}`, { cache: 'no-store' });
-    if (response.status === 204) throw new Superseded();
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    if (data.superseded) throw new Superseded();
     await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     clearGroup(model, { ownsGeometry: false });
     for (const part of data.parts) model.add(partObject(part, geometries.get(part.mesh.id)));
     current = data;
-    rebuildHelpers(data.bbox);
     renderPartList(data.parts);
     showRevision(data);
-    notice(null);
+    const empty = !data.parts.length;
+    notice(empty ? `Revision ${data.revision} has no solid parts yet` : null,
+      'Sketches are not drawn here. Parts appear when a feature makes a solid.');
+    enableCamera(!empty);
+    if (empty) clearGroup(helpers, { ownsGeometry: true });
+    else if (userMoved) {
+      rebuildHelpers(data.bbox);
+      showRefit(true);
+    } else applyView(activeView);
     syncGizmo();
-    if (!fitted) {
-      fitted = true;
-      enableCamera(true);
-      applyView('iso');
-    }
+    describeView();
     requestRender();
   } catch (error) {
     // superseded: the event for the newer revision is already here or on its way
@@ -456,16 +511,10 @@ async function loadOne(revision) {
 
 async function connect() {
   const token = new URLSearchParams(location.hash.slice(1)).get('token');
-  if (token) {
-    // the token lives only in the fragment; trade it for an HttpOnly cookie, then drop it.
-    await fetch('/api/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
-    }).catch(() => null);
-    history.replaceState(null, '', location.pathname);
-  }
-  if (await authorized() !== true) {
+  // the token lives only in the fragment; trade it for an HttpOnly cookie, then drop it.
+  const access = token ? await session({ method: 'POST', body: JSON.stringify({ token }) }) : await session();
+  if (token) history.replaceState(null, '', location.pathname);
+  if (access !== true) {
     setLink('denied', 'No access');
     document.querySelector('.revision-line').hidden = true;
     document.querySelector('.parts').hidden = true;
@@ -479,10 +528,10 @@ async function connect() {
   listen();
 }
 
-// true or false; null while the server is unreachable
-async function authorized() {
+// whether our cookie (or the posted token) gives access; null while the server is unreachable
+async function session(init = {}) {
   try {
-    const response = await fetch('/api/session', { cache: 'no-store' });
+    const response = await fetch('/api/session', { cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...init });
     return (await response.json()).authorized === true;
   } catch {
     return null;
@@ -513,18 +562,23 @@ function listen() {
   });
 }
 
-// a restarted server has a new key: ask whether our cookie still works before reconnecting
+// a restarted coalesce has a new key and, almost always, a new port: this page cannot follow it.
+// retry a brief drop for a bounded time, then say the viewer ended and stop.
+const OUTAGE_LIMIT_MS = 15000;
+let lostAt = null;
 async function lost() {
-  setLink('lost', 'Not live');
-  if (!current) notice('Disconnected from coalesce', 'This page reconnects by itself when coalesce runs again.');
-  const access = await authorized();
-  if (access === null) {
+  lostAt ??= Date.now();
+  setLink('lost', 'Reconnecting');
+  if (!current) notice('Disconnected from coalesce', 'Reconnecting to coalesce.');
+  const access = await session();
+  if (access === null && Date.now() - lostAt < OUTAGE_LIMIT_MS) {
     setTimeout(lost, 2000);
   } else if (access) {
+    lostAt = null;
     listen();
   } else {
-    setLink('ended', 'Link expired');
-    if (!current) notice(NEW_LINK, NEW_LINK_HELP);
+    setLink('ended', ENDED);
+    if (!current) notice(ENDED, ENDED_HELP);
   }
 }
 
@@ -552,9 +606,15 @@ if (window.coalesceDebug === true) {
       meshes: current?.parts.map((part) => part.mesh.id) ?? [],
       geometries: model.children.map((group) => group.children[0].geometry.uuid),
       camera: controls.enabled,
+      view: [...camera.quaternion.toArray(), camera.zoom], // orientation and zoom, which an orbit sets
+      // the visible parts' box corners in normalized device coordinates (-1..1 is on screen)
+      projected: visibleBox().isEmpty() ? null : corners(visibleBox()).map((p) => p.project(camera).toArray().slice(0, 2)),
     }),
   });
 }
+
+const corners = ({ min, max }) => [0, 1, 2, 3, 4, 5, 6, 7].map((i) => new THREE.Vector3(
+  i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z));
 
 requestRender();
 connect();

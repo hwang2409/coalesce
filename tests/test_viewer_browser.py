@@ -8,12 +8,13 @@ VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-from build123d import Align, Box, fillet
+from build123d import Align, Box, Location, fillet
 
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
@@ -125,9 +126,8 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             next_step()
 
             lost = step("disconnected", outage=True)
-            assert lost["link"] == "Not live"
-            assert "Revision 2 may be out of date" in lost["banner"]
-            assert "Not live" not in lost["banner"]  # the sidebar names the state once
+            assert lost["link"] == "Reconnecting"
+            assert lost["banner"] == "Revision 2 may be out of date. Reconnecting to coalesce."
             assert "grayscale(1)" in lost["filter"]
             # the status row pushes the model down instead of covering it
             assert lost["viewTop"] == lost["statusBottom"] > 0 and lost["viewBottom"] == 800
@@ -155,12 +155,12 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             next_step()
 
             ended = step("new-link", outage=True)  # a brief gap while the port changes hands
-            assert ended["link"] == "Link expired"
-            assert "Open the new viewer link" in ended["status"]
+            assert ended["link"] == "Viewer ended"  # a new key: no waiting out the retry bound
+            assert "open the new link it printed" in ended["status"]
             assert "stderr" in ended["status"]
             assert ended["eventRequestsAfter"] == 0  # the page stopped retrying the old key
             assert ended["gizmo"] is False
-            assert "Revision 52 is stale" in ended["status"]
+            assert "Revision 52 is the last one this page saw" in ended["status"]
             # nothing current to aim at: orbit and view buttons are off
             assert ended["camera"] is False and ended["disabled"] == [True] * 5
             # an expired key is an expected state, not a browser error (no 401s)
@@ -180,3 +180,110 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             driver.kill()
             if restarted:
                 restarted.close()
+
+
+UX = Path(__file__).with_name("viewer_ux_smoke.mjs")
+LONG = "a_very_long_part_name_for_the_two_thousand_millimeter_test"
+
+
+def bar(length: float) -> Box:
+    return Box(0.5, 0.5, length, align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+
+def on_screen(result) -> bool:
+    return all(-1 <= c <= 1 for corner in result["scene"]["projected"] for c in corner)
+
+
+def scale_matches_grid(result) -> bool:
+    if result["scale"] is None:  # narrow layouts have no room for the scale bar
+        return True
+    bar_mm, grid_mm = re.fullmatch(r"(\S+) mm, grid (\S+) mm", result["scale"]).groups()
+    return bar_mm == grid_mm
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_viewer_frames_fails_and_ends_honestly(module, viewport):
+    store = ViewerSceneStore()
+    shots = os.environ.get("VIEWER_SCREENSHOTS")
+    server = ViewerServer(store)
+    driver = subprocess.Popen(
+        ["node", str(UX), module, server.url, *map(str, viewport), *([shots] if shots else [])],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+
+    def step(name, outage=False):
+        line = driver.stdout.readline()
+        assert line.startswith(f"step {name} "), line
+        result = json.loads(line.split(" ", 2)[2])
+        # no console errors and no failed requests, the session request included
+        errors = [e for e in result["errors"] if not (outage and any(o in e for o in OUTAGE_ERRORS))]
+        assert errors == [], (name, errors)
+        driver.stdin.write("next\n")
+        driver.stdin.flush()
+        return result
+
+    try:
+        empty = step("empty")
+        assert empty["parts"] == "No parts yet"
+        assert '- img "3D view of the current revision"' in empty["aria"]
+        store.publish(1, [])  # a sketch alone: a revision with no solid parts
+
+        solids = step("no-solids")
+        assert "Revision 1 has no solid parts yet" in solids["notice"]
+        assert solids["fitDisabled"] is True and solids["scale"] is None
+        store.publish(2, [ScenePart("plate_extrude", plate(10))])
+
+        first = step("plate")
+        # the first solid is fitted even though an empty revision came first
+        assert first["coverage"] > 0.02 and first["dark"] > 0.0003, first
+        assert on_screen(first) and scale_matches_grid(first), first
+        assert first["description"].startswith("Revision 2, iso view, fitted to the model. plate_extrude")
+        store.publish_failure(["plate_extrude"], {"code": "UNIT_MISMATCH", "message": "expected mm; received inch"})
+
+        failed = step("failure")
+        # the last good model stays drawn, at about the same size
+        assert failed["coverage"] > first["coverage"] * 0.8 and failed["dark"] > 0.0003, failed
+        assert failed["repair"].startswith("A value has the wrong unit (expected mm; received inch)")
+        assert failed["codeVisible"] is False  # the stable code waits under "Error details"
+        assert step("failure-details")["codeVisible"] is True
+        store.publish(3, [ScenePart("plate_extrude", plate(10)), ScenePart(LONG, bar(2000))])
+
+        large = step("large")
+        # 0.5 mm and 2000 mm together: fitted, and scale bar and grid tell the same scale
+        assert on_screen(large) and scale_matches_grid(large), large
+        assert large["status"] is None and large["fit"] == "Fit"
+
+        focused = step("long-name-focus")
+        assert focused["name"] == {"text": LONG, "clipped": False}
+
+        orbited = step("orbited")
+        store.publish(4, [
+            ScenePart("plate_extrude", plate(10)),
+            ScenePart(LONG, bar(2000)),
+            ScenePart("far_block", Box(100, 100, 100).moved(Location((3000, 0, 0)))),
+        ])
+
+        held = step("held")
+        # the human's view stays; the page offers the fit instead of forcing it
+        assert held["scene"]["view"] == orbited["scene"]["view"]
+        assert held["fit"] == "Fit new model" and not on_screen(held)
+        refit = step("refit")
+        assert refit["fit"] == "Fit" and on_screen(refit) and scale_matches_grid(refit), refit
+        server.close()  # for good: a restarted coalesce prints a new link on a new port
+
+        retrying = step("reconnecting", outage=True)
+        assert retrying["link"] == "Reconnecting"
+        assert "Revision 4 may be out of date. Reconnecting to coalesce." == retrying["status"]
+
+        ended = step("ended", outage=True)
+        assert ended["link"] == "Viewer ended"
+        assert ended["status"].startswith("Viewer ended. Revision 4 is the last one this page saw.")
+        assert "cannot reconnect" in ended["status"] and "coalesce viewer:" in ended["status"]
+        assert "select server" in ended["status"]
+        assert ended["requestsAfter"] == []  # it stopped retrying
+        assert ended["buttons"] == [True] * 5
+        assert ended["coverage"] > refit["coverage"] * 0.9  # the last model stays, dimmed by css
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()

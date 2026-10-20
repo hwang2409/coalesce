@@ -24,7 +24,7 @@
 
   <section class="parts" aria-labelledby="parts-title">
     <h2 id="parts-title">Parts <span class="unit">size in mm</span></h2>
-    <ul id="parts"></ul>
+    <ul id="parts"><li class="parts-empty">No parts yet</li></ul>
   </section>
 </aside>
 
@@ -35,12 +35,17 @@
     <div class="failure" id="failure" role="alert" hidden>
       <p class="failure-title" id="failure-title"></p>
       <p class="failure-features" id="failure-features"></p>
-      <p class="failure-error" id="failure-error"></p>
+      <p class="failure-repair" id="failure-repair"></p>
+      <details class="failure-details">
+        <summary>Error details</summary>
+        <p><code class="failure-code" id="failure-code"></code> <span id="failure-message"></span></p>
+      </details>
     </div>
   </div>
 
   <div class="viewport">
-    <canvas id="view" aria-label="3D view of the current revision"></canvas>
+    <canvas id="view" role="img" aria-label="3D view of the current revision" aria-describedby="view-description"></canvas>
+    <p class="visually-hidden" id="view-description" aria-live="polite">No parts to show.</p>
 
     <div class="notice" id="notice">
       <p class="notice-title" id="notice-title">Connecting to coalesce</p>
@@ -65,7 +70,7 @@
         <button type="button" data-view="right" aria-pressed="false" disabled>Right</button>
         <button type="button" data-view="top" aria-pressed="false" disabled>Top</button>
       </div>
-      <button type="button" class="fit" id="fit" disabled>Fit</button>
+      <button type="button" class="fit" id="fit" disabled><span id="fit-text">Fit</span></button>
     </nav>
   </div>
 </main>

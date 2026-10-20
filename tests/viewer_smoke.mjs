@@ -15,6 +15,7 @@ const errorsOf = (target) => {
   const found = [];
   target.on('pageerror', (error) => found.push(String(error)));
   target.on('console', (message) => message.type() === 'error' && found.push(message.text()));
+  target.on('requestfailed', (request) => found.push(`${request.method()} ${new URL(request.url()).pathname} ${request.failure()?.errorText}`));
   return found;
 };
 
@@ -126,7 +127,7 @@ await waitRevision(STRESS_LAST);
 await page.waitForTimeout(300);
 await step('stress', async () => ({ memory: await page.evaluate(() => window.coalesceViewer.memory) }));
 // the Python side restarts the server with a new key; the old page must say so and stop retrying
-await page.getByText('Open the new viewer link').waitFor({ timeout: 20000 });
+await page.getByText('Viewer ended', { exact: true }).waitFor({ timeout: 20000 });
 await page.waitForTimeout(300);
 const requestsAtEnd = eventRequests;
 await page.waitForTimeout(5000); // longer than the EventSource retry delay
