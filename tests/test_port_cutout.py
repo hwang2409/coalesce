@@ -3,13 +3,12 @@ import re
 import shutil
 from pathlib import Path
 
-from test_mcp_cut_hole_circle import cut, hole, rectangle_sketch
-from test_mcp_vertical import call_server_tool
-
 import pytest
 from build123d import Face, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
+from test_mcp_cut_hole_circle import cut, hole, rectangle_sketch
+from test_mcp_vertical import call_server_tool
 from test_pcb_enclosure import (
     FEATURE_HOLES,
     FIXTURES,
