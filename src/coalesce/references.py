@@ -25,7 +25,7 @@ class Status(str, Enum):
 class ElementKey:
     feature: str
     role: str
-    source: str | None = None
+    source: str | tuple[ElementKey, ...] | None = None
 
 
 @dataclass
@@ -72,7 +72,18 @@ class Reference:
             raise ValueError("exactly cardinality requires a non-negative count")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self) | {"cardinality": self.cardinality.value}
+        filters = [
+            {"kind": type(predicate).__name__, **asdict(predicate)}
+            for predicate in self.filters
+        ]
+        return {
+            "feature": self.feature,
+            "role": self.role,
+            "cardinality": self.cardinality.value,
+            "count": self.count,
+            "source": self.source,
+            "filters": filters,
+        }
 
 
 @dataclass
@@ -159,11 +170,15 @@ def resolve(
     ordered_features: list[str] | None = None,
     before_feature: str | None = None,
 ) -> Resolution:
-    if before_feature is not None and ordered_features is not None:
-        if ref.feature in ordered_features and before_feature in ordered_features:
-            if ordered_features.index(ref.feature) >= ordered_features.index(before_feature):
-                status = Status.ORDER
-                return Resolution(status, error=_error(ref, status, []))
+    if (
+        before_feature is not None
+        and ordered_features is not None
+        and ref.feature in ordered_features
+        and before_feature in ordered_features
+        and ordered_features.index(ref.feature) >= ordered_features.index(before_feature)
+    ):
+        status = Status.ORDER
+        return Resolution(status, error=_error(ref, status, []))
 
     candidates = [
         candidate
@@ -174,18 +189,22 @@ def resolve(
     for predicate in ref.filters:
         candidates = _filter(candidates, predicate)
 
+    violates_cardinality = (
+        ref.cardinality is Cardinality.ONE
+        and len(candidates) > 1
+        or ref.cardinality is Cardinality.EXACTLY
+        and len(candidates) != ref.count
+    )
     if not candidates:
         status = Status.EMPTY
     elif any(candidate.merged_from for candidate in candidates):
         status = Status.MERGED
-    elif ref.cardinality is Cardinality.ONE and len(candidates) > 1:
+    elif violates_cardinality:
         status = (
             Status.SPLIT
             if len({candidate.key for candidate in candidates}) == 1
             else Status.AMBIGUOUS
         )
-    elif ref.cardinality is Cardinality.EXACTLY and len(candidates) != ref.count:
-        status = Status.SPLIT if len({candidate.key for candidate in candidates}) == 1 else Status.AMBIGUOUS
     else:
         return Resolution(Status.OK, candidates)
     return Resolution(status, candidates, _error(ref, status, candidates))

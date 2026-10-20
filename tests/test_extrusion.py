@@ -1,7 +1,7 @@
 from math import isclose
 
-from coalesce.graph import Circle, Extrude, Rectangle, Sketch
 from coalesce.extrusion import extrude_sketch
+from coalesce.graph import Circle, Extrude, Rectangle, Sketch
 
 
 def by_role(result, role):

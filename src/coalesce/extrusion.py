@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from build123d import Compound, Edge, Face, Location, Plane as BuildPlane, Shape, Wire
+from build123d import Compound, Edge, Face, Location, Shape, Wire
+from build123d import Plane as BuildPlane
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
@@ -35,7 +36,12 @@ def _descriptor(entity: Shape) -> dict[str, object]:
     return descriptor
 
 
-def _candidate(feature: str, role: str, source: str | None, entity: Shape) -> Candidate:
+def _candidate(
+    feature: str,
+    role: str,
+    source: str | tuple[ElementKey, ...] | None,
+    entity: Shape,
+) -> Candidate:
     return Candidate(ElementKey(feature, role, source), entity, _descriptor(entity))
 
 
@@ -53,7 +59,8 @@ def _profile(entity: Rectangle | Circle, location: Location) -> tuple[Face, dict
         return face, dict(zip(names, face.edges(), strict=True))
     if isinstance(entity, Circle):
         face = Face(Wire.make_circle(entity.radius).moved(location))
-        return face, {entity.id: face.edges()[0]}
+        (edge,) = face.edges()
+        return face, {entity.id: edge}
     raise TypeError(f"unsupported sketch entity: {type(entity).__name__}")
 
 
@@ -110,7 +117,11 @@ def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
         ]
         roles = sorted({candidate.key.role for candidate in adjacent})
         if len(roles) == 2:
-            candidates.append(
-                _candidate(node.id, _between_role(roles), None, edge)
+            source = tuple(
+                sorted(
+                    (candidate.key for candidate in adjacent),
+                    key=lambda key: (key.feature, key.role, str(key.source)),
+                )
             )
+            candidates.append(_candidate(node.id, _between_role(roles), source, edge))
     return ExtrusionResult(shape, candidates)
