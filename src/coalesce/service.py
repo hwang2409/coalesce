@@ -415,6 +415,26 @@ def _terminal_shapes(result: RegenResult) -> list[tuple[str, Any]]:
     return [(feature, shape) for feature, shape in result.shapes.items() if feature not in consumed]
 
 
+def _body_name(solid: Any, owned: list[Any]) -> str:
+    faces = [face.wrapped for face in solid.faces()]
+    bodies = sorted(
+        {
+            candidate.key.body.entity
+            for candidate in owned
+            if any(candidate.entity.wrapped.IsSame(face) for face in faces)
+        }
+    )
+    return "+".join(bodies) or "solid"
+
+
+def _split_suffixes(names: list[str]) -> list[str]:
+    # a cut can split one body into several solids; scene names must stay unique.
+    return [
+        f" ({names[: index + 1].count(name)})" if names.count(name) > 1 else ""
+        for index, name in enumerate(names)
+    ]
+
+
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     owned = [
         candidate
@@ -424,22 +444,11 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     ]
     for feature, shape in _terminal_shapes(result):
         solids = shape.solids()
-        names = []
-        for solid in solids:
-            faces = [face.wrapped for face in solid.faces()]
-            bodies = sorted(
-                {
-                    candidate.key.body.entity
-                    for candidate in owned
-                    if any(candidate.entity.wrapped.IsSame(face) for face in faces)
-                }
-            )
-            names.append(f"{feature}/{'+'.join(bodies) or 'solid'}")
-        for index, (name, solid) in enumerate(zip(names, solids, strict=True)):
-            # a cut can split one body into several solids; scene names must stay unique.
-            if names.count(name) > 1:
-                name = f"{name} ({names[: index + 1].count(name)})"
-            yield ScenePart(name, solid)
+        bodies = [_body_name(solid, owned) for solid in solids]
+        several = len(set(bodies)) > 1
+        for body, suffix, solid in zip(bodies, _split_suffixes(bodies), solids, strict=True):
+            label = f"{feature} · {body}{suffix}" if several else f"{feature}{suffix}"
+            yield ScenePart(f"{feature}/{body}{suffix}", solid, label=label)
 
 
 class _ScenePublisher:
@@ -497,7 +506,8 @@ class DocumentService:
         if any(not BRepCheck_Analyzer(shape.wrapped).IsValid() for shape in result.shapes.values()):
             raise RequestError("INVALID_BREP", "regeneration produced invalid geometry")
 
-    def _publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
+    def publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
+        """Show a failed sketch or feature call in the viewer; the last good scene stays."""
         if self._publisher is None:
             return
         feature_id = payload.get("featureId") or payload.get("sketchId")
@@ -612,7 +622,7 @@ class DocumentService:
                     retryable=error.code == "REVISION_CONFLICT",
                     **error.details,
                 )
-                self._publish_failure(payload, failure)
+                self.publish_failure(payload, failure)
                 return failure
             except GraphError as error:
                 code = error.error["code"].upper()
@@ -633,7 +643,7 @@ class DocumentService:
                     "the modeling operation could not produce valid geometry",
                     operation=operation,
                 )
-                self._publish_failure(payload, failure)
+                self.publish_failure(payload, failure)
                 return failure
             except Exception:  # noqa: BLE001 - translate all kernel failures at this seam.
                 _LOG.exception("kernel failure during %s", operation)
@@ -644,7 +654,7 @@ class DocumentService:
                     "the modeling operation could not produce valid geometry",
                     operation=operation,
                 )
-                self._publish_failure(payload, failure)
+                self.publish_failure(payload, failure)
                 return failure
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:

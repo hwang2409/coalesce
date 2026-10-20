@@ -23,6 +23,10 @@ async function capture(revision) {
   console.log(JSON.stringify({
     revision: await page.getByTestId('revision').textContent(),
     parts: await page.locator('#parts li').count(),
+    part: {
+      label: await page.locator('.part-name').first().textContent(),
+      title: await page.locator('.part-name').first().getAttribute('title'),
+    },
     errors,
   }));
 }

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from test_mcp_vertical import FEATURE, SKETCH, result_json
+from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
 from test_viewer_browser import playwright_module
 
 from coalesce.document_store import Document, DocumentStore
@@ -177,7 +177,12 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
         )
         try:
             first = json.loads(await driver.stdout.readline())
-            assert first == {"revision": "2", "parts": 1, "errors": []}
+            assert first == {
+                "revision": "2",
+                "parts": 1,
+                "part": {"label": "plate_extrude", "title": "plate_extrude/outline"},
+                "errors": [],
+            }
             updated = {
                 "action": "update",
                 "expectedRevision": 2,
@@ -190,7 +195,12 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
             driver.stdin.write(b"next\n")
             await driver.stdin.drain()
             second = json.loads(await driver.stdout.readline())
-            assert second == {"revision": "3", "parts": 1, "errors": []}
+            assert second == {
+                "revision": "3",
+                "parts": 1,
+                "part": {"label": "plate_extrude", "title": "plate_extrude/outline"},
+                "errors": [],
+            }
             failed = {
                 "action": "update",
                 "expectedRevision": 3,
@@ -273,6 +283,46 @@ def test_failed_mutation_publishes_safe_failure_and_keeps_scene(tmp_path):
         "featureIds": ["missing_extrude"],
         "error": {"code": "UNKNOWN_ID", "message": "unknown extrude: missing_extrude"},
     }
+
+
+async def _wait_for_failure(store, previous):
+    deadline = time.monotonic() + 5
+    while store.snapshot()[2] == previous and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    return store.snapshot()[2]
+
+
+@pytest.mark.anyio
+async def test_schema_invalid_mutations_publish_viewer_failure_and_keep_scene(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "plate.coalesce.json", scene_store=store)
+    await call_server_tool(service, "sketch", SKETCH)
+    await call_server_tool(service, "feature", FEATURE)
+    deadline = time.monotonic() + 5
+    while store.current_revision != 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    good = store.scene(2)
+
+    bad_sketch = {**SKETCH, "expectedRevision": 2, "requestId": "bad-sketch", "entities": "outline"}
+    sketch = await call_server_tool(service, "sketch", bad_sketch)
+    sketch_failure = await _wait_for_failure(store, None)
+    bad_feature = {**FEATURE, "expectedRevision": 2, "requestId": "bad-feature", "colour": "red"}
+    feature = await call_server_tool(service, "feature", bad_feature)
+    feature_failure = await _wait_for_failure(store, sketch_failure)
+
+    assert sketch["error"]["code"] == feature["error"]["code"] == "INVALID_PARAMETER"
+    assert sketch_failure == {
+        "revision": 2,
+        "featureIds": ["plate_profile"],
+        "error": {"code": "INVALID_PARAMETER", "message": sketch["error"]["message"]},
+    }
+    assert feature_failure == {
+        "revision": 2,
+        "featureIds": ["plate_extrude"],
+        "error": {"code": "INVALID_PARAMETER", "message": feature["error"]["message"]},
+    }
+    assert store.current_revision == 2
+    assert store.scene(2) == good
 
 
 def _stdio(path, *args, env=None):
@@ -365,9 +415,34 @@ def test_scene_parts_are_named_by_the_body_that_owns_each_solid(tmp_path):
     while store.current_revision != 4 and time.monotonic() < deadline:
         time.sleep(0.02)
 
-    parts = {part["name"]: part["size"] for part in store.scene(4)["parts"]}
+    parts = {(part["name"], part["label"]): part["size"] for part in store.scene(4)["parts"]}
     assert parts == {
-        "split/left": pytest.approx([10, 10, 5]),
-        "split/right (1)": pytest.approx([14, 10, 5]),
-        "split/right (2)": pytest.approx([14, 10, 5]),
+        ("split/left", "split · left"): pytest.approx([10, 10, 5]),
+        ("split/right (1)", "split · right (1)"): pytest.approx([14, 10, 5]),
+        ("split/right (2)", "split · right (2)"): pytest.approx([14, 10, 5]),
+    }
+
+
+def test_single_body_part_is_labelled_by_its_feature(tmp_path):
+    graph = Graph()
+    graph.add(Sketch("plate_profile", entities=[Rectangle("outline", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_profile", height=6))
+    graph.add(Sketch("slot_tool", entities=[Rectangle("slot", 2, 50)]))
+    graph.add(Cut("split", target="plate", tool="slot_tool"))
+    graph.add(Sketch("boss_profile", entities=[Rectangle("boss", 5, 5, position=(100, 0))]))
+    graph.add(Extrude("boss_extrude", sketch="boss_profile", height=3))
+    path = tmp_path / "plate.coalesce.json"
+    DocumentStore(path).save(Document(graph, revision=6, receipts=[]))
+    store = ViewerSceneStore()
+
+    DocumentService(path, scene_store=store)
+    deadline = time.monotonic() + 5
+    while store.current_revision != 6 and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    labels = {part["name"]: part["label"] for part in store.scene(6)["parts"]}
+    assert labels == {
+        "split/outline (1)": "split (1)",
+        "split/outline (2)": "split (2)",
+        "boss_extrude/boss": "boss_extrude",
     }

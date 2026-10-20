@@ -106,21 +106,22 @@ def create_server(service: DocumentService) -> Server:
                 details["allowedKinds"] = ["extrude", "boolean", "hole", "fillet"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
-            return _tool_result(
-                {
-                    "ok": False,
-                    "revision": service.revision,
-                    "requestId": arguments.get("requestId"),
-                    "units": "mm",
-                    "error": {
-                        "code": "INVALID_PARAMETER",
-                        "message": error.message,
-                        "retryable": False,
-                        "operation": name,
-                        **details,
-                    },
-                }
-            )
+            failure = {
+                "ok": False,
+                "revision": service.revision,
+                "requestId": arguments.get("requestId"),
+                "units": "mm",
+                "error": {
+                    "code": "INVALID_PARAMETER",
+                    "message": error.message,
+                    "retryable": False,
+                    "operation": name,
+                    **details,
+                },
+            }
+            if name in ("sketch", "feature"):
+                service.publish_failure(arguments, failure)
+            return _tool_result(failure)
         try:
             handler = getattr(service, name)
             return _tool_result(handler(arguments))

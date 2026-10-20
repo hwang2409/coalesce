@@ -297,13 +297,14 @@ function renderPartList(parts) {
     button.type = 'button';
     button.className = 'part';
     button.setAttribute('aria-pressed', String(object.visible));
-    button.title = `Show or hide ${part.name}`;
+    button.title = `Show or hide ${part.label}`;
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = part.color;
     const name = document.createElement('span');
     name.className = 'part-name';
-    name.textContent = part.name;
+    name.textContent = part.label;
+    name.title = part.name;
     const size = document.createElement('span');
     size.className = 'part-size';
     size.textContent = part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');

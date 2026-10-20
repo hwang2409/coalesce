@@ -24,6 +24,8 @@ class ScenePart:
     shape: Shape
     color: str | None = None
     visible: bool = True
+    # short part-list text; name stays the stable identity.
+    label: str | None = None
 
 
 def _bytes(kind: str, values: list) -> bytes:
@@ -77,6 +79,7 @@ def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) ->
         scene_parts.append(
             {
                 "name": part.name,
+                "label": part.label or part.name,
                 "color": part.color or PALETTE[index % len(PALETTE)],
                 "visible": part.visible,
                 "size": [exact.size.X, exact.size.Y, exact.size.Z],
