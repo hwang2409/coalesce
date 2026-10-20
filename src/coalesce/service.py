@@ -95,26 +95,55 @@ def _rectangles(payload: Any) -> list[Rectangle]:
     return rectangles
 
 
-def _canonical_request(value: Any) -> Any:
-    if isinstance(value, dict):
-        if set(value) == {"value", "unit"} and value["unit"] in {"deg", "rad"}:
-            return {"value": float(_angle(value)), "unit": "deg"}
-        if set(value) == {"value", "unit"} and value["unit"] == "mm":
-            return {"value": float(_quantity(value, "mm")), "unit": "mm"}
-        return {key: _canonical_request(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_canonical_request(item) for item in value]
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    return value
+def _operation_intent(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    intent: dict[str, Any] = {
+        "operation": operation,
+        "action": payload.get("action"),
+        "expectedRevision": float(payload.get("expectedRevision")),
+    }
+    if operation == "sketch":
+        intent["sketchId"] = payload.get("sketchId")
+        if payload.get("action") == "create":
+            intent["plane"] = payload.get("plane", {})
+            intent["entities"] = [
+                asdict(rectangle) for rectangle in _rectangles(payload.get("entities"))
+            ]
+        else:
+            changes = payload.get("set", {})
+            if "position" in changes:
+                intent["position"] = [float(value) for value in changes["position"]]
+            if "entities" in changes:
+                intent["entities"] = [
+                    asdict(rectangle) for rectangle in _rectangles(changes["entities"])
+                ]
+        return intent
+
+    intent.update({"featureId": payload.get("featureId"), "kind": payload.get("kind")})
+    if payload.get("action") == "create":
+        parameters = payload.get("parameters", {})
+        profile = parameters.get("profile", {})
+        intent["parameters"] = {
+            "profile": {
+                "sketchId": profile.get("sketchId"),
+                "profileIds": profile.get("profileIds"),
+            },
+            "distance": _quantity(parameters.get("distance"), "mm"),
+            "operation": parameters.get("operation"),
+            "direction": parameters.get("direction"),
+        }
+    else:
+        changes = payload.get("set", {})
+        intent["distance"] = _quantity(changes.get("distance"), "mm")
+    return intent
 
 
-def _hash(payload: dict[str, Any]) -> str:
-    normalized = _canonical_request(
-        {key: value for key, value in payload.items() if key != "requestId"}
-    )
+def _hash(operation: str, payload: dict[str, Any]) -> str:
     return hashlib.sha256(
-        json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            _operation_intent(operation, payload),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
 
 
@@ -275,7 +304,7 @@ class DocumentService:
             try:
                 if not isinstance(request_id, str) or not request_id:
                     raise RequestError("INVALID_PARAMETER", "requestId is required")
-                body_hash = _hash(payload)
+                body_hash = _hash(operation, payload)
                 receipt = next(
                     (
                         item
@@ -353,7 +382,6 @@ class DocumentService:
                     _LOG.warning(
                         "document rename committed but directory fsync failed; durability is unconfirmed"
                     )
-                    return {**response, "durability": "unconfirmed"}
                 return response
             except RequestError as error:
                 return _safe_error(

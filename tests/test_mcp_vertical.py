@@ -9,6 +9,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+from coalesce.schemas import TOOL_SCHEMAS
 from coalesce.server import create_server
 from coalesce.service import DocumentService
 
@@ -34,7 +35,6 @@ FEATURE = {
     "expectedRevision": 1,
     "requestId": "feature-1",
     "featureId": "plate_extrude",
-    "partId": "plate",
     "kind": "extrude",
     "parameters": {
         "profile": {"sketchId": "plate_profile", "profileIds": ["outline"]},
@@ -161,6 +161,36 @@ def test_update_sketch_and_extrude(tmp_path):
     assert service.query({"select": {"kind": "measurements"}})["bbox"]["z"]["value"] == 8
 
 
+def test_replay_hash_applies_operation_defaults_and_rejects_different_intent(tmp_path):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    omitted_defaults = {
+        **SKETCH,
+        "entities": [
+            {
+                key: value
+                for key, value in SKETCH["entities"][0].items()
+                if key not in {"center", "rotation"}
+            }
+        ],
+    }
+    created = service.sketch(omitted_defaults)
+
+    assert service.sketch(SKETCH) == created
+
+    different = service.sketch(
+        {
+            **SKETCH,
+            "entities": [
+                {
+                    **SKETCH["entities"][0],
+                    "center": [1, 0],
+                }
+            ],
+        }
+    )
+    assert different["error"]["code"] == "REQUEST_ID_REUSED"
+
+
 def test_replay_hash_normalizes_numeric_forms_and_angles(tmp_path):
     service = DocumentService(tmp_path / "plate.coalesce.json")
     request = {
@@ -213,8 +243,61 @@ def test_request_id_tombstone_survives_full_receipt_eviction(tmp_path):
     assert reused["error"]["code"] == "REQUEST_ID_REUSED"
 
 
+def _schema_fields(schema, prefix=""):
+    fields = set()
+    for name, subschema in schema.get("properties", {}).items():
+        path = f"{prefix}.{name}" if prefix else name
+        fields.add(path)
+        fields.update(_schema_fields(subschema, path))
+    if "items" in schema:
+        fields.update(_schema_fields(schema["items"], f"{prefix}[]"))
+    for subschema in schema.get("oneOf", []):
+        fields.update(_schema_fields(subschema, prefix))
+    return fields
+
+
+def test_public_schemas_only_accept_consumed_fields():
+    consumed = {
+        "sketch": {
+            "action", "expectedRevision", "requestId", "sketchId", "plane", "plane.kind",
+            "plane.name", "entities", "entities[].id", "entities[].kind", "entities[].center",
+            "entities[].width", "entities[].width.value", "entities[].width.unit",
+            "entities[].height", "entities[].height.value", "entities[].height.unit",
+            "entities[].rotation", "entities[].rotation.value", "entities[].rotation.unit", "set",
+            "set.position", "set.entities", "set.entities[].id", "set.entities[].kind",
+            "set.entities[].center", "set.entities[].width", "set.entities[].width.value",
+            "set.entities[].width.unit", "set.entities[].height", "set.entities[].height.value",
+            "set.entities[].height.unit", "set.entities[].rotation",
+            "set.entities[].rotation.value", "set.entities[].rotation.unit",
+        },
+        "feature": {
+            "action", "expectedRevision", "requestId", "featureId", "kind", "parameters",
+            "parameters.profile", "parameters.profile.sketchId", "parameters.profile.profileIds",
+            "parameters.distance", "parameters.distance.value", "parameters.distance.unit",
+            "parameters.operation", "parameters.direction", "set", "set.distance",
+            "set.distance.value", "set.distance.unit",
+        },
+        "query": {
+            "revision", "select", "select.kind", "select.reference", "select.reference.feature",
+            "select.reference.role", "select.reference.cardinality", "select.reference.count",
+            "select.reference.source", "select.reference.source.kind",
+            "select.reference.source.sketch", "select.reference.source.entity",
+            "select.reference.source.segment", "select.reference.body", "select.reference.body.kind",
+            "select.reference.body.feature", "select.reference.body.entity",
+            "select.reference.filters", "select.reference.filters[].kind",
+            "select.reference.filters[].direction", "select.reference.filters[].tolerance",
+            "select.reference.filters[].value",
+        },
+        "check": {
+            "action", "revision", "requirements", "requirements[].id", "requirements[].kind",
+        },
+    }
+
+    assert {name: _schema_fields(schema) for name, schema in TOOL_SCHEMAS.items()} == consumed
+
+
 @pytest.mark.anyio
-async def test_sketch_schema_rejects_deferred_fields_with_allowed_list(tmp_path):
+async def test_schemas_reject_deferred_fields_with_allowed_list(tmp_path):
     service = DocumentService(tmp_path / "plate.coalesce.json")
     allowed = set(SKETCH) - {"entities", "plane"}
     allowed.update({"entities", "plane", "set"})
@@ -225,6 +308,18 @@ async def test_sketch_schema_rejects_deferred_fields_with_allowed_list(tmp_path)
         result = await call_server_tool(service, "sketch", {**SKETCH, field: value})
         assert result["error"]["code"] == "INVALID_PARAMETER"
         assert set(result["error"]["allowedFields"]) == allowed
+
+    feature = await call_server_tool(service, "feature", {**FEATURE, "partId": "plate"})
+    assert feature["error"]["code"] == "INVALID_PARAMETER"
+    assert "partId" not in feature["error"]["allowedFields"]
+
+    query = await call_server_tool(
+        service,
+        "query",
+        {"select": {"kind": "graph", "ids": ["plate_profile"]}},
+    )
+    assert query["error"]["code"] == "INVALID_PARAMETER"
+    assert "ids" not in query["error"]["allowedFields"]
 
 
 @pytest.mark.anyio
@@ -259,7 +354,9 @@ async def test_angle_schema_accepts_radians_and_rejects_untyped_update_rotation(
     assert "rotation" not in rejected["error"]["allowedFields"]
 
 
-def test_post_rename_fsync_failure_commits_and_allows_next_mutation(tmp_path, monkeypatch):
+def test_post_rename_fsync_failure_commits_and_replays_identically(
+    tmp_path, monkeypatch, caplog
+):
     path = tmp_path / "plate.coalesce.json"
     service = DocumentService(path)
     real_fsync = os.fsync
@@ -273,7 +370,9 @@ def test_post_rename_fsync_failure_commits_and_allows_next_mutation(tmp_path, mo
     created = service.sketch(SKETCH)
 
     assert created["ok"] is True
-    assert created["durability"] == "unconfirmed"
+    assert "durability" not in created
+    assert service.sketch(SKETCH) == created
+    assert "durability is unconfirmed" in caplog.text
     assert service.revision == 1
     assert json.loads(path.read_text())["revision"] == 1
     assert DocumentService(path).revision == 1

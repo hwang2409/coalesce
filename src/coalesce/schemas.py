@@ -174,7 +174,6 @@ FEATURE_SCHEMA = {
         "expectedRevision": {"type": "integer", "minimum": 0},
         "requestId": {"type": "string", "minLength": 1},
         "featureId": {"type": "string", "minLength": 1},
-        "partId": {"type": "string", "minLength": 1},
         "kind": {"enum": ["extrude", "boolean", "hole", "fillet"]},
         "parameters": EXTRUDE_PARAMETERS,
         "set": {
@@ -203,7 +202,6 @@ QUERY_SCHEMA = {
                         "reference",
                     ]
                 },
-                "ids": {"type": "array", "items": {"type": "string"}},
                 "reference": REFERENCE,
             },
             "required": ["kind"],
