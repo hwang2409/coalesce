@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from build123d import Face, Shape
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCP.TopAbs import TopAbs_FACE
 
 from .graph import GraphError
@@ -21,6 +21,7 @@ class BooleanResult:
     shape: Shape
     candidates: list[Candidate]
     algorithm: BRepAlgoAPI_Cut
+    removed_material: bool
 
 
 def _same(shape: Shape, candidates: list[Shape]) -> bool:
@@ -125,6 +126,39 @@ def _deduplicate(feature: str, result: Shape, faces: list[Candidate]) -> list[Ca
     return resolved
 
 
+def _removed_material(
+    algorithm: BRepAlgoAPI_Cut,
+    target: Shape,
+    target_candidates: list[Candidate],
+    tool: Shape,
+    tool_candidates: list[Candidate],
+    output_faces: list[Face],
+) -> bool:
+    common = BRepAlgoAPI_Common(target.wrapped, tool.wrapped)
+    common.Build()
+    if not common.IsDone() or not Shape.cast(common.Shape()).solids():
+        return False
+
+    tool_face_appears = any(
+        _same(face, output_faces)
+        for source in tool_candidates
+        if isinstance(source.entity, Face)
+        for face in _result_faces(
+            [
+                *algorithm.Modified(source.entity.wrapped),
+                *algorithm.Generated(source.entity.wrapped),
+            ]
+        )
+    )
+    target_changed = any(
+        algorithm.IsDeleted(source.entity.wrapped)
+        or bool(algorithm.Modified(source.entity.wrapped))
+        for source in target_candidates
+        if isinstance(source.entity, Face)
+    )
+    return tool_face_appears or target_changed
+
+
 def cut_shape(
     feature: str,
     target: Shape,
@@ -166,4 +200,12 @@ def cut_shape(
 
     result_faces = _deduplicate(feature, result, [*inherited, *generated])
     edges = derive_edge_candidates(feature, result, result_faces)
-    return BooleanResult(result, [*result_faces, *edges], algorithm)
+    removed_material = _removed_material(
+        algorithm,
+        target,
+        target_candidates,
+        tool,
+        tool_candidates,
+        output_faces,
+    )
+    return BooleanResult(result, [*result_faces, *edges], algorithm, removed_material)

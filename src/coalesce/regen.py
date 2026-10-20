@@ -30,6 +30,7 @@ class RegenResult:
     provenance: dict[str, list[Candidate]]
     ordered_features: list[str]
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = field(default_factory=dict)
+    removed_material: dict[str, bool] = field(default_factory=dict)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
@@ -123,6 +124,7 @@ def regenerate(graph: Graph) -> RegenResult:
     provenance: dict[str, list[Candidate]] = {}
     states: dict[str, list[Candidate]] = {}
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = {}
+    removed_material: dict[str, bool] = {}
     ordered_features = [node.id for node in ordered]
 
     for node in ordered:
@@ -152,6 +154,7 @@ def regenerate(graph: Graph) -> RegenResult:
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
+            removed_material[node.id] = result.removed_material
             _replace_provenance(provenance, states[node.target], result.candidates)
         elif isinstance(node, Hole):
             tool = make_hole_tool(node, shapes[node.target])
@@ -165,6 +168,7 @@ def regenerate(graph: Graph) -> RegenResult:
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
+            removed_material[node.id] = result.removed_material
             _replace_provenance(provenance, states[node.target], result.candidates)
         elif isinstance(node, Fillet):
             result = fillet_shape(
@@ -185,4 +189,5 @@ def regenerate(graph: Graph) -> RegenResult:
         provenance,
         ordered_features,
         consumed,
+        removed_material,
     )

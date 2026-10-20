@@ -244,8 +244,155 @@ async def test_non_intersecting_cut_and_hole_fail_without_advancing_revision(tmp
         assert result["revision"] == 3
         assert result["error"]["featureId"] == feature_id
         assert result["error"]["target"] == "base"
-        assert result["error"]["hint"] == "check flip, plane, and offset"
+    assert results[0]["error"]["hint"] == "check flip, plane, and offset"
+    assert results[1]["error"]["hint"] == "check target, position, diameter, and depth"
     assert results[-1]["revision"] == 3
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["cut", "hole"])
+async def test_small_subtractions_from_large_body_are_not_lost_to_scale(tmp_path, kind):
+    path = tmp_path / f"small-{kind}.coalesce.json"
+    calls = [
+        (
+            "sketch",
+            rectangle_sketch(
+                request_id="base-sketch",
+                revision=0,
+                sketch_id="base_sketch",
+                entity_id="base_profile",
+                width=1000,
+                height=1000,
+            ),
+        ),
+        (
+            "feature",
+            extrude(
+                request_id="base",
+                revision=1,
+                feature_id="base",
+                sketch_id="base_sketch",
+                profile_ids=["base_profile"],
+                distance=1000,
+            ),
+        ),
+    ]
+    if kind == "cut":
+        calls.extend(
+            [
+                (
+                    "sketch",
+                    rectangle_sketch(
+                        request_id="tool-sketch",
+                        revision=2,
+                        sketch_id="tool_sketch",
+                        entity_id="tool_profile",
+                        width=0.05,
+                        height=0.05,
+                        offset=1000,
+                    ),
+                ),
+                (
+                    "feature",
+                    cut(
+                        request_id="tiny-cut",
+                        revision=3,
+                        feature_id="tiny_cut",
+                        target="base",
+                        tool="tool_sketch",
+                        depth=0.1,
+                    ),
+                ),
+            ]
+        )
+        feature_result = 3
+        expected_revision = 4
+    else:
+        calls.append(
+            (
+                "feature",
+                hole(
+                    request_id="tiny-hole",
+                    revision=2,
+                    feature_id="tiny_hole",
+                    target="base",
+                    position=(0, 0),
+                    diameter=0.1,
+                    depth=0.1,
+                ),
+            )
+        )
+        feature_result = 2
+        expected_revision = 3
+
+    results = await run_server(path, calls)
+
+    assert results[feature_result]["revision"] == expected_revision
+    assert "error" not in results[feature_result]
+
+
+@pytest.mark.anyio
+async def test_tangent_cut_returns_structured_no_effect_without_commit(tmp_path):
+    path = tmp_path / "tangent.coalesce.json"
+    results = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="base-sketch",
+                    revision=0,
+                    sketch_id="base_sketch",
+                    entity_id="base_profile",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="base",
+                    revision=1,
+                    feature_id="base",
+                    sketch_id="base_sketch",
+                    profile_ids=["base_profile"],
+                    distance=10,
+                ),
+            ),
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="tool-sketch",
+                    revision=2,
+                    sketch_id="tool_sketch",
+                    entity_id="tool_profile",
+                    width=2,
+                    height=2,
+                    offset=0,
+                ),
+            ),
+            (
+                "feature",
+                cut(
+                    request_id="tangent-cut",
+                    revision=3,
+                    feature_id="tangent_cut",
+                    target="base",
+                    tool="tool_sketch",
+                    depth=1,
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    error = results[3]["error"]
+    assert error["code"] == "CUT_NO_EFFECT"
+    assert error["message"] == "cut tangent_cut removes no material from base"
+    assert error["featureId"] == "tangent_cut"
+    assert error["target"] == "base"
+    assert error["hint"] == "check flip, plane, and offset"
+    assert results[4]["revision"] == 3
 
 
 @pytest.mark.anyio

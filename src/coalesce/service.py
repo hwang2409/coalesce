@@ -687,18 +687,22 @@ class DocumentService:
     def _assert_effect(self, operation: MutationOperation, result: RegenResult) -> None:
         if not isinstance(operation, (CutCreate, HoleCreate)):
             return
+        if result.removed_material.get(operation.featureId, False):
+            return
         target = operation.parameters.target.featureId
-        before = sum(solid.volume for solid in self._regen.shapes[target].solids())
-        after = sum(solid.volume for solid in result.shapes[operation.featureId].solids())
-        if math.isclose(before, after, rel_tol=1e-12, abs_tol=1e-9):
-            kind = "cut" if isinstance(operation, CutCreate) else "hole"
-            raise RequestError(
-                f"{kind.upper()}_NO_EFFECT",
-                f"{kind} {operation.featureId} removes no material from {target}",
-                featureId=operation.featureId,
-                target=target,
-                hint="check flip, plane, and offset",
-            )
+        kind = "cut" if isinstance(operation, CutCreate) else "hole"
+        hint = (
+            "check flip, plane, and offset"
+            if kind == "cut"
+            else "check target, position, diameter, and depth"
+        )
+        raise RequestError(
+            f"{kind.upper()}_NO_EFFECT",
+            f"{kind} {operation.featureId} removes no material from {target}",
+            featureId=operation.featureId,
+            target=target,
+            hint=hint,
+        )
 
     def publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
         """Show a failed sketch or feature call in the viewer; the last good scene stays."""
