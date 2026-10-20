@@ -238,7 +238,7 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         # keyboard only: tab from the page start to a part row, then to a view button
         keys = step("keyboard-part", do=[{"blur": True}, {"tabTo": "plate_extrude"}])
         assert keys["actions"][1]["visited"][-1] == "plate_extrude"
-        assert all(d is not None for d in keys["details"][:1])  # the focused part shows its detail
+        assert keys["details"][0] is not None  # the focused part shows its detail, narrow too
         keys = step("keyboard-front", do=[{"tabTo": "Front", "press": "Enter"}])
         assert keys["actions"][0]["visited"][-1] == "Front"
         assert keys["description"].startswith(f"Revision {revision}, front view")
