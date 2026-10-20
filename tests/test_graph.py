@@ -15,15 +15,52 @@ from coalesce import (
     Graph,
     GraphError,
     Hole,
+    HoleSurfaceSource,
     Rectangle,
     Reference,
     Sketch,
     SketchSegmentSource,
     Status,
+    ToolCapSource,
     regenerate,
 )
 from coalesce.references import ElementKey
 from coalesce.serialization import loads
+
+
+@pytest.mark.parametrize(
+    ("source", "dependency"),
+    [
+        (BodySource("body-dependency", "face"), "body-dependency"),
+        (SketchSegmentSource("sketch-dependency", "entity", "segment"), "sketch-dependency"),
+        (ToolCapSource("tool-dependency", "cap_end"), "tool-dependency"),
+        (HoleSurfaceSource("hole-dependency", "surface"), "hole-dependency"),
+        (
+            ElementKey("unrelated", "face", source=ToolCapSource("nested-tool-dependency", "cap_end")),
+            "nested-tool-dependency",
+        ),
+        (
+            ElementKey("unrelated", "face", body=BodySource("nested-body-dependency", "body")),
+            "nested-body-dependency",
+        ),
+    ],
+)
+def test_transitive_dependents_finds_nested_typed_reference_dependencies(
+    source, dependency
+):
+    graph = Graph()
+    graph.add(Sketch(dependency))
+    graph.add(Sketch("unrelated"))
+    graph.add(
+        Fillet(
+            "consumer",
+            edges=[Reference("unrelated", "face", source=source)],
+        )
+    )
+
+    assert [node.id for node in graph.transitive_dependents(dependency, {})] == [
+        "consumer"
+    ]
 
 
 def base(height=10, *, position=(0, 0, 0), rotation=(0, 0, 0)):

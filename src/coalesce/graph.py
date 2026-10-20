@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from math import isfinite
 from typing import Any
 
-from .references import Reference
+from .references import (
+    BodySource,
+    ElementKey,
+    HoleSurfaceSource,
+    Reference,
+    SketchSegmentSource,
+    ToolCapSource,
+)
 
 
 @dataclass
@@ -214,23 +221,34 @@ class Graph:
         return isinstance(self.nodes.get(feature), Feature)
 
     @staticmethod
+    def _typed_reference_dependencies(value: Any):
+        if isinstance(value, (Reference, ElementKey, BodySource)):
+            yield value.feature
+        elif isinstance(value, SketchSegmentSource):
+            yield value.sketch
+        elif isinstance(value, ToolCapSource):
+            yield value.tool
+        elif isinstance(value, HoleSurfaceSource):
+            yield value.feature
+
+        if is_dataclass(value):
+            for item in fields(value):
+                yield from Graph._typed_reference_dependencies(getattr(value, item.name))
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from Graph._typed_reference_dependencies(item)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                yield from Graph._typed_reference_dependencies(item)
+
+    @staticmethod
     def _dependencies(node: Any) -> list[str]:
         dependencies = list(getattr(node, "depends_on", []))
-        direct = (
-            getattr(node, field)
-            for field in ("sketch", "target", "tool", "board", "base")
-            if getattr(node, field, None)
-        )
-        references = (
-            dependency
-            for reference in getattr(node, "edges", [])
-            if isinstance(reference, Reference)
-            for value in (reference, reference.source, reference.body)
-            for field in ("feature", "sketch")
-            if (dependency := getattr(value, field, None))
-        )
-        for dependency in (*direct, *references):
-            if dependency not in dependencies:
+        for dependency in (
+            *(getattr(node, dependency_field, None) for dependency_field in ("sketch", "target", "tool", "board", "base")),
+            *Graph._typed_reference_dependencies(node),
+        ):
+            if dependency and dependency not in dependencies:
                 dependencies.append(dependency)
         return dependencies
 
