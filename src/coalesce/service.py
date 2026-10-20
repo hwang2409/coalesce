@@ -449,23 +449,30 @@ def _parse_cut(payload: dict[str, Any], common: dict[str, Any]) -> CutCreate:
     )
 
 
-def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
-    if common["action"] is Action.UPDATE:
-        raise RequestError("INVALID_PARAMETER", "only extrude features can be updated")
-    parameters = payload.get("parameters", {})
+def _hole_positions(parameters: dict[str, Any]) -> tuple[HolePosition, ...]:
     raw_positions = parameters.get("positions")
     if raw_positions is None:
         raw_positions = [{"name": "h1", "point": parameters.get("position", [])}]
     positions = tuple(
         HolePosition(
             item.get("name", f"h{index}"),
-            tuple(_finite_number(value, f"positions[{index - 1}].point") for value in item["point"]),
+            tuple(
+                _finite_number(value, f"positions[{index - 1}].point")
+                for value in item["point"]
+            ),
         )
         for index, item in enumerate(raw_positions, start=1)
     )
     names = [position.name for position in positions]
     if len(names) != len(set(names)):
         raise RequestError("INVALID_PARAMETER", "hole position names must be unique")
+    return positions
+
+
+def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
+    if common["action"] is Action.UPDATE:
+        raise RequestError("INVALID_PARAMETER", "only extrude features can be updated")
+    parameters = payload.get("parameters", {})
     return HoleCreate(
         **common,
         parameters=HoleParameters(
@@ -476,7 +483,7 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
                 if "depth" in parameters
                 else None
             ),
-            positions=positions,
+            positions=_hole_positions(parameters),
         ),
     )
 
@@ -539,6 +546,44 @@ def _safe_error(
     }
 
 
+def _graph_error_response(
+    revision: int,
+    request_id: str | None,
+    operation: str,
+    error: GraphError,
+) -> dict[str, Any]:
+    code = error.error["code"].upper()
+    known = {
+        "UNKNOWN_ID",
+        "DUPLICATE_ID",
+        "CYCLE",
+        "ORDER",
+        "EMPTY",
+        "SPLIT",
+        "MERGED",
+        "AMBIGUOUS",
+        "JOIN_NO_CONTACT",
+        "JOIN_NON_MANIFOLD",
+        "HOLES_INTERSECT",
+        "HOLE_NO_EFFECT",
+    }
+    details = {
+        key: value
+        for key, value in error.error.items()
+        if key not in {"code", "message"}
+    }
+    if code == "JOIN_NO_CONTACT":
+        details["hint"] = "move or extend the listed profiles to contact the target"
+    return _safe_error(
+        revision,
+        request_id,
+        code if code in known else "KERNEL_OPERATION_FAILED",
+        str(error) if code in known else "the modeling operation could not produce valid geometry",
+        operation=operation,
+        **details,
+    )
+
+
 def _reference(payload: dict[str, Any]) -> Reference:
     source = payload.get("source")
     if isinstance(source, dict) and source.get("kind") == "sketch_segment":
@@ -594,6 +639,13 @@ def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
     return operation.sketchId
 
 
+def _validate_join_target(graph: Any, target: str | None) -> None:
+    if target not in graph.nodes:
+        raise RequestError("UNKNOWN_ID", "join target feature does not exist")
+    if not graph.produces_body(target):
+        raise RequestError("INVALID_PARAMETER", "join target must produce a body")
+
+
 def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     if isinstance(operation, ExtrudeUpdate):
         node = graph.nodes.get(operation.featureId)
@@ -607,8 +659,7 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
         raise RequestError("INVALID_PARAMETER", "only normal new_body and join extrudes are supported")
     target = parameters.target.featureId if parameters.target is not None else None
     if parameters.operation == "join":
-        if not isinstance(graph.nodes.get(target), (Extrude, Cut, Hole)):
-            raise RequestError("UNKNOWN_ID", "join target feature does not exist")
+        _validate_join_target(graph, target)
     elif target is not None:
         raise RequestError("INVALID_PARAMETER", "new_body extrudes do not accept a target")
     sketch = graph.nodes.get(parameters.profile.sketchId)
@@ -966,33 +1017,8 @@ class DocumentService:
                 self.publish_failure(payload, failure)
                 return failure
             except GraphError as error:
-                code = error.error["code"].upper()
-                known = {
-                    "UNKNOWN_ID",
-                    "DUPLICATE_ID",
-                    "CYCLE",
-                    "ORDER",
-                    "EMPTY",
-                    "SPLIT",
-                    "MERGED",
-                    "AMBIGUOUS",
-                    "JOIN_NO_CONTACT",
-                    "JOIN_NON_MANIFOLD",
-                }
-                details = {
-                    key: value
-                    for key, value in error.error.items()
-                    if key not in {"code", "message"}
-                }
-                if code == "JOIN_NO_CONTACT":
-                    details["hint"] = "move or extend the listed profiles to contact the target"
-                failure = _safe_error(
-                    self._document.revision,
-                    request_id,
-                    code if code in known else "KERNEL_OPERATION_FAILED",
-                    str(error) if code in known else "the modeling operation could not produce valid geometry",
-                    operation=operation,
-                    **details,
+                failure = _graph_error_response(
+                    self._document.revision, request_id, operation, error
                 )
                 self.publish_failure(payload, failure)
                 return failure
@@ -1044,7 +1070,9 @@ class DocumentService:
             sketch = graph.nodes[node.tool]
             tool = make_cut_tool(node, sketch, result.shapes[node.target]).shape
             normal = self._frame(sketch)["normal"]
-            direction = [value if node.flip else -value for value in normal]
+            direction = (
+                normal if node.depth is None else [value if node.flip else -value for value in normal]
+            )
         elif isinstance(node, Hole):
             sketch = Sketch("global_xy")
             tool = make_hole_tool(node, result.shapes[node.target]).shape

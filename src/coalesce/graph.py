@@ -154,6 +154,9 @@ class Graph:
             raise GraphError("unknown_id", f"unknown id: {feature}")
         del self.nodes[feature]
 
+    def produces_body(self, feature: str) -> bool:
+        return isinstance(self.nodes.get(feature), Feature)
+
     @staticmethod
     def _dependencies(node: Any) -> list[str]:
         dependencies = list(getattr(node, "depends_on", []))
