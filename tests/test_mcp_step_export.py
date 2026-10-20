@@ -1,6 +1,7 @@
 import hashlib
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
@@ -148,6 +149,58 @@ async def test_step_export_success_is_stateless(tmp_path):
     assert exported["validation"]["reimport"]["solidCount"] == 2
     assert document.read_bytes() == document_bytes
     assert not list(tmp_path.glob("*.exports.jsonl"))
+
+
+@pytest.mark.anyio
+async def test_step_export_excludes_pcb_reference_parts_like_default_measurements(tmp_path):
+    document = tmp_path / "pcb-enclosure.coalesce.json"
+    target = tmp_path / "plate.step"
+    fixture = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
+    calls = [
+        (
+            "import",
+            {
+                "action": "create",
+                "expectedRevision": 0,
+                "requestId": "import-board",
+                "assetId": "controller_board",
+                "format": "kicad_pcb",
+                "path": str(fixture.resolve()),
+            },
+        ),
+        (
+            "sketch",
+            rectangle_sketch(
+                request_id="plate-sketch",
+                revision=1,
+                sketch_id="plate_sketch",
+                entity_id="plate",
+                width=60,
+                height=40,
+            ),
+        ),
+        (
+            "feature",
+            extrude(
+                request_id="plate",
+                revision=2,
+                feature_id="plate",
+                sketch_id="plate_sketch",
+                profile_ids=["plate"],
+                distance=3,
+            ),
+        ),
+        ("query", {"select": {"kind": "measurements"}}),
+        ("export", export_request(target, revision=3)),
+    ]
+
+    *_, measured, exported = await run_server(document, calls)
+
+    assert [part["partId"] for part in measured["parts"]] == ["plate/plate"]
+    assert exported["ok"] is True
+    assert exported["partIds"] == ["plate/plate"]
+    assert exported["validation"]["reimport"]["partCount"] == 1
+    assert exported["validation"]["reimport"]["solidCount"] == 1
 
 
 @pytest.mark.anyio
