@@ -24,6 +24,8 @@ class ScenePart:
     shape: Shape
     color: str | None = None
     visible: bool = True
+    # short part-list text; name stays the stable identity.
+    label: str | None = None
 
 
 def _bytes(kind: str, values: list) -> bytes:
@@ -77,6 +79,7 @@ def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) ->
         scene_parts.append(
             {
                 "name": part.name,
+                "label": part.label or part.name,
                 "color": part.color or PALETTE[index % len(PALETTE)],
                 "visible": part.visible,
                 "size": [exact.size.X, exact.size.Y, exact.size.Z],
@@ -136,7 +139,7 @@ class ViewerSceneStore:
             self._version += 1
             self._changed.notify_all()
 
-    def publish_failure(self, feature_ids: Sequence[str], error: str) -> None:
+    def publish_failure(self, feature_ids: Sequence[str], error: dict[str, str]) -> None:
         """Mark a failed edit attempt; the last good scene stays current."""
         with self._changed:
             self._failure = {

@@ -297,13 +297,14 @@ function renderPartList(parts) {
     button.type = 'button';
     button.className = 'part';
     button.setAttribute('aria-pressed', String(object.visible));
-    button.title = `Show or hide ${part.name}`;
+    button.title = `Show or hide ${part.label}`;
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = part.color;
     const name = document.createElement('span');
     name.className = 'part-name';
-    name.textContent = part.name;
+    name.textContent = part.label;
+    name.title = part.name;
     const size = document.createElement('span');
     size.className = 'part-size';
     size.textContent = part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
@@ -388,7 +389,7 @@ function showFailure() {
     return chip;
   }));
   ids.hidden = !failure.featureIds.length;
-  $('failure-error').textContent = failure.error;
+  $('failure-error').textContent = `${failure.error.code}: ${failure.error.message}`;
 }
 
 // loads run one at a time, then catch up to the newest announced revision,
@@ -466,8 +467,12 @@ async function connect() {
   }
   if (await authorized() !== true) {
     setLink('denied', 'No access');
+    document.querySelector('.revision-line').hidden = true;
+    document.querySelector('.parts').hidden = true;
+    $('revision-meta').textContent = 'Open the link printed as “coalesce viewer:” to see the current model';
     notice('Open the viewer link that coalesce printed',
-      'This page needs the access key from that link. The key is part of the address after #token=.');
+      'This page needs the access key in that link, after #token=. coalesce prints the link to its '
+      + 'error output (stderr): your terminal, or your agent\'s MCP server log.');
     return;
   }
 

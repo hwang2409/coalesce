@@ -19,7 +19,8 @@ from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 SMOKE = Path(__file__).with_name("viewer_smoke.mjs")
 # chromium logs every request to a stopped server, whatever sent it; no page code can avoid it
-REFUSED = "net::ERR_CONNECTION_REFUSED"
+# a stopped server refuses new connections or resets ones in flight
+OUTAGE_ERRORS = ("net::ERR_CONNECTION_REFUSED", "net::ERR_CONNECTION_RESET")
 
 
 def plate(height: float) -> Box:
@@ -67,7 +68,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             assert line.startswith(f"step {name} "), line
             result = json.loads(line.split(" ", 2)[2])
             # no console errors in any state, expired key and no access included
-            errors = [e for e in result["errors"] if not (outage and REFUSED in e)]
+            errors = [e for e in result["errors"] if not (outage and any(o in e for o in OUTAGE_ERRORS))]
             assert errors == [], (name, errors)
             return result
 
@@ -99,7 +100,10 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             try:
                 fillet(plate(10).edges(), radius=20)
             except ValueError as error:
-                store.publish_failure(["edge_fillet"], str(error))
+                store.publish_failure(
+                    ["edge_fillet"],
+                    {"code": "INVALID_PARAMETER", "message": str(error)},
+                )
             next_step()
 
             failed = step("failure")
@@ -164,6 +168,12 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
 
             bare = step("no-access")
             assert bare["link"] == "No access" and bare["gizmo"] is False
+            assert bare["meta"] == (
+                "Open the link printed as “coalesce viewer:” to see the current model"
+            )
+            assert "error output (stderr)" in bare["notice"]
+            assert bare["revisionVisible"] is False
+            assert bare["partsVisible"] is False
             next_step()
             assert driver.wait(timeout=30) == 0
         finally:

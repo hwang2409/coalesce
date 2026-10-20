@@ -97,7 +97,10 @@ def test_failure_keeps_last_good_scene_and_next_publish_clears_it():
     store.publish(1, [ScenePart("plate", plate())])
     good = store.scene(1)
 
-    store.publish_failure(["edge_fillet"], "fillet radius 20 mm is too large")
+    store.publish_failure(
+        ["edge_fillet"],
+        {"code": "INVALID_PARAMETER", "message": "fillet radius 20 mm is too large"},
+    )
 
     _, revision, failure = store.snapshot()
     assert revision == 1
@@ -105,7 +108,10 @@ def test_failure_keeps_last_good_scene_and_next_publish_clears_it():
     assert failure == {
         "revision": 1,
         "featureIds": ["edge_fillet"],
-        "error": "fillet radius 20 mm is too large",
+        "error": {
+            "code": "INVALID_PARAMETER",
+            "message": "fillet radius 20 mm is too large",
+        },
     }
 
     store.publish(2, [ScenePart("plate", plate(10))])

@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from jsonschema import ValidationError, validate
+from jsonschema.exceptions import best_match, relevance
 from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -31,8 +32,10 @@ Use `sketch` to create an XY rectangle, then `feature` to extrude it. Mutations 
 current `expectedRevision` and a unique `requestId`. Full replay receipts cover the last
 100 mutations; compact request-id/hash tombstones reject changed reuse for the last 10,000.
 All lengths are explicit mm quantities. Rectangle angles accept `deg` or `rad`.
-Use `query` with `measurements` for bbox, area, volume, and solid count. Use `check` with
-`valid_brep` before relying on the model. Domain failures have `ok: false` and a stable code.
+Use `query` with `measurements` for bbox, area, volume, and solid count. `query` with
+`server` returns the full viewer link, including its fragment access token, so the agent can
+show the link to the user. Use `check` with `valid_brep` before relying on the model.
+Domain failures have `ok: false` and a stable code.
 """
 
 PLATE_EXAMPLE = """# 60 x 40 x 6 mm plate
@@ -52,6 +55,92 @@ def _tool_result(payload: dict[str, Any]) -> types.CallToolResult:
         structuredContent=payload,
         isError=not payload.get("ok", False),
     )
+
+
+_TYPE_NAMES = {
+    "array": "an array",
+    "object": "an object",
+    "string": "a string",
+    "number": "a number",
+    "integer": "an integer",
+    "boolean": "a boolean",
+    "null": "null",
+}
+
+
+def _quoted(values) -> str:
+    return ", ".join(repr(value) for value in values)
+
+
+def schema_error_message(error: ValidationError) -> str:
+    """Stable coalesce wording for a schema failure; never the jsonschema library text."""
+    path = "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" for part in error.absolute_path
+    ).lstrip(".")
+    last = error.absolute_path[-1] if error.absolute_path else None
+    subject = last if isinstance(last, str) else "value"
+    kind, expected, instance = error.validator, error.validator_value, error.instance
+    if kind == "type":
+        types_ = [expected] if isinstance(expected, str) else expected
+        text = f"{subject} must be " + " or ".join(_TYPE_NAMES.get(t, t) for t in types_)
+    elif kind == "additionalProperties" and isinstance(instance, dict):
+        unknown = sorted(set(instance) - set(error.schema.get("properties", {})))
+        text = f"unknown field{'s' if len(unknown) > 1 else ''} {_quoted(unknown)}"
+    elif kind == "required" and isinstance(instance, dict):
+        missing = next(name for name in expected if name not in instance)
+        text = f"missing required field {missing!r}"
+    elif kind == "minimum":
+        text = f"{subject} must be at least {expected}"
+    elif kind == "enum":
+        text = f"{subject} must be one of {_quoted(expected)}"
+    elif kind == "const":
+        text = f"{subject} must be {expected!r}"
+    else:
+        text = "invalid value"
+    return f"{text} (field: {path})" if path else text
+
+
+def _is_kind_union(error: ValidationError) -> bool:
+    return (
+        error.validator in ("oneOf", "anyOf")
+        and isinstance(error.instance, dict)
+        and "kind" in error.instance
+    )
+
+
+def _branch_error(error: ValidationError) -> ValidationError:
+    """Report a union failure from the branch the supplied `kind` selects, not a wrong branch."""
+    union = error
+    while union.parent is not None:
+        union = union.parent
+    if not _is_kind_union(union):
+        return error
+    while _is_kind_union(union):
+        kinds = [branch.get("properties", {}).get("kind", {}) for branch in union.validator_value]
+        allowed = [
+            value for k in kinds for value in ([k["const"]] if "const" in k else k.get("enum", []))
+        ]
+        index = next(
+            (
+                i
+                for i, k in enumerate(kinds)
+                if k and union.instance["kind"] in (k.get("const"), *k.get("enum", ()))
+            ),
+            None,
+        )
+        if index is None:
+            return ValidationError(
+                "kind",
+                validator="enum" if len(allowed) > 1 else "const",
+                validator_value=allowed if len(allowed) > 1 else allowed[0],
+                instance=union.instance["kind"],
+                path=[*union.absolute_path, "kind"],
+            )
+        branch = [e for e in union.context if e.relative_schema_path[0] == index]
+        if not branch:
+            return error
+        union = max(branch, key=relevance)
+    return best_match([union])
 
 
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -98,27 +187,29 @@ def create_server(service: DocumentService) -> Server:
                 instance=arguments,
                 schema=_schema_for_action(name, arguments),
             )
-        except ValidationError as error:
+        except ValidationError as raised:
+            error = _branch_error(raised)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
                 details["allowedKinds"] = ["extrude", "boolean", "hole", "fillet"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
-            return _tool_result(
-                {
-                    "ok": False,
-                    "revision": service.revision,
-                    "requestId": arguments.get("requestId"),
-                    "units": "mm",
-                    "error": {
-                        "code": "INVALID_PARAMETER",
-                        "message": error.message,
-                        "retryable": False,
-                        "operation": name,
-                        **details,
-                    },
-                }
-            )
+            failure = {
+                "ok": False,
+                "revision": service.revision,
+                "requestId": arguments.get("requestId"),
+                "units": "mm",
+                "error": {
+                    "code": "INVALID_PARAMETER",
+                    "message": schema_error_message(error),
+                    "retryable": False,
+                    "operation": name,
+                    **details,
+                },
+            }
+            if name in ("sketch", "feature"):
+                service.publish_failure(arguments, failure)
+            return _tool_result(failure)
         try:
             handler = getattr(service, name)
             return _tool_result(handler(arguments))
