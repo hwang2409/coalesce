@@ -470,7 +470,8 @@ async function connect() {
     document.querySelector('.parts').hidden = true;
     $('revision-meta').textContent = 'Open the link printed as “coalesce viewer:” to see the current model';
     notice('Open the viewer link that coalesce printed',
-      'This page needs the access key from that link. The key is part of the address after #token=.');
+      'This page needs the access key in that link, after #token=. coalesce prints the link to its '
+      + 'error output (stderr): your terminal, or your agent\'s MCP server log.');
     return;
   }
 

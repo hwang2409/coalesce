@@ -147,6 +147,7 @@ if (shots) await bare.screenshot({ path: `${shots}/no-access.png` });
 console.log(`step no-access ${JSON.stringify({
   link: await bare.locator('#link-text').textContent(),
   meta: await bare.locator('#revision-meta').textContent(),
+  notice: await bare.locator('#notice-body').textContent(),
   revisionVisible: await bare.locator('.revision-line').isVisible(),
   partsVisible: await bare.locator('.parts').isVisible(),
   gizmo: await bare.locator('.gizmo').isVisible(),
