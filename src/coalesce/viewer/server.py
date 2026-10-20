@@ -132,12 +132,14 @@ def _handler(server: ViewerServer) -> type[BaseHTTPRequestHandler]:
                 if path == "/":
                     headers.append(("Content-Security-Policy", _PAGE_POLICY))
                 return self.send(200, body, kind, headers)
-            if not (path == "/events" or _SCENE.fullmatch(path) or _MESH.fullmatch(path)):
+            if not (path in ("/events", "/api/session") or _SCENE.fullmatch(path) or _MESH.fullmatch(path)):
                 return self.send(HTTPStatus.NOT_FOUND)
             if not self.authorized():
                 return self.send(HTTPStatus.UNAUTHORIZED)
             if path == "/events":
                 return self.events()
+            if path == "/api/session":
+                return self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
             if match := _SCENE.fullmatch(path):
                 scene = server.store.scene(int(match[1]))
                 return self.json(scene) if scene else self.send(HTTPStatus.NOT_FOUND)
