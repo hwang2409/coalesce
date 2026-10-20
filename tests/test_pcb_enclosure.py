@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
+from test_mcp_vertical import run_server
 
 from coalesce.service import DocumentService
 
@@ -113,7 +114,13 @@ def test_pcb_base_offsets_real_outline_and_preserves_exact_dimensions(
 
     if fixture == "features":
         assert (box.min.X, box.max.X, box.min.Y, box.max.Y) == pytest.approx((-3, 23, -3, 13))
-        expected = 26 * 16 * 8.2 - 22 * 12 * 6.2
+        floor_box = floor.bounding_box()
+        assert floor_box.min.X - box.min.X == pytest.approx(2)
+        assert box.max.X - floor_box.max.X == pytest.approx(2)
+        assert 0 - floor_box.min.Z == pytest.approx(1)
+        outer_area = 200 + 60 * 3 + math.pi * 3**2
+        cavity_area = 200 + 60 * 1 + math.pi * 1**2
+        expected = outer_area * 8.2 - cavity_area * 6.2
         assert base.volume == pytest.approx(expected, rel=1e-7)
 
 
@@ -131,25 +138,34 @@ def test_standoffs_follow_hole_ids_and_join_with_exact_pilots(tmp_path):
     assert len(shape.solids()) == 1
     assert service._regen.joined_material["mounts"] is True
     pilots = [_candidate(service._regen, "pilot_wall", hole)[0].entity for hole in FEATURE_HOLES]
-    assert sorted((face.center().X, face.center().Y) for face in pilots) == pytest.approx(
-        [(2, 3), (18, 3)], abs=1e-6
-    )
+    axes = [
+        (
+            (face.bounding_box().min.X + face.bounding_box().max.X) / 2,
+            (face.bounding_box().min.Y + face.bounding_box().max.Y) / 2,
+        )
+        for face in pilots
+    ]
+    assert sorted(axes) == pytest.approx([(2, 3), (18, 3)], abs=1e-6)
     assert [face.radius for face in pilots] == pytest.approx([0.8, 0.8])
     for hole in FEATURE_HOLES:
         assert _candidate(service._regen, "standoff_side", hole)
         assert _candidate(service._regen, "standoff_top", hole)
 
-    base_volume = 26 * 16 * 8.2 - 22 * 12 * 6.2
+    base_volume = (200 + 60 * 3 + math.pi * 3**2) * 8.2 - (
+        200 + 60 + math.pi
+    ) * 6.2
     standoff_volume = 2 * math.pi * (2.5**2 - 0.8**2) * 1
     assert shape.volume == pytest.approx(base_volume + standoff_volume, rel=1e-7)
 
     restarted = DocumentService(document)
+    graph = restarted.query({"select": {"kind": "graph"}})["graph"]
     restarted_shape = restarted._regen.shapes["mounts"]
     assert restarted_shape.volume == pytest.approx(shape.volume)
-    assert [
-        node["type"]
-        for node in restarted.query({"select": {"kind": "graph"}})["graph"]["nodes"]
-    ] == ["BoardImport", "PcbBase", "Standoffs"]
+    assert [node["type"] for node in graph["nodes"]] == [
+        "BoardImport",
+        "PcbBase",
+        "Standoffs",
+    ]
 
 
 def test_all_mounting_selects_all_drills_at_or_above_minimum_dimension(tmp_path):
@@ -192,6 +208,47 @@ def test_invalid_standoff_parameters_fail_atomically(tmp_path, payload, field):
     assert document.read_bytes() == before
 
 
+def test_invalid_base_clearance_names_feature_and_parameter_and_is_atomic(tmp_path):
+    document = tmp_path / "invalid-base.coalesce.json"
+    service = DocumentService(document)
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    before = document.read_bytes()
+
+    failed = service.feature(base_request(clearance=quantity(0)))
+
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "INVALID_PARAMETER"
+    assert failed["error"]["feature"] == "base"
+    assert failed["error"]["parameter"] == "clearance"
+    assert service.revision == 1
+    assert document.read_bytes() == before
+
+
+def test_refresh_that_moves_selected_hole_off_floor_fails_atomically(tmp_path):
+    source = tmp_path / "board.kicad_pcb"
+    shutil.copyfile(FIXTURES / "features.kicad_pcb", source)
+    document = tmp_path / "off-floor.coalesce.json"
+    service = DocumentService(document)
+    service.import_board(import_request(source))
+    service.feature(base_request())
+    service.feature(standoffs_request())
+    source.write_text(
+        source.read_text().replace('(uuid "m2-id") (at 2 3)', '(uuid "m2-id") (at 30 20)')
+    )
+    before = document.read_bytes()
+
+    failed = service.import_board(
+        import_request(source, revision=3, request_id="refresh-off-floor", action="refresh")
+    )
+
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "INVALID_PARAMETER"
+    assert failed["error"]["feature"] == "mounts"
+    assert failed["error"]["parameter"] == "bossDiameter"
+    assert service.revision == 3
+    assert document.read_bytes() == before
+
+
 def test_refresh_moves_standoff_and_removed_hole_is_missing_and_atomic(tmp_path):
     source = tmp_path / "board.kicad_pcb"
     shutil.copyfile(FIXTURES / "features.kicad_pcb", source)
@@ -207,7 +264,11 @@ def test_refresh_moves_standoff_and_removed_hole_is_missing_and_atomic(tmp_path)
     )
     assert moved["ok"] is True
     pilot = _candidate(service._regen, "pilot_wall", FEATURE_HOLES[0])[0].entity
-    assert (pilot.center().X, pilot.center().Y) == pytest.approx((4, 4), abs=1e-6)
+    pilot_box = pilot.bounding_box()
+    assert (
+        (pilot_box.min.X + pilot_box.max.X) / 2,
+        (pilot_box.min.Y + pilot_box.max.Y) / 2,
+    ) == pytest.approx((4, 4), abs=1e-6)
 
     text = source.read_text()
     start = text.index(' (footprint "MountingHole:M2"')
@@ -223,3 +284,79 @@ def test_refresh_moves_standoff_and_removed_hole_is_missing_and_atomic(tmp_path)
     assert missing["error"]["hole"] == FEATURE_HOLES[0]
     assert service.revision == 4
     assert document.read_bytes() == before
+
+
+@pytest.mark.anyio
+async def test_real_stdio_semantic_enclosure_sequence_exports_without_board(tmp_path):
+    document = tmp_path / "stdio.coalesce.json"
+    target = tmp_path / "enclosure.step"
+    imported, base, mounts, checked, measured, exported = await run_server(
+        document,
+        [
+            ("import", import_request(FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", standoffs_request()),
+            (
+                "check",
+                {
+                    "action": "evaluate",
+                    "requirements": [{"id": "valid", "kind": "valid_brep"}],
+                },
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+            (
+                "export",
+                {"expectedRevision": 3, "path": str(target)},
+            ),
+        ],
+    )
+
+    assert [imported["revision"], base["revision"], mounts["revision"]] == [1, 2, 3]
+    assert checked["results"][0]["status"] == "PASS"
+    assert checked["results"][0]["measured"] == {"value": True, "unit": "boolean"}
+    assert checked["results"][0]["evidence"]["solidCount"] == 1
+    assert measured["role"] == "manufacturing"
+    assert measured["solidCount"] == 1
+    assert measured["parts"][0]["partId"].startswith("base/")
+    assert exported["ok"] is True
+    assert exported["partIds"] == [measured["parts"][0]["partId"]]
+    assert exported["validation"]["reimport"]["partCount"] == 1
+    assert exported["validation"]["reimport"]["solidCount"] == 1
+    assert target.stat().st_size == exported["byteCount"]
+
+
+def test_numeric_updates_regenerate_semantic_features(tmp_path):
+    service = DocumentService(tmp_path / "update.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    service.feature(base_request())
+    service.feature(standoffs_request())
+
+    base = service.feature(
+        {
+            "action": "update",
+            "expectedRevision": 3,
+            "requestId": "base-update",
+            "featureId": "base",
+            "kind": "pcb_base",
+            "set": {"wallHeightAboveBoard": quantity(6)},
+        }
+    )
+    mounts = service.feature(
+        {
+            "action": "update",
+            "expectedRevision": 4,
+            "requestId": "mounts-update",
+            "featureId": "mounts",
+            "kind": "standoffs",
+            "set": {"pilotDiameter": quantity(2)},
+        }
+    )
+
+    assert base["ok"] is mounts["ok"] is True
+    assert service._regen.shapes["mounts"].bounding_box().max.Z == pytest.approx(7.2)
+    pilots = [
+        item.entity
+        for item in service._regen.provenance["mounts"]
+        if item.key.role == "pilot_wall"
+    ]
+    assert [face.radius for face in pilots] == pytest.approx([1, 1])

@@ -13,9 +13,11 @@ if TYPE_CHECKING:
         GraphError,
         Hole,
         Parameter,
+        PcbBase,
         Plane,
         Rectangle,
         Sketch,
+        Standoffs,
     )
     from .references import (
         BodySource,
@@ -35,13 +37,13 @@ if TYPE_CHECKING:
 __all__ = [
     "BodySource", "Cardinality", "Circle", "Cut", "Extrude", "Fillet", "Graph",
     "GraphError", "Hole", "HoleSurfaceSource", "MaxAlong", "Normal", "Parameter",
-    "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
-    "Sketch", "SketchSegmentSource", "Status", "ToolCapSource", "regenerate",
+    "PcbBase", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
+    "Sketch", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
 ]
 
 _GRAPH_NAMES = {
     "Circle", "Cut", "Extrude", "Fillet", "Graph", "GraphError", "Hole", "Parameter",
-    "Plane", "Rectangle", "Sketch",
+    "PcbBase", "Plane", "Rectangle", "Sketch", "Standoffs",
 }
 _REFERENCE_NAMES = {
     "BodySource", "Cardinality", "HoleSurfaceSource", "MaxAlong", "Normal", "Position",
