@@ -1,11 +1,11 @@
 # integration screenshots (mcp-viewer-integration)
 
 Real headless Chromium captures of the viewer started by the real `coalesce` MCP server.
-Captured at mcp-viewer-integration c3edf34a4338ef07729bea4cfcee4a887039e762, 2560x1600 (1280x800 at device scale 2).
+Captured at mcp-viewer-integration cec0217b19a3869739d26d84f5478ee382004a1e, 2560x1600 (1280x800 at device scale 2).
 
 - `revision-2.png`: after `sketch` + `feature` over stdio MCP (60 x 40 x 6 mm plate).
 - `revision-3.png`: after an MCP `feature` update of the extrude distance to 10 mm.
-- `failure.png`: after a failed MCP mutation (UNKNOWN_ID); revision 3 stays shown.
+- `failure.png`: after a schema-invalid MCP `feature` call (unknown field `colour`); the banner shows coalesce wording, revision 3 stays shown.
 - `no-access.png`: the viewer opened without the token.
 
 Method: `INTEGRATION_SCREENSHOTS=<dir> uv run --extra test pytest -q tests/test_mcp_viewer_integration.py -k browser`
