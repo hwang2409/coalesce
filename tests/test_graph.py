@@ -7,6 +7,7 @@ from math import isclose
 import pytest
 
 from coalesce import (
+    BodySource,
     Cardinality,
     Cut,
     Extrude,
@@ -20,6 +21,7 @@ from coalesce import (
     Status,
     regenerate,
 )
+from coalesce.references import ElementKey
 from coalesce.serialization import loads
 
 
@@ -195,6 +197,80 @@ def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
     reference = restored.nodes["round"].edges[0]
     assert reference.source == source
     assert reference.body == body
+
+
+def test_json_round_trip_preserves_exact_blend_source():
+    body = BodySource("base", "profile")
+    source = ElementKey(
+        "base",
+        "between(side(left),cap_end)",
+        (
+            ElementKey("base", "cap_end", "profile", body),
+            ElementKey(
+                "base",
+                "side(left)",
+                SketchSegmentSource("sk", "profile", "left"),
+                body,
+            ),
+        ),
+        body,
+    )
+    graph = base()
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", source.role, source=source, body=body)],
+        )
+    )
+
+    payload = json.loads(graph.to_json())
+    encoded_source = payload["nodes"][-1]["edges"][0]["source"]
+    restored = loads(json.dumps(payload))
+
+    assert encoded_source == {
+        "kind": "element_key",
+        "feature": "base",
+        "role": "between(side(left),cap_end)",
+        "source": {
+            "kind": "element_keys",
+            "items": [
+                {
+                    "kind": "element_key",
+                    "feature": "base",
+                    "role": "cap_end",
+                    "source": "profile",
+                    "body": {
+                        "kind": "body_source",
+                        "feature": "base",
+                        "entity": "profile",
+                    },
+                },
+                {
+                    "kind": "element_key",
+                    "feature": "base",
+                    "role": "side(left)",
+                    "source": {
+                        "kind": "sketch_segment",
+                        "sketch": "sk",
+                        "entity": "profile",
+                        "segment": "left",
+                    },
+                    "body": {
+                        "kind": "body_source",
+                        "feature": "base",
+                        "entity": "profile",
+                    },
+                },
+            ],
+        },
+        "body": {
+            "kind": "body_source",
+            "feature": "base",
+            "entity": "profile",
+        },
+    }
+    assert restored.nodes["round"].edges[0].source == source
 
 
 def test_json_round_trip_preserves_cut_depth_and_flip():

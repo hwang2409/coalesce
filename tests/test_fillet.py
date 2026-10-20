@@ -1,3 +1,4 @@
+from dataclasses import replace
 from math import isclose, pi
 
 import pytest
@@ -64,6 +65,28 @@ def test_case_13_fillet_consumes_edge_and_names_blend_replacement() -> None:
     assert blends[0].entity.geom_type is not GeomType.PLANE
     expected_removed = (1 - pi / 4) * 10
     assert isclose(result.shapes["round"].volume, 1000 - expected_removed, abs_tol=1e-7)
+
+
+def test_unresolved_exact_blend_source_returns_structured_empty() -> None:
+    graph = base_graph()
+    graph.add(Fillet("round", target="base", edges=[top_bottom_edge()], radius=1))
+    result = regenerate(graph)
+    blend = next(
+        candidate
+        for candidate in result.provenance["round"]
+        if candidate.key.role.startswith("blend(")
+    )
+    missing_source = replace(blend.key.source, role="missing")
+
+    resolution = result.resolve(
+        Reference("round", blend.key.role, source=missing_source, body=blend.key.body)
+    )
+
+    assert resolution.status is Status.EMPTY
+    assert resolution.candidates == []
+    assert resolution.error is not None
+    assert resolution.error["status"] == Status.EMPTY.value
+    assert resolution.error["reference"]["source"]["kind"] == "element_key"
 
 
 def test_case_14_fillet_keeps_adjacent_cap_reference_ok() -> None:

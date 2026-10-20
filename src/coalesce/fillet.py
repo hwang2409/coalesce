@@ -26,42 +26,12 @@ def _blend_role(edge: ElementKey) -> str:
     return f"blend({edge!r})"
 
 
-def fillet_shape(
+def _collect_history(
     feature: str,
-    target: Shape,
+    algorithm: BRepFilletAPI_MakeFillet,
     target_candidates: list[Candidate],
-    edges: list[Candidate],
-    radius: float,
-) -> FilletResult:
-    edge_keys = [edge.key for edge in edges]
-    if radius <= 0:
-        raise GraphError(
-            "invalid_fillet_radius",
-            f"fillet {feature} radius must be positive",
-            feature=feature,
-            radius=radius,
-            edges=edge_keys,
-        )
-
-    algorithm = BRepFilletAPI_MakeFillet(target.wrapped)
-    try:
-        for edge in edges:
-            algorithm.Add(radius, edge.entity.wrapped)
-        algorithm.Build()
-        if not algorithm.IsDone():
-            raise RuntimeError("kernel operation did not complete")
-        result = Shape.cast(algorithm.Shape())
-    except Exception:
-        _LOGGER.exception("fillet kernel operation failed for feature %s", feature)
-        raise GraphError(
-            "fillet_failed",
-            f"fillet feature {feature} failed",
-            feature=feature,
-            radius=radius,
-            edges=edge_keys,
-        ) from None
-
-    output_faces = result.faces()
+    output_faces: list[Face],
+) -> tuple[list[Candidate], list[Candidate], dict[ElementKey, tuple[ElementKey, ...]]]:
     inherited: list[Candidate] = []
     for source in target_candidates:
         if not isinstance(source.entity, Face):
@@ -97,7 +67,47 @@ def fillet_shape(
             blend_keys.append(blend.key)
         if algorithm.IsDeleted(source.entity.wrapped):
             consumed[source.key] = tuple(blend_keys)
+    return inherited, generated, consumed
 
+
+def fillet_shape(
+    feature: str,
+    target: Shape,
+    target_candidates: list[Candidate],
+    edges: list[Candidate],
+    radius: float,
+) -> FilletResult:
+    edge_keys = [edge.key for edge in edges]
+    if radius <= 0:
+        raise GraphError(
+            "invalid_fillet_radius",
+            f"fillet {feature} radius must be positive",
+            feature=feature,
+            radius=radius,
+            edges=edge_keys,
+        )
+
+    algorithm = BRepFilletAPI_MakeFillet(target.wrapped)
+    try:
+        for edge in edges:
+            algorithm.Add(radius, edge.entity.wrapped)
+        algorithm.Build()
+        if not algorithm.IsDone():
+            raise RuntimeError("kernel operation did not complete")
+        result = Shape.cast(algorithm.Shape())
+    except Exception:
+        _LOGGER.exception("fillet kernel operation failed for feature %s", feature)
+        raise GraphError(
+            "fillet_failed",
+            f"fillet feature {feature} failed",
+            feature=feature,
+            radius=radius,
+            edges=edge_keys,
+        ) from None
+
+    inherited, generated, consumed = _collect_history(
+        feature, algorithm, target_candidates, result.faces()
+    )
     result_faces = _deduplicate(feature, result, [*inherited, *generated])
     result_edges = derive_edge_candidates(feature, result, result_faces)
     return FilletResult(

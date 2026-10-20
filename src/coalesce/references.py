@@ -122,7 +122,9 @@ class Reference:
         }
 
 
-def _source_dict(source: ElementSource | None) -> dict[str, Any] | str | None:
+def _source_dict(
+    source: ElementSource | ElementKey | tuple[ElementKey, ...] | None,
+) -> dict[str, Any] | str | None:
     kinds = {
         SketchSegmentSource: "sketch_segment",
         ToolCapSource: "tool_cap",
@@ -130,7 +132,51 @@ def _source_dict(source: ElementSource | None) -> dict[str, Any] | str | None:
     }
     if isinstance(source, str) or source is None:
         return source
+    if isinstance(source, tuple):
+        return {"kind": "element_keys", "items": [_source_dict(item) for item in source]}
+    if isinstance(source, ElementKey):
+        return {
+            "kind": "element_key",
+            "feature": source.feature,
+            "role": source.role,
+            "source": _source_dict(source.source),
+            "body": (
+                {"kind": "body_source", **asdict(source.body)}
+                if source.body is not None
+                else None
+            ),
+        }
     return {"kind": kinds[type(source)], **asdict(source)}
+
+
+def _source_from_dict(
+    source: dict[str, Any] | str | None,
+) -> ElementSource | ElementKey | tuple[ElementKey, ...] | None:
+    if isinstance(source, str) or source is None:
+        return source
+    kind = source.get("kind")
+    source_types = {
+        "sketch_segment": SketchSegmentSource,
+        "tool_cap": ToolCapSource,
+        "hole_surface": HoleSurfaceSource,
+    }
+    if kind in source_types:
+        return source_types[kind](
+            **{key: value for key, value in source.items() if key != "kind"}
+        )
+    if kind == "element_keys":
+        return tuple(_source_from_dict(item) for item in source["items"])
+    if kind == "element_key":
+        body = source.get("body")
+        return ElementKey(
+            source["feature"],
+            source["role"],
+            _source_from_dict(source.get("source")),
+            BodySource(**{key: value for key, value in body.items() if key != "kind"})
+            if body is not None
+            else None,
+        )
+    raise ValueError(f"unknown reference source kind: {kind}")
 
 
 @dataclass

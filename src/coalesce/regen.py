@@ -40,19 +40,28 @@ class RegenResult:
         )
         if resolution.status is not Status.EMPTY or resolution.error is None:
             return resolution
-        replacements = [
-            replacement
-            for consumed, generated in self.consumed.items()
-            if reference_matches_key(ref, consumed)
-            for replacement in generated
-        ]
-        if replacements:
-            names = ", ".join(
-                f"{replacement.feature}.{replacement.role}"
-                for replacement in replacements
-            )
-            resolution.error["suggestion"] = f"use generated blend face {names}"
+        suggestion = _consumed_edge_suggestion(ref, self.consumed)
+        if suggestion is not None:
+            resolution.error["suggestion"] = suggestion
         return resolution
+
+
+def _consumed_edge_suggestion(
+    ref: Reference,
+    consumed_edges: dict[ElementKey, tuple[ElementKey, ...]],
+) -> str | None:
+    replacements = [
+        replacement
+        for consumed, generated in consumed_edges.items()
+        if reference_matches_key(ref, consumed)
+        for replacement in generated
+    ]
+    if not replacements:
+        return None
+    names = ", ".join(
+        f"{replacement.feature}.{replacement.role}" for replacement in replacements
+    )
+    return f"use generated blend face {names}"
 
 
 def _replace_provenance(
@@ -68,12 +77,53 @@ def _replace_provenance(
         provenance[feature] = groups.get(feature, [])
 
 
+def _resolve_fillet_edges(
+    fillet: Fillet,
+    provenance: dict[str, list[Candidate]],
+    ordered_features: list[str],
+) -> list[Candidate]:
+    if not fillet.edges:
+        raise GraphError(
+            "empty_fillet_edges",
+            f"fillet {fillet.id} requires at least one edge reference",
+            feature=fillet.id,
+        )
+    selected: list[Candidate] = []
+    for reference in fillet.edges:
+        resolution = resolve(
+            reference,
+            provenance,
+            ordered_features=ordered_features,
+            before_feature=fillet.id,
+        )
+        if resolution.error is not None:
+            raise GraphError(
+                "reference_failed",
+                f"fillet {fillet.id} edge reference did not resolve",
+                feature=fillet.id,
+                resolution=resolution.error,
+            )
+        selected.extend(resolution.candidates)
+    if any(not isinstance(item.entity, Edge) for item in selected):
+        raise GraphError(
+            "invalid_fillet_reference",
+            f"fillet {fillet.id} reference must resolve to edges",
+            feature=fillet.id,
+        )
+    unique: list[Candidate] = []
+    for item in selected:
+        if not any(item.entity.is_same(other.entity) for other in unique):
+            unique.append(item)
+    return unique
+
+
 def regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
     provenance: dict[str, list[Candidate]] = {}
     states: dict[str, list[Candidate]] = {}
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = {}
+    ordered_features = [node.id for node in ordered]
 
     for node in ordered:
         if isinstance(node, Sketch):
@@ -117,43 +167,11 @@ def regenerate(graph: Graph) -> RegenResult:
             states[node.id] = result.candidates
             _replace_provenance(provenance, states[node.target], result.candidates)
         elif isinstance(node, Fillet):
-            if not node.edges:
-                raise GraphError(
-                    "empty_fillet_edges",
-                    f"fillet {node.id} requires at least one edge reference",
-                    feature=node.id,
-                )
-            selected: list[Candidate] = []
-            for reference in node.edges:
-                resolution = resolve(
-                    reference,
-                    provenance,
-                    ordered_features=[item.id for item in ordered],
-                    before_feature=node.id,
-                )
-                if resolution.error is not None:
-                    raise GraphError(
-                        "reference_failed",
-                        f"fillet {node.id} edge reference did not resolve",
-                        feature=node.id,
-                        resolution=resolution.error,
-                    )
-                selected.extend(resolution.candidates)
-            if any(not isinstance(item.entity, Edge) for item in selected):
-                raise GraphError(
-                    "invalid_fillet_reference",
-                    f"fillet {node.id} reference must resolve to edges",
-                    feature=node.id,
-                )
-            unique = []
-            for item in selected:
-                if not any(item.entity.is_same(other.entity) for other in unique):
-                    unique.append(item)
             result = fillet_shape(
                 node.id,
                 shapes[node.target],
                 states[node.target],
-                unique,
+                _resolve_fillet_edges(node, provenance, ordered_features),
                 node.radius,
             )
             shapes[node.id] = result.shape
@@ -165,6 +183,6 @@ def regenerate(graph: Graph) -> RegenResult:
         graph,
         shapes,
         provenance,
-        [node.id for node in ordered],
+        ordered_features,
         consumed,
     )
