@@ -1662,16 +1662,16 @@ def _hole_names(node: Hole) -> list[str | None]:
     return [position.name for position in node.positions] or [None]
 
 
-def _lineage(graph: Any, feature_id: str) -> tuple[dict[str, Any], ...]:
-    """The features that built a terminal part, oldest first, following each target."""
+def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]:
+    """The features that built a terminal part, oldest first."""
     chain = []
-    node = graph.nodes.get(feature_id)
-    while node is not None:
+    while feature_id:
+        node = result.graph.nodes[feature_id]
         entry = {"id": node.id, "kind": _kind(node)}
         if isinstance(node, Hole):
             entry["holes"] = _hole_names(node)
         chain.append(entry)
-        node = graph.nodes.get(getattr(node, "target", None) or "")
+        feature_id = result.predecessors.get(feature_id, "")
     return tuple(reversed(chain))
 
 
@@ -1752,7 +1752,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
             terminal_feature=part.terminal_feature,
             area=part.shape.area,
             volume=part.shape.volume,
-            features=_lineage(result.graph, part.terminal_feature),
+            features=_lineage(result, part.terminal_feature),
         )
 
 

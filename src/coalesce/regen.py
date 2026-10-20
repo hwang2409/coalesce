@@ -27,6 +27,7 @@ from .graph import (
     Standoffs,
 )
 from .hole import make_hole_tool
+from .lineage import BodyLineage
 from .pcb import build_pcb
 from .references import (
     Candidate,
@@ -51,6 +52,7 @@ class RegenResult:
     metadata: dict[str, dict] = field(default_factory=dict)
     opening_tools: dict[str, Shape] = field(default_factory=dict)
     superseded: set[str] = field(default_factory=set)
+    predecessors: dict[str, str] = field(default_factory=dict)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
@@ -83,19 +85,6 @@ def _consumed_edge_suggestion(
         f"{replacement.feature}.{replacement.role}" for replacement in replacements
     )
     return f"use generated blend face {names}"
-
-
-def _replace_provenance(
-    provenance: dict[str, list[Candidate]],
-    previous: list[Candidate],
-    current: list[Candidate],
-) -> None:
-    groups: dict[str, list[Candidate]] = {}
-    for item in current:
-        groups.setdefault(item.key.feature, []).append(item)
-    affected = {item.key.feature for item in previous} | set(groups)
-    for feature in affected:
-        provenance[feature] = groups.get(feature, [])
 
 
 def _resolve_fillet_edges(
@@ -143,6 +132,7 @@ def _join_extrude(
     graph: Graph,
     shapes: dict[str, Shape],
     states: dict[str, list[Candidate]],
+    target: str,
 ) -> FuseResult:
     if node.target is None:
         raise GraphError(
@@ -153,7 +143,7 @@ def _join_extrude(
     prism = extrude_sketch(node, graph.nodes[node.sketch])
     unjoined_entities, non_manifold_entities = join_contact_failures(
         node.id,
-        shapes[node.target],
+        shapes[target],
         prism.shape,
         prism.candidates,
     )
@@ -177,8 +167,8 @@ def _join_extrude(
         )
     return fuse_shape(
         node.id,
-        shapes[node.target],
-        states[node.target],
+        shapes[target],
+        states[target],
         prism.shape,
         prism.candidates,
     )
@@ -194,6 +184,7 @@ class _EnclosureRegenerator:
         removed_material: dict[str, bool],
         joined_material: dict[str, bool],
         metadata: dict[str, dict],
+        lineage: BodyLineage,
     ) -> None:
         self.graph = graph
         self.shapes = shapes
@@ -202,9 +193,8 @@ class _EnclosureRegenerator:
         self.removed_material = removed_material
         self.joined_material = joined_material
         self.metadata = metadata
+        self.lineage = lineage
         self.opening_tools: dict[str, Shape] = {}
-        self.terminals: dict[str, str] = {}
-        self.superseded: set[str] = set()
 
     def _base_context(self, base_id: str, feature: str) -> tuple[PcbBase, BoardImport]:
         base = self.graph.nodes.get(base_id)
@@ -225,12 +215,6 @@ class _EnclosureRegenerator:
             )
         return base, board
 
-    def _replace_terminal(self, base_id: str, feature: str, candidates: list[Candidate]) -> None:
-        previous = self.terminals[base_id]
-        self.superseded.add(previous)
-        self.terminals[base_id] = feature
-        _replace_provenance(self.provenance, self.states[previous], candidates)
-
     def _regenerate_pcb_base(self, node: PcbBase) -> None:
         board = self.graph.nodes.get(node.board)
         if not isinstance(board, BoardImport):
@@ -244,7 +228,7 @@ class _EnclosureRegenerator:
         self.shapes[node.id] = base.shape
         self.states[node.id] = base.candidates
         self.provenance[node.id] = base.candidates
-        self.terminals[node.id] = node.id
+        self.lineage.create(node.id, base.candidates)
 
     def _regenerate_pcb_lid(self, node: PcbLid) -> None:
         base, board = self._base_context(node.base, node.id)
@@ -252,10 +236,11 @@ class _EnclosureRegenerator:
         self.shapes[node.id] = lid.shape
         self.states[node.id] = lid.candidates
         self.provenance[node.id] = lid.candidates
+        self.lineage.create(node.id, lid.candidates)
 
     def _regenerate_port_cutout(self, node: PortCutout) -> None:
         base, board = self._base_context(node.base, node.id)
-        terminal = self.terminals[node.base]
+        terminal = self.lineage.terminal(node.base)
         opening = build_port_cutout(
             node,
             base,
@@ -268,7 +253,7 @@ class _EnclosureRegenerator:
         self.removed_material[node.id] = True
         self.metadata[node.id] = opening.metadata
         self.opening_tools[node.id] = opening.opening_tool
-        self._replace_terminal(node.base, node.id, opening.candidates)
+        self.lineage.replace(node.base, node.id, opening.candidates)
 
     def _regenerate_standoffs(self, node: Standoffs) -> None:
         base, board = self._base_context(node.target, node.id)
@@ -279,7 +264,7 @@ class _EnclosureRegenerator:
                 feature=node.id,
                 parameter="board",
             )
-        terminal = self.terminals[node.target]
+        terminal = self.lineage.terminal(node.target)
         mounts = build_standoffs(
             node,
             base,
@@ -290,7 +275,7 @@ class _EnclosureRegenerator:
         self.shapes[node.id] = mounts.shape
         self.states[node.id] = mounts.candidates
         self.joined_material[node.id] = True
-        self._replace_terminal(node.target, node.id, mounts.candidates)
+        self.lineage.replace(node.target, node.id, mounts.candidates)
 
     def apply(self, node: PcbBase | PcbLid | PortCutout | Standoffs) -> None:
         if isinstance(node, PcbBase):
@@ -303,7 +288,7 @@ class _EnclosureRegenerator:
             self._regenerate_standoffs(node)
 
     def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
-        terminal = self.terminals[port.base]
+        terminal = self.lineage.terminal(port.base)
         conflict = next(
             (
                 item.key.source
@@ -380,6 +365,7 @@ def regenerate(graph: Graph) -> RegenResult:
     joined_material: dict[str, bool] = {}
     metadata: dict[str, dict] = {}
     ordered_features = [node.id for node in ordered]
+    lineage = BodyLineage(states, provenance)
     enclosure = _EnclosureRegenerator(
         graph,
         shapes,
@@ -388,6 +374,7 @@ def regenerate(graph: Graph) -> RegenResult:
         removed_material,
         joined_material,
         metadata,
+        lineage,
     )
 
     for node in ordered:
@@ -398,6 +385,7 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = board.shape
             states[node.id] = board.candidates
             provenance[node.id] = board.candidates
+            lineage.create(node.id, board.candidates)
         elif isinstance(node, (PcbBase, PcbLid, PortCutout, Standoffs)):
             enclosure.apply(node)
         elif isinstance(node, Extrude):
@@ -406,6 +394,7 @@ def regenerate(graph: Graph) -> RegenResult:
                 shapes[node.id] = prism.shape
                 states[node.id] = prism.candidates
                 provenance[node.id] = prism.candidates
+                lineage.create(node.id, prism.candidates)
                 continue
             if node.operation != "join":
                 raise GraphError(
@@ -414,12 +403,13 @@ def regenerate(graph: Graph) -> RegenResult:
                     feature=node.id,
                     operation=node.operation,
                 )
-            result = _join_extrude(node, graph, shapes, states)
+            assert node.target is not None
+            target = lineage.terminal(node.target)
+            result = _join_extrude(node, graph, shapes, states, target)
             joined_material[node.id] = result.joined_material
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
-            assert node.target is not None
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
         elif isinstance(node, Cut):
             tool_sketch = graph.nodes[node.tool]
             if not isinstance(tool_sketch, Sketch):
@@ -429,24 +419,26 @@ def regenerate(graph: Graph) -> RegenResult:
                     feature=node.id,
                     tool=node.tool,
                 )
-            tool = make_cut_tool(node, tool_sketch, shapes[node.target])
+            target = lineage.terminal(node.target)
+            tool = make_cut_tool(node, tool_sketch, shapes[target])
             result = cut_shape(
                 node.id,
-                shapes[node.target],
-                states[node.target],
+                shapes[target],
+                states[target],
                 tool.shape,
                 tool.candidates,
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
             removed_material[node.id] = result.removed_material
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
         elif isinstance(node, Hole):
-            tool = make_hole_tool(node, shapes[node.target])
+            target = lineage.terminal(node.target)
+            tool = make_hole_tool(node, shapes[target])
             result = cut_shape(
                 node.id,
-                shapes[node.target],
-                states[node.target],
+                shapes[target],
+                states[target],
                 tool.shape,
                 tool.candidates,
                 kind="hole",
@@ -454,19 +446,20 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
             removed_material[node.id] = result.removed_material
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
         elif isinstance(node, Fillet):
+            target = lineage.terminal(node.target)
             result = fillet_shape(
                 node.id,
-                shapes[node.target],
-                states[node.target],
+                shapes[target],
+                states[target],
                 _resolve_fillet_edges(node, provenance, ordered_features),
                 node.radius,
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
             consumed.update(result.consumed)
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
 
     enclosure.validate()
     return RegenResult(
@@ -479,5 +472,6 @@ def regenerate(graph: Graph) -> RegenResult:
         joined_material=joined_material,
         metadata=metadata,
         opening_tools=enclosure.opening_tools,
-        superseded=enclosure.superseded,
+        superseded=lineage.superseded,
+        predecessors=lineage.predecessors,
     )
