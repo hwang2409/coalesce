@@ -76,6 +76,25 @@ def test_filters_only_reduce_the_selected_provenance_set():
     assert resolution.candidates[0].key.source == "right"
 
 
+def test_exact_cardinality_and_merged_status_are_explicit():
+    pieces = [candidate("cap_end", "top"), candidate("cap_end", "top")]
+    exact = resolve(
+        Reference("base", "cap_end", Cardinality.EXACTLY, count=2),
+        {"base": pieces},
+    )
+    merged = candidate("cap_end", "top")
+    merged.merged_from = (ElementKey("boss", "cap_end", "boss_top"),)
+
+    merged_resolution = resolve(Reference("base", "cap_end"), {"base": [merged]})
+
+    assert exact.status is Status.OK
+    assert merged_resolution.status is Status.MERGED
+    assert merged_resolution.error["candidates"][0]["keys"] == [
+        {"feature": "base", "role": "cap_end", "source": "top"},
+        {"feature": "boss", "role": "cap_end", "source": "boss_top"},
+    ]
+
+
 def test_equal_maximum_is_ambiguous_instead_of_picking_by_index():
     candidates = {
         "base": [
