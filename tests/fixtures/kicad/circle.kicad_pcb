@@ -1,3 +1,0 @@
-(kicad_pcb (version 20240108) (generator pcbnew)
- (general (thickness 2.0))
- (gr_circle (center 5 5) (end 8 5) (layer "Edge.Cuts") (uuid "circle")))
