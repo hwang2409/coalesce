@@ -171,10 +171,31 @@ for (const button of document.querySelectorAll('[data-view]')) {
 }
 $('fit').addEventListener('click', () => applyView(activeView ?? 'iso'));
 
-// ---- grid and origin axes, sized to the model
+// ---- gpu resources: each group owns its materials; the mesh cache owns part geometry
+
+function clearGroup(group, { ownsGeometry }) {
+  group.traverse((object) => {
+    object.material?.dispose();
+    if (ownsGeometry) object.geometry?.dispose();
+  });
+  group.clear();
+}
+
+// frees every cached part geometry that the shown revision does not use
+function pruneGeometries() {
+  const used = new Set(current?.parts.map((part) => part.mesh.id));
+  for (const [id, geometry] of geometries) {
+    if (used.has(id)) continue;
+    geometry.surface.dispose();
+    geometry.edges.dispose();
+    geometries.delete(id);
+  }
+}
+
+// ---- ground grid, sized to the model; its center lines mark the origin
 
 function rebuildHelpers(bbox) {
-  helpers.clear();
+  clearGroup(helpers, { ownsGeometry: true });
   const extent = Math.max(...bbox.max.map((v, i) => Math.abs(v)), ...bbox.min.map((v) => Math.abs(v)), 1);
   gridStep = niceLength(extent / 6);
   const cells = Math.ceil((extent * 1.6) / gridStep) * 2;
@@ -187,14 +208,11 @@ function rebuildHelpers(bbox) {
   // just under the lowest geometry, so faces resting on z = 0 do not flicker against it
   grid.position.z = Math.min(0, bbox.min[2]) - extent * 0.002;
   helpers.add(grid);
-  const axes = new THREE.AxesHelper(gridStep * 2);
-  axes.setColors(new THREE.Color(0xc0392b), new THREE.Color(0x2e8b57), new THREE.Color(0x2e5f9e));
-  helpers.add(axes);
 }
 
 // ---- parts
 
-const geometries = new Map(); // mesh id -> {surface, edges}
+const geometries = new Map(); // mesh id -> {surface, edges}; parts borrow these
 const hiddenByUser = new Map(); // part name -> visible override
 
 async function loadMesh(mesh) {
@@ -315,26 +333,33 @@ function showFailure() {
   $('failure-error').textContent = failure.error;
 }
 
-async function loadRevision(revision) {
+// loads run one at a time, then catch up to the newest announced revision,
+// so the mesh cache is never pruned under an in-flight load.
+let loader = null;
+function loadRevision(revision) {
   wanted = Math.max(wanted, revision);
+  loader ??= (async () => {
+    let tried = null;
+    while (wanted !== current?.revision && wanted !== tried) {
+      tried = wanted;
+      await loadOne(tried);
+    }
+    loader = null;
+  })();
+}
+
+async function loadOne(revision) {
   if (!current) notice(`Loading revision ${revision}`);
   else $('revision-meta').textContent = `Loading revision ${revision}`;
   try {
     const response = await fetch(`/api/scene/${revision}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    const meshes = await Promise.all(data.parts.map((part) => loadMesh(part.mesh)));
+    const meshes = [];
+    for (const part of data.parts) meshes.push(await loadMesh(part.mesh)); // one by one: shared ids load once
     if (revision !== wanted) return; // a newer revision arrived meanwhile
-    model.clear();
+    clearGroup(model, { ownsGeometry: false });
     data.parts.forEach((part, i) => model.add(partObject(part, meshes[i])));
-    const usedIds = new Set(data.parts.map((part) => part.mesh.id));
-    for (const [id, geometry] of geometries) {
-      if (!usedIds.has(id)) {
-        geometry.surface.dispose();
-        geometry.edges.dispose();
-        geometries.delete(id);
-      }
-    }
     current = data;
     rebuildHelpers(data.bbox);
     renderPartList(data.parts);
@@ -349,6 +374,8 @@ async function loadRevision(revision) {
     if (revision !== wanted) return;
     if (!current) notice(`Could not load revision ${revision}`, String(error.message));
     else $('revision-meta').textContent = `Could not load revision ${revision}: ${error.message}`;
+  } finally {
+    pruneGeometries(); // also drops meshes a stale or failed load fetched
   }
 }
 

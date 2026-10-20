@@ -106,7 +106,9 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             stress = step("stress")
             # 50 more revisions free what they replace: gpu counts match the one-part baseline
             assert stress["memory"] == second["memory"], (stress["memory"], second["memory"])
-            assert stress["errors"] == []
+            # the store keeps two revisions, so skipped ones may 404; the page then catches up
+            dropped = "the server responded with a status of 404"
+            assert [e for e in stress["errors"] if dropped not in e] == []
             next_step()
             assert driver.wait(timeout=30) == 0
         finally:
