@@ -21,7 +21,7 @@ _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
-    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional and flip has no effect. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Only extrudes can be updated.",
+    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Only extrudes can be updated.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
 }
@@ -35,7 +35,7 @@ Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
 Use operation `join` with an explicit target feature to add material to one contacting body.
 For finite cuts, `flip=false` cuts along the negative sketch normal and `flip=true` cuts
-along the positive sketch normal. Through-all cuts are bidirectional; flip has no effect.
+along the positive sketch normal. Through-all cuts are bidirectional, and flip has no effect for through-all cuts.
 Holes use absolute XY positions and global +Z only. Omitted hole depth means through-all.
 A hole accepts one `position` or 1..64 `positions`; each position can have a stable,
 caller-chosen `name`, defaulting to `h1`..`hn` in request order. Use that name in a
