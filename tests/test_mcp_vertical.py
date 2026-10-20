@@ -1,12 +1,15 @@
 import json
+import math
 import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+from coalesce.server import create_server
 from coalesce.service import DocumentService
 
 SKETCH = {
@@ -14,7 +17,6 @@ SKETCH = {
     "expectedRevision": 0,
     "requestId": "sketch-1",
     "sketchId": "plate_profile",
-    "partId": "plate",
     "plane": {"kind": "origin", "name": "XY"},
     "entities": [
         {
@@ -41,6 +43,17 @@ FEATURE = {
         "direction": "normal",
     },
 }
+
+
+async def call_server_tool(service, name, arguments):
+    server = create_server(service)
+    handler = server.request_handlers[types.CallToolRequest]
+    result = await handler(
+        types.CallToolRequest(
+            params=types.CallToolRequestParams(name=name, arguments=arguments)
+        )
+    )
+    return result.root.structuredContent
 
 
 def result_json(result):
@@ -75,6 +88,7 @@ async def test_real_stdio_path_builds_plate_and_survives_restart(tmp_path):
     )
 
     assert [first[0]["revision"], first[1]["revision"]] == [1, 2]
+    assert "solver" not in first[0]
     assert first[2]["revision"] == 2
     assert {node["id"] for node in first[2]["graph"]["nodes"]} == {
         "plate_profile",
@@ -128,7 +142,7 @@ def test_update_sketch_and_extrude(tmp_path):
             "expectedRevision": 2,
             "requestId": "sketch-2",
             "sketchId": "plate_profile",
-            "set": {"position": [5, 2, 0], "rotation": [0, 0, 0]},
+            "set": {"position": [5, 2, 0]},
         }
     )
     feature_result = service.feature(
@@ -145,6 +159,145 @@ def test_update_sketch_and_extrude(tmp_path):
     assert sketch_result["revision"] == 3
     assert feature_result["revision"] == 4
     assert service.query({"select": {"kind": "measurements"}})["bbox"]["z"]["value"] == 8
+
+
+def test_replay_hash_normalizes_numeric_forms_and_angles(tmp_path):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    request = {
+        **SKETCH,
+        "entities": [{**SKETCH["entities"][0], "rotation": {"value": 180, "unit": "deg"}}],
+    }
+    created = service.sketch(request)
+
+    replay = service.sketch(
+        {
+            **request,
+            "expectedRevision": 0.0,
+            "entities": [
+                {
+                    **request["entities"][0],
+                    "center": [0.0, 0.0],
+                    "width": {"value": 60.0, "unit": "mm"},
+                    "rotation": {"value": math.pi, "unit": "rad"},
+                }
+            ],
+        }
+    )
+
+    assert replay == created
+
+
+def test_request_id_tombstone_survives_full_receipt_eviction(tmp_path):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    service.sketch(SKETCH)
+    for revision in range(1, 101):
+        result = service.sketch(
+            {
+                "action": "update",
+                "expectedRevision": revision,
+                "requestId": f"update-{revision}",
+                "sketchId": "plate_profile",
+                "set": {"position": [revision, 0, 0]},
+            }
+        )
+        assert result["ok"] is True
+
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    reused = service.sketch(
+        {
+            **SKETCH,
+            "expectedRevision": 101,
+            "sketchId": "different",
+        }
+    )
+    assert reused["error"]["code"] == "REQUEST_ID_REUSED"
+
+
+@pytest.mark.anyio
+async def test_sketch_schema_rejects_deferred_fields_with_allowed_list(tmp_path):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    allowed = set(SKETCH) - {"entities", "plane"}
+    allowed.update({"entities", "plane", "set"})
+    for field, value in (
+        ("partId", "plate"),
+        ("constraints", [{"id": "c1", "kind": "coincident", "entities": ["a", "b"]}]),
+    ):
+        result = await call_server_tool(service, "sketch", {**SKETCH, field: value})
+        assert result["error"]["code"] == "INVALID_PARAMETER"
+        assert set(result["error"]["allowedFields"]) == allowed
+
+
+@pytest.mark.anyio
+async def test_angle_schema_accepts_radians_and_rejects_untyped_update_rotation(tmp_path):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    radians = {
+        **SKETCH,
+        "entities": [
+            {
+                **SKETCH["entities"][0],
+                "rotation": {"value": math.pi / 2, "unit": "rad"},
+            }
+        ],
+    }
+    created = await call_server_tool(service, "sketch", radians)
+    assert created["ok"] is True
+    graph = service.query({"select": {"kind": "graph"}})["graph"]
+    assert graph["nodes"][0]["entities"][0]["rotation"] == pytest.approx(90)
+
+    rejected = await call_server_tool(
+        service,
+        "sketch",
+        {
+            "action": "update",
+            "expectedRevision": 1,
+            "requestId": "rotate",
+            "sketchId": "plate_profile",
+            "set": {"rotation": [0, 0, 90]},
+        },
+    )
+    assert rejected["error"]["code"] == "INVALID_PARAMETER"
+    assert "rotation" not in rejected["error"]["allowedFields"]
+
+
+def test_post_rename_fsync_failure_commits_and_allows_next_mutation(tmp_path, monkeypatch):
+    path = tmp_path / "plate.coalesce.json"
+    service = DocumentService(path)
+    real_fsync = os.fsync
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("directory fsync failed at /secret/kernel/path")
+        return real_fsync(fd)
+
+    monkeypatch.setattr("coalesce.document_store.os.fsync", fail_directory_fsync)
+    created = service.sketch(SKETCH)
+
+    assert created["ok"] is True
+    assert created["durability"] == "unconfirmed"
+    assert service.revision == 1
+    assert json.loads(path.read_text())["revision"] == 1
+    assert DocumentService(path).revision == 1
+
+    monkeypatch.setattr("coalesce.document_store.os.fsync", real_fsync)
+    extruded = service.feature(FEATURE)
+    assert extruded["ok"] is True
+    assert extruded["revision"] == 2
+    assert DocumentService(path).revision == 2
+
+
+@pytest.mark.anyio
+async def test_common_tool_seam_redacts_unexpected_metric_failure(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+
+    def fail_metrics():
+        raise RuntimeError("kernel exploded at /secret/kernel/path")
+
+    monkeypatch.setattr(service, "_metrics", fail_metrics)
+    result = await call_server_tool(service, "query", {"select": {"kind": "measurements"}})
+    encoded = json.dumps(result)
+    assert result["error"]["code"] == "KERNEL_OPERATION_FAILED"
+    assert "kernel exploded" not in encoded
+    assert "/secret/kernel/path" not in encoded
 
 
 def test_unknown_feature_kind_and_kernel_failure_are_safe(tmp_path):

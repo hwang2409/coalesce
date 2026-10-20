@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import threading
 from collections.abc import Callable
 from dataclasses import asdict
@@ -13,7 +14,7 @@ from typing import Any
 
 from OCP.BRepCheck import BRepCheck_Analyzer
 
-from .document_store import MAX_RECEIPTS, Document, DocumentStore
+from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .graph import Extrude, GraphError, Rectangle, Sketch
 from .references import (
     BodySource,
@@ -53,6 +54,22 @@ def _quantity(value: Any, unit: str) -> float:
     return float(value["value"])
 
 
+def _angle(value: Any) -> float:
+    if not isinstance(value, dict) or set(value) != {"value", "unit"}:
+        raise RequestError("INVALID_PARAMETER", "angle must contain value and unit")
+    if value["unit"] not in {"deg", "rad"}:
+        raise RequestError(
+            "UNIT_MISMATCH",
+            f"expected deg or rad; received {value['unit']}",
+            expected=["deg", "rad"],
+            actual=value["unit"],
+        )
+    if not isinstance(value["value"], (int, float)):
+        raise RequestError("INVALID_PARAMETER", "angle value must be a number")
+    angle = float(value["value"])
+    return math.degrees(angle) if value["unit"] == "rad" else angle
+
+
 def _rectangles(payload: Any) -> list[Rectangle]:
     if not isinstance(payload, list) or not payload:
         raise RequestError("INVALID_PARAMETER", "entities must contain a rectangle")
@@ -72,14 +89,30 @@ def _rectangles(payload: Any) -> list[Rectangle]:
                 width=_quantity(entity.get("width"), "mm"),
                 height=_quantity(entity.get("height"), "mm"),
                 position=(float(center[0]), float(center[1])),
-                rotation=_quantity(rotation, "deg"),
+                rotation=_angle(rotation),
             )
         )
     return rectangles
 
 
+def _canonical_request(value: Any) -> Any:
+    if isinstance(value, dict):
+        if set(value) == {"value", "unit"} and value["unit"] in {"deg", "rad"}:
+            return {"value": float(_angle(value)), "unit": "deg"}
+        if set(value) == {"value", "unit"} and value["unit"] == "mm":
+            return {"value": float(_quantity(value, "mm")), "unit": "mm"}
+        return {key: _canonical_request(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_request(item) for item in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return value
+
+
 def _hash(payload: dict[str, Any]) -> str:
-    normalized = {key: value for key, value in payload.items() if key != "requestId"}
+    normalized = _canonical_request(
+        {key: value for key, value in payload.items() if key != "requestId"}
+    )
     return hashlib.sha256(
         json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -139,6 +172,79 @@ def _reference(payload: dict[str, Any]) -> Reference:
     )
 
 
+def _apply_sketch(graph: Any, payload: dict[str, Any]) -> str:
+    action = payload.get("action")
+    sketch_id = payload.get("sketchId")
+    if action == "create":
+        plane = payload.get("plane", {})
+        if plane != {"kind": "origin", "name": "XY"}:
+            raise RequestError("INVALID_PARAMETER", "slice 1 supports only the XY origin plane")
+        graph.add(Sketch(sketch_id, entities=_rectangles(payload.get("entities"))))
+    elif action == "update":
+        node = graph.nodes.get(sketch_id)
+        if not isinstance(node, Sketch):
+            raise RequestError("UNKNOWN_ID", f"unknown sketch: {sketch_id}")
+        changes = payload.get("set")
+        if not isinstance(changes, dict) or not changes:
+            raise RequestError("INVALID_PARAMETER", "update set must not be empty")
+        if "position" in changes:
+            node.position = tuple(float(value) for value in changes["position"])
+        if "entities" in changes:
+            node.entities = _rectangles(changes["entities"])
+    else:
+        raise RequestError("INVALID_PARAMETER", "action must be create or update")
+    return sketch_id
+
+
+def _apply_feature(graph: Any, payload: dict[str, Any]) -> str:
+    kind = payload.get("kind")
+    if kind not in _ALLOWED_FEATURE_KINDS:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"unknown feature kind: {kind}",
+            allowedKinds=_ALLOWED_FEATURE_KINDS,
+        )
+    if kind != "extrude":
+        raise RequestError(
+            "FEATURE_NOT_AVAILABLE",
+            f"feature kind {kind} is not yet available",
+            allowedKinds=_ALLOWED_FEATURE_KINDS,
+        )
+    feature_id = payload.get("featureId")
+    action = payload.get("action")
+    if action == "create":
+        parameters = payload.get("parameters", {})
+        profile = parameters.get("profile", {})
+        if parameters.get("operation") != "new_body" or parameters.get("direction") != "normal":
+            raise RequestError("INVALID_PARAMETER", "slice 1 supports normal new_body extrudes")
+        sketch = graph.nodes.get(profile.get("sketchId"))
+        if not isinstance(sketch, Sketch):
+            raise RequestError("UNKNOWN_ID", "extrude profile sketch does not exist")
+        if profile.get("profileIds") != [entity.id for entity in sketch.entities]:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "profileIds must list all sketch profiles in graph order",
+            )
+        graph.add(
+            Extrude(
+                feature_id,
+                sketch=sketch.id,
+                height=_quantity(parameters.get("distance"), "mm"),
+            )
+        )
+    elif action == "update":
+        node = graph.nodes.get(feature_id)
+        if not isinstance(node, Extrude):
+            raise RequestError("UNKNOWN_ID", f"unknown extrude: {feature_id}")
+        changes = payload.get("set")
+        if not isinstance(changes, dict) or set(changes) != {"distance"}:
+            raise RequestError("INVALID_PARAMETER", "extrude update requires set.distance")
+        node.height = _quantity(changes["distance"], "mm")
+    else:
+        raise RequestError("INVALID_PARAMETER", "action must be create or update")
+    return feature_id
+
+
 class DocumentService:
     """The only writer for one persisted, revisioned document."""
 
@@ -185,6 +291,21 @@ class DocumentService:
                         "REQUEST_ID_REUSED",
                         "requestId was already used for a different request body",
                     )
+                request_hash = next(
+                    (
+                        item["requestHash"]
+                        for item in self._document.request_hashes
+                        if item["requestId"] == request_id
+                    ),
+                    None,
+                )
+                if request_hash is not None:
+                    message = (
+                        "requestId was already used for a different request body"
+                        if request_hash != body_hash
+                        else "requestId replay is outside the full receipt window"
+                    )
+                    raise RequestError("REQUEST_ID_REUSED", message)
                 expected = payload.get("expectedRevision")
                 if expected != self._document.revision:
                     raise RequestError(
@@ -220,10 +341,19 @@ class DocumentService:
                     graph=graph,
                     revision=previous + 1,
                     receipts=[*self._document.receipts, receipt][-MAX_RECEIPTS:],
+                    request_hashes=[
+                        *self._document.request_hashes,
+                        {"requestId": request_id, "requestHash": body_hash},
+                    ][-MAX_REQUEST_HASHES:],
                 )
-                self.store.save(document)
+                durable = self.store.save(document)
                 self._document = document
                 self._regen = result
+                if not durable:
+                    _LOG.warning(
+                        "document rename committed but directory fsync failed; durability is unconfirmed"
+                    )
+                    return {**response, "durability": "unconfirmed"}
                 return response
             except RequestError as error:
                 return _safe_error(
@@ -265,98 +395,21 @@ class DocumentService:
                 )
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
-        def apply(graph):
-            action = payload.get("action")
-            sketch_id = payload.get("sketchId")
-            if action == "create":
-                plane = payload.get("plane", {})
-                if plane != {"kind": "origin", "name": "XY"}:
-                    raise RequestError("INVALID_PARAMETER", "slice 1 supports only the XY origin plane")
-                graph.add(Sketch(sketch_id, entities=_rectangles(payload.get("entities"))))
-            elif action == "update":
-                node = graph.nodes.get(sketch_id)
-                if not isinstance(node, Sketch):
-                    raise RequestError("UNKNOWN_ID", f"unknown sketch: {sketch_id}")
-                changes = payload.get("set")
-                if not isinstance(changes, dict) or not changes:
-                    raise RequestError("INVALID_PARAMETER", "update set must not be empty")
-                if "position" in changes:
-                    node.position = tuple(float(value) for value in changes["position"])
-                if "rotation" in changes:
-                    node.rotation = tuple(float(value) for value in changes["rotation"])
-                if "entities" in changes:
-                    node.entities = _rectangles(changes["entities"])
-            else:
-                raise RequestError("INVALID_PARAMETER", "action must be create or update")
-            return sketch_id
-
         return self._mutate(
             "sketch",
             payload,
-            apply,
+            lambda graph: _apply_sketch(graph, payload),
             {
                 "sketchId": payload.get("sketchId"),
-                "solver": {"status": "SOLVED", "degreesOfFreedom": 0, "conflicts": []},
                 "segmentIds": ["bottom", "right", "top", "left"],
             },
         )
 
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
-        def apply(graph):
-            kind = payload.get("kind")
-            if kind not in _ALLOWED_FEATURE_KINDS:
-                raise RequestError(
-                    "INVALID_PARAMETER",
-                    f"unknown feature kind: {kind}",
-                    allowedKinds=_ALLOWED_FEATURE_KINDS,
-                )
-            if kind != "extrude":
-                raise RequestError(
-                    "FEATURE_NOT_AVAILABLE",
-                    f"feature kind {kind} is not yet available",
-                    allowedKinds=_ALLOWED_FEATURE_KINDS,
-                )
-            feature_id = payload.get("featureId")
-            action = payload.get("action")
-            if action == "create":
-                parameters = payload.get("parameters", {})
-                profile = parameters.get("profile", {})
-                if parameters.get("operation") != "new_body" or parameters.get("direction") != "normal":
-                    raise RequestError(
-                        "INVALID_PARAMETER",
-                        "slice 1 supports normal new_body extrudes",
-                    )
-                sketch = graph.nodes.get(profile.get("sketchId"))
-                if not isinstance(sketch, Sketch):
-                    raise RequestError("UNKNOWN_ID", "extrude profile sketch does not exist")
-                if profile.get("profileIds") != [entity.id for entity in sketch.entities]:
-                    raise RequestError(
-                        "INVALID_PARAMETER",
-                        "profileIds must list all sketch profiles in graph order",
-                    )
-                graph.add(
-                    Extrude(
-                        feature_id,
-                        sketch=sketch.id,
-                        height=_quantity(parameters.get("distance"), "mm"),
-                    )
-                )
-            elif action == "update":
-                node = graph.nodes.get(feature_id)
-                if not isinstance(node, Extrude):
-                    raise RequestError("UNKNOWN_ID", f"unknown extrude: {feature_id}")
-                changes = payload.get("set")
-                if not isinstance(changes, dict) or set(changes) != {"distance"}:
-                    raise RequestError("INVALID_PARAMETER", "extrude update requires set.distance")
-                node.height = _quantity(changes["distance"], "mm")
-            else:
-                raise RequestError("INVALID_PARAMETER", "action must be create or update")
-            return feature_id
-
         return self._mutate(
             "feature",
             payload,
-            apply,
+            lambda graph: _apply_feature(graph, payload),
             {"featureId": payload.get("featureId")},
         )
 

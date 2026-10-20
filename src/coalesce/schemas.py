@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-
 QUANTITY = {
     "type": "object",
     "properties": {"value": {"type": "number"}, "unit": {"type": "string"}},
     "required": ["value", "unit"],
     "additionalProperties": False,
 }
-ANGLE = deepcopy(QUANTITY)
+ANGLE = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "number"},
+        "unit": {"enum": ["deg", "rad"]},
+    },
+    "required": ["value", "unit"],
+    "additionalProperties": False,
+}
 POINT_2D = {
     "type": "array",
     "items": {"type": "number"},
@@ -121,7 +127,6 @@ SKETCH_SCHEMA = {
         "expectedRevision": {"type": "integer", "minimum": 0},
         "requestId": {"type": "string", "minLength": 1},
         "sketchId": {"type": "string", "minLength": 1},
-        "partId": {"type": "string", "minLength": 1},
         "plane": {
             "type": "object",
             "properties": {"kind": {"const": "origin"}, "name": {"const": "XY"}},
@@ -129,28 +134,10 @@ SKETCH_SCHEMA = {
             "additionalProperties": False,
         },
         "entities": {"type": "array", "items": RECTANGLE, "minItems": 1},
-        "constraints": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "kind": {"const": "coincident"},
-                    "entities": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 2,
-                    },
-                },
-                "required": ["id", "kind", "entities"],
-                "additionalProperties": False,
-            },
-        },
         "set": {
             "type": "object",
             "properties": {
                 "position": POINT_3D,
-                "rotation": POINT_3D,
                 "entities": {"type": "array", "items": RECTANGLE, "minItems": 1},
             },
             "additionalProperties": False,
