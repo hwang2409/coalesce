@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import re
 import shutil
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -74,6 +76,7 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
         line = next(
             line for line in errlog.read().splitlines() if line.startswith("coalesce viewer: ")
         )
+        assert re.fullmatch(r"coalesce viewer: http://127\.0\.0\.1:\d+/#token=[\w-]+", line)
         viewer_url = line.removeprefix("coalesce viewer: ")
         parsed, headers = _viewer_access(viewer_url)
         assert _get_json(parsed, headers, "/api/session") == {"authorized": True}
@@ -267,4 +270,71 @@ def test_failed_mutation_publishes_safe_failure_and_keeps_scene(tmp_path):
         "revision": 2,
         "featureIds": ["missing_extrude"],
         "error": {"code": "UNKNOWN_ID", "message": "unknown extrude: missing_extrude"},
+    }
+
+
+def _stdio(path, *args, env=None):
+    return StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path), *args],
+        env={**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})},
+    )
+
+
+@pytest.mark.anyio
+async def test_no_viewer_flag_starts_mcp_without_a_viewer(tmp_path):
+    errlog = (tmp_path / "server.stderr").open("w+")
+    async with stdio_client(
+        _stdio(tmp_path / "plate.coalesce.json", "--no-viewer"), errlog=errlog
+    ) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        assert result_json(await session.call_tool("sketch", SKETCH))["revision"] == 1
+        server = result_json(await session.call_tool("query", {"select": {"kind": "server"}}))
+    errlog.seek(0)
+    assert "coalesce viewer:" not in errlog.read()
+    assert server == {"ok": True, "revision": 1, "units": "mm", "viewerUrl": None}
+
+
+@pytest.mark.anyio
+async def test_open_flag_opens_the_printed_viewer_link(tmp_path):
+    opened = tmp_path / "opened.txt"
+    recorder = tmp_path / "record_url.py"
+    recorder.write_text(f"import sys\nopen({str(opened)!r}, 'w').write(sys.argv[1])\n")
+    errlog = (tmp_path / "server.stderr").open("w+")
+    browser = {"BROWSER": f"{sys.executable} {recorder} %s"}
+    async with stdio_client(
+        _stdio(tmp_path / "plate.coalesce.json", "--open", env=browser), errlog=errlog
+    ) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        deadline = time.monotonic() + 5
+        while not opened.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+    errlog.seek(0)
+    line = next(line for line in errlog.read().splitlines() if line.startswith("coalesce viewer: "))
+    assert opened.read_text() == line.removeprefix("coalesce viewer: ")
+
+
+def test_kernel_failure_publishes_coalesce_wording_only(tmp_path, monkeypatch):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "plate.coalesce.json", scene_store=store)
+    service.sketch(SKETCH)
+
+    def kernel_failure(graph):
+        raise RuntimeError("BRep_API: command not done; use max_fillet()")
+
+    monkeypatch.setattr("coalesce.service.regenerate", kernel_failure)
+    result = service.feature(FEATURE)
+    deadline = time.monotonic() + 5
+    while store.snapshot()[2] is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert result["error"]["code"] == "KERNEL_OPERATION_FAILED"
+    assert store.current_revision == 1
+    assert store.snapshot()[2] == {
+        "revision": 1,
+        "featureIds": ["plate_extrude"],
+        "error": {
+            "code": "KERNEL_OPERATION_FAILED",
+            "message": "the modeling operation could not produce valid geometry",
+        },
     }
