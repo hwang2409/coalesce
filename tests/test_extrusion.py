@@ -70,7 +70,7 @@ def test_nested_profile_is_a_hole_in_one_solid():
     assert len(result.shape.solids()) == 1
     assert isclose(result.shape.volume, (100 - pi * 4) * 3, rel_tol=1e-7)
     assert BRepCheck_Analyzer(result.shape.wrapped).IsValid()
-    assert len(by_role(result, "side(hole)")) == 1
+    assert len(by_role(result, "side(circle)")) == 1
 
 
 def test_small_nested_profile_is_a_valid_hole_in_one_solid():

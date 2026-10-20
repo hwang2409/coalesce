@@ -93,7 +93,7 @@ def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
     if isinstance(entity, Circle):
         wire = Wire.make_circle(entity.radius).moved(location)
         (edge,) = wire.edges()
-        return _Profile(entity, Face(wire), wire, {entity.id: edge})
+        return _Profile(entity, Face(wire), wire, {"circle": edge})
     raise TypeError(f"unsupported sketch entity: {type(entity).__name__}")
 
 

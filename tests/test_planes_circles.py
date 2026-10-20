@@ -56,6 +56,82 @@ def test_circle_extrudes_along_origin_plane_normal_with_exact_bounds(
     assert tuple(bounds.max) == pytest.approx(expected_max)
 
 
+def test_circle_with_non_role_entity_id_resolves_as_side_circle() -> None:
+    graph = Graph()
+    graph.add(Sketch("sketch", entities=[Circle("boss", radius=2)]))
+    graph.add(Extrude("cylinder", sketch="sketch", height=5))
+
+    result = regenerate(graph)
+    reference = Reference(
+        "cylinder",
+        "side(circle)",
+        source=SketchSegmentSource("sketch", "boss", "circle"),
+    )
+
+    resolution = result.resolve(reference)
+    assert resolution.status is Status.OK
+    assert resolution.candidates[0].key.source == reference.source
+
+
+def test_circle_cut_tool_keeps_side_circle_role_and_source() -> None:
+    graph = Graph()
+    graph.add(Sketch("box_sketch", entities=[Rectangle("box", 10, 10)]))
+    graph.add(Extrude("box", sketch="box_sketch", height=10))
+    graph.add(
+        Sketch(
+            "tool_sketch",
+            plane=Plane("XY", offset=5),
+            entities=[Circle("tool", radius=2)],
+        )
+    )
+    graph.add(Cut("pocket", target="box", tool="tool_sketch", depth=4))
+
+    result = regenerate(graph)
+    resolution = result.resolve(
+        Reference(
+            "pocket",
+            "side(circle)",
+            source=SketchSegmentSource("tool_sketch", "tool", "circle"),
+        )
+    )
+    assert resolution.status is Status.OK
+    assert resolution.candidates[0].key.source == SketchSegmentSource(
+        "tool_sketch", "tool", "circle"
+    )
+
+
+def test_two_circles_share_role_but_keep_distinct_sources() -> None:
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "sketch",
+            entities=[
+                Circle("first", radius=2, position=(-3, 0)),
+                Circle("second", radius=2, position=(3, 0)),
+            ],
+        )
+    )
+    graph.add(Extrude("cylinder", sketch="sketch", height=5))
+
+    result = regenerate(graph)
+    unresolved = result.resolve(Reference("cylinder", "side(circle)"))
+    assert unresolved.status is Status.AMBIGUOUS
+    assert unresolved.error is not None
+    assert unresolved.error["status"] == Status.AMBIGUOUS.value
+    for entity in ("first", "second"):
+        resolution = result.resolve(
+            Reference(
+                "cylinder",
+                "side(circle)",
+                source=SketchSegmentSource("sketch", entity, "circle"),
+            )
+        )
+        assert resolution.status is Status.OK
+        assert resolution.candidates[0].key.source == SketchSegmentSource(
+            "sketch", entity, "circle"
+        )
+
+
 def test_circle_boss_is_a_separate_body_under_existing_new_body_rules() -> None:
     graph = Graph()
     graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 20, 20)]))
