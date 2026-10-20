@@ -321,7 +321,10 @@ def _entity(**changes):
             {"entities": _entity(rotation={"value": 1, "unit": "turn"})},
             "unit must be one of 'deg', 'rad' (field: entities[0].rotation.unit)",
         ),
-        ({"plane": {"kind": "origin", "name": "YZ"}}, "name must be 'XY' (field: plane.name)"),
+        (
+            {"plane": {"kind": "origin", "name": "ZX"}},
+            "name must be one of 'XY', 'XZ', 'YZ' (field: plane.name)",
+        ),
         ({"entities": []}, "invalid value (field: entities)"),
     ],
 )
