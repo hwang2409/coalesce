@@ -12,14 +12,14 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from .schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
+from .schemas import ACTION_SCHEMAS, FEATURE_ACTION_SCHEMAS, QUERY_FEATURE_SCHEMA, TOOL_SCHEMAS
 from .service import DocumentService
 
 _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
-    "feature": "Create a normal new-body extrude, sketch cut, or global +Z hole. Cut supports through-all or a positive depth and flip; hole depth is optional. Only extrudes can be updated.",
+    "feature": "Create a normal new-body extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; flip has no effect for through-all cuts. Hole depth is optional. Only extrudes can be updated.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
 }
@@ -28,10 +28,11 @@ TOOLS_GUIDE = """# coalesce tools
 
 Start with `coalesce --document part.coalesce.json` or set `COALESCE_DOCUMENT`.
 coalesce owns one revisioned document. Start with `query` using `select.kind: revision`.
-Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes and normals are:
-XY=(+X,+Y,+Z), XZ=(+X,+Z,-Y), YZ=(+Y,+Z,+X). Plane offset moves along the normal.
+Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+Y), XZ=(+X,+Z), YZ=(+Y,+Z). Plane offset moves along its normal.
+Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
-Cuts use a sketch tool and either through-all or a positive depth; `flip` reverses finite cuts.
+For finite cuts, `flip=false` cuts along the negative sketch normal and `flip=true` cuts
+along the positive sketch normal. flip has no effect for through-all cuts.
 Holes use absolute XY positions and global +Z only. Omitted hole depth means through-all.
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
@@ -164,6 +165,12 @@ def _branch_error(error: ValidationError) -> ValidationError:
 
 
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "feature":
+        return FEATURE_ACTION_SCHEMAS.get(
+            (arguments.get("action"), arguments.get("kind")), TOOL_SCHEMAS[name]
+        )
+    if name == "query" and arguments.get("select", {}).get("kind") == "feature":
+        return QUERY_FEATURE_SCHEMA
     return ACTION_SCHEMAS.get(name, {}).get(arguments.get("action"), TOOL_SCHEMAS[name])
 
 

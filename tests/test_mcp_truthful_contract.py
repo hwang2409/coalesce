@@ -74,7 +74,7 @@ async def test_translated_plate_reports_bbox_placement_and_terminal_body_metrics
     ]
 
 
-def test_feature_query_returns_only_requested_feature(tmp_path):
+def test_feature_query_returns_only_requested_feature_and_rejects_unknown_id(tmp_path):
     service = DocumentService(tmp_path / "feature.coalesce.json")
     service.sketch(SKETCH)
     service.feature(FEATURE)
@@ -90,9 +90,37 @@ def test_feature_query_returns_only_requested_feature(tmp_path):
     }
     assert "graph" not in result
 
+    unknown = service.query({"select": {"kind": "feature", "id": "missing"}})
+    assert unknown["error"] == {
+        "code": "UNKNOWN_ID",
+        "message": "unknown feature: missing",
+        "retryable": False,
+        "operation": "query.feature",
+    }
 
-def test_tools_guide_states_placement_no_guess_and_harness_setup():
-    assert "ask the user" in TOOLS_GUIDE.lower()
-    assert "extrusion starts at the sketch plane" in TOOLS_GUIDE.lower()
+
+@pytest.mark.anyio
+async def test_feature_query_requires_id(tmp_path):
+    result = (
+        await run_server(
+            tmp_path / "missing-id.coalesce.json",
+            [("query", {"select": {"kind": "feature"}})],
+        )
+    )[0]
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["message"] == "missing required field 'id' (field: select)"
+
+
+def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup():
+    guide = TOOLS_GUIDE.lower()
+    assert "ask the user" in guide
+    assert "extrusion starts at the sketch plane" in guide
+    assert "xy +z, xz -y, yz +x" in guide
+    assert "flip=false" in guide
+    assert "negative sketch normal" in guide
+    assert "flip=true" in guide
+    assert "positive sketch normal" in guide
+    assert "flip has no effect for through-all" in guide
     assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE
     assert '"mcpServers"' in TOOLS_GUIDE

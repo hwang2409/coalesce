@@ -109,7 +109,143 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
     sketch = tools["sketch"].inputSchema
     assert sketch["properties"]["plane"]["properties"]["name"]["enum"] == ["XY", "XZ", "YZ"]
     assert {branch["properties"]["kind"]["const"] for branch in sketch["properties"]["entities"]["items"]["oneOf"]} == {"rectangle", "circle"}
-    assert "global +Z" in tools["feature"].description
+    description = tools["feature"].description
+    assert "global +Z" in description
+    assert "flip=false" in description
+    assert "negative sketch normal" in description
+    assert "flip=true" in description
+    assert "positive sketch normal" in description
+    assert "through-all" in description
+    assert "XY +Z, XZ -Y, YZ +X" in description
+
+
+@pytest.mark.anyio
+async def test_feature_schema_uses_kind_to_validate_parameters(tmp_path):
+    path = tmp_path / "schema.coalesce.json"
+    base = cut(
+        request_id="cut",
+        revision=0,
+        feature_id="cut",
+        target="base",
+        tool="tool",
+        depth=2,
+    )
+    missing_distance = json.loads(json.dumps(base))
+    del missing_distance["parameters"]["depth"]["distance"]
+    missing_flip = json.loads(json.dumps(base))
+    del missing_flip["parameters"]["flip"]
+    invalid_depth = json.loads(json.dumps(base))
+    invalid_depth["parameters"]["depth"] = {"kind": "blind"}
+    mismatched = extrude(
+        request_id="mismatch",
+        revision=0,
+        feature_id="mismatch",
+        sketch_id="sketch",
+        profile_ids=["profile"],
+        distance=2,
+    )
+    mismatched["kind"] = "cut"
+
+    results = await run_server(
+        path,
+        [
+            ("feature", missing_distance),
+            ("feature", missing_flip),
+            ("feature", invalid_depth),
+            ("feature", mismatched),
+        ],
+    )
+
+    assert [result["error"]["message"] for result in results] == [
+        "missing required field 'distance' (field: parameters.depth)",
+        "missing required field 'flip' (field: parameters)",
+        "kind must be one of 'through_all', 'distance' (field: parameters.depth.kind)",
+        "missing required field 'target' (field: parameters)",
+    ]
+    assert all(result["revision"] == 0 for result in results)
+
+
+@pytest.mark.anyio
+async def test_non_intersecting_cut_and_hole_fail_without_advancing_revision(tmp_path):
+    path = tmp_path / "no-effect.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="base-sketch",
+                    revision=0,
+                    sketch_id="base_sketch",
+                    entity_id="base_profile",
+                    width=20,
+                    height=20,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="base",
+                    revision=1,
+                    feature_id="base",
+                    sketch_id="base_sketch",
+                    profile_ids=["base_profile"],
+                    distance=10,
+                ),
+            ),
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="far-tool",
+                    revision=2,
+                    sketch_id="far_tool",
+                    entity_id="far_profile",
+                    width=2,
+                    height=2,
+                    center=(100, 100),
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 3
+
+    results = await run_server(
+        path,
+        [
+            (
+                "feature",
+                cut(
+                    request_id="no-cut",
+                    revision=3,
+                    feature_id="no_cut",
+                    target="base",
+                    tool="far_tool",
+                ),
+            ),
+            (
+                "feature",
+                hole(
+                    request_id="no-hole",
+                    revision=3,
+                    feature_id="no_hole",
+                    target="base",
+                    position=(100, 100),
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert [result["error"]["code"] for result in results[:2]] == [
+        "CUT_NO_EFFECT",
+        "HOLE_NO_EFFECT",
+    ]
+    for result, feature_id in zip(results[:2], ("no_cut", "no_hole"), strict=True):
+        assert result["revision"] == 3
+        assert result["error"]["featureId"] == feature_id
+        assert result["error"]["target"] == "base"
+        assert result["error"]["hint"] == "check flip, plane, and offset"
+    assert results[-1]["revision"] == 3
 
 
 @pytest.mark.anyio

@@ -305,6 +305,28 @@ FEATURE_UPDATE_SCHEMA = {
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
 }
+FEATURE_ACTION_SCHEMAS = {
+    ("create", kind): {
+        **FEATURE_CREATE_SCHEMA,
+        "properties": {
+            **FEATURE_CREATE_SCHEMA["properties"],
+            "kind": {"const": kind},
+            "parameters": parameters,
+        },
+    }
+    for kind, parameters in {
+        "extrude": EXTRUDE_PARAMETERS,
+        "cut": CUT_PARAMETERS,
+        "hole": HOLE_PARAMETERS,
+    }.items()
+}
+FEATURE_ACTION_SCHEMAS[("update", "extrude")] = {
+    **FEATURE_UPDATE_SCHEMA,
+    "properties": {
+        **FEATURE_UPDATE_SCHEMA["properties"],
+        "kind": {"const": "extrude"},
+    },
+}
 FEATURE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -353,6 +375,16 @@ QUERY_SCHEMA = {
     },
     "required": ["select"],
     "additionalProperties": False,
+}
+QUERY_FEATURE_SCHEMA = {
+    **QUERY_SCHEMA,
+    "properties": {
+        **QUERY_SCHEMA["properties"],
+        "select": {
+            **QUERY_SCHEMA["properties"]["select"],
+            "required": ["kind", "id"],
+        },
+    },
 }
 CHECK_SCHEMA = {
     "type": "object",
