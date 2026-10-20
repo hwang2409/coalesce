@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 from mcp import ClientSession, StdioServerParameters, types
+
+import coalesce.service as service_module
+from coalesce.regen import regenerate as real_regenerate
 from mcp.client.stdio import stdio_client
 
 from coalesce.document_store import Document, DocumentStore
@@ -137,7 +140,7 @@ async def test_real_stdio_path_builds_plate_and_survives_restart(tmp_path):
     assert restarted[1] == first[3]
 
 
-def test_startup_regeneration_cannot_overwrite_a_concurrent_commit(tmp_path):
+def test_startup_regeneration_cannot_overwrite_a_concurrent_commit(tmp_path, monkeypatch):
     graph = Graph()
     graph.add(Sketch("plate_profile", entities=[Rectangle("outline", 60, 40)]))
     graph.add(Extrude("plate_extrude", sketch="plate_profile", height=6))
@@ -146,14 +149,20 @@ def test_startup_regeneration_cannot_overwrite_a_concurrent_commit(tmp_path):
 
     startup_entered = threading.Event()
     release_startup = threading.Event()
+    class ReadyKernel:
+        def start(self):
+            pass
 
-    def startup_gate() -> None:
+        def wait(self):
+            pass
+
+    def blocked_regenerate(graph):
         startup_entered.set()
         release_startup.wait()
+        return real_regenerate(graph)
 
-    service = DocumentService(
-        path, warmup=False, startup_regeneration_gate=startup_gate
-    )
+    monkeypatch.setattr(service_module, "regenerate", blocked_regenerate, raising=False)
+    service = DocumentService(path, warmup=False, kernel_loader=ReadyKernel())
     service.start_kernel_warmup()
     assert startup_entered.wait(5)
 
