@@ -157,18 +157,18 @@ def test_special_import_sources_fail_promptly_and_atomically(tmp_path, source_ki
         expectedRevision=1,
         requestId=f"import-{source_kind}",
     )
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     results = context.Queue()
     process = context.Process(
         target=import_in_process,
         args=(str(document), request, results),
     )
     process.start()
-    process.join(timeout=2)
+    process.join(timeout=5)
     if process.is_alive():
         process.terminate()
         process.join()
-        pytest.fail("import did not complete within 2 seconds")
+        pytest.fail("import did not complete within 5 seconds")
 
     result = results.get(timeout=1)
     assert result["error"]["code"] == "IMPORT_FAILED"
