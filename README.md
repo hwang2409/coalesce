@@ -1,7 +1,7 @@
 # integration screenshots (mcp-viewer-integration)
 
 Real headless Chromium captures of the viewer started by the real `coalesce` MCP server.
-Captured at mcp-viewer-integration 114b8fb93149ca7e768e99e2e2778f520b880d90, 2560x1600 (1280x800 at device scale 2).
+Captured at mcp-viewer-integration c3edf34a4338ef07729bea4cfcee4a887039e762, 2560x1600 (1280x800 at device scale 2).
 
 - `revision-2.png`: after `sketch` + `feature` over stdio MCP (60 x 40 x 6 mm plate).
 - `revision-3.png`: after an MCP `feature` update of the extrude distance to 10 mm.
