@@ -22,7 +22,7 @@ _LOG = logging.getLogger(__name__)
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh to re-read the persisted path explicitly.",
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
-    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Extrude updates change distance; cut and hole updates change target.featureId.",
+    "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, semantic pcb_base, or semantic standoffs. pcb_base derives its cavity from the selected board outline; standoffs derive axes from stable board hole ids and join the base. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Updates change numeric pcb_base and standoff parameters, extrude distance, or cut and hole targets.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
     "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path and current expectedRevision. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. A fresh Python process validates STEP bytes in a private directory before direct publication. The final file is briefly visible while written; failed writes stay in place for manual recovery.",
@@ -52,6 +52,24 @@ A hole accepts one `position` or 1..64 `positions`; each position can have a sta
 caller-chosen `name`, defaulting to `h1`..`hn` in request order. Use that name in a
 `hole_surface` reference. Sketch and feature responses report the global frame; feature
 responses also report the direction vector and exact tool/cutter bbox.
+
+For a PCB enclosure, create `pcb_base` with a BoardImport id, wall and floor thickness,
+board-edge clearance, wall height above the board top, and board seat height. The inner
+cavity is the board outline offset outward by the clearance; arcs remain arcs. The board
+stays at its imported Z position. The floor top is `-boardSeatHeight`, the floor bottom is
+lower by `floorThickness`, and the wall top is the board top plus
+`wallHeightAboveBoard`. Then create `standoffs` with that base as target and the same board.
+Use `selection.mode: explicit` with stable `holeIds`, or `all_mounting` with
+`minimumDiameter`; all plated and non-plated drills whose smaller drill dimension meets the
+minimum are selected. Boss height is derived from the base seat height, so the board bottom
+sits on the boss tops. `pilotDiameter` must be smaller than `bossDiameter`, and every boss
+must fit fully on the cavity floor without crossing a wall. Board refresh recomputes the
+base and standoff positions; a missing explicit hole id fails the refresh atomically.
+
+Short enclosure sequence: `import` the board, create `pcb_base`, create `standoffs`, run
+`check` with `valid_brep`, then `export` the terminal enclosure. Export excludes the board
+reference geometry.
+
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
 idempotent. Supplied update entities replace the full list; omitted entities stay unchanged.
@@ -289,7 +307,7 @@ def create_server(service: DocumentService) -> Server:
                 error = _prefer_unknown_field(error)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
-                details["allowedKinds"] = ["extrude", "cut", "hole"]
+                details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
             failure = {

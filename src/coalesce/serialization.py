@@ -11,9 +11,11 @@ from .graph import (
     Graph,
     Hole,
     HolePosition,
+    PcbBase,
     Plane,
     Rectangle,
     Sketch,
+    Standoffs,
 )
 from .references import (
     BodySource,
@@ -27,7 +29,18 @@ from .references import (
 
 _TYPES = {
     cls.__name__: cls
-    for cls in (BoardImport, Sketch, Rectangle, Circle, Extrude, Cut, Hole, Fillet)
+    for cls in (
+        BoardImport,
+        Sketch,
+        Rectangle,
+        Circle,
+        Extrude,
+        PcbBase,
+        Standoffs,
+        Cut,
+        Hole,
+        Fillet,
+    )
 }
 _FILTERS = {cls.__name__: cls for cls in (Normal, Position, MaxAlong)}
 
@@ -125,6 +138,8 @@ def loads(value: str) -> Graph:
             payload["parser_version"] = payload.pop("parserVersion")
         elif cls is Sketch:
             payload = _sketch(payload)
+        elif cls is Standoffs:
+            payload["hole_ids"] = tuple(payload.get("hole_ids", ()))
         elif cls is Hole:
             payload["position"] = tuple(payload.get("position", (0, 0)))
             payload["positions"] = tuple(

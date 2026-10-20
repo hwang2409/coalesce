@@ -8,6 +8,13 @@ QUANTITY = {
     "required": ["value", "unit"],
     "additionalProperties": False,
 }
+POSITIVE_QUANTITY = {
+    **QUANTITY,
+    "properties": {
+        **QUANTITY["properties"],
+        "value": {"type": "number", "exclusiveMinimum": 0},
+    },
+}
 ANGLE = {
     "type": "object",
     "properties": {
@@ -312,11 +319,78 @@ HOLE_PARAMETERS = {
     "oneOf": [{"required": ["position"]}, {"required": ["positions"]}],
     "additionalProperties": False,
 }
-FEATURE_PARAMETERS = {"oneOf": [EXTRUDE_PARAMETERS, CUT_PARAMETERS, HOLE_PARAMETERS]}
+PCB_BASE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "board": FEATURE_TARGET,
+        "wallThickness": POSITIVE_QUANTITY,
+        "floorThickness": POSITIVE_QUANTITY,
+        "clearance": POSITIVE_QUANTITY,
+        "wallHeightAboveBoard": POSITIVE_QUANTITY,
+        "boardSeatHeight": POSITIVE_QUANTITY,
+    },
+    "required": [
+        "board",
+        "wallThickness",
+        "floorThickness",
+        "clearance",
+        "wallHeightAboveBoard",
+        "boardSeatHeight",
+    ],
+    "additionalProperties": False,
+}
+STANDOFF_SELECTION = {
+    "type": "object",
+    "properties": {
+        "mode": {"enum": ["explicit", "all_mounting"]},
+        "holeIds": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+        "minimumDiameter": POSITIVE_QUANTITY,
+    },
+    "required": ["mode"],
+    "oneOf": [
+        {
+            "properties": {"mode": {"const": "explicit"}},
+            "required": ["holeIds"],
+            "not": {"required": ["minimumDiameter"]},
+        },
+        {
+            "properties": {"mode": {"const": "all_mounting"}},
+            "required": ["minimumDiameter"],
+            "not": {"required": ["holeIds"]},
+        },
+    ],
+    "additionalProperties": False,
+}
+STANDOFFS_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "target": FEATURE_TARGET,
+        "board": FEATURE_TARGET,
+        "selection": STANDOFF_SELECTION,
+        "bossDiameter": POSITIVE_QUANTITY,
+        "pilotDiameter": POSITIVE_QUANTITY,
+    },
+    "required": ["target", "board", "selection", "bossDiameter", "pilotDiameter"],
+    "additionalProperties": False,
+}
+FEATURE_PARAMETERS = {
+    "oneOf": [
+        EXTRUDE_PARAMETERS,
+        CUT_PARAMETERS,
+        HOLE_PARAMETERS,
+        PCB_BASE_PARAMETERS,
+        STANDOFFS_PARAMETERS,
+    ]
+}
 FEATURE_PROPERTIES = {
     **MUTATION_PROPERTIES,
     "featureId": {"type": "string", "minLength": 1},
-    "kind": {"enum": ["extrude", "cut", "hole"]},
+    "kind": {"enum": ["extrude", "cut", "hole", "pcb_base", "standoffs"]},
 }
 FEATURE_CREATE_SCHEMA = {
     "type": "object",
@@ -338,6 +412,28 @@ TARGET_UPDATE_SET = {
     "type": "object",
     "properties": {"target": FEATURE_TARGET},
     "required": ["target"],
+    "additionalProperties": False,
+}
+PCB_BASE_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "wallThickness": POSITIVE_QUANTITY,
+        "floorThickness": POSITIVE_QUANTITY,
+        "clearance": POSITIVE_QUANTITY,
+        "wallHeightAboveBoard": POSITIVE_QUANTITY,
+        "boardSeatHeight": POSITIVE_QUANTITY,
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
+STANDOFFS_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "minimumDiameter": POSITIVE_QUANTITY,
+        "bossDiameter": POSITIVE_QUANTITY,
+        "pilotDiameter": POSITIVE_QUANTITY,
+    },
+    "minProperties": 1,
     "additionalProperties": False,
 }
 FEATURE_UPDATE_SCHEMA = {
@@ -363,12 +459,16 @@ FEATURE_ACTION_SCHEMAS = {
         "extrude": EXTRUDE_PARAMETERS,
         "cut": CUT_PARAMETERS,
         "hole": HOLE_PARAMETERS,
+        "pcb_base": PCB_BASE_PARAMETERS,
+        "standoffs": STANDOFFS_PARAMETERS,
     }.items()
 }
 for kind, changes in {
     "extrude": EXTRUDE_UPDATE_SET,
     "cut": TARGET_UPDATE_SET,
     "hole": TARGET_UPDATE_SET,
+    "pcb_base": PCB_BASE_UPDATE_SET,
+    "standoffs": STANDOFFS_UPDATE_SET,
 }.items():
     FEATURE_ACTION_SCHEMAS[("update", kind)] = {
         **FEATURE_UPDATE_SCHEMA,
@@ -383,7 +483,7 @@ FEATURE_SCHEMA = {
     "properties": {
         "action": {
             "enum": ["create", "update"],
-            "description": "Use create with parameters; use update with set. For update, extrude sets distance; cut and hole set target.featureId.",
+            "description": "Use create with parameters; use update with set. Updates accept extrude distance, cut or hole target.featureId, and numeric pcb_base or standoff parameters.",
         },
         **FEATURE_PROPERTIES,
         "parameters": {
@@ -392,7 +492,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create. For extrude, set distance; for cut and hole, set target.featureId.",
+            "description": "Required for update; not allowed for create. Accepts extrude distance, cut or hole target.featureId, and numeric pcb_base or standoff parameters.",
         },
     },
     "required": ["action", *FEATURE_PROPERTIES],
