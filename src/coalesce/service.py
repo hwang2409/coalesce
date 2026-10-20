@@ -15,10 +15,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
-from .graph import Circle, Cut, Extrude, GraphError, Hole, Plane, Rectangle, Sketch
+from .graph import (
+    Circle,
+    Cut,
+    Extrude,
+    GraphError,
+    Hole,
+    HolePosition,
+    Plane,
+    Rectangle,
+    Sketch,
+)
 from .references import (
     BodySource,
     Cardinality,
+    HoleSurfaceSource,
     MaxAlong,
     Normal,
     Position,
@@ -194,6 +205,7 @@ class ExtrudeParameters:
     profile: ExtrudeProfile
     distance: float
     operation: str
+    target: FeatureTarget | None
     direction: str
 
 
@@ -220,7 +232,7 @@ class HoleParameters:
     target: FeatureTarget
     diameter: float
     depth: float | None
-    position: tuple[float, float]
+    positions: tuple[HolePosition, ...]
 
 
 @dataclass(frozen=True)
@@ -407,6 +419,11 @@ def _parse_extrude(payload: dict[str, Any], common: dict[str, Any]) -> ExtrudeCr
             ),
             distance=_positive_quantity(parameters.get("distance"), "distance"),
             operation=parameters.get("operation"),
+            target=(
+                FeatureTarget(parameters["target"].get("featureId"))
+                if "target" in parameters
+                else None
+            ),
             direction=parameters.get("direction"),
         ),
     )
@@ -432,6 +449,26 @@ def _parse_cut(payload: dict[str, Any], common: dict[str, Any]) -> CutCreate:
     )
 
 
+def _hole_positions(parameters: dict[str, Any]) -> tuple[HolePosition, ...]:
+    raw_positions = parameters.get("positions")
+    if raw_positions is None:
+        raw_positions = [{"name": "h1", "point": parameters.get("position", [])}]
+    positions = tuple(
+        HolePosition(
+            item.get("name", f"h{index}"),
+            tuple(
+                _finite_number(value, f"positions[{index - 1}].point")
+                for value in item["point"]
+            ),
+        )
+        for index, item in enumerate(raw_positions, start=1)
+    )
+    names = [position.name for position in positions]
+    if len(names) != len(set(names)):
+        raise RequestError("INVALID_PARAMETER", "hole position names must be unique")
+    return positions
+
+
 def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
     if common["action"] is Action.UPDATE:
         raise RequestError("INVALID_PARAMETER", "only extrude features can be updated")
@@ -446,9 +483,7 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate:
                 if "depth" in parameters
                 else None
             ),
-            position=tuple(
-                _finite_number(value, "position") for value in parameters.get("position", [])
-            ),
+            positions=_hole_positions(parameters),
         ),
     )
 
@@ -511,11 +546,53 @@ def _safe_error(
     }
 
 
+def _graph_error_response(
+    revision: int,
+    request_id: str | None,
+    operation: str,
+    error: GraphError,
+) -> dict[str, Any]:
+    code = error.error["code"].upper()
+    known = {
+        "UNKNOWN_ID",
+        "DUPLICATE_ID",
+        "CYCLE",
+        "ORDER",
+        "EMPTY",
+        "SPLIT",
+        "MERGED",
+        "AMBIGUOUS",
+        "JOIN_NO_CONTACT",
+        "JOIN_NON_MANIFOLD",
+        "HOLES_INTERSECT",
+        "HOLE_NO_EFFECT",
+    }
+    details = {
+        key: value
+        for key, value in error.error.items()
+        if key not in {"code", "message"}
+    }
+    if code == "JOIN_NO_CONTACT":
+        details["hint"] = "move or extend the listed profiles to contact the target"
+    return _safe_error(
+        revision,
+        request_id,
+        code if code in known else "KERNEL_OPERATION_FAILED",
+        str(error) if code in known else "the modeling operation could not produce valid geometry",
+        operation=operation,
+        **details,
+    )
+
+
 def _reference(payload: dict[str, Any]) -> Reference:
     source = payload.get("source")
     if isinstance(source, dict) and source.get("kind") == "sketch_segment":
         source = SketchSegmentSource(
             source["sketch"], source["entity"], source["segment"]
+        )
+    elif isinstance(source, dict) and source.get("kind") == "hole_surface":
+        source = HoleSurfaceSource(
+            source["feature"], source["surface"], source["name"]
         )
     body = payload.get("body")
     if isinstance(body, dict) and body.get("kind") == "body_source":
@@ -562,6 +639,13 @@ def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
     return operation.sketchId
 
 
+def _validate_join_target(graph: Any, target: str | None) -> None:
+    if target not in graph.nodes:
+        raise RequestError("UNKNOWN_ID", "join target feature does not exist")
+    if not graph.produces_body(target):
+        raise RequestError("INVALID_PARAMETER", "join target must produce a body")
+
+
 def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     if isinstance(operation, ExtrudeUpdate):
         node = graph.nodes.get(operation.featureId)
@@ -571,8 +655,13 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
         return operation.featureId
 
     parameters = operation.parameters
-    if parameters.operation != "new_body" or parameters.direction != "normal":
-        raise RequestError("INVALID_PARAMETER", "only normal new_body extrudes are supported")
+    if parameters.operation not in {"new_body", "join"} or parameters.direction != "normal":
+        raise RequestError("INVALID_PARAMETER", "only normal new_body and join extrudes are supported")
+    target = parameters.target.featureId if parameters.target is not None else None
+    if parameters.operation == "join":
+        _validate_join_target(graph, target)
+    elif target is not None:
+        raise RequestError("INVALID_PARAMETER", "new_body extrudes do not accept a target")
     sketch = graph.nodes.get(parameters.profile.sketchId)
     if not isinstance(sketch, Sketch):
         raise RequestError("UNKNOWN_ID", "extrude profile sketch does not exist")
@@ -581,7 +670,15 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
             "INVALID_PARAMETER",
             "profileIds must list all sketch profiles in graph order",
         )
-    graph.add(Extrude(operation.featureId, sketch=sketch.id, height=parameters.distance))
+    graph.add(
+        Extrude(
+            operation.featureId,
+            sketch=sketch.id,
+            height=parameters.distance,
+            operation=parameters.operation,
+            target=target,
+        )
+    )
     return operation.featureId
 
 
@@ -613,7 +710,7 @@ def _apply_hole(graph: Any, operation: HoleCreate) -> str:
             target=parameters.target.featureId,
             diameter=parameters.diameter,
             depth=parameters.depth,
-            position=parameters.position,
+            positions=parameters.positions,
         )
     )
     return operation.featureId
@@ -728,7 +825,6 @@ class DocumentService:
         viewer_url: str | None = None,
         warmup: bool = True,
         kernel_loader: _KernelLoaderInterface | None = None,
-        startup_regeneration_gate: Callable[[], None] | None = None,
     ):
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
@@ -737,7 +833,6 @@ class DocumentService:
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
         self._kernel_loader = kernel_loader or _KERNEL_LOADER
-        self._startup_regeneration_gate = startup_regeneration_gate
         self._warmup_started = False
         self._warmup_lock = threading.Lock()
         if warmup:
@@ -757,8 +852,6 @@ class DocumentService:
             with self._lock:
                 if self._regen is not None:
                     return
-                if self._startup_regeneration_gate is not None:
-                    self._startup_regeneration_gate()
                 result = regenerate(self._document.graph)
                 self._assert_valid(result)
                 self._regen = result
@@ -821,7 +914,7 @@ class DocumentService:
         payload: dict[str, Any],
         parse: Callable[[dict[str, Any]], MutationOperation],
         apply: Callable[[Any, MutationOperation], str],
-        response_fields: dict[str, Any],
+        response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
     ) -> dict[str, Any]:
         request_id = payload.get("requestId")
         with self._lock:
@@ -884,7 +977,7 @@ class DocumentService:
                     "changedFeatureIds": [changed_id],
                     "regeneration": {"status": "OK", "valid": True},
                     "warnings": [],
-                    **response_fields,
+                    **response_fields(graph, result, changed_id),
                 }
                 receipt = {
                     "requestId": request_id,
@@ -924,23 +1017,8 @@ class DocumentService:
                 self.publish_failure(payload, failure)
                 return failure
             except GraphError as error:
-                code = error.error["code"].upper()
-                known = {
-                    "UNKNOWN_ID",
-                    "DUPLICATE_ID",
-                    "CYCLE",
-                    "ORDER",
-                    "EMPTY",
-                    "SPLIT",
-                    "MERGED",
-                    "AMBIGUOUS",
-                }
-                failure = _safe_error(
-                    self._document.revision,
-                    request_id,
-                    code if code in known else "KERNEL_OPERATION_FAILED",
-                    "the modeling operation could not produce valid geometry",
-                    operation=operation,
+                failure = _graph_error_response(
+                    self._document.revision, request_id, operation, error
                 )
                 self.publish_failure(payload, failure)
                 return failure
@@ -956,12 +1034,93 @@ class DocumentService:
                 self.publish_failure(payload, failure)
                 return failure
 
+    @staticmethod
+    def _frame(sketch: Sketch) -> dict[str, list[float]]:
+        from build123d import Plane as BuildPlane
+
+        from .extrusion import sketch_location
+
+        plane = BuildPlane(sketch_location(sketch))
+
+        def coordinates(vector: Any) -> list[float]:
+            return [vector.X, vector.Y, vector.Z]
+
+        return {
+            "origin": coordinates(plane.origin),
+            "normal": coordinates(plane.z_dir),
+            "xAxis": coordinates(plane.x_dir),
+            "yAxis": coordinates(plane.y_dir),
+        }
+
+    def _extrude_metadata(self, graph: Any, node: Extrude) -> dict[str, Any]:
+        from .extrusion import extrude_sketch
+
+        sketch = graph.nodes[node.sketch]
+        tool = extrude_sketch(node, sketch).shape
+        return {
+            "frame": self._frame(sketch),
+            "direction": self._frame(sketch)["normal"],
+            "toolBBox": self._bbox([tool]),
+        }
+
+    def _cut_metadata(
+        self, graph: Any, result: RegenResult, node: Cut
+    ) -> dict[str, Any]:
+        from .cut import make_cut_tool
+
+        sketch = graph.nodes[node.tool]
+        tool = make_cut_tool(node, sketch, result.shapes[node.target]).shape
+        normal = self._frame(sketch)["normal"]
+        direction = (
+            normal
+            if node.depth is None
+            else [value if node.flip else -value for value in normal]
+        )
+        return {
+            "frame": self._frame(sketch),
+            "direction": direction,
+            "toolBBox": self._bbox([tool]),
+        }
+
+    def _hole_metadata(self, result: RegenResult, node: Hole) -> dict[str, Any]:
+        from .hole import make_hole_tool
+
+        sketch = Sketch("global_xy")
+        tool = make_hole_tool(node, result.shapes[node.target]).shape
+        return {
+            "frame": self._frame(sketch),
+            "direction": [0.0, 0.0, 1.0],
+            "toolBBox": self._bbox([tool]),
+            "positionNames": [
+                position.name
+                for position in (node.positions or (HolePosition(None, node.position),))
+            ],
+        }
+
+    def _node_metadata(
+        self, graph: Any, result: RegenResult, node_id: str
+    ) -> dict[str, Any]:
+        node = graph.nodes[node_id]
+        if isinstance(node, Sketch):
+            return {"frame": self._frame(node)}
+        if isinstance(node, Extrude):
+            return self._extrude_metadata(graph, node)
+        if isinstance(node, Cut):
+            return self._cut_metadata(graph, result, node)
+        if isinstance(node, Hole):
+            return self._hole_metadata(result, node)
+        return {}
+
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
         entities = payload.get("entities") or payload.get("set", {}).get("entities")
-        response = {"sketchId": payload.get("sketchId")}
-        if entities:
-            response["entitySegments"] = _entity_segments(entities)
+
+        def response(graph: Any, result: RegenResult, changed_id: str) -> dict[str, Any]:
+            fields = {"sketchId": changed_id, **self._node_metadata(graph, result, changed_id)}
+            if entities:
+                fields["entitySegments"] = _entity_segments(entities)
+            return fields
+
         return self._mutate(
             "sketch",
             payload,
@@ -977,12 +1136,15 @@ class DocumentService:
             payload,
             _parse_feature,
             _apply_feature,
-            {"featureId": payload.get("featureId")},
+            lambda graph, result, changed_id: {
+                "featureId": changed_id,
+                **self._node_metadata(graph, result, changed_id),
+            },
         )
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")
-        if kind in {"measurements", "reference"}:
+        if kind in {"measurements", "feature", "reference"}:
             self._ensure_geometry()
         with self._lock:
             requested_revision = payload.get("revision", self._document.revision)
@@ -1038,7 +1200,11 @@ class DocumentService:
                 f"unknown feature: {feature_id}",
                 operation="query.feature",
             )
-        return {**base, "feature": feature}
+        return {
+            **base,
+            "feature": feature,
+            **self._node_metadata(self._document.graph, self._regen, feature_id),
+        }
 
     def _query_reference(
         self, select: dict[str, Any], base: dict[str, Any]

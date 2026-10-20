@@ -45,6 +45,7 @@ class ToolCapSource:
 class HoleSurfaceSource:
     feature: str
     surface: str
+    name: str | None = None
 
 
 ElementSource = SketchSegmentSource | ToolCapSource | HoleSurfaceSource | str

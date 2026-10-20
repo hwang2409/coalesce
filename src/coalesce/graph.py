@@ -74,12 +74,19 @@ class Cut(Feature):
     flip: bool = False
 
 
+@dataclass(frozen=True)
+class HolePosition:
+    name: str | None
+    point: tuple[float, float]
+
+
 @dataclass
 class Hole(Feature):
     target: str = ""
     diameter: float = 1
     depth: float | None = None
     position: tuple[float, float] = (0.0, 0.0)
+    positions: tuple[HolePosition, ...] = ()
 
 
 @dataclass
@@ -146,6 +153,9 @@ class Graph:
         if feature not in self.nodes:
             raise GraphError("unknown_id", f"unknown id: {feature}")
         del self.nodes[feature]
+
+    def produces_body(self, feature: str) -> bool:
+        return isinstance(self.nodes.get(feature), Feature)
 
     @staticmethod
     def _dependencies(node: Any) -> list[str]:
