@@ -28,8 +28,18 @@ async function capture(revision) {
 }
 
 await capture(2);
-const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-await lines[Symbol.asyncIterator]().next();
+const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator]();
+await lines.next();
 await capture(3);
+await lines.next();
+await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
+await page.waitForTimeout(300);
+if (screenshots) await page.screenshot({ path: path.join(screenshots, 'failure.png') });
+console.log(JSON.stringify({
+  revision: await page.getByTestId('revision').textContent(),
+  parts: await page.locator('#parts li').count(),
+  failure: await page.locator('#failure-error').textContent(),
+  errors,
+}));
 await browser.close();
 process.exit(0);

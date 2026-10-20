@@ -475,7 +475,7 @@ class DocumentService:
         self._assert_valid(self._regen)
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
-        if self._publisher is not None and self._regen.shapes:
+        if self._publisher is not None and self._document.revision > 0:
             self._publisher.publish(self._document.revision, self._regen)
 
     @property

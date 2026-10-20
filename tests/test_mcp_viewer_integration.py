@@ -107,19 +107,26 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
         )
 
 
-def test_existing_document_is_published_on_startup(tmp_path):
+@pytest.mark.parametrize("with_feature", [False, True])
+def test_existing_document_is_published_on_startup(tmp_path, with_feature):
     path = tmp_path / "plate.coalesce.json"
     writer = DocumentService(path)
     writer.sketch(SKETCH)
-    writer.feature(FEATURE)
+    if with_feature:
+        writer.feature(FEATURE)
+    expected_revision = 2 if with_feature else 1
     store = ViewerSceneStore()
 
     DocumentService(path, scene_store=store)
     deadline = time.monotonic() + 5
-    while store.current_revision != 2 and time.monotonic() < deadline:
+    while store.current_revision != expected_revision and time.monotonic() < deadline:
         time.sleep(0.02)
 
-    assert store.scene(2)["parts"][0]["size"] == pytest.approx([60, 40, 6])
+    scene = store.scene(expected_revision)
+    if with_feature:
+        assert scene["parts"][0]["size"] == pytest.approx([60, 40, 6])
+    else:
+        assert scene["parts"] == []
 
 
 @pytest.fixture(scope="module")
@@ -179,6 +186,25 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
             await driver.stdin.drain()
             second = json.loads(await driver.stdout.readline())
             assert second == {"revision": "3", "parts": 1, "errors": []}
+            failed = {
+                "action": "update",
+                "expectedRevision": 3,
+                "requestId": "missing-1",
+                "featureId": "missing_extrude",
+                "kind": "extrude",
+                "set": {"distance": {"value": 12, "unit": "mm"}},
+            }
+            failure = result_json(await session.call_tool("feature", failed))
+            assert failure["error"]["code"] == "UNKNOWN_ID"
+            driver.stdin.write(b"failure\n")
+            await driver.stdin.drain()
+            third = json.loads(await driver.stdout.readline())
+            assert third == {
+                "revision": "3",
+                "parts": 1,
+                "failure": "UNKNOWN_ID: unknown extrude: missing_extrude",
+                "errors": [],
+            }
             assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
         finally:
             if driver.returncode is None:
@@ -187,6 +213,7 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
 
     assert (screenshots / "revision-2.png").stat().st_size > 0
     assert (screenshots / "revision-3.png").stat().st_size > 0
+    assert (screenshots / "failure.png").stat().st_size > 0
 
 
 class FailingSlowStore:
