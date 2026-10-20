@@ -531,7 +531,7 @@ async def test_common_tool_seam_redacts_unexpected_metric_failure(tmp_path, monk
     assert "/secret/kernel/path" not in encoded
 
 
-def test_unknown_feature_kind_and_kernel_failure_are_safe(tmp_path):
+def test_unknown_feature_kind_and_invalid_geometry_are_safe(tmp_path):
     service = DocumentService(tmp_path / "plate.coalesce.json")
     unknown = service.feature(
         {
@@ -544,9 +544,9 @@ def test_unknown_feature_kind_and_kernel_failure_are_safe(tmp_path):
         }
     )
     assert unknown["error"]["code"] == "INVALID_PARAMETER"
-    assert unknown["error"]["allowedKinds"] == ["extrude"]
+    assert unknown["error"]["allowedKinds"] == ["extrude", "cut", "hole"]
 
-    service.sketch(
+    failed = service.sketch(
         {
             **SKETCH,
             "entities": [
@@ -557,9 +557,8 @@ def test_unknown_feature_kind_and_kernel_failure_are_safe(tmp_path):
             ],
         }
     )
-    failed = service.feature(FEATURE)
     encoded = json.dumps(failed)
-    assert failed["error"]["code"] == "KERNEL_OPERATION_FAILED"
+    assert failed["error"]["code"] == "INVALID_PARAMETER"
     assert "build123d" not in encoded.lower()
     assert "occt" not in encoded.lower()
 

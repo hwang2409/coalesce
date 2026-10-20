@@ -42,6 +42,19 @@ RECTANGLE = {
     "required": ["id", "kind", "width", "height"],
     "additionalProperties": False,
 }
+CIRCLE = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"const": "circle"},
+        "center": POINT_2D,
+        "radius": QUANTITY,
+        "rotation": ANGLE,
+    },
+    "required": ["id", "kind", "radius"],
+    "additionalProperties": False,
+}
+SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE]}
 DIRECTION = {
     "type": "array",
     "items": {"type": "number"},
@@ -135,11 +148,15 @@ SKETCH_CREATE_SCHEMA = {
         **SKETCH_PROPERTIES,
         "plane": {
             "type": "object",
-            "properties": {"kind": {"const": "origin"}, "name": {"const": "XY"}},
+            "properties": {
+                "kind": {"const": "origin"},
+                "name": {"enum": ["XY", "XZ", "YZ"]},
+                "offset": QUANTITY,
+            },
             "required": ["kind", "name"],
             "additionalProperties": False,
         },
-        "entities": {"type": "array", "items": RECTANGLE, "minItems": 1},
+        "entities": {"type": "array", "items": SKETCH_ENTITY, "minItems": 1},
     },
     "required": ["action", *SKETCH_PROPERTIES, "plane", "entities"],
     "additionalProperties": False,
@@ -153,7 +170,7 @@ SKETCH_UPDATE_SCHEMA = {
             "type": "object",
             "properties": {
                 "position": POINT_3D,
-                "entities": {"type": "array", "items": RECTANGLE, "minItems": 1},
+                "entities": {"type": "array", "items": SKETCH_ENTITY, "minItems": 1},
             },
             "additionalProperties": False,
             "minProperties": 1,
@@ -207,17 +224,68 @@ EXTRUDE_PARAMETERS = {
     "required": ["profile", "distance", "operation", "direction"],
     "additionalProperties": False,
 }
+FEATURE_TARGET = {
+    "type": "object",
+    "properties": {"featureId": {"type": "string", "minLength": 1}},
+    "required": ["featureId"],
+    "additionalProperties": False,
+}
+SKETCH_TOOL = {
+    "type": "object",
+    "properties": {"sketchId": {"type": "string", "minLength": 1}},
+    "required": ["sketchId"],
+    "additionalProperties": False,
+}
+CUT_DEPTH = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {"kind": {"const": "through_all"}},
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {"kind": {"const": "distance"}, "distance": QUANTITY},
+            "required": ["kind", "distance"],
+            "additionalProperties": False,
+        },
+    ]
+}
+CUT_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "target": FEATURE_TARGET,
+        "tool": SKETCH_TOOL,
+        "depth": CUT_DEPTH,
+        "flip": {"type": "boolean"},
+    },
+    "required": ["target", "tool", "depth", "flip"],
+    "additionalProperties": False,
+}
+HOLE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "target": FEATURE_TARGET,
+        "diameter": QUANTITY,
+        "depth": QUANTITY,
+        "position": POINT_2D,
+    },
+    "required": ["target", "diameter", "position"],
+    "additionalProperties": False,
+}
+FEATURE_PARAMETERS = {"oneOf": [EXTRUDE_PARAMETERS, CUT_PARAMETERS, HOLE_PARAMETERS]}
 FEATURE_PROPERTIES = {
     **MUTATION_PROPERTIES,
     "featureId": {"type": "string", "minLength": 1},
-    "kind": {"enum": ["extrude"]},
+    "kind": {"enum": ["extrude", "cut", "hole"]},
 }
 FEATURE_CREATE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "create"},
         **FEATURE_PROPERTIES,
-        "parameters": EXTRUDE_PARAMETERS,
+        "parameters": FEATURE_PARAMETERS,
     },
     "required": ["action", *FEATURE_PROPERTIES, "parameters"],
     "additionalProperties": False,
@@ -236,6 +304,28 @@ FEATURE_UPDATE_SCHEMA = {
     },
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,
+}
+FEATURE_ACTION_SCHEMAS = {
+    ("create", kind): {
+        **FEATURE_CREATE_SCHEMA,
+        "properties": {
+            **FEATURE_CREATE_SCHEMA["properties"],
+            "kind": {"const": kind},
+            "parameters": parameters,
+        },
+    }
+    for kind, parameters in {
+        "extrude": EXTRUDE_PARAMETERS,
+        "cut": CUT_PARAMETERS,
+        "hole": HOLE_PARAMETERS,
+    }.items()
+}
+FEATURE_ACTION_SCHEMAS[("update", "extrude")] = {
+    **FEATURE_UPDATE_SCHEMA,
+    "properties": {
+        **FEATURE_UPDATE_SCHEMA["properties"],
+        "kind": {"const": "extrude"},
+    },
 }
 FEATURE_SCHEMA = {
     "type": "object",
@@ -285,6 +375,16 @@ QUERY_SCHEMA = {
     },
     "required": ["select"],
     "additionalProperties": False,
+}
+QUERY_FEATURE_SCHEMA = {
+    **QUERY_SCHEMA,
+    "properties": {
+        **QUERY_SCHEMA["properties"],
+        "select": {
+            **QUERY_SCHEMA["properties"]["select"],
+            "required": ["kind", "id"],
+        },
+    },
 }
 CHECK_SCHEMA = {
     "type": "object",
