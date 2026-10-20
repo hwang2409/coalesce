@@ -1,6 +1,6 @@
 import json
 import os
-import sys
+import shutil
 from pathlib import Path
 
 import pytest
@@ -8,7 +8,6 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from coalesce.service import DocumentService
-
 
 SKETCH = {
     "action": "create",
@@ -52,14 +51,13 @@ def result_json(result):
 
 async def run_server(path: Path, calls):
     server = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "coalesce", "--document", str(path)],
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
-    async with stdio_client(server) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            return [result_json(await session.call_tool(name, arguments)) for name, arguments in calls]
+    async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        return [result_json(await session.call_tool(name, arguments)) for name, arguments in calls]
 
 
 @pytest.mark.anyio
