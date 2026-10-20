@@ -5,13 +5,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from build123d import Compound, Face, Location, Shape, Wire
+from build123d import Align, Box, Compound, Face, Location, Shape, Wire
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
 from .boolean import cut_shape, fuse_shape, join_contact_failures
-from .graph import BoardImport, GraphError, PcbBase, PcbLid, Standoffs
+from .graph import BoardImport, GraphError, PcbBase, PcbLid, PortCutout, Standoffs
 from .pcb import board_loop_wire
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate
@@ -21,6 +21,12 @@ from .references import BodySource, Candidate
 class EnclosureResult:
     shape: Shape
     candidates: list[Candidate]
+
+
+@dataclass(frozen=True)
+class PortCutoutResult(EnclosureResult):
+    metadata: dict
+    opening_tool: Shape
 
 
 def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
@@ -220,6 +226,355 @@ def build_pcb_lid(node: PcbLid, base: PcbBase, board: BoardImport) -> EnclosureR
     )
     joined = fuse_shape(node.id, slab.shape, slab.candidates, ring.shape, ring.candidates)
     return EnclosureResult(joined.shape, joined.candidates)
+
+
+def _resolve_footprint(node: PortCutout, board: BoardImport) -> dict:
+    footprints = board.mechanics.get("footprints", [])
+    lookup = node.footprint_id or node.footprint
+    by_id = [item for item in footprints if item["id"] == lookup]
+    matches = by_id or [item for item in footprints if item["reference"] == lookup]
+    if not matches:
+        raise GraphError(
+            "MISSING",
+            f"port_cutout {node.id} footprint {node.footprint} is missing",
+            feature=node.id,
+            parameter="footprint",
+            footprint=lookup,
+            hint="restore the footprint or update the cutout to a stable footprint id",
+        )
+    if len(matches) != 1:
+        raise GraphError(
+            "AMBIGUOUS",
+            f"port_cutout {node.id} footprint reference {node.footprint} is ambiguous",
+            feature=node.id,
+            parameter="footprint",
+            footprint=node.footprint,
+            candidates=sorted(item["id"] for item in matches),
+            hint="use one of the listed stable footprint ids",
+        )
+    node.footprint_id = matches[0]["id"]
+    return matches[0]
+
+
+def _courtyard_bounds(node: PortCutout, footprint: dict) -> tuple[float, float, float, float]:
+    courtyard = footprint.get("courtyard")
+    if not courtyard:
+        raise GraphError(
+            "MISSING",
+            f"port_cutout {node.id} footprint {footprint['id']} has no courtyard envelope",
+            feature=node.id,
+            parameter="envelope",
+            footprint=footprint["id"],
+            envelopeSource="courtyard",
+            hint="provide an explicit envelope with width, height, and bottomOffset",
+        )
+    try:
+        wire, _ = board_loop_wire(
+            {
+                "id": footprint["id"],
+                "closed": True,
+                "segments": [
+                    {**segment, "id": segment.get("id") or f"courtyard-{index}"}
+                    for index, segment in enumerate(courtyard)
+                ],
+            }
+        )
+        Face(wire)
+    except (RuntimeError, ValueError) as error:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} courtyard is not a closed envelope",
+            feature=node.id,
+            parameter="envelope",
+            footprint=footprint["id"],
+            envelopeSource="courtyard",
+        ) from error
+    box = wire.bounding_box()
+    return box.min.X, box.max.X, box.min.Y, box.max.Y
+
+
+def _wall_choice(
+    node: PortCutout,
+    footprint: dict,
+    footprint_bounds: tuple[float, float, float, float] | None,
+    inner: Wire,
+) -> str:
+    if node.wall != "auto":
+        return node.wall
+    inner_box = inner.bounding_box()
+    if footprint_bounds is None:
+        x0 = x1 = footprint["position"][0]
+        y0 = y1 = footprint["position"][1]
+    else:
+        x0, x1, y0, y1 = footprint_bounds
+    distances = {
+        "left": x0 - inner_box.min.X,
+        "right": inner_box.max.X - x1,
+        "front": y0 - inner_box.min.Y,
+        "back": inner_box.max.Y - y1,
+    }
+    nearest = min(distances.values())
+    candidates = sorted(
+        wall for wall, distance in distances.items() if math.isclose(distance, nearest, abs_tol=1e-7)
+    )
+    if len(candidates) != 1:
+        raise GraphError(
+            "AMBIGUOUS",
+            f"port_cutout {node.id} footprint has no unique nearest wall",
+            feature=node.id,
+            parameter="wall",
+            footprint=footprint["id"],
+            candidates=candidates,
+            hint="set wall explicitly to left, right, front, or back",
+        )
+    return candidates[0]
+
+
+def _wall_span(
+    target_candidates: list[Candidate], axis: str, coordinate: float
+) -> tuple[float, float] | None:
+    tangent_axis = "Y" if axis == "X" else "X"
+    spans = []
+    for item in target_candidates:
+        if item.key.role != "inner_wall" or not isinstance(item.entity, Face):
+            continue
+        box = item.entity.bounding_box()
+        if math.isclose(getattr(box.min, axis), coordinate, abs_tol=1e-7) and math.isclose(
+            getattr(box.max, axis), coordinate, abs_tol=1e-7
+        ):
+            spans.append((getattr(box.min, tangent_axis), getattr(box.max, tangent_axis)))
+    return spans[0] if len(spans) == 1 else None
+
+
+def _opening_xy_bounds(
+    wall: str,
+    center_x: float,
+    center_y: float,
+    opening_width: float,
+    inner: Wire,
+    outer: Wire,
+    target_candidates: list[Candidate],
+) -> tuple[tuple[float, float, float, float], tuple[float, float] | None]:
+    inner_box = inner.bounding_box()
+    outer_box = outer.bounding_box()
+    tangent_center = center_y if wall in {"left", "right"} else center_x
+    tangent_min = tangent_center - opening_width / 2
+    tangent_max = tangent_center + opening_width / 2
+    margin = 1.0
+    if wall == "left":
+        bounds = (outer_box.min.X - margin, inner_box.min.X + margin, tangent_min, tangent_max)
+        span = _wall_span(target_candidates, "X", inner_box.min.X)
+    elif wall == "right":
+        bounds = (inner_box.max.X - margin, outer_box.max.X + margin, tangent_min, tangent_max)
+        span = _wall_span(target_candidates, "X", inner_box.max.X)
+    elif wall == "front":
+        bounds = (tangent_min, tangent_max, outer_box.min.Y - margin, inner_box.min.Y + margin)
+        span = _wall_span(target_candidates, "Y", inner_box.min.Y)
+    else:
+        bounds = (tangent_min, tangent_max, inner_box.max.Y - margin, outer_box.max.Y + margin)
+        span = _wall_span(target_candidates, "Y", inner_box.max.Y)
+    return bounds, span
+
+
+@dataclass(frozen=True)
+class _OpeningBounds:
+    minimum_x: float
+    maximum_x: float
+    minimum_y: float
+    maximum_y: float
+    bottom: float
+    top: float
+    width: float
+    height: float
+    cuts_floor: bool
+
+
+def _opening_bounds(
+    node: PortCutout,
+    footprint: dict,
+    wall: str,
+    footprint_bounds: tuple[float, float, float, float] | None,
+    inner: Wire,
+    outer: Wire,
+    board_top: float,
+    floor_top: float,
+    target_candidates: list[Candidate],
+) -> _OpeningBounds:
+    if footprint_bounds is None:
+        center_x, center_y = footprint["position"]
+        width = node.envelope_width
+        assert width is not None
+    else:
+        x0, x1, y0, y1 = footprint_bounds
+        center_x, center_y = (x0 + x1) / 2, (y0 + y1) / 2
+        width = y1 - y0 if wall in {"left", "right"} else x1 - x0
+    opening_width = width + 2 * node.clearance
+    opening_height = node.envelope_height + 2 * node.clearance
+    envelope_bottom = board_top + node.bottom_offset
+    bottom = envelope_bottom - node.clearance
+    top = envelope_bottom + node.envelope_height + node.clearance
+    if bottom < floor_top and envelope_bottom >= floor_top:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} clearance would cut the base floor",
+            feature=node.id,
+            parameter="clearance",
+            measuredBottom=bottom,
+            floorTop=floor_top,
+            unit="mm",
+            hint="raise bottomOffset or reduce clearance",
+        )
+
+    bounds, wall_span = _opening_xy_bounds(
+        wall,
+        center_x,
+        center_y,
+        opening_width,
+        inner,
+        outer,
+        target_candidates,
+    )
+    minimum_x, maximum_x, minimum_y, maximum_y = bounds
+    tangent_min = minimum_y if wall in {"left", "right"} else minimum_x
+    tangent_max = maximum_y if wall in {"left", "right"} else maximum_x
+    if wall_span is None:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} wall {wall} is not one planar base wall",
+            feature=node.id,
+            parameter="wall",
+            wall=wall,
+        )
+    straight_min, straight_max = wall_span
+    if tangent_min < straight_min - 1e-7 or tangent_max > straight_max + 1e-7:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} opening reaches an adjacent or curved wall",
+            feature=node.id,
+            parameter="envelope",
+            wall=wall,
+            openingSpan=[tangent_min, tangent_max],
+            wallSpan=[straight_min, straight_max],
+        )
+    return _OpeningBounds(
+        minimum_x,
+        maximum_x,
+        minimum_y,
+        maximum_y,
+        bottom,
+        top,
+        opening_width,
+        opening_height,
+        envelope_bottom < floor_top,
+    )
+
+
+def _opening_tool(
+    node: PortCutout,
+    footprint: dict,
+    wall: str,
+    footprint_bounds: tuple[float, float, float, float] | None,
+    inner: Wire,
+    outer: Wire,
+    board_top: float,
+    floor_top: float,
+    target_candidates: list[Candidate],
+) -> tuple[Shape, list[Candidate], dict]:
+    bounds = _opening_bounds(
+        node,
+        footprint,
+        wall,
+        footprint_bounds,
+        inner,
+        outer,
+        board_top,
+        floor_top,
+        target_candidates,
+    )
+    tool = Box(
+        bounds.maximum_x - bounds.minimum_x,
+        bounds.maximum_y - bounds.minimum_y,
+        bounds.top - bounds.bottom,
+        align=(Align.MIN, Align.MIN, Align.MIN),
+    ).moved(Location((bounds.minimum_x, bounds.minimum_y, bounds.bottom)))
+    tool_body = BodySource(node.id, footprint["id"])
+    candidates = []
+    for face in tool.faces():
+        box = face.bounding_box()
+        if math.isclose(box.min.Z, bounds.bottom, abs_tol=1e-7) and math.isclose(
+            box.max.Z, bounds.bottom, abs_tol=1e-7
+        ):
+            role = "port_bottom"
+        elif math.isclose(box.min.Z, bounds.top, abs_tol=1e-7) and math.isclose(
+            box.max.Z, bounds.top, abs_tol=1e-7
+        ):
+            role = "port_top"
+        else:
+            role = "port_side"
+        candidates.append(candidate(node.id, role, footprint["id"], face, body=tool_body))
+    metadata = {
+        "footprintId": footprint["id"],
+        "reference": footprint["reference"],
+        "wall": wall,
+        "envelopeSource": node.envelope_source,
+        "opening": {
+            "width": {"value": round(bounds.width, 12), "unit": "mm"},
+            "height": {"value": round(bounds.height, 12), "unit": "mm"},
+            "bottom": {"value": round(bounds.bottom, 12), "unit": "mm"},
+            "top": {"value": round(bounds.top, 12), "unit": "mm"},
+        },
+        "cutsBelowBoardTop": bounds.bottom < board_top,
+    }
+    if bounds.cuts_floor:
+        metadata["cutsFloor"] = True
+    return tool, candidates, metadata
+
+
+def build_port_cutout(
+    node: PortCutout,
+    base: PcbBase,
+    board: BoardImport,
+    target_shape: Shape,
+    target_candidates: list[Candidate],
+) -> PortCutoutResult:
+    footprint = _resolve_footprint(node, board)
+    footprint_bounds = (
+        _courtyard_bounds(node, footprint)
+        if node.envelope_source == "courtyard"
+        else None
+    )
+    _, inner, outer = _base_wires(base, board)
+    wall = _wall_choice(node, footprint, footprint_bounds, inner)
+    board_top = board.mechanics["thickness"]
+    tool, tool_candidates, metadata = _opening_tool(
+        node,
+        footprint,
+        wall,
+        footprint_bounds,
+        inner,
+        outer,
+        board_top,
+        -base.board_seat_height,
+        target_candidates,
+    )
+    result = cut_shape(
+        node.id,
+        target_shape,
+        target_candidates,
+        tool,
+        tool_candidates,
+        kind="semantic",
+    )
+    if not result.removed_material:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} does not intersect wall {wall}",
+            feature=node.id,
+            parameter="wall",
+            wall=wall,
+            footprint=footprint["id"],
+        )
+    return PortCutoutResult(result.shape, result.candidates, metadata, tool)
 
 
 def selected_holes(node: Standoffs, board: BoardImport) -> list[dict]:

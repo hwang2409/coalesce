@@ -71,6 +71,7 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
         "m3-id",
         "npth-id",
         "front-id",
+        "center-id",
         "back-id",
     }
     assert board["availability"] == {
@@ -79,7 +80,7 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
         "innerCutouts": "available",
         "holes": "available",
         "footprints": "available",
-        "courtyards": "missing",
+        "courtyards": "partial",
         "models": "unresolved",
     }
     assert board["warnings"] == board["errors"] == []

@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from build123d import Edge, Shape
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
-from .enclosure import build_pcb_base, build_pcb_lid, build_standoffs
+from .enclosure import build_pcb_base, build_pcb_lid, build_port_cutout, build_standoffs
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
 from .graph import (
@@ -21,10 +22,12 @@ from .graph import (
     Hole,
     PcbBase,
     PcbLid,
+    PortCutout,
     Sketch,
     Standoffs,
 )
 from .hole import make_hole_tool
+from .lineage import BodyLineage
 from .pcb import build_pcb
 from .references import (
     Candidate,
@@ -46,6 +49,10 @@ class RegenResult:
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = field(default_factory=dict)
     removed_material: dict[str, bool] = field(default_factory=dict)
     joined_material: dict[str, bool] = field(default_factory=dict)
+    metadata: dict[str, dict] = field(default_factory=dict)
+    opening_tools: dict[str, Shape] = field(default_factory=dict)
+    superseded: set[str] = field(default_factory=set)
+    predecessors: dict[str, str] = field(default_factory=dict)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
@@ -78,19 +85,6 @@ def _consumed_edge_suggestion(
         f"{replacement.feature}.{replacement.role}" for replacement in replacements
     )
     return f"use generated blend face {names}"
-
-
-def _replace_provenance(
-    provenance: dict[str, list[Candidate]],
-    previous: list[Candidate],
-    current: list[Candidate],
-) -> None:
-    groups: dict[str, list[Candidate]] = {}
-    for item in current:
-        groups.setdefault(item.key.feature, []).append(item)
-    affected = {item.key.feature for item in previous} | set(groups)
-    for feature in affected:
-        provenance[feature] = groups.get(feature, [])
 
 
 def _resolve_fillet_edges(
@@ -138,6 +132,7 @@ def _join_extrude(
     graph: Graph,
     shapes: dict[str, Shape],
     states: dict[str, list[Candidate]],
+    target: str,
 ) -> FuseResult:
     if node.target is None:
         raise GraphError(
@@ -148,7 +143,7 @@ def _join_extrude(
     prism = extrude_sketch(node, graph.nodes[node.sketch])
     unjoined_entities, non_manifold_entities = join_contact_failures(
         node.id,
-        shapes[node.target],
+        shapes[target],
         prism.shape,
         prism.candidates,
     )
@@ -172,88 +167,192 @@ def _join_extrude(
         )
     return fuse_shape(
         node.id,
-        shapes[node.target],
-        states[node.target],
+        shapes[target],
+        states[target],
         prism.shape,
         prism.candidates,
     )
 
 
-def _regenerate_pcb_lid(
-    node: PcbLid,
-    graph: Graph,
-    shapes: dict[str, Shape],
-    states: dict[str, list[Candidate]],
-    provenance: dict[str, list[Candidate]],
-) -> None:
-    base_node = graph.nodes[node.base]
-    if not isinstance(base_node, PcbBase):
-        raise GraphError(
-            "INVALID_PARAMETER",
-            f"pcb_lid {node.id} base must reference a pcb_base",
-            feature=node.id,
-            parameter="base",
-        )
-    board_node = graph.nodes[base_node.board]
-    if not isinstance(board_node, BoardImport):
-        raise GraphError(
-            "INVALID_PARAMETER",
-            f"pcb_lid {node.id} base must reference a valid board import",
-            feature=node.id,
-            parameter="base",
-        )
-    lid = build_pcb_lid(node, base_node, board_node)
-    shapes[node.id] = lid.shape
-    states[node.id] = lid.candidates
-    provenance[node.id] = lid.candidates
+class _EnclosureRegenerator:
+    def __init__(
+        self,
+        graph: Graph,
+        shapes: dict[str, Shape],
+        states: dict[str, list[Candidate]],
+        provenance: dict[str, list[Candidate]],
+        removed_material: dict[str, bool],
+        joined_material: dict[str, bool],
+        metadata: dict[str, dict],
+        lineage: BodyLineage,
+    ) -> None:
+        self.graph = graph
+        self.shapes = shapes
+        self.states = states
+        self.provenance = provenance
+        self.removed_material = removed_material
+        self.joined_material = joined_material
+        self.metadata = metadata
+        self.lineage = lineage
+        self.opening_tools: dict[str, Shape] = {}
 
+    def _base_context(self, base_id: str, feature: str) -> tuple[PcbBase, BoardImport]:
+        base = self.graph.nodes.get(base_id)
+        if not isinstance(base, PcbBase):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"{feature} base must reference a pcb_base",
+                feature=feature,
+                parameter="base",
+            )
+        board = self.graph.nodes.get(base.board)
+        if not isinstance(board, BoardImport):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"{feature} base must reference a valid board import",
+                feature=feature,
+                parameter="base",
+            )
+        return base, board
 
-def _regenerate_enclosure(
-    node: PcbBase | PcbLid | Standoffs,
-    graph: Graph,
-    shapes: dict[str, Shape],
-    states: dict[str, list[Candidate]],
-    provenance: dict[str, list[Candidate]],
-    joined_material: dict[str, bool],
-) -> None:
-    if isinstance(node, PcbLid):
-        _regenerate_pcb_lid(node, graph, shapes, states, provenance)
-        return
-
-    board_node = graph.nodes[node.board]
-    if isinstance(node, PcbBase):
-        if not isinstance(board_node, BoardImport):
+    def _regenerate_pcb_base(self, node: PcbBase) -> None:
+        board = self.graph.nodes.get(node.board)
+        if not isinstance(board, BoardImport):
             raise GraphError(
                 "INVALID_PARAMETER",
                 f"pcb_base {node.id} board must reference a board import",
                 feature=node.id,
                 parameter="board",
             )
-        base = build_pcb_base(node, board_node)
-        shapes[node.id] = base.shape
-        states[node.id] = base.candidates
-        provenance[node.id] = base.candidates
-        return
+        base = build_pcb_base(node, board)
+        self.shapes[node.id] = base.shape
+        self.states[node.id] = base.candidates
+        self.provenance[node.id] = base.candidates
+        self.lineage.create(node.id, base.candidates)
 
-    base_node = graph.nodes[node.target]
-    if not isinstance(board_node, BoardImport) or not isinstance(base_node, PcbBase):
-        raise GraphError(
-            "INVALID_PARAMETER",
-            f"standoffs {node.id} requires a pcb_base target and board import",
-            feature=node.id,
-            parameter="target",
+    def _regenerate_pcb_lid(self, node: PcbLid) -> None:
+        base, board = self._base_context(node.base, node.id)
+        lid = build_pcb_lid(node, base, board)
+        self.shapes[node.id] = lid.shape
+        self.states[node.id] = lid.candidates
+        self.provenance[node.id] = lid.candidates
+        self.lineage.create(node.id, lid.candidates)
+
+    def _regenerate_port_cutout(self, node: PortCutout) -> None:
+        base, board = self._base_context(node.base, node.id)
+        terminal = self.lineage.terminal(node.base)
+        opening = build_port_cutout(
+            node,
+            base,
+            board,
+            self.shapes[terminal],
+            self.states[terminal],
         )
-    mounts = build_standoffs(
-        node,
-        base_node,
-        board_node,
-        shapes[node.target],
-        states[node.target],
-    )
-    shapes[node.id] = mounts.shape
-    states[node.id] = mounts.candidates
-    joined_material[node.id] = True
-    _replace_provenance(provenance, states[node.target], mounts.candidates)
+        self.shapes[node.id] = opening.shape
+        self.states[node.id] = opening.candidates
+        self.removed_material[node.id] = True
+        self.metadata[node.id] = opening.metadata
+        self.opening_tools[node.id] = opening.opening_tool
+        self.lineage.replace(node.base, node.id, opening.candidates)
+
+    def _regenerate_standoffs(self, node: Standoffs) -> None:
+        base, board = self._base_context(node.target, node.id)
+        if node.board != board.id:
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"standoffs {node.id} board must match its pcb_base board",
+                feature=node.id,
+                parameter="board",
+            )
+        terminal = self.lineage.terminal(node.target)
+        mounts = build_standoffs(
+            node,
+            base,
+            board,
+            self.shapes[terminal],
+            self.states[terminal],
+        )
+        self.shapes[node.id] = mounts.shape
+        self.states[node.id] = mounts.candidates
+        self.joined_material[node.id] = True
+        self.lineage.replace(node.target, node.id, mounts.candidates)
+
+    def apply(self, node: PcbBase | PcbLid | PortCutout | Standoffs) -> None:
+        if isinstance(node, PcbBase):
+            self._regenerate_pcb_base(node)
+        elif isinstance(node, PcbLid):
+            self._regenerate_pcb_lid(node)
+        elif isinstance(node, PortCutout):
+            self._regenerate_port_cutout(node)
+        else:
+            self._regenerate_standoffs(node)
+
+    def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
+        terminal = self.lineage.terminal(port.base)
+        conflict = next(
+            (
+                item.key.source
+                for item in self.states[terminal]
+                if item.key.role.startswith(("standoff_", "pilot_"))
+                and item.entity.distance_to(tool) <= 1e-7
+            ),
+            None,
+        )
+        if conflict is not None:
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"port_cutout {port.id} opening intersects a standoff",
+                feature=port.id,
+                parameter="envelope",
+                footprint=port.footprint_id,
+                conflict=conflict,
+            )
+
+    def _validate_lid_clearance(self, port: PortCutout, lid: PcbLid, tool: Shape) -> None:
+        common = BRepAlgoAPI_Common(tool.wrapped, self.shapes[lid.id].wrapped)
+        common.Build()
+        if not common.IsDone():
+            raise GraphError(
+                "BOOLEAN_FAILED",
+                f"port_cutout {port.id} clearance check against lid {lid.id} failed",
+                feature=port.id,
+                port=port.id,
+                lid=lid.id,
+            )
+        overlap = Shape.cast(common.Shape())
+        volume = sum(solid.volume for solid in overlap.solids())
+        if volume <= 1e-9:
+            return
+        bounds = overlap.bounding_box()
+        raise GraphError(
+            "PORT_BLOCKED_BY_LID",
+            f"port_cutout {port.id} opening is blocked by pcb_lid {lid.id}",
+            feature=port.id,
+            port=port.id,
+            lid=lid.id,
+            overlapVolume=volume,
+            overlapBounds={
+                "min": [bounds.min.X, bounds.min.Y, bounds.min.Z],
+                "max": [bounds.max.X, bounds.max.Y, bounds.max.Z],
+                "unit": "mm",
+            },
+            hints=[
+                "lower the opening height",
+                "lower bottomOffset",
+                "reduce the lid lip depth or change the lid",
+            ],
+        )
+
+    def validate(self) -> None:
+        lids = [node for node in self.graph.nodes.values() if isinstance(node, PcbLid)]
+        for node in self.graph.nodes.values():
+            if not isinstance(node, PortCutout):
+                continue
+            tool = self.opening_tools[node.id]
+            self._validate_standoff_clearance(node, tool)
+            for lid in lids:
+                if lid.base == node.base:
+                    self._validate_lid_clearance(node, lid, tool)
 
 
 def regenerate(graph: Graph) -> RegenResult:
@@ -264,7 +363,19 @@ def regenerate(graph: Graph) -> RegenResult:
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = {}
     removed_material: dict[str, bool] = {}
     joined_material: dict[str, bool] = {}
+    metadata: dict[str, dict] = {}
     ordered_features = [node.id for node in ordered]
+    lineage = BodyLineage(states, provenance)
+    enclosure = _EnclosureRegenerator(
+        graph,
+        shapes,
+        states,
+        provenance,
+        removed_material,
+        joined_material,
+        metadata,
+        lineage,
+    )
 
     for node in ordered:
         if isinstance(node, Sketch):
@@ -274,21 +385,16 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = board.shape
             states[node.id] = board.candidates
             provenance[node.id] = board.candidates
-        elif isinstance(node, (PcbBase, PcbLid, Standoffs)):
-            _regenerate_enclosure(
-                node,
-                graph,
-                shapes,
-                states,
-                provenance,
-                joined_material,
-            )
+            lineage.create(node.id, board.candidates)
+        elif isinstance(node, (PcbBase, PcbLid, PortCutout, Standoffs)):
+            enclosure.apply(node)
         elif isinstance(node, Extrude):
             if node.operation == "new_body":
                 prism = extrude_sketch(node, graph.nodes[node.sketch])
                 shapes[node.id] = prism.shape
                 states[node.id] = prism.candidates
                 provenance[node.id] = prism.candidates
+                lineage.create(node.id, prism.candidates)
                 continue
             if node.operation != "join":
                 raise GraphError(
@@ -297,12 +403,13 @@ def regenerate(graph: Graph) -> RegenResult:
                     feature=node.id,
                     operation=node.operation,
                 )
-            result = _join_extrude(node, graph, shapes, states)
+            assert node.target is not None
+            target = lineage.terminal(node.target)
+            result = _join_extrude(node, graph, shapes, states, target)
             joined_material[node.id] = result.joined_material
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
-            assert node.target is not None
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
         elif isinstance(node, Cut):
             tool_sketch = graph.nodes[node.tool]
             if not isinstance(tool_sketch, Sketch):
@@ -312,24 +419,26 @@ def regenerate(graph: Graph) -> RegenResult:
                     feature=node.id,
                     tool=node.tool,
                 )
-            tool = make_cut_tool(node, tool_sketch, shapes[node.target])
+            target = lineage.terminal(node.target)
+            tool = make_cut_tool(node, tool_sketch, shapes[target])
             result = cut_shape(
                 node.id,
-                shapes[node.target],
-                states[node.target],
+                shapes[target],
+                states[target],
                 tool.shape,
                 tool.candidates,
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
             removed_material[node.id] = result.removed_material
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
         elif isinstance(node, Hole):
-            tool = make_hole_tool(node, shapes[node.target])
+            target = lineage.terminal(node.target)
+            tool = make_hole_tool(node, shapes[target])
             result = cut_shape(
                 node.id,
-                shapes[node.target],
-                states[node.target],
+                shapes[target],
+                states[target],
                 tool.shape,
                 tool.candidates,
                 kind="hole",
@@ -337,26 +446,32 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
             removed_material[node.id] = result.removed_material
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
         elif isinstance(node, Fillet):
+            target = lineage.terminal(node.target)
             result = fillet_shape(
                 node.id,
-                shapes[node.target],
-                states[node.target],
+                shapes[target],
+                states[target],
                 _resolve_fillet_edges(node, provenance, ordered_features),
                 node.radius,
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
             consumed.update(result.consumed)
-            _replace_provenance(provenance, states[node.target], result.candidates)
+            lineage.replace(node.target, node.id, result.candidates)
 
+    enclosure.validate()
     return RegenResult(
-        graph,
-        shapes,
-        provenance,
-        ordered_features,
-        consumed,
-        removed_material,
-        joined_material,
+        graph=graph,
+        shapes=shapes,
+        provenance=provenance,
+        ordered_features=ordered_features,
+        consumed=consumed,
+        removed_material=removed_material,
+        joined_material=joined_material,
+        metadata=metadata,
+        opening_tools=enclosure.opening_tools,
+        superseded=lineage.superseded,
+        predecessors=lineage.predecessors,
     )

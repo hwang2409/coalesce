@@ -383,6 +383,39 @@ PCB_LID_PARAMETERS = {
     "required": ["base", "thickness", "fitGap"],
     "additionalProperties": False,
 }
+PORT_ENVELOPE = {
+    "type": "object",
+    "properties": {
+        "source": {"enum": ["courtyard", "explicit"]},
+        "width": POSITIVE_QUANTITY,
+        "height": POSITIVE_QUANTITY,
+        "bottomOffset": QUANTITY,
+    },
+    "required": ["source", "height", "bottomOffset"],
+    "oneOf": [
+        {
+            "properties": {"source": {"const": "courtyard"}},
+            "not": {"required": ["width"]},
+        },
+        {
+            "properties": {"source": {"const": "explicit"}},
+            "required": ["width"],
+        },
+    ],
+    "additionalProperties": False,
+}
+PORT_CUTOUT_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "base": FEATURE_TARGET,
+        "footprint": {"type": "string", "minLength": 1},
+        "wall": {"enum": ["auto", "left", "right", "front", "back"]},
+        "clearance": POSITIVE_QUANTITY,
+        "envelope": PORT_ENVELOPE,
+    },
+    "required": ["base", "footprint", "wall", "clearance", "envelope"],
+    "additionalProperties": False,
+}
 STANDOFFS_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -403,12 +436,23 @@ FEATURE_PARAMETERS = {
         PCB_BASE_PARAMETERS,
         STANDOFFS_PARAMETERS,
         PCB_LID_PARAMETERS,
+        PORT_CUTOUT_PARAMETERS,
     ]
 }
 FEATURE_PROPERTIES = {
     **MUTATION_PROPERTIES,
     "featureId": {"type": "string", "minLength": 1},
-    "kind": {"enum": ["extrude", "cut", "hole", "pcb_base", "standoffs", "pcb_lid"]},
+    "kind": {
+        "enum": [
+            "extrude",
+            "cut",
+            "hole",
+            "pcb_base",
+            "standoffs",
+            "pcb_lid",
+            "port_cutout",
+        ]
+    },
 }
 FEATURE_CREATE_SCHEMA = {
     "type": "object",
@@ -454,6 +498,25 @@ STANDOFFS_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+PORT_CUTOUT_ROOT_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "footprint": {"type": "string", "minLength": 1},
+        "wall": {"enum": ["auto", "left", "right", "front", "back"]},
+        "envelope": PORT_ENVELOPE,
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
+PORT_CUTOUT_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        **PORT_CUTOUT_ROOT_UPDATE_SET["properties"],
+        "clearance": POSITIVE_QUANTITY,
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
 PCB_LID_UPDATE_SET = {
     "type": "object",
     "properties": {
@@ -476,6 +539,7 @@ FEATURE_UPDATE_SCHEMA = {
                 PCB_BASE_UPDATE_SET,
                 STANDOFFS_UPDATE_SET,
                 PCB_LID_UPDATE_SET,
+                PORT_CUTOUT_ROOT_UPDATE_SET,
             ]
         },
     },
@@ -498,6 +562,7 @@ FEATURE_ACTION_SCHEMAS = {
         "pcb_base": PCB_BASE_PARAMETERS,
         "standoffs": STANDOFFS_PARAMETERS,
         "pcb_lid": PCB_LID_PARAMETERS,
+        "port_cutout": PORT_CUTOUT_PARAMETERS,
     }.items()
 }
 for kind, changes in {
@@ -507,6 +572,7 @@ for kind, changes in {
     "pcb_base": PCB_BASE_UPDATE_SET,
     "standoffs": STANDOFFS_UPDATE_SET,
     "pcb_lid": PCB_LID_UPDATE_SET,
+    "port_cutout": PORT_CUTOUT_UPDATE_SET,
 }.items():
     FEATURE_ACTION_SCHEMAS[("update", kind)] = {
         **FEATURE_UPDATE_SCHEMA,
