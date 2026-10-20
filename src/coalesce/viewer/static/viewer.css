@@ -125,6 +125,13 @@ button {
 
 .revision-number[data-empty] { color: var(--mute); font-weight: 500; }
 
+.revision-change {
+  margin-top: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
 .revision-meta {
   margin-top: 2px;
   color: var(--mute);
@@ -150,14 +157,33 @@ button {
 
 .parts ul { list-style: none; padding: 0; }
 
+/* one row: the show/hide swatch (a 44 px target), then the part button that shows details */
+.parts li:not(.parts-empty) { display: grid; grid-template-columns: 44px 1fr; align-items: start; }
+
+.visibility, .part { -webkit-tap-highlight-color: transparent; }
+.part:focus { background: rgba(29, 35, 41, 0.05); }
+
+.visibility {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.visibility:hover, .part:hover { background: rgba(29, 35, 41, 0.05); }
+
 .part {
   display: grid;
-  grid-template-columns: 14px 1fr auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
-  gap: 10px;
+  column-gap: 10px;
+  row-gap: 4px;
   width: 100%;
-  min-height: 40px;
-  padding: 8px;
+  min-height: 44px;
+  padding: 8px 8px 8px 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -165,8 +191,6 @@ button {
   transition-property: background-color, color;
   transition-duration: 120ms;
 }
-
-.part:hover { background: rgba(29, 35, 41, 0.05); }
 
 .swatch {
   width: 14px;
@@ -182,14 +206,23 @@ button {
   font-weight: 500;
 }
 
-/* a focused row (keyboard or tap) shows its full name */
-.part:focus .part-name { grid-column: 2 / -1; white-space: normal; overflow-wrap: anywhere; }
+/* a focused row (keyboard or tap) and a name with a distinguishing suffix show the full name */
+.part-name.collides { white-space: normal; }
+.part:focus .part-name { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
 
-.part-size { grid-column: 3; color: var(--mute); font-size: 12px; }
+.part-size { grid-column: 2; color: var(--mute); font-size: 12px; }
 
-.part[aria-pressed="false"] { color: var(--mute); }
-.part[aria-pressed="false"] .swatch { background: transparent !important; }
-.part[aria-pressed="false"] .part-name { text-decoration: line-through; text-decoration-color: var(--faint); }
+/* named holes and the feature chain; narrow screens show it only for the focused row */
+.part-detail {
+  grid-column: 1 / -1;
+  color: var(--mute);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.visibility[aria-pressed="false"] .swatch { background: transparent !important; }
+.visibility[aria-pressed="false"] + .part { color: var(--mute); }
+.visibility[aria-pressed="false"] + .part .part-name { text-decoration: line-through; text-decoration-color: var(--faint); }
 
 .parts-empty { padding: 0 8px; color: var(--mute); }
 
@@ -262,6 +295,22 @@ button {
 .stale[data-state="ended"] { box-shadow: inset 3px 0 0 var(--fail); }
 
 .stale strong { font-weight: 650; }
+
+.stale code { font-size: 12px; overflow-wrap: anywhere; }
+
+.copy {
+  display: block;
+  min-height: 34px;
+  margin-top: 8px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--rule), 0 1px 2px rgba(29, 35, 41, 0.12);
+  font-weight: 500;
+}
+
+.copy:active { scale: 0.96; }
 
 /* a dropped connection leaves the last scene on screen, visibly not current */
 #view { transition-property: filter; transition-duration: 200ms; }
@@ -419,7 +468,12 @@ button {
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .panel { max-height: 40vh; }
-  .scale { display: none; }
+  .part:not(:focus) .part-detail { display: none; }
+  /* a row with hidden details says so before the tap */
+  .part.has-detail:not(:focus) .part-size::after { content: "  \25BE"; color: var(--faint); }
+  /* a compact scale above the camera buttons; the grid square is the same length */
+  .scale, .gizmo[hidden] + .scale { left: auto; right: 16px; bottom: 66px; }
+  .scale-grid { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
