@@ -1,0 +1,15 @@
+(kicad_pcb
+  (version 20240108)
+  (generator "pcbnew")
+  (generator_version "8.0")
+  (footprint "54-00298:54-00298"
+    (layer "B.Cu")
+    (at 148.5 82.5 180)
+    (property "Reference" "J3")
+    (pad "1" thru_hole oval
+      (at -2.949999 -2.9 180)
+      (size 1.3716 2.0066)
+      (drill oval 0.7 1.524)
+    )
+  )
+)
