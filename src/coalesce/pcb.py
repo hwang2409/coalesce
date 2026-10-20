@@ -6,8 +6,8 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from build123d import Edge, Face, Location, Shape, Wire
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+from build123d import Compound, Edge, Face, Location, Shape, Wire
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
@@ -23,6 +23,13 @@ from .references import BodySource, Candidate
 class PcbResult:
     shape: Shape
     candidates: list[Candidate]
+
+
+@dataclass
+class _PlanarRegion:
+    face: Face
+    boundaries: list[tuple[str, str, Edge]]
+    source: str
 
 
 def _point(value: list[float]) -> tuple[float, float, float]:
@@ -167,36 +174,89 @@ def _subtract_region(
     return faces[0], surviving
 
 
-def _planar_region(node: BoardImport) -> tuple[Face, list[tuple[str, str, Edge]]]:
-    mechanics = node.mechanics
-    outer_loops = mechanics.get("outline", [])
-    if len(outer_loops) != 1:
-        raise GraphError(
-            "INVALID_BOARD",
-            "board must contain exactly one outer outline loop",
-            feature=node.id,
-            outerLoops=len(outer_loops),
-        )
-    outer, edges = _loop_wire(outer_loops[0])
-    region = Face(outer)
-    boundaries = [("outline", source, edge) for source, edge in edges]
-    subtractions: list[tuple[Wire, list[tuple[str, str, Edge]]]] = []
-    for loop in mechanics.get("innerCutouts", []):
+def _contains_face(container: Face, contained: Face) -> bool:
+    common = BRepAlgoAPI_Common(container.wrapped, contained.wrapped)
+    common.Build()
+    if not common.IsDone():
+        return False
+    area = sum(face.area for face in Shape.cast(common.Shape()).faces())
+    return math.isclose(area, contained.area, rel_tol=1e-9, abs_tol=1e-9)
+
+
+_Subtraction = tuple[Wire, list[tuple[str, str, Edge]]]
+
+
+def _cutout_subtractions(
+    node: BoardImport,
+    regions: list[_PlanarRegion],
+) -> dict[str, list[_Subtraction]]:
+    assigned: dict[str, list[_Subtraction]] = {region.source: [] for region in regions}
+    for loop in node.mechanics.get("innerCutouts", []):
         wire, edges = _loop_wire(loop)
-        subtractions.append((wire, [("cutout", source, edge) for source, edge in edges]))
-    for hole in mechanics.get("holes", []):
+        cutout = Face(wire)
+        parents = [region for region in regions if _contains_face(region.face, cutout)]
+        if not parents:
+            raise GraphError(
+                "INVALID_BOARD",
+                "board cutout is not inside an outer outline",
+                feature=node.id,
+                loop=loop["id"],
+            )
+        parent = min(parents, key=lambda region: region.face.area)
+        assigned[parent.source].append(
+            (wire, [("cutout", source, edge) for source, edge in edges])
+        )
+    return assigned
+
+
+def _drill_subtractions(node: BoardImport) -> list[_Subtraction]:
+    drills = []
+    for hole in node.mechanics.get("holes", []):
         wire, edges = _drill_wire(hole)
-        subtractions.append((wire, [("hole", hole["id"], edge) for edge in edges]))
+        drills.append((wire, [("hole", hole["id"], edge) for edge in edges]))
+    return drills
+
+
+def _apply_subtractions(
+    node: BoardImport,
+    regions: list[_PlanarRegion],
+    assigned: dict[str, list[_Subtraction]],
+    drills: list[_Subtraction],
+) -> None:
     try:
-        for wire, sources in subtractions:
-            region, boundaries = _subtract_region(region, boundaries, wire, sources)
+        for region in regions:
+            for wire, sources in [*assigned[region.source], *drills]:
+                region.face, region.boundaries = _subtract_region(
+                    region.face, region.boundaries, wire, sources
+                )
     except Exception as error:
         raise GraphError(
             "INVALID_BOARD",
             "board loops and drills do not define a valid substrate",
             feature=node.id,
         ) from error
-    return region, boundaries
+
+
+def _planar_regions(node: BoardImport) -> list[_PlanarRegion]:
+    regions: list[_PlanarRegion] = []
+    for loop in node.mechanics.get("outline", []):
+        wire, edges = _loop_wire(loop)
+        regions.append(
+            _PlanarRegion(
+                Face(wire),
+                [("outline", source, edge) for source, edge in edges],
+                loop["id"],
+            )
+        )
+    if not regions:
+        raise GraphError("INVALID_BOARD", "board has no outer outline loop", feature=node.id)
+    _apply_subtractions(
+        node,
+        regions,
+        _cutout_subtractions(node, regions),
+        _drill_subtractions(node),
+    )
+    return regions
 
 
 def _validate_face_provenance(node: BoardImport, shape: Shape, faces: list[Candidate]) -> None:
@@ -211,48 +271,53 @@ def _validate_face_provenance(node: BoardImport, shape: Shape, faces: list[Candi
         )
 
 
+def _extrude_region(
+    node: BoardImport,
+    region: _PlanarRegion,
+    thickness: float,
+) -> tuple[Shape, list[Candidate]]:
+    prism = BRepPrimAPI_MakePrism(region.face.wrapped, gp_Vec(0, 0, thickness))
+    prism.Build()
+    if not prism.IsDone():
+        raise ValueError("board substrate extrusion failed")
+    shape = Shape.cast(prism.Shape())
+    body = BodySource(node.id, region.source)
+    candidates = [
+        candidate(node.id, "board_bottom", region.source, Shape.cast(prism.FirstShape()), body=body),
+        candidate(node.id, "board_top", region.source, Shape.cast(prism.LastShape()), body=body),
+    ]
+    for role, source, edge in region.boundaries:
+        generated = list(prism.Generated(edge.wrapped))
+        if len(generated) != 1:
+            raise ValueError(f"extrusion lost {role} provenance for {source}")
+        candidates.append(candidate(node.id, role, source, Shape.cast(generated[0]), body=body))
+    return shape, candidates
+
+
 def build_pcb(node: BoardImport) -> PcbResult:
-    """Build one board solid; subtraction outside existing material is a no-op."""
+    """Build board solids; subtraction outside existing material is a no-op."""
     thickness = node.mechanics.get("thickness")
     if not isinstance(thickness, (int, float)) or not math.isfinite(thickness) or thickness <= 0:
         raise GraphError("INVALID_BOARD", "board thickness must be a positive finite value", feature=node.id)
 
-    face, boundaries = _planar_region(node)
     try:
-        prism = BRepPrimAPI_MakePrism(face.wrapped, gp_Vec(0, 0, thickness))
-        prism.Build()
+        built = [_extrude_region(node, region, thickness) for region in _planar_regions(node)]
+    except GraphError:
+        raise
     except Exception as error:
         raise GraphError(
             "INVALID_BOARD",
             "board loops and drills do not define a valid substrate",
             feature=node.id,
         ) from error
-    if not prism.IsDone():
-        raise GraphError("INVALID_BOARD", "board substrate extrusion failed", feature=node.id)
-    shape = Shape.cast(prism.Shape())
-    if len(shape.solids()) != 1 or not BRepCheck_Analyzer(shape.wrapped).IsValid():
+    shapes = [shape for shape, _ in built]
+    shape = shapes[0] if len(shapes) == 1 else Compound(children=shapes)
+    candidates = [item for _, region_candidates in built for item in region_candidates]
+    if not BRepCheck_Analyzer(shape.wrapped).IsValid():
         raise GraphError(
             "INVALID_BOARD",
-            "board loops and drills do not define one valid solid",
+            "board loops and drills do not define valid solids",
             feature=node.id,
         )
-
-    outer_id = node.mechanics["outline"][0]["id"]
-    body = BodySource(node.id, outer_id)
-    candidates = [
-        candidate(node.id, "board_bottom", outer_id, Shape.cast(prism.FirstShape()), body=body),
-        candidate(node.id, "board_top", outer_id, Shape.cast(prism.LastShape()), body=body),
-    ]
-    for role, source, edge in boundaries:
-        generated = list(prism.Generated(edge.wrapped))
-        if len(generated) != 1:
-            raise GraphError(
-                "INVALID_BOARD",
-                "board extrusion did not preserve boundary provenance",
-                feature=node.id,
-                role=role,
-                source=source,
-            )
-        candidates.append(candidate(node.id, role, source, Shape.cast(generated[0]), body=body))
     _validate_face_provenance(node, shape, candidates)
     return PcbResult(shape, [*candidates, *derive_edge_candidates(node.id, shape, candidates)])

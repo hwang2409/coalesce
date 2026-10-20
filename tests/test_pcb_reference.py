@@ -208,23 +208,23 @@ def test_drill_outside_substrate_is_a_no_op_with_empty_provenance():
     assert resolution.candidates == []
 
 
-def test_nested_outline_is_rejected_as_unsupported_multi_body_board():
-    node = _board_node(
-        outline=[
-            _rectangle_loop("outer", 0, 0, 20, 10),
-            _rectangle_loop("island", 8, 4, 12, 6),
-        ],
-        cutouts=[_rectangle_loop("cutout", 6, 3, 14, 7)],
+def test_nested_outline_builds_island_inside_cutout():
+    result = build_pcb(
+        _board_node(
+            outline=[
+                _rectangle_loop("outer", 0, 0, 20, 10),
+                _rectangle_loop("island", 8, 4, 12, 6),
+            ],
+            cutouts=[_rectangle_loop("cutout", 6, 3, 14, 7)],
+        )
     )
 
-    with pytest.raises(GraphError) as error:
-        build_pcb(node)
-    assert error.value.error == {
-        "code": "INVALID_BOARD",
-        "message": "board must contain exactly one outer outline loop",
-        "feature": "board",
-        "outerLoops": 2,
+    assert len(result.shape.solids()) == 2
+    assert result.shape.volume == pytest.approx((200 - 32 + 8) * 1.6)
+    top_sources = {
+        item.key.source for item in result.candidates if item.key.role == "board_top"
     }
+    assert top_sources == {"outer", "island"}
 
 
 def test_unsupported_outline_fails_with_structured_board_error():
