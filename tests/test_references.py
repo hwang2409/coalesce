@@ -96,6 +96,34 @@ def test_exact_cardinality_and_merged_status_are_explicit():
     )
 
 
+def test_accepted_distinct_key_collections_are_ok():
+    pieces = [candidate("cap_end", "a"), candidate("cap_end", "b")]
+
+    one_or_more = resolve(
+        Reference("base", "cap_end", Cardinality.ONE_OR_MORE),
+        {"base": pieces},
+    )
+    exact = resolve(
+        Reference("base", "cap_end", Cardinality.EXACTLY, count=2),
+        {"base": pieces},
+    )
+
+    assert one_or_more.status is Status.OK
+    assert one_or_more.error is None
+    assert exact.status is Status.OK
+    assert exact.error is None
+
+
+def test_count_above_contract_is_ambiguous_with_structured_error():
+    pieces = [candidate("cap_end", "a"), candidate("cap_end", "b")]
+
+    resolution = resolve(Reference("base", "cap_end"), {"base": pieces})
+
+    assert resolution.status is Status.AMBIGUOUS
+    assert resolution.error["status"] == "AMBIGUOUS"
+    assert len(resolution.error["candidates"]) == 2
+
+
 def test_equal_maximum_is_ambiguous_instead_of_picking_by_index():
     candidates = {
         "base": [
@@ -109,6 +137,28 @@ def test_equal_maximum_is_ambiguous_instead_of_picking_by_index():
     )
 
     assert resolution.status is Status.AMBIGUOUS
+    assert resolution.error["status"] == "AMBIGUOUS"
+    assert len(resolution.candidates) == 2
+
+
+def test_equal_maximum_between_split_pieces_is_ambiguous():
+    pieces = [
+        candidate("cap_end", "top", (0, 0, 10)),
+        candidate("cap_end", "top", (5, 0, 10)),
+    ]
+
+    resolution = resolve(
+        Reference(
+            "base",
+            "cap_end",
+            Cardinality.ONE_OR_MORE,
+            filters=[MaxAlong((0, 0, 1))],
+        ),
+        {"base": pieces},
+    )
+
+    assert resolution.status is Status.AMBIGUOUS
+    assert resolution.error["status"] == "AMBIGUOUS"
     assert len(resolution.candidates) == 2
 
 

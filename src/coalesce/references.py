@@ -139,19 +139,27 @@ def _error(ref: Reference, status: Status, candidates: list[Candidate]) -> dict[
     }
 
 
-def _filter(candidates: list[Candidate], predicate: Filter) -> list[Candidate]:
+@dataclass
+class _FilterResult:
+    candidates: list[Candidate]
+    tied: bool = False
+
+
+def _filter(candidates: list[Candidate], predicate: Filter) -> _FilterResult:
     direction = _unit(predicate.direction)
     if isinstance(predicate, Normal):
-        return [
-            candidate
-            for candidate in candidates
-            if "normal" in candidate.descriptor
-            and isclose(
-                _dot(_unit(tuple(candidate.descriptor["normal"])), direction),
-                1.0,
-                abs_tol=predicate.tolerance,
-            )
-        ]
+        return _FilterResult(
+            [
+                candidate
+                for candidate in candidates
+                if "normal" in candidate.descriptor
+                and isclose(
+                    _dot(_unit(tuple(candidate.descriptor["normal"])), direction),
+                    1.0,
+                    abs_tol=predicate.tolerance,
+                )
+            ]
+        )
 
     positions = [
         (candidate, _dot(tuple(candidate.descriptor["center"]), direction))
@@ -159,42 +167,49 @@ def _filter(candidates: list[Candidate], predicate: Filter) -> list[Candidate]:
         if "center" in candidate.descriptor
     ]
     if isinstance(predicate, Position):
-        return [
-            candidate
-            for candidate, position in positions
-            if isclose(position, predicate.value, abs_tol=predicate.tolerance)
-        ]
+        return _FilterResult(
+            [
+                candidate
+                for candidate, position in positions
+                if isclose(position, predicate.value, abs_tol=predicate.tolerance)
+            ]
+        )
     if not positions:
-        return []
+        return _FilterResult([])
     maximum = max(position for _, position in positions)
-    return [
+    selected = [
         candidate
         for candidate, position in positions
         if isclose(position, maximum, abs_tol=predicate.tolerance)
     ]
+    return _FilterResult(selected, tied=len(selected) > 1)
 
 
-def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> list[Candidate]:
+def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> _FilterResult:
     candidates = [
         candidate
         for candidate in provenance.get(ref.feature, [])
         if candidate.key.role == ref.role
         and (ref.source is None or candidate.key.source == ref.source)
     ]
+    tied = False
     for predicate in ref.filters:
-        candidates = _filter(candidates, predicate)
-    return candidates
+        result = _filter(candidates, predicate)
+        candidates = result.candidates
+        tied = tied or result.tied
+    return _FilterResult(candidates, tied)
 
 
-def _classify(candidates: list[Candidate]) -> Status:
+def _classify(result: _FilterResult) -> Status:
+    candidates = result.candidates
     if not candidates:
         return Status.EMPTY
+    if result.tied:
+        return Status.AMBIGUOUS
     if any(candidate.merged_from for candidate in candidates):
         return Status.MERGED
-    if len(candidates) > 1:
-        if len({candidate.key for candidate in candidates}) == 1:
-            return Status.SPLIT
-        return Status.AMBIGUOUS
+    if len(candidates) > 1 and len({candidate.key for candidate in candidates}) == 1:
+        return Status.SPLIT
     return Status.OK
 
 
@@ -222,7 +237,11 @@ def resolve(
     ):
         return Resolution(Status.ORDER, error=_error(ref, Status.ORDER, []))
 
-    candidates = _select(ref, provenance)
-    status = _classify(candidates)
-    error = _error(ref, status, candidates) if _violates_cardinality(ref, len(candidates)) else None
+    filtered = _select(ref, provenance)
+    candidates = filtered.candidates
+    status = _classify(filtered)
+    violates = _violates_cardinality(ref, len(candidates))
+    if status is Status.OK and violates:
+        status = Status.AMBIGUOUS
+    error = _error(ref, status, candidates) if violates or filtered.tied else None
     return Resolution(status, candidates, error)
