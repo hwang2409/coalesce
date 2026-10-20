@@ -1718,8 +1718,8 @@ class DocumentService:
                     )
                     continue
                 valid = all(
-                    BRepCheck_Analyzer(shape.wrapped).IsValid()
-                    for shape in self._regen.shapes.values()
+                    BRepCheck_Analyzer(part.shape.wrapped).IsValid()
+                    for part in terminal_parts(self._regen)
                 )
                 results.append(
                     {

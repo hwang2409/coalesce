@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
 
+import coalesce.service as service_module
 from coalesce.graph import BoardImport, GraphError
 from coalesce.pcb import build_pcb
 from coalesce.references import Cardinality, Reference, Status, resolve
@@ -330,3 +331,89 @@ def test_invalid_refresh_is_atomic_and_keeps_last_good_reference_scene(tmp_path)
     assert service.revision == 1
     assert store.current_revision == 1
     assert store.scene(1) == first
+
+
+def _add_plate(service):
+    service.sketch(
+        {
+            "action": "create",
+            "expectedRevision": 1,
+            "requestId": "plate-sketch",
+            "sketchId": "plate_profile",
+            "plane": {"kind": "origin", "name": "XY"},
+            "entities": [
+                {
+                    "id": "outline",
+                    "kind": "rectangle",
+                    "center": [0, 0],
+                    "width": {"value": 60, "unit": "mm"},
+                    "height": {"value": 40, "unit": "mm"},
+                    "rotation": {"value": 0, "unit": "deg"},
+                }
+            ],
+        }
+    )
+    service.feature(
+        {
+            "action": "create",
+            "expectedRevision": 2,
+            "requestId": "plate-feature",
+            "featureId": "plate",
+            "kind": "extrude",
+            "parameters": {
+                "profile": {"sketchId": "plate_profile", "profileIds": ["outline"]},
+                "distance": {"value": 6, "unit": "mm"},
+                "operation": "new_body",
+                "direction": "normal",
+            },
+        }
+    )
+
+
+def test_valid_brep_excludes_pcb_reference_shapes(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "board.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    checked = []
+    real_analyzer = service_module.BRepCheck_Analyzer
+
+    class RecordingAnalyzer:
+        def __init__(self, shape):
+            checked.append(shape)
+            self._analyzer = real_analyzer(shape)
+
+        def IsValid(self):
+            return self._analyzer.IsValid()
+
+    monkeypatch.setattr(service_module, "BRepCheck_Analyzer", RecordingAnalyzer)
+    result = service.check({"action": "evaluate"})
+
+    assert result["results"][0]["status"] == "PASS"
+    assert result["results"][0]["evidence"] == {"solidCount": 0}
+    assert checked == []
+
+    _add_plate(service)
+    checked.clear()
+    result = service.check({"action": "evaluate"})
+
+    assert result["results"][0]["status"] == "PASS"
+    assert result["results"][0]["evidence"] == {"solidCount": 1}
+    assert len(checked) == 1
+
+
+def test_valid_brep_fails_for_invalid_manufacturing_shape(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "board.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    _add_plate(service)
+
+    class InvalidAnalyzer:
+        def __init__(self, shape):
+            pass
+
+        def IsValid(self):
+            return False
+
+    monkeypatch.setattr(service_module, "BRepCheck_Analyzer", InvalidAnalyzer)
+    result = service.check({"action": "evaluate"})
+
+    assert result["results"][0]["status"] == "FAIL"
+    assert result["results"][0]["evidence"] == {"solidCount": 1}
