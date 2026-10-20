@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any
 
+from .graph import BoardImport
 from .references import BodySource, Candidate
 
 
@@ -13,6 +14,7 @@ from .references import BodySource, Candidate
 class TerminalPart:
     part_id: str
     label: str
+    role: str
     source_body: BodySource
     terminal_feature: str
     shape: Any
@@ -55,7 +57,7 @@ def _solid_body(solid: Any, owned: list[Candidate]) -> tuple[BodySource, tuple[s
     return body, history
 
 
-def terminal_parts(result: Any) -> list[TerminalPart]:
+def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[TerminalPart]:
     owned = [
         candidate
         for candidates in result.provenance.values()
@@ -73,13 +75,21 @@ def terminal_parts(result: Any) -> list[TerminalPart]:
         counts[body] = counts.get(body, 0) + 1
     parts: list[TerminalPart] = []
     for feature, solid, body, history in solids:
+        part_role = (
+            "reference"
+            if isinstance(result.graph.nodes[body.feature], BoardImport)
+            else "manufacturing"
+        )
+        if role is not None and part_role != role:
+            continue
         base = f"{body.feature}/{body.entity}"
         if counts[body] > 1:
             suffix = hashlib.sha256("\n".join(history).encode()).hexdigest()[:12]
             part_id = f"{base}#{suffix}"
         else:
             part_id = base
-        parts.append(TerminalPart(part_id, body.feature, body, feature, solid))
+        label = "pcb reference" if part_role == "reference" else body.feature
+        parts.append(TerminalPart(part_id, label, part_role, body, feature, solid))
     if len({part.part_id for part in parts}) != len(parts):
         raise ValueError("terminal part provenance is ambiguous")
     return parts

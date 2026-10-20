@@ -54,6 +54,7 @@ async def test_translated_plate_reports_bbox_placement_and_terminal_body_metrics
     )
 
     metrics = results[-1]
+    assert metrics["role"] == "manufacturing"
     assert metrics["bbox"] == {
         "x": {"value": 60, "unit": "mm"},
         "y": {"value": 40, "unit": "mm"},
@@ -66,6 +67,7 @@ async def test_translated_plate_reports_bbox_placement_and_terminal_body_metrics
         {
             "partId": "plate_extrude/outline",
             "label": "plate_extrude",
+            "role": "manufacturing",
             "sourceBody": {"feature": "plate_extrude", "entity": "outline"},
             "terminalFeatureId": "plate_extrude",
             "featureId": "plate_extrude",

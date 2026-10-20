@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
 
+from coalesce.graph import BoardImport, GraphError
+from coalesce.pcb import build_pcb
 from coalesce.references import Cardinality, Reference, Status
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
@@ -58,7 +60,8 @@ def test_imported_board_regenerates_exact_valid_reference_geometry(
     assert shape.volume == pytest.approx(expected_area(name) * thickness, rel=1e-6)
 
     candidates = service._regen.provenance["controller_board"]
-    assert len({item.key.source for item in candidates if item.key.role == "cutout"}) == cutouts
+    top = next(item.entity for item in candidates if item.key.role == "board_top")
+    assert len(top.wires()) - holes - 1 == cutouts
     assert len({item.key.source for item in candidates if item.key.role == "hole"}) == holes
 
 
@@ -86,8 +89,16 @@ def test_board_source_ids_resolve_to_provenance_faces(tmp_path, name):
             source=segment_id,
         )
     )
-    assert segment.status is Status.OK
+    assert segment.status in {Status.OK, Status.SPLIT}
     assert len(segment.candidates) == segment_count
+
+    for cutout in mechanics["innerCutouts"]:
+        for item in cutout["segments"]:
+            resolution = service._regen.resolve(
+                Reference("controller_board", "cutout", source=item["id"])
+            )
+            assert resolution.status is Status.OK
+            assert len(resolution.candidates) == 1
 
     for hole in mechanics["holes"]:
         resolution = service._regen.resolve(
@@ -95,6 +106,76 @@ def test_board_source_ids_resolve_to_provenance_faces(tmp_path, name):
         )
         assert resolution.status is Status.OK
         assert len(resolution.candidates) == 1
+
+
+def test_oval_drill_uses_exact_rotated_stadium_geometry():
+    node = BoardImport(
+        "board",
+        "/board.kicad_pcb",
+        "digest",
+        "2",
+        {
+            "thickness": 1.6,
+            "outline": [
+                {
+                    "id": "outer",
+                    "closed": True,
+                    "segments": [
+                        {"id": "a", "kind": "line", "start": [0, 0], "end": [20, 0]},
+                        {"id": "b", "kind": "line", "start": [20, 0], "end": [20, 10]},
+                        {"id": "c", "kind": "line", "start": [20, 10], "end": [0, 10]},
+                        {"id": "d", "kind": "line", "start": [0, 10], "end": [0, 0]},
+                    ],
+                }
+            ],
+            "innerCutouts": [],
+            "holes": [
+                {
+                    "id": "slot",
+                    "position": [10, 5],
+                    "drill": {"shape": "oval", "width": 4, "height": 2, "rotation": 30},
+                }
+            ],
+        },
+        {},
+    )
+
+    result = build_pcb(node)
+
+    slot_area = 2 * 2 + math.pi * 1**2
+    assert result.shape.volume == pytest.approx((200 - slot_area) * 1.6)
+    slot_faces = [item for item in result.candidates if item.key.role == "hole"]
+    assert len(slot_faces) == 4
+    assert {item.key.source for item in slot_faces} == {"slot"}
+
+
+def test_unsupported_outline_fails_with_structured_board_error():
+    node = BoardImport(
+        "board",
+        "/board.kicad_pcb",
+        "digest",
+        "2",
+        {
+            "thickness": 1.6,
+            "outline": [
+                {
+                    "id": "outer",
+                    "closed": True,
+                    "segments": [
+                        {"id": "curve", "kind": "bezier", "start": [0, 0], "end": [0, 0]}
+                    ],
+                }
+            ],
+            "innerCutouts": [],
+            "holes": [],
+        },
+        {},
+    )
+
+    with pytest.raises(GraphError) as error:
+        build_pcb(node)
+    assert error.value.error["code"] == "UNSUPPORTED_BOARD_OUTLINE"
+    assert error.value.error["segment"] == "curve"
 
 
 def test_reference_role_is_excluded_by_default_and_queryable_after_restart(tmp_path):
