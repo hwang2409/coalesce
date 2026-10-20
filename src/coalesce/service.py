@@ -416,19 +416,30 @@ def _terminal_shapes(result: RegenResult) -> list[tuple[str, Any]]:
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
+    owned = [
+        candidate
+        for candidates in result.provenance.values()
+        for candidate in candidates
+        if candidate.key.body is not None and candidate.entity is not None
+    ]
     for feature, shape in _terminal_shapes(result):
-        source = feature
-        while target := getattr(result.graph.nodes[source], "target", None):
-            source = target
-        bodies = []
-        for candidates in result.provenance.values():
-            for candidate in candidates:
-                body = candidate.key.body
-                if body is not None and body.feature == source and body not in bodies:
-                    bodies.append(body)
-        for index, solid in enumerate(shape.solids()):
-            body_name = bodies[index].entity if index < len(bodies) else str(index + 1)
-            yield ScenePart(f"{feature}/{body_name}", solid)
+        solids = shape.solids()
+        names = []
+        for solid in solids:
+            faces = [face.wrapped for face in solid.faces()]
+            bodies = sorted(
+                {
+                    candidate.key.body.entity
+                    for candidate in owned
+                    if any(candidate.entity.wrapped.IsSame(face) for face in faces)
+                }
+            )
+            names.append(f"{feature}/{'+'.join(bodies) or 'solid'}")
+        for index, (name, solid) in enumerate(zip(names, solids, strict=True)):
+            # a cut can split one body into several solids; scene names must stay unique.
+            if names.count(name) > 1:
+                name = f"{name} ({names[: index + 1].count(name)})"
+            yield ScenePart(name, solid)
 
 
 class _ScenePublisher:

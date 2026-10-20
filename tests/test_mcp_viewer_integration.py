@@ -17,6 +17,8 @@ from mcp.client.stdio import stdio_client
 from test_mcp_vertical import FEATURE, SKETCH, result_json
 from test_viewer_browser import playwright_module
 
+from coalesce.document_store import Document, DocumentStore
+from coalesce.graph import Cut, Extrude, Graph, Rectangle, Sketch
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
@@ -337,4 +339,35 @@ def test_kernel_failure_publishes_coalesce_wording_only(tmp_path, monkeypatch):
             "code": "KERNEL_OPERATION_FAILED",
             "message": "the modeling operation could not produce valid geometry",
         },
+    }
+
+
+def test_scene_parts_are_named_by_the_body_that_owns_each_solid(tmp_path):
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "bars",
+            entities=[
+                Rectangle("left", 10, 10, position=(-20, 0)),
+                Rectangle("right", 30, 10, position=(20, 0)),
+            ],
+        )
+    )
+    graph.add(Extrude("base", sketch="bars", height=5))
+    graph.add(Sketch("slot_tool", entities=[Rectangle("slot", 2, 20, position=(20, 0))]))
+    graph.add(Cut("split", target="base", tool="slot_tool"))
+    path = tmp_path / "bars.coalesce.json"
+    DocumentStore(path).save(Document(graph, revision=4, receipts=[]))
+    store = ViewerSceneStore()
+
+    DocumentService(path, scene_store=store)
+    deadline = time.monotonic() + 5
+    while store.current_revision != 4 and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    parts = {part["name"]: part["size"] for part in store.scene(4)["parts"]}
+    assert parts == {
+        "split/left": pytest.approx([10, 10, 5]),
+        "split/right (1)": pytest.approx([14, 10, 5]),
+        "split/right (2)": pytest.approx([14, 10, 5]),
     }
