@@ -4,10 +4,10 @@ from dataclasses import dataclass, replace
 from itertools import product
 from math import sqrt
 
-from build123d import Location, Shape
 from build123d import Plane as BuildPlane
+from build123d import Shape
 
-from .extrusion import extrude_sketch
+from .extrusion import extrude_sketch, sketch_location
 from .graph import Cut, Extrude, GraphError, Sketch
 from .references import Candidate
 
@@ -20,12 +20,14 @@ class CutTool:
 
 def _through_span(sketch: Sketch, target: Shape) -> float:
     bounds = target.bounding_box()
-    normal = BuildPlane(Location(sketch.position, sketch.rotation)).z_dir
+    location = sketch_location(sketch)
+    normal = BuildPlane(location).z_dir
+    origin = location.position
     projections = [
         abs(
-            (x - sketch.position[0]) * normal.X
-            + (y - sketch.position[1]) * normal.Y
-            + (z - sketch.position[2]) * normal.Z
+            (x - origin.X) * normal.X
+            + (y - origin.Y) * normal.Y
+            + (z - origin.Z) * normal.Z
         )
         for x, y, z in product(
             (bounds.min.X, bounds.max.X),
@@ -49,7 +51,7 @@ def make_cut_tool(node: Cut, sketch: Sketch, target: Shape) -> CutTool:
     tool_sketch = sketch
     if node.depth is None:
         span = _through_span(sketch, target)
-        normal = BuildPlane(Location(sketch.position, sketch.rotation)).z_dir
+        normal = BuildPlane(sketch_location(sketch)).z_dir
         tool_sketch = replace(
             sketch,
             position=(

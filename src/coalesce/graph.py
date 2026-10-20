@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any
 
 from .references import Reference
@@ -14,7 +15,15 @@ class Parameter:
 
 @dataclass
 class Plane:
+    """An origin plane matching build123d's frames.
+
+    XY uses local x=+X, y=+Y, normal=+Z. XZ uses local x=+X, y=+Z,
+    normal=-Y. YZ uses local x=+Y, y=+Z, normal=+X. ``offset`` moves
+    the plane origin along its normal.
+    """
+
     name: str = "XY"
+    offset: float = 0.0
 
 
 @dataclass
@@ -84,6 +93,43 @@ class GraphError(ValueError):
         super().__init__(message)
 
 
+def _require_finite(sketch: Sketch, field: str, values: tuple[float, ...]) -> None:
+    if not all(isinstance(value, (int, float)) and isfinite(value) for value in values):
+        raise GraphError(
+            "non_finite_value",
+            f"sketch {sketch.id} {field} values must be finite",
+            sketch=sketch.id,
+            field=field,
+        )
+
+
+def validate_sketch(sketch: Sketch) -> None:
+    if sketch.plane.name not in {"XY", "XZ", "YZ"}:
+        raise GraphError(
+            "unknown_plane",
+            f"unknown origin plane: {sketch.plane.name}",
+            sketch=sketch.id,
+            plane=sketch.plane.name,
+            allowed=["XY", "XZ", "YZ"],
+        )
+    _require_finite(sketch, "plane.offset", (sketch.plane.offset,))
+    _require_finite(sketch, "position", sketch.position)
+    _require_finite(sketch, "rotation", sketch.rotation)
+    for entity in sketch.entities:
+        _require_finite(sketch, f"entity.{entity.id}.position", entity.position)
+        _require_finite(sketch, f"entity.{entity.id}.rotation", (entity.rotation,))
+        if isinstance(entity, Circle):
+            _require_finite(sketch, f"entity.{entity.id}.radius", (entity.radius,))
+            if entity.radius <= 0:
+                raise GraphError(
+                    "invalid_circle_radius",
+                    f"circle {entity.id} radius must be positive",
+                    sketch=sketch.id,
+                    entity=entity.id,
+                    radius=entity.radius,
+                )
+
+
 class Graph:
     def __init__(self) -> None:
         self.nodes: dict[str, Any] = {}
@@ -113,6 +159,7 @@ class Graph:
     def _validate_node(node: Any) -> None:
         if not isinstance(node, Sketch):
             return
+        validate_sketch(node)
         entity_ids = [entity.id for entity in node.entities]
         duplicate = next(
             (entity_id for entity_id in entity_ids if entity_ids.count(entity_id) > 1),

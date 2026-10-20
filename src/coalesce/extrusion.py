@@ -10,7 +10,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
-from .graph import Circle, Extrude, GraphError, Rectangle, Sketch
+from .graph import Circle, Extrude, GraphError, Rectangle, Sketch, validate_sketch
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
 
@@ -25,6 +25,24 @@ _LINEAR_BOUNDARY_TOLERANCE = 1e-7
 _AREA_RELATIVE_TOLERANCE = 1e-9
 # Keep an absolute floor for floating-point noise without imposing a linear tolerance on areas.
 _AREA_TOLERANCE_FLOOR = 1e-18
+
+
+_ORIGIN_PLANES = {
+    "XY": BuildPlane.XY,
+    "XZ": BuildPlane.XZ,
+    "YZ": BuildPlane.YZ,
+}
+
+
+def sketch_location(sketch: Sketch) -> Location:
+    validate_sketch(sketch)
+    frame = _ORIGIN_PLANES[sketch.plane.name]
+    normal = frame.z_dir * sketch.plane.offset
+    return (
+        Location(sketch.position, sketch.rotation)
+        * Location((normal.X, normal.Y, normal.Z))
+        * frame.location
+    )
 
 
 class _ProfileRelation(Enum):
@@ -75,7 +93,7 @@ def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
     if isinstance(entity, Circle):
         wire = Wire.make_circle(entity.radius).moved(location)
         (edge,) = wire.edges()
-        return _Profile(entity, Face(wire), wire, {entity.id: edge})
+        return _Profile(entity, Face(wire), wire, {"circle": edge})
     raise TypeError(f"unsupported sketch entity: {type(entity).__name__}")
 
 
@@ -218,7 +236,7 @@ def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
     if not sketch.entities:
         raise ValueError(f"sketch {sketch.id} has no entities")
 
-    location = Location(sketch.position, sketch.rotation)
+    location = sketch_location(sketch)
     direction = BuildPlane(location).z_dir * node.height
     profiles = _organize_profiles(sketch, location)
     shapes: list[Shape] = []
