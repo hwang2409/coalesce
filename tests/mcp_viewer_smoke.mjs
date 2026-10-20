@@ -42,7 +42,7 @@ if (screenshots) await page.screenshot({ path: path.join(screenshots, 'failure.p
 console.log(JSON.stringify({
   revision: await page.getByTestId('revision').textContent(),
   parts: await page.locator('#parts li').count(),
-  failure: await page.locator('#failure-error').textContent(),
+  failure: `${await page.locator('#failure-code').textContent()}: ${await page.locator('#failure-message').textContent()}`,
   errors,
 }));
 await browser.close();
