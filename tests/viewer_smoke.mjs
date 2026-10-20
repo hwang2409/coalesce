@@ -24,6 +24,8 @@ const errorsOf = (target) => {
 async function drawn() {
   return page.evaluate(() => {
     const source = document.getElementById('view');
+    // requestAnimationFrame ends before Chromium always completes queued WebGL drawing.
+    source.getContext('webgl2').finish();
     const offset = source.getBoundingClientRect().top * devicePixelRatio;
     const copy = document.createElement('canvas');
     copy.width = source.width;
