@@ -169,6 +169,25 @@ def test_required_m5stack_extract_has_independent_mechanical_assertions():
     assert plated.reference == "CN5"
 
 
+def test_kicad_fabrication_outputs_confirm_front_and_back_hole_positions():
+    front = parse_kicad_pcb(FIXTURES / "probe_scope_rotation_trimmed.kicad_pcb")
+    assert "X73.55Y-98.365" in (FIXTURES / "probe_scope_rotation_trimmed.drl").read_text()
+    expected_front = [
+        (71.01, 98.365),
+        (71.01, 99.635),
+        (72.28, 98.365),
+        (72.28, 99.635),
+        (73.55, 98.365),
+        (73.55, 99.635),
+    ]
+    assert sorted(hole.position for hole in front.holes) == pytest.approx(expected_front, abs=0.001)
+
+    back = parse_kicad_pcb(FIXTURES / "hawk_back_rotation_trimmed.kicad_pcb")
+    drill = (FIXTURES / "hawk_back_rotation_trimmed.drl").read_text()
+    assert "G00X151.45Y-85.812" in drill and "G01X151.45Y-84.988" in drill
+    assert back.holes[0].position == pytest.approx((151.45, 85.4), abs=0.001)
+
+
 def test_existing_outline_forms_and_cutout_regressions():
     rect = parse_kicad_pcb(FIXTURES / "features.kicad_pcb")
     assert rect.outline[0].bbox == {"min_x": 0.0, "min_y": 0.0, "max_x": 20.0, "max_y": 10.0}
@@ -307,6 +326,28 @@ def test_zero_length_outline_geometry_is_a_structured_parse_error(tmp_path, inva
     board = _parse_text(tmp_path, _board(invalid))
     assert [error.kind for error in board.errors] == ["parse"]
     assert board.outline == []
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        '(gr_rect (start 1 1) (end 1 1) (layer "Edge.Cuts"))',
+        '(gr_rect (start 0 1) (end 2 1) (layer "Edge.Cuts"))',
+        '(gr_poly (pts (xy 1 1) (xy 1 1) (xy 1 1)) (layer "Edge.Cuts"))',
+    ],
+)
+def test_generated_zero_length_segments_are_structured_parse_errors(tmp_path, invalid):
+    board = _parse_text(tmp_path, _board(invalid))
+    assert [error.kind for error in board.errors] == ["parse"]
+    assert board.outline == []
+
+
+@pytest.mark.parametrize("coordinate", ["1e308", "2147.483648"])
+def test_coordinates_outside_signed_32_bit_nanometres_are_structured_errors(tmp_path, coordinate):
+    circle = f'(gr_circle (center {coordinate} 0) (end 0 1) (layer "Edge.Cuts"))'
+    board = _parse_text(tmp_path, _board(circle))
+    assert [error.kind for error in board.errors] == ["parse"]
+    assert "coordinate" in board.errors[0].message
 
 
 def test_footprint_curve_courtyard_warns_explicitly(tmp_path):

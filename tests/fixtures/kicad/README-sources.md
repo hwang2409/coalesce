@@ -1,5 +1,36 @@
 # fixture sources and licenses
 
+## KiCad fabrication-output rotation ground truth
+
+The rotation convention is checked against two public KiCad projects that commit
+the board and KiCad-generated Excellon output together. Excellon uses absolute
+metric decimal coordinates in these extracts. Its Y values have the opposite
+sign from KiCad board-file Y values. Both files state 0.001 mm coordinate
+precision, so tests use a 0.001 mm absolute tolerance.
+
+| source | commit | license | side / rotation | local pad center | parser board center | fabrication evidence |
+|---|---|---|---|---|---|---|
+| [noahensley/kicad-probe-scope](https://github.com/noahensley/kicad-probe-scope) | `017a53c5bd6f3ac6296dbdbfea2f9a3618e3d4e3` | MIT, notice in `LICENSE-kicad-probe-scope.txt` | front / +90° | `(0, 2.54)` from X3 | `(73.55, 99.635)` | `X73.55Y-99.635` |
+| [noahensley/kicad-probe-scope](https://github.com/noahensley/kicad-probe-scope) | `017a53c5bd6f3ac6296dbdbfea2f9a3618e3d4e3` | MIT | front / +90° | `(1.27, 2.54)` from X3 | `(73.55, 98.365)` | `X73.55Y-98.365` |
+| [Ryzee119/hawk](https://github.com/Ryzee119/hawk) | `5ab6f63b280425edd9ee121f5b5520dd8e891990` | MIT, notice in `LICENSE-hawk.txt` | back / 180° | `(-2.949999, -2.9)` from J3 | `(151.449999, 85.4)` | routed slot `X151.45Y-85.812` to `X151.45Y-84.988`, center `(151.45, 85.4)` |
+
+`probe_scope_rotation_trimmed.kicad_pcb` retains the rotated X3 footprint and
+its six off-origin drilled pads. `probe_scope_rotation_trimmed.drl` retains the
+six corresponding drill coordinates and the format header.
+`hawk_back_rotation_trimmed.kicad_pcb` retains one off-origin slotted pad from
+the rotated back-side J3 footprint. `hawk_back_rotation_trimmed.drl` retains
+that slot's routed endpoints and format header. Unrelated electrical, graphic,
+and fabrication data was removed.
+
+The front output proves that KiCad positive 90° maps `(x, y)` to `(y, -x)`.
+The back output also proves that child coordinates serialized in a back-side
+footprint are already flipped: applying another parser-side mirror gives the
+wrong hole center.
+
+The M5Stack repository was also checked at the source commit recorded below.
+It contains no committed `.drl`, `.pos`, or Gerber output, so it cannot provide
+independent fabrication-coordinate ground truth.
+
 ## M5Stack Module_ExtPort_For_Core2
 
 `m5stack_module_extport_trimmed.kicad_pcb` is a mechanically relevant extract of
