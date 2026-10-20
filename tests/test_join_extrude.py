@@ -160,6 +160,69 @@ def test_circle_boss_joins_plate() -> None:
     assert result.resolve(Reference("boss", "cap_end")).status is Status.OK
 
 
+def split_body_graph(
+    join_profile: Rectangle,
+    *,
+    join_position: tuple[float, float, float] = (0, 0, 4),
+) -> Graph:
+    graph = Graph()
+    graph.add(Sketch("base_sketch", entities=[Rectangle("base_profile", 20, 10)]))
+    graph.add(Extrude("base", sketch="base_sketch", height=4))
+    graph.add(Sketch("slot_sketch", entities=[Rectangle("slot_profile", 2, 10)]))
+    graph.add(Cut("split", target="base", tool="slot_sketch"))
+    graph.add(
+        Sketch(
+            "join_sketch",
+            entities=[join_profile],
+            position=join_position,
+        )
+    )
+    graph.add(
+        Extrude(
+            "join",
+            sketch="join_sketch",
+            height=2,
+            operation="join",
+            target="split",
+        )
+    )
+    return graph
+
+
+def test_join_onto_one_half_of_split_body_succeeds() -> None:
+    result = regenerate(
+        split_body_graph(Rectangle("join_profile", 2, 2, position=(-5, 0)))
+    )
+    shape = result.shapes["join"]
+
+    assert len(result.shapes["split"].solids()) == 2
+    assert len(shape.solids()) == 2
+    assert isclose(shape.volume, 20 * 10 * 4 - 2 * 10 * 4 + 2 * 2 * 2)
+    assert len(shape.solids()) == len(result.shapes["split"].solids()) + 1 - 1
+    assert result.joined_material["join"] is True
+
+
+def test_join_bridging_both_halves_of_split_body_makes_one_solid() -> None:
+    result = regenerate(split_body_graph(Rectangle("join_profile", 20, 2)))
+    shape = result.shapes["join"]
+
+    assert len(result.shapes["split"].solids()) == 2
+    assert len(shape.solids()) == 1
+    assert isclose(shape.volume, 20 * 10 * 4 - 2 * 10 * 4 + 20 * 2 * 2)
+
+
+def test_disjoint_join_next_to_split_body_is_structured_error() -> None:
+    graph = split_body_graph(
+        Rectangle("join_profile", 2, 2),
+        join_position=(20, 0, 4),
+    )
+
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+
+    assert caught.value.error["code"] == "JOIN_NO_CONTACT"
+
+
 def test_join_without_contact_is_structured_error() -> None:
     graph = Graph()
     graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 10, 10)]))
