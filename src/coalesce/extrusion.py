@@ -12,7 +12,7 @@ from OCP.gp import gp_Vec
 
 from .graph import Circle, Extrude, GraphError, Rectangle, Sketch
 from .provenance import candidate, derive_edge_candidates
-from .references import Candidate, SketchSegmentSource
+from .references import BodySource, Candidate, SketchSegmentSource
 
 
 @dataclass
@@ -156,9 +156,22 @@ def _extrude_region(
         gp_Vec(direction.X, direction.Y, direction.Z),
     )
     outer = profiles[0].entity
+    body = BodySource(node.id, outer.id)
     faces = [
-        candidate(node.id, "cap_start", outer.id, Shape.cast(prism.FirstShape())),
-        candidate(node.id, "cap_end", outer.id, Shape.cast(prism.LastShape())),
+        candidate(
+            node.id,
+            "cap_start",
+            outer.id,
+            Shape.cast(prism.FirstShape()),
+            body=body,
+        ),
+        candidate(
+            node.id,
+            "cap_end",
+            outer.id,
+            Shape.cast(prism.LastShape()),
+            body=body,
+        ),
     ]
     for profile in profiles:
         for segment, edge in profile.segments.items():
@@ -169,7 +182,13 @@ def _extrude_region(
                 )
             source = SketchSegmentSource(sketch.id, profile.entity.id, segment)
             faces.append(
-                candidate(node.id, f"side({segment})", source, Shape.cast(generated[0]))
+                candidate(
+                    node.id,
+                    f"side({segment})",
+                    source,
+                    Shape.cast(generated[0]),
+                    body=body,
+                )
             )
     return Shape.cast(prism.Shape()), faces
 

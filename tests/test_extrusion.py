@@ -74,6 +74,8 @@ def test_nested_profile_is_a_hole_in_one_solid():
 
 
 def test_disjoint_profiles_are_separate_solids_of_one_extrusion():
+    from coalesce.references import Cardinality, Reference, Status, resolve
+
     sketch = Sketch(
         "sk",
         entities=[
@@ -86,6 +88,16 @@ def test_disjoint_profiles_are_separate_solids_of_one_extrusion():
 
     assert len(result.shape.solids()) == 2
     assert isclose(result.shape.volume, 24)
+    one_or_more = resolve(
+        Reference("parts", "cap_end", Cardinality.ONE_OR_MORE),
+        {"parts": result.candidates},
+    )
+    exact = resolve(
+        Reference("parts", "cap_end", Cardinality.EXACTLY, count=2),
+        {"parts": result.candidates},
+    )
+    assert one_or_more.status is Status.OK
+    assert exact.status is Status.OK
 
 
 def test_overlapping_non_nested_profiles_are_a_structured_error():

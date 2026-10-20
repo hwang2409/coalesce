@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from build123d import Face, Shape
 
-from .references import Candidate, ElementKey
+from .references import BodySource, Candidate, ElementKey
 
 
 def descriptor(entity: Shape) -> dict[str, object]:
@@ -29,8 +29,10 @@ def candidate(
     role: str,
     source: object,
     entity: Shape,
+    *,
+    body: BodySource,
 ) -> Candidate:
-    return Candidate(ElementKey(feature, role, source), entity, descriptor(entity))
+    return Candidate(ElementKey(feature, role, source, body), entity, descriptor(entity))
 
 
 def _between_role(roles: list[str]) -> str:
@@ -55,12 +57,16 @@ def derive_edge_candidates(
             key=lambda key: (key.feature, key.role, str(key.source)),
         )
         if len(keys) == 2:
+            bodies = {key.body for key in keys}
+            if len(bodies) != 1 or None in bodies:
+                raise RuntimeError("an edge must be bounded by faces from one body")
             result.append(
                 candidate(
                     feature,
                     _between_role([key.role for key in keys]),
                     tuple(keys),
                     edge,
+                    body=bodies.pop(),
                 )
             )
     return result

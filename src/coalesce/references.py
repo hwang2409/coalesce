@@ -22,6 +22,12 @@ class Status(str, Enum):
 
 
 @dataclass(frozen=True)
+class BodySource:
+    feature: str
+    entity: str
+
+
+@dataclass(frozen=True)
 class SketchSegmentSource:
     sketch: str
     entity: str
@@ -33,6 +39,7 @@ class ElementKey:
     feature: str
     role: str
     source: SketchSegmentSource | str | tuple[ElementKey, ...] | None = None
+    body: BodySource | None = None
 
 
 @dataclass
@@ -72,6 +79,7 @@ class Reference:
     cardinality: Cardinality = Cardinality.ONE
     count: int | None = None
     source: SketchSegmentSource | str | None = None
+    body: BodySource | None = None
     filters: list[Filter] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -92,6 +100,11 @@ class Reference:
                 {"kind": "sketch_segment", **asdict(self.source)}
                 if isinstance(self.source, SketchSegmentSource)
                 else self.source
+            ),
+            "body": (
+                {"kind": "body_source", **asdict(self.body)}
+                if self.body is not None
+                else None
             ),
             "filters": filters,
         }
@@ -191,6 +204,7 @@ def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> _FilterRe
         for candidate in provenance.get(ref.feature, [])
         if candidate.key.role == ref.role
         and (ref.source is None or candidate.key.source == ref.source)
+        and (ref.body is None or candidate.key.body == ref.body)
     ]
     tied = False
     for predicate in ref.filters:

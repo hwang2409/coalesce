@@ -32,16 +32,21 @@ def test_cardinality_reports_split_with_structured_candidates():
             "cardinality": "one",
             "count": None,
             "source": None,
+            "body": None,
             "filters": [],
         },
         "status": "SPLIT",
         "candidates": [
             {
-                "keys": [{"feature": "base", "role": "cap_end", "source": "top"}],
+                "keys": [
+                    {"feature": "base", "role": "cap_end", "source": "top", "body": None}
+                ],
                 "descriptor": {"center": (0, 0, 0), "normal": (0, 0, 1)},
             },
             {
-                "keys": [{"feature": "base", "role": "cap_end", "source": "top"}],
+                "keys": [
+                    {"feature": "base", "role": "cap_end", "source": "top", "body": None}
+                ],
                 "descriptor": {"center": (0, 0, 0), "normal": (0, 0, 1)},
             },
         ],

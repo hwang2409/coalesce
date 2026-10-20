@@ -14,6 +14,7 @@ from .graph import (
     Sketch,
 )
 from .references import (
+    BodySource,
     Cardinality,
     MaxAlong,
     Normal,
@@ -26,6 +27,7 @@ from .references import (
 from .regen import RegenResult, regenerate
 
 __all__ = [
+    "BodySource",
     "Cardinality",
     "Circle",
     "Cut",

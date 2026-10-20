@@ -4,6 +4,7 @@ from typing import Any
 
 from .graph import Circle, Cut, Extrude, Fillet, Graph, Hole, Plane, Rectangle, Sketch
 from .references import (
+    BodySource,
     Cardinality,
     MaxAlong,
     Normal,
@@ -23,6 +24,11 @@ def _reference(payload: dict[str, Any]) -> Reference:
     if isinstance(source, dict) and source.get("kind") == "sketch_segment":
         value["source"] = SketchSegmentSource(
             **{key: field for key, field in source.items() if key != "kind"}
+        )
+    body = value.get("body")
+    if isinstance(body, dict) and body.get("kind") == "body_source":
+        value["body"] = BodySource(
+            **{key: field for key, field in body.items() if key != "kind"}
         )
     value["filters"] = [
         _FILTERS[item["kind"]](
