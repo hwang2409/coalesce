@@ -12,10 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar
-
-from build123d import Compound
-from OCP.BRepCheck import BRepCheck_Analyzer
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .graph import Circle, Cut, Extrude, GraphError, Hole, Plane, Rectangle, Sketch
@@ -28,12 +25,41 @@ from .references import (
     Reference,
     SketchSegmentSource,
 )
-from .regen import RegenResult, regenerate
 from .serialization import dumps, loads
-from .viewer import ScenePart, ViewerSceneStore
+
+if TYPE_CHECKING:
+    from .regen import RegenResult
+    from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
 _ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole"]
+_KERNEL_READY = threading.Event()
+_KERNEL_ERROR: BaseException | None = None
+
+
+def _load_kernel() -> None:
+    global _KERNEL_ERROR, regenerate, RegenResult, BRepCheck_Analyzer, Compound
+    try:
+        from build123d import Compound as _Compound
+        from OCP.BRepCheck import BRepCheck_Analyzer as _BRepCheck_Analyzer
+
+        from .regen import RegenResult as _RegenResult
+        from .regen import regenerate as _regenerate
+
+        Compound = _Compound
+        BRepCheck_Analyzer = _BRepCheck_Analyzer
+        RegenResult = _RegenResult
+        regenerate = _regenerate
+    except Exception as error:  # noqa: BLE001 - preserve the original startup failure
+        _KERNEL_ERROR = error
+    finally:
+        _KERNEL_READY.set()
+
+
+def _wait_for_kernel() -> None:
+    _KERNEL_READY.wait()
+    if _KERNEL_ERROR is not None:
+        raise _KERNEL_ERROR
 
 
 class RequestError(ValueError):
@@ -614,6 +640,8 @@ def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
+    from .viewer import ScenePart
+
     owned = [
         candidate
         for candidates in result.provenance.values()
@@ -665,16 +693,43 @@ class DocumentService:
         *,
         scene_store: ViewerSceneStore | None = None,
         viewer_url: str | None = None,
+        warmup: bool = True,
     ):
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
-        self._regen = regenerate(self._document.graph)
-        self._assert_valid(self._regen)
+        self._regen = None
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
-        if self._publisher is not None and self._document.revision > 0:
-            self._publisher.publish(self._document.revision, self._regen)
+        self._warmup_started = False
+        self._warmup_lock = threading.Lock()
+        if warmup:
+            self.start_kernel_warmup()
+
+    def start_kernel_warmup(self) -> None:
+        with self._warmup_lock:
+            if self._warmup_started:
+                return
+            self._warmup_started = True
+            threading.Thread(target=self._finish_startup, name="coalesce-kernel", daemon=True).start()
+
+    def _finish_startup(self) -> None:
+        try:
+            _load_kernel()
+            _wait_for_kernel()
+            self._regen = regenerate(self._document.graph)
+            self._assert_valid(self._regen)
+            if self._publisher is not None and self._document.revision > 0:
+                self._publisher.publish(self._document.revision, self._regen)
+        except Exception:  # noqa: BLE001 - startup errors must not kill the server
+            _LOG.exception("kernel startup failed")
+
+    def _ensure_geometry(self) -> None:
+        self.start_kernel_warmup()
+        _wait_for_kernel()
+        if self._regen is None:
+            self._regen = regenerate(self._document.graph)
+            self._assert_valid(self._regen)
 
     @property
     def revision(self) -> int:
@@ -857,6 +912,7 @@ class DocumentService:
                 return failure
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         entities = payload.get("entities") or payload.get("set", {}).get("entities")
         response = {"sketchId": payload.get("sketchId")}
         if entities:
@@ -870,6 +926,7 @@ class DocumentService:
         )
 
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         return self._mutate(
             "feature",
             payload,
@@ -879,6 +936,7 @@ class DocumentService:
         )
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         with self._lock:
             requested_revision = payload.get("revision", self._document.revision)
             if requested_revision != self._document.revision:
@@ -1018,6 +1076,7 @@ class DocumentService:
         }
 
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         with self._lock:
             if payload.get("action") != "evaluate":
                 return _safe_error(

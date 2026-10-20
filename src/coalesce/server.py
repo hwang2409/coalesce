@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from typing import Any
 
 from jsonschema import ValidationError, validate
@@ -187,6 +189,9 @@ def create_server(service: DocumentService) -> Server:
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
+        if os.environ.get("COALESCE_DEBUG_MODULES"):
+            print(f"build123d={'build123d' in sys.modules}", file=sys.stderr, flush=True)
+        service.start_kernel_warmup()
         return [
             types.Tool(
                 name=name,
