@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from build123d import Shape
 
 from .boolean import cut_shape
+from .cut import make_cut_tool
 from .extrusion import extrude_sketch
-from .graph import Cut, Extrude, Fillet, Graph, Hole, Sketch
+from .graph import Cut, Extrude, Fillet, Graph, GraphError, Hole, Sketch
 from .hole import make_hole_tool
 from .references import Candidate, Reference, Resolution, resolve
 
@@ -57,12 +58,21 @@ def regenerate(graph: Graph) -> RegenResult:
             states[node.id] = result.candidates
             provenance[node.id] = result.candidates
         elif isinstance(node, Cut):
+            tool_sketch = graph.nodes[node.tool]
+            if not isinstance(tool_sketch, Sketch):
+                raise GraphError(
+                    "invalid_cut_tool",
+                    f"cut {node.id} tool must reference a sketch",
+                    feature=node.id,
+                    tool=node.tool,
+                )
+            tool = make_cut_tool(node, tool_sketch, shapes[node.target])
             result = cut_shape(
                 node.id,
                 shapes[node.target],
                 states[node.target],
-                shapes[node.tool],
-                states[node.tool],
+                tool.shape,
+                tool.candidates,
             )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates

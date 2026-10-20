@@ -8,6 +8,7 @@ import pytest
 
 from coalesce import (
     Cardinality,
+    Cut,
     Extrude,
     Fillet,
     Graph,
@@ -194,6 +195,17 @@ def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
     reference = restored.nodes["round"].edges[0]
     assert reference.source == source
     assert reference.body == body
+
+
+def test_json_round_trip_preserves_cut_depth_and_flip():
+    graph = base()
+    graph.add(Sketch("tool", entities=[Rectangle("pocket", 2, 2)]))
+    graph.add(Cut("cut", target="base", tool="tool", depth=3, flip=True))
+
+    restored = loads(graph.to_json())
+
+    assert restored.nodes["cut"].depth == 3
+    assert restored.nodes["cut"].flip is True
 
 
 def test_json_round_trip_preserves_any_cardinality():

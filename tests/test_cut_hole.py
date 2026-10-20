@@ -1,11 +1,14 @@
 from math import isclose, pi
 
+import pytest
+
 from coalesce import (
     BodySource,
     Cardinality,
     Cut,
     Extrude,
     Graph,
+    GraphError,
     Hole,
     HoleSurfaceSource,
     MaxAlong,
@@ -39,8 +42,20 @@ def base_graph() -> Graph:
     return graph
 
 
-def add_slot(graph: Graph, *, z: float = 8, depth: float = 4) -> None:
-    add_extrude(graph, "slot_tool", "slot", 2, 20, depth, position=(0, 0, z))
+def add_tool_sketch(
+    graph: Graph,
+    sketch: str,
+    entity: str,
+    width: float,
+    height: float,
+    *,
+    position: tuple[float, float, float],
+) -> None:
+    graph.add(Sketch(sketch, entities=[Rectangle(entity, width, height)], position=position))
+
+
+def add_slot(graph: Graph, *, z: float = 10) -> None:
+    add_tool_sketch(graph, "slot_tool", "slot", 2, 20, position=(0, 0, z))
     graph.add(Cut("slot", target="base", tool="slot_tool"))
 
 
@@ -77,7 +92,7 @@ def test_case_9_slot_split_is_explicit_and_preserves_total_top_area() -> None:
     wall = result.resolve(Reference("slot", "side(left)"))
     assert wall.status is Status.OK
     assert wall.candidates[0].key.source == SketchSegmentSource(
-        "slot_tool_sketch", "slot", "left"
+        "slot_tool", "slot", "left"
     )
 
 
@@ -93,8 +108,10 @@ def test_case_17_maximum_filter_reports_equal_height_body_tie() -> None:
         )
     )
     graph.add(Extrude("parts", sketch="parts_sketch", height=10))
-    add_extrude(graph, "notch_tool", "notch", 1, 1, 2, position=(-4, 0, 4))
-    graph.add(Cut("notch", target="parts", tool="notch_tool"))
+    add_tool_sketch(
+        graph, "notch_tool", "notch", 1, 1, position=(-4, 0, 4)
+    )
+    graph.add(Cut("notch", target="parts", tool="notch_tool", depth=2, flip=True))
 
     resolution = regenerate(graph).resolve(
         Reference(
@@ -112,8 +129,10 @@ def test_case_17_maximum_filter_reports_equal_height_body_tie() -> None:
 
 def test_case_7_modified_top_face_survives_upstream_of_hole() -> None:
     graph = base_graph()
-    add_extrude(graph, "pocket_tool", "pocket", 2, 2, 4, position=(-2, 0, 8))
-    graph.add(Cut("pocket", target="base", tool="pocket_tool"))
+    add_tool_sketch(
+        graph, "pocket_tool", "pocket", 2, 2, position=(-2, 0, 10)
+    )
+    graph.add(Cut("pocket", target="base", tool="pocket_tool", depth=2))
     graph.add(Hole("mount", target="pocket", diameter=2, position=(2, 0)))
 
     result = regenerate(graph)
@@ -134,7 +153,9 @@ def test_case_10_top_face_returns_to_ok_when_slot_stops_short() -> None:
 
     assert regenerate(graph).resolve(ref).status is Status.SPLIT
 
-    graph.nodes["slot_tool"].height = 1
+    graph.nodes["slot_tool"].position = (0, 0, 8)
+    graph.nodes["slot"].depth = 1
+    graph.nodes["slot"].flip = True
     restored = regenerate(graph).resolve(ref)
     assert restored.status is Status.OK
     assert isclose(restored.candidates[0].entity.area, 100)
@@ -159,7 +180,7 @@ def test_cut_preserves_unintersected_body_keys() -> None:
         for candidate in before.provenance["parts"]
         if candidate.key.body == body_b
     }
-    add_extrude(graph, "tool", "cutter", 2, 2, 4, position=(-5, 0, 3))
+    add_tool_sketch(graph, "tool", "cutter", 2, 2, position=(-5, 0, 5))
     graph.add(Cut("cut", target="parts", tool="tool"))
 
     result = regenerate(graph)
@@ -175,6 +196,59 @@ def test_cut_preserves_unintersected_body_keys() -> None:
         assert updated[key].get("area", updated[key].get("length")) == descriptor.get(
             "area", descriptor.get("length")
         )
+
+
+def test_cut_through_all_cuts_both_sides_of_sketch_plane() -> None:
+    graph = base_graph()
+    add_tool_sketch(graph, "tool", "slot", 2, 2, position=(0, 0, 5))
+    graph.add(Cut("slot", target="base", tool="tool", depth=None))
+
+    shape = regenerate(graph).shapes["slot"]
+    bounds = shape.bounding_box()
+
+    assert isclose(shape.volume, 960)
+    assert isclose(bounds.min.Z, 0)
+    assert isclose(bounds.max.Z, 10)
+
+
+@pytest.mark.parametrize(
+    ("z", "flip", "floor_z"),
+    [(10, False, 7), (0, True, 3)],
+)
+def test_cut_finite_depth_uses_sketch_normal_direction(
+    z: float, flip: bool, floor_z: float
+) -> None:
+    graph = base_graph()
+    add_tool_sketch(graph, "tool", "pocket", 2, 2, position=(0, 0, z))
+    graph.add(Cut("pocket", target="base", tool="tool", depth=3, flip=flip))
+
+    result = regenerate(graph)
+    shape = result.shapes["pocket"]
+    bounds = shape.bounding_box()
+    floor = result.resolve(Reference("pocket", "pocket_floor"))
+
+    assert isclose(shape.volume, 988)
+    assert isclose(bounds.min.Z, 0)
+    assert isclose(bounds.max.Z, 10)
+    assert floor.status is Status.OK
+    assert isclose(floor.candidates[0].entity.center().Z, floor_z)
+
+
+@pytest.mark.parametrize("depth", [0, -1])
+def test_cut_rejects_non_positive_depth_with_structured_error(depth: float) -> None:
+    graph = base_graph()
+    add_tool_sketch(graph, "tool", "pocket", 2, 2, position=(0, 0, 10))
+    graph.add(Cut("pocket", target="base", tool="tool", depth=depth))
+
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+
+    assert caught.value.error == {
+        "code": "invalid_cut_depth",
+        "message": "cut pocket depth must be positive",
+        "feature": "pocket",
+        "depth": depth,
+    }
 
 
 def test_blind_hole_has_history_derived_floor() -> None:
