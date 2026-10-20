@@ -4,6 +4,7 @@ import math
 import os
 import shutil
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,55 @@ async def test_real_stdio_path_builds_plate_and_survives_restart(tmp_path):
     )
     assert restarted[0] == first[2]
     assert restarted[1] == first[3]
+
+
+def test_startup_regeneration_cannot_overwrite_a_concurrent_commit(tmp_path):
+    graph = Graph()
+    graph.add(Sketch("plate_profile", entities=[Rectangle("outline", 60, 40)]))
+    graph.add(Extrude("plate_extrude", sketch="plate_profile", height=6))
+    path = tmp_path / "plate.coalesce.json"
+    DocumentStore(path).save(Document(graph, revision=2))
+
+    startup_entered = threading.Event()
+    release_startup = threading.Event()
+
+    def startup_gate() -> None:
+        startup_entered.set()
+        release_startup.wait()
+
+    service = DocumentService(
+        path, warmup=False, startup_regeneration_gate=startup_gate
+    )
+    service.start_kernel_warmup()
+    assert startup_entered.wait(5)
+
+    committed = threading.Event()
+
+    def update_feature() -> None:
+        result = service.feature(
+            {
+                "action": "update",
+                "expectedRevision": 2,
+                "requestId": "feature-update",
+                "featureId": "plate_extrude",
+                "kind": "extrude",
+                "set": {"distance": {"value": 8, "unit": "mm"}},
+            }
+        )
+        assert result["revision"] == 3
+        committed.set()
+
+    mutation = threading.Thread(target=update_feature)
+    mutation.start()
+    try:
+        committed_during_startup = committed.wait(0.5)
+    finally:
+        release_startup.set()
+        mutation.join(timeout=5)
+
+    assert not committed_during_startup
+    assert not mutation.is_alive()
+    assert service.query({"select": {"kind": "measurements"}})["bbox"]["z"]["value"] == 8
 
 
 def test_measurements_include_only_terminal_bodies(tmp_path):
