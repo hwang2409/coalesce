@@ -7,6 +7,7 @@ import pytest
 from build123d import Align, Box
 
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
+from coalesce.viewer.server import _pending_events
 
 
 def plate(height: float = 6) -> Box:
@@ -98,6 +99,35 @@ def test_late_subscriber_gets_full_current_scene(served):
         assert mesh == store.mesh(part["mesh"]["id"])
     assert call(server, "GET", "/api/scene/1", cookie=cookie)[0] == 200
     assert call(server, "GET", "/api/scene/3", cookie=cookie)[0] == 404
+
+
+def test_dropped_revision_and_mesh_answer_superseded_not_404(served):
+    store, server = served
+    store.publish(1, [ScenePart("plate", plate(6))])
+    first_mesh = store.scene(1)["parts"][0]["mesh"]["url"]
+    store.publish(2, [ScenePart("plate", plate(8))])
+    store.publish(3, [ScenePart("plate", plate(10))])  # the store keeps 2 and 3 only
+    cookie = login(server)
+
+    assert call(server, "GET", "/api/scene/1", cookie=cookie)[0] == 204
+    assert call(server, "GET", first_mesh, cookie=cookie)[0] == 204
+    assert call(server, "GET", "/api/scene/2", cookie=cookie)[0] == 200
+    assert call(server, "GET", "/api/scene/4", cookie=cookie)[0] == 404  # not published yet
+
+
+def test_pending_events_announce_each_revision_and_failure_once():
+    failure = {"revision": 1, "featureIds": ["f"], "error": "e"}
+    out, sent = _pending_events(1, None, (None, None))
+    assert out == b'event: revision\ndata: {"revision": 1}\n\n'
+    assert _pending_events(1, None, sent) == (b"", sent)
+
+    out, sent = _pending_events(1, failure, sent)
+    assert out.startswith(b"event: failure\n") and out.count(b"event:") == 1
+    assert _pending_events(1, failure, sent)[0] == b""
+    # an equal but new failure object is a new failed attempt
+    assert _pending_events(1, dict(failure), sent)[0].startswith(b"event: failure\n")
+    out, sent = _pending_events(2, None, sent)
+    assert out == b'event: revision\ndata: {"revision": 2}\n\n' and sent == (2, None)
 
 
 def test_second_publish_emits_exactly_one_revision_event(served):

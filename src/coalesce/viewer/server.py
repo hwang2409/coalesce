@@ -120,6 +120,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send(200, json.dumps(value).encode(), "application/json",
                   [("Cache-Control", "no-store")])
 
+    def superseded(self):
+        # a 2xx, not 404: catching up past dropped revisions is normal, not a browser error.
+        self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
+
     def trusted(self) -> bool:
         origin = self.headers.get("Origin")
         return self.headers.get("Host") == f"{LOOPBACK}:{self.viewer.port}" and (
@@ -153,11 +157,17 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/session":
             return self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
         if match := _SCENE.fullmatch(path):
-            scene = self.viewer.store.scene(int(match[1]))
-            return self.json(scene) if scene else self.send(HTTPStatus.NOT_FOUND)
+            revision = int(match[1])
+            if scene := self.viewer.store.scene(revision):
+                return self.json(scene)
+            current = self.viewer.store.current_revision
+            if current is not None and revision < current:
+                return self.superseded()
+            return self.send(HTTPStatus.NOT_FOUND)
         mesh = self.viewer.store.mesh(_MESH.fullmatch(path)[1])
         if mesh is None:
-            return self.send(HTTPStatus.NOT_FOUND)
+            # ids are content hashes, so an unknown one is a mesh the store no longer keeps.
+            return self.superseded()
         # content-addressed: unchanged parts are never downloaded twice.
         self.send(200, mesh, "application/octet-stream",
                   [("Cache-Control", "private, max-age=31536000, immutable")])
@@ -185,7 +195,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.close_connection = True
-        sent_revision, sent_failure, version, idle = None, None, None, 0.0
+        sent, version, idle = (None, None), None, 0.0
         try:
             while not self.viewer._closing.is_set():
                 if version is not None and not self.viewer.store.wait_for_change(version, 1):
@@ -196,18 +206,27 @@ class _Handler(BaseHTTPRequestHandler):
                         idle = 0
                     continue
                 version, revision, failure = self.viewer.store.snapshot()
-                out = b""
-                if revision is not None and revision != sent_revision:
-                    out += _event("revision", {"revision": revision})
-                    sent_revision = revision
-                if failure is not None and failure is not sent_failure:
-                    out += _event("failure", failure)
-                sent_failure = failure
+                out, sent = _pending_events(revision, failure, sent)
                 if out:
                     self.wfile.write(out)
                     self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+
+def _pending_events(revision, failure, sent):
+    """Event bytes for what changed since ``sent`` = (revision, failure), and the new ``sent``.
+
+    A new revision is announced once; a failure is announced when it is a new failure object.
+    """
+    sent_revision, sent_failure = sent
+    out = b""
+    if revision is not None and revision != sent_revision:
+        out += _event("revision", {"revision": revision})
+        sent_revision = revision
+    if failure is not None and failure is not sent_failure:
+        out += _event("failure", failure)
+    return out, (sent_revision, failure)
 
 
 def _event(name: str, data: dict) -> bytes:
