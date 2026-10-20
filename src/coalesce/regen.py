@@ -8,7 +8,7 @@ from build123d import Edge, Shape
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
-from .enclosure import build_pcb_base, build_pcb_lid, build_standoffs
+from .enclosure import build_pcb_base, build_pcb_lid, build_port_cutout, build_standoffs
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
 from .graph import (
@@ -21,6 +21,7 @@ from .graph import (
     Hole,
     PcbBase,
     PcbLid,
+    PortCutout,
     Sketch,
     Standoffs,
 )
@@ -46,6 +47,7 @@ class RegenResult:
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = field(default_factory=dict)
     removed_material: dict[str, bool] = field(default_factory=dict)
     joined_material: dict[str, bool] = field(default_factory=dict)
+    metadata: dict[str, dict] = field(default_factory=dict)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
@@ -209,15 +211,47 @@ def _regenerate_pcb_lid(
 
 
 def _regenerate_enclosure(
-    node: PcbBase | PcbLid | Standoffs,
+    node: PcbBase | PcbLid | PortCutout | Standoffs,
     graph: Graph,
     shapes: dict[str, Shape],
     states: dict[str, list[Candidate]],
     provenance: dict[str, list[Candidate]],
+    removed_material: dict[str, bool],
     joined_material: dict[str, bool],
+    metadata: dict[str, dict],
 ) -> None:
     if isinstance(node, PcbLid):
         _regenerate_pcb_lid(node, graph, shapes, states, provenance)
+        return
+    if isinstance(node, PortCutout):
+        base_node = graph.nodes[node.base]
+        if not isinstance(base_node, PcbBase):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"port_cutout {node.id} base must reference a pcb_base",
+                feature=node.id,
+                parameter="base",
+            )
+        board_node = graph.nodes[base_node.board]
+        if not isinstance(board_node, BoardImport):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"port_cutout {node.id} base must reference a valid board import",
+                feature=node.id,
+                parameter="base",
+            )
+        opening = build_port_cutout(
+            node,
+            base_node,
+            board_node,
+            shapes[node.target],
+            states[node.target],
+        )
+        shapes[node.id] = opening.shape
+        states[node.id] = opening.candidates
+        removed_material[node.id] = True
+        metadata[node.id] = opening.metadata
+        _replace_provenance(provenance, states[node.target], opening.candidates)
         return
 
     board_node = graph.nodes[node.board]
@@ -264,6 +298,7 @@ def regenerate(graph: Graph) -> RegenResult:
     consumed: dict[ElementKey, tuple[ElementKey, ...]] = {}
     removed_material: dict[str, bool] = {}
     joined_material: dict[str, bool] = {}
+    metadata: dict[str, dict] = {}
     ordered_features = [node.id for node in ordered]
 
     for node in ordered:
@@ -274,14 +309,16 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = board.shape
             states[node.id] = board.candidates
             provenance[node.id] = board.candidates
-        elif isinstance(node, (PcbBase, PcbLid, Standoffs)):
+        elif isinstance(node, (PcbBase, PcbLid, PortCutout, Standoffs)):
             _regenerate_enclosure(
                 node,
                 graph,
                 shapes,
                 states,
                 provenance,
+                removed_material,
                 joined_material,
+                metadata,
             )
         elif isinstance(node, Extrude):
             if node.operation == "new_body":
@@ -359,4 +396,5 @@ def regenerate(graph: Graph) -> RegenResult:
         consumed,
         removed_material,
         joined_material,
+        metadata,
     )

@@ -28,6 +28,7 @@ from .graph import (
     PcbBase,
     PcbLid,
     Plane,
+    PortCutout,
     Rectangle,
     Sketch,
     Standoffs,
@@ -50,7 +51,15 @@ if TYPE_CHECKING:
     from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
-_ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole", "pcb_base", "standoffs", "pcb_lid"]
+_ALLOWED_FEATURE_KINDS = [
+    "extrude",
+    "cut",
+    "hole",
+    "pcb_base",
+    "standoffs",
+    "pcb_lid",
+    "port_cutout",
+]
 
 
 class _KernelLoaderInterface(Protocol):
@@ -294,6 +303,23 @@ class PcbLidParameters:
 
 
 @dataclass(frozen=True)
+class PortEnvelope:
+    source: str
+    width: float | None
+    height: float
+    bottomOffset: float
+
+
+@dataclass(frozen=True)
+class PortCutoutParameters:
+    base: FeatureTarget
+    footprint: str
+    wall: str
+    clearance: float
+    envelope: PortEnvelope
+
+
+@dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
 
@@ -319,6 +345,14 @@ class PcbLidChanges:
     thickness: float | None = None
     fitGap: float | None = None
     lip: LidLip | None = None
+
+
+@dataclass(frozen=True)
+class PortCutoutChanges:
+    footprint: str | None = None
+    wall: str | None = None
+    clearance: float | None = None
+    envelope: PortEnvelope | None = None
 
 
 @dataclass(frozen=True)
@@ -415,6 +449,16 @@ class PcbLidCreate(_FeatureCreate):
 
 
 @dataclass(frozen=True)
+class PortCutoutCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: PortCutoutParameters
+    kind: ClassVar[str] = "port_cutout"
+
+
+@dataclass(frozen=True)
 class ExtrudeUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -471,6 +515,20 @@ class PcbLidUpdate(_Operation):
 
 
 @dataclass(frozen=True)
+class PortCutoutUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: PortCutoutChanges
+    kind: ClassVar[str] = "port_cutout"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
 class CutUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -508,10 +566,12 @@ MutationOperation = (
     | PcbBaseCreate
     | StandoffsCreate
     | PcbLidCreate
+    | PortCutoutCreate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
     | PcbLidUpdate
+    | PortCutoutUpdate
     | CutUpdate
     | HoleUpdate
 )
@@ -885,6 +945,111 @@ def _parse_pcb_lid(
     )
 
 
+def _parse_port_envelope(value: Any, feature: str) -> PortEnvelope:
+    if not isinstance(value, dict):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "port_cutout envelope must be an object",
+            feature=feature,
+            parameter="envelope",
+        )
+    source = value.get("source")
+    required = {"source", "height", "bottomOffset"}
+    allowed = required | ({"width"} if source == "explicit" else set())
+    if source not in {"courtyard", "explicit"} or set(value) != allowed:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "explicit port_cutout envelope requires width, height, and bottomOffset; courtyard requires height and bottomOffset",
+            feature=feature,
+            parameter="envelope",
+        )
+    try:
+        bottom = _quantity(value["bottomOffset"], "mm", "envelope.bottomOffset")
+    except RequestError as error:
+        error.details.update(feature=feature, parameter="envelope.bottomOffset")
+        raise
+    return PortEnvelope(
+        source=source,
+        width=(
+            _feature_quantity(value["width"], "envelope.width", feature)
+            if source == "explicit"
+            else None
+        ),
+        height=_feature_quantity(value["height"], "envelope.height", feature),
+        bottomOffset=bottom,
+    )
+
+
+def _port_text(value: Any, parameter: str, feature: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"port_cutout {parameter} must be a non-empty string",
+            feature=feature,
+            parameter=parameter,
+        )
+    return value
+
+
+def _port_wall(value: Any, feature: str) -> str:
+    wall = _port_text(value, "wall", feature)
+    if wall not in {"auto", "left", "right", "front", "back"}:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "port_cutout wall must be auto, left, right, front, or back",
+            feature=feature,
+            parameter="wall",
+        )
+    return wall
+
+
+def _parse_port_cutout(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> PortCutoutCreate | PortCutoutUpdate:
+    feature = common["featureId"]
+    values = payload.get("set" if common["action"] is Action.UPDATE else "parameters", {})
+    if not isinstance(values, dict):
+        raise RequestError("INVALID_PARAMETER", "port_cutout values must be an object")
+    if common["action"] is Action.UPDATE:
+        allowed = {"footprint", "wall", "clearance", "envelope"}
+        if not values or not set(values) <= allowed:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "port_cutout update requires footprint, wall, clearance, or envelope",
+            )
+        return PortCutoutUpdate(
+            **common,
+            set=PortCutoutChanges(
+                footprint=(
+                    _port_text(values["footprint"], "footprint", feature)
+                    if "footprint" in values
+                    else None
+                ),
+                wall=_port_wall(values["wall"], feature) if "wall" in values else None,
+                clearance=(
+                    _feature_quantity(values["clearance"], "clearance", feature)
+                    if "clearance" in values
+                    else None
+                ),
+                envelope=(
+                    _parse_port_envelope(values["envelope"], feature)
+                    if "envelope" in values
+                    else None
+                ),
+            ),
+        )
+    return PortCutoutCreate(
+        **common,
+        parameters=PortCutoutParameters(
+            base=FeatureTarget(values.get("base", {}).get("featureId")),
+            footprint=_port_text(values.get("footprint"), "footprint", feature),
+            wall=_port_wall(values.get("wall"), feature),
+            clearance=_feature_quantity(values.get("clearance"), "clearance", feature),
+            envelope=_parse_port_envelope(values.get("envelope"), feature),
+        ),
+    )
+
+
 def _parse_feature(
     payload: dict[str, Any],
 ) -> (
@@ -894,10 +1059,12 @@ def _parse_feature(
     | PcbBaseCreate
     | StandoffsCreate
     | PcbLidCreate
+    | PortCutoutCreate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
     | PcbLidUpdate
+    | PortCutoutUpdate
     | CutUpdate
     | HoleUpdate
 ):
@@ -909,6 +1076,7 @@ def _parse_feature(
         "pcb_base": _parse_pcb_base,
         "standoffs": _parse_standoffs,
         "pcb_lid": _parse_pcb_lid,
+        "port_cutout": _parse_port_cutout,
     }.get(kind)
     if parser is None:
         raise RequestError(
@@ -1384,6 +1552,66 @@ def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
     return operation.featureId
 
 
+def _apply_port_cutout(
+    graph: Any, operation: PortCutoutCreate | PortCutoutUpdate
+) -> str:
+    if isinstance(operation, PortCutoutUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, PortCutout):
+            raise RequestError("UNKNOWN_ID", f"unknown port_cutout: {operation.featureId}")
+        changes = operation.set
+        if changes.footprint is not None:
+            node.footprint = changes.footprint
+            node.footprint_id = None
+        if changes.wall is not None:
+            node.wall = changes.wall
+        if changes.clearance is not None:
+            node.clearance = changes.clearance
+        if changes.envelope is not None:
+            node.envelope_source = changes.envelope.source
+            node.envelope_width = changes.envelope.width
+            node.envelope_height = changes.envelope.height
+            node.bottom_offset = changes.envelope.bottomOffset
+        return operation.featureId
+
+    parameters = operation.parameters
+    base = graph.nodes.get(parameters.base.featureId)
+    if not isinstance(base, PcbBase):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "port_cutout base must reference a pcb_base",
+            feature=operation.featureId,
+            parameter="base",
+        )
+    target = base.id
+    while True:
+        consumers = [
+            node
+            for node in graph.nodes.values()
+            if getattr(node, "target", None) == target
+        ]
+        if not consumers:
+            break
+        target = consumers[0].id
+    _validate_body_target(graph, target, "port_cutout")
+    envelope = parameters.envelope
+    graph.add(
+        PortCutout(
+            operation.featureId,
+            base=base.id,
+            target=target,
+            footprint=parameters.footprint,
+            wall=parameters.wall,
+            clearance=parameters.clearance,
+            envelope_source=envelope.source,
+            envelope_width=envelope.width,
+            envelope_height=envelope.height,
+            bottom_offset=envelope.bottomOffset,
+        )
+    )
+    return operation.featureId
+
+
 def _apply_feature(graph: Any, operation: MutationOperation) -> str:
     applier = {
         ExtrudeCreate: _apply_extrude,
@@ -1398,6 +1626,8 @@ def _apply_feature(graph: Any, operation: MutationOperation) -> str:
         StandoffsUpdate: _apply_standoffs,
         PcbLidCreate: _apply_pcb_lid,
         PcbLidUpdate: _apply_pcb_lid,
+        PortCutoutCreate: _apply_port_cutout,
+        PortCutoutUpdate: _apply_port_cutout,
     }[type(operation)]
     return applier(graph, operation)
 
@@ -1425,6 +1655,8 @@ def _kind(node: Any) -> str:
         return "standoffs"
     if isinstance(node, PcbLid):
         return "pcb lid"
+    if isinstance(node, PortCutout):
+        return "port cutout"
     if isinstance(node, BoardImport):
         return "board import"
     return type(node).__name__.lower()
@@ -1895,6 +2127,8 @@ class DocumentService:
             return self._cut_metadata(graph, result, node)
         if isinstance(node, Hole):
             return self._hole_metadata(result, node)
+        if isinstance(node, PortCutout):
+            return {"portCutout": result.metadata[node.id]}
         return {}
 
     def import_board(self, payload: dict[str, Any]) -> dict[str, Any]:

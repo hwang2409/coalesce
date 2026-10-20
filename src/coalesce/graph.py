@@ -109,6 +109,20 @@ class PcbLid(Feature):
 
 
 @dataclass
+class PortCutout(Feature):
+    base: str = ""
+    target: str = ""
+    footprint: str = ""
+    footprint_id: str | None = None
+    wall: str = "auto"
+    clearance: float = 0.5
+    envelope_source: str = "courtyard"
+    envelope_width: float | None = None
+    envelope_height: float = 1
+    bottom_offset: float = 0
+
+
+@dataclass
 class Cut(Feature):
     target: str = ""
     tool: str = ""
@@ -229,7 +243,7 @@ class Graph:
 
     @staticmethod
     def _body_target(node: Any) -> str | None:
-        if isinstance(node, (Cut, Hole, Fillet, Standoffs)):
+        if isinstance(node, (Cut, Hole, Fillet, Standoffs, PortCutout)):
             return node.target
         if isinstance(node, Extrude) and node.operation == "join":
             return node.target

@@ -41,6 +41,28 @@ async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
     schema = tools["feature"].inputSchema
     quantity = {"value": 1, "unit": "mm"}
+    validate(
+        {
+            "action": "create",
+            "expectedRevision": 0,
+            "requestId": "schema-port-cutout-create",
+            "featureId": "port",
+            "kind": "port_cutout",
+            "parameters": {
+                "base": {"featureId": "base"},
+                "footprint": "J3",
+                "wall": "auto",
+                "clearance": quantity,
+                "envelope": {
+                    "source": "explicit",
+                    "width": quantity,
+                    "height": quantity,
+                    "bottomOffset": {"value": 0, "unit": "mm"},
+                },
+            },
+        },
+        schema,
+    )
     updates = [
         ("pcb_base", "pcb_base", {"wallThickness": quantity}),
         ("standoffs", "standoffs", {"minimumDiameter": quantity}),
@@ -168,6 +190,6 @@ def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup()
     assert "pcb_base" in guide
     assert "stable `holeids`" in guide
     assert "import` the board, create `pcb_base`, create `standoffs`, create" in guide
-    assert "`pcb_lid`, run `check`" in guide
+    assert "`pcb_lid`, create `port_cutout`, run `check`" in guide
     assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE
     assert '"mcpServers"' in TOOLS_GUIDE

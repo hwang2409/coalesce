@@ -4,14 +4,14 @@ import shutil
 from pathlib import Path
 
 import pytest
-from build123d import Face
+from build123d import Face, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
+from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
+from test_pcb_lid import lid_request
 
 from coalesce.references import Cardinality, Reference, Status
 from coalesce.service import DocumentService
-from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
-from test_pcb_lid import lid_request
 
 
 def port_request(
@@ -92,7 +92,7 @@ def _common_volume(first, second):
     common.Build()
     assert common.IsDone()
     return common.Shape().ShapeType(), sum(
-        solid.volume for solid in type(first).cast(common.Shape()).solids()
+        solid.volume for solid in Shape.cast(common.Shape()).solids()
     )
 
 
@@ -133,11 +133,11 @@ def test_courtyard_port_has_exact_opening_and_only_cuts_nearest_wall(tmp_path):
     assert bottom.bounding_box().max.Z == pytest.approx(1.7)
     assert top.area == pytest.approx(10)
     assert bottom.area == pytest.approx(10)
-    assert _planar_face_area(service._regen, "base", "outer_wall", "X", -3) == pytest.approx(
+    assert _planar_face_area(service._regen, "outer_wall", "X", -3) == pytest.approx(
         _planar_face_area(before, "outer_wall", "X", -3) - 15
     )
     for (axis, value), area in unchanged.items():
-        assert _planar_face_area(service._regen, "base", "outer_wall", axis, value) == pytest.approx(area)
+        assert _planar_face_area(service._regen, "outer_wall", axis, value) == pytest.approx(area)
     assert service._regen.shapes["lid"].volume == pytest.approx(lid_volume)
     assert port.volume == pytest.approx(standoff_volume - 30)
     assert _common_volume(port, service._regen.shapes["lid"])[1] == pytest.approx(0, abs=1e-8)
@@ -163,7 +163,7 @@ def test_refresh_moves_port_and_deleted_footprint_fails_atomically_with_hint(tmp
     assert refreshed.bounding_box().min.Y - original.bounding_box().min.Y == pytest.approx(1)
 
     text = source.read_text()
-    source.write_text(re.sub(r' \(footprint "Connector:Front".*?front\.wrl"\)\)\n', "", text, flags=re.S))
+    source.write_text(re.sub(r' \(footprint "Connector:Front".*?front\.wrl"\)\)\n', "", text, flags=re.DOTALL))
     before = service.store.path.read_bytes()
     missing = service.import_board(
         import_request(source, revision=5, request_id="delete-port", action="refresh")
@@ -192,7 +192,7 @@ def test_ambiguous_wall_missing_envelope_and_reference_are_structured_and_atomic
     assert ambiguous_wall["ok"] is False
     assert ambiguous_wall["error"]["code"] == "AMBIGUOUS"
     assert ambiguous_wall["error"]["parameter"] == "wall"
-    assert ambiguous_wall["error"]["candidates"] == ["front", "back"]
+    assert ambiguous_wall["error"]["candidates"] == ["back", "front"]
 
     missing_envelope = service.feature(
         port_request(revision=3, request_id="missing-envelope", footprint="J2")

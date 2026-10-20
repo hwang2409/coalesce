@@ -75,7 +75,7 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
         "innerCutouts": "available",
         "holes": "available",
         "footprints": "available",
-        "courtyards": "available",
+        "courtyards": "partial",
         "models": "unresolved",
     }
     assert board["warnings"] == board["errors"] == []
