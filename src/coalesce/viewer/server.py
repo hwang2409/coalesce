@@ -51,6 +51,14 @@ def _static_files() -> dict[str, tuple[bytes, str]]:
     return found
 
 
+class _HTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, viewer: ViewerServer, port: int) -> None:
+        self.viewer = viewer
+        super().__init__((LOOPBACK, port), _Handler)
+
+
 class ViewerServer:
     """Serves one ``ViewerSceneStore`` on 127.0.0.1 and a free port until ``close``."""
 
@@ -59,8 +67,7 @@ class ViewerServer:
         self._token = secrets.token_urlsafe(32)
         self._static = _static_files()
         self._closing = threading.Event()
-        self._httpd = ThreadingHTTPServer((LOOPBACK, port), _handler(self))
-        self._httpd.daemon_threads = True
+        self._httpd = _HTTPServer(self, port)
         self.port = self._httpd.server_address[1]
         self.origin = f"http://{LOOPBACK}:{self.port}"
         self.cookie_name = f"coalesce_{self.port}"  # cookies ignore ports; keep servers apart
@@ -87,118 +94,120 @@ class ViewerServer:
         self.close()
 
 
-def _handler(server: ViewerServer) -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
+class _Handler(BaseHTTPRequestHandler):
+    server: _HTTPServer
+    protocol_version = "HTTP/1.1"
 
-        def log_message(self, format, *args):
-            pass  # stderr belongs to the MCP host; never log request lines.
+    @property
+    def viewer(self) -> ViewerServer:
+        return self.server.viewer
 
-        def send(self, status, body=b"", kind="text/plain", headers=()):
-            self.send_response(status)
-            self.send_header("Content-Type", kind)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
-            for name, value in headers:
-                self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(body)
+    def log_message(self, format, *args):
+        pass  # stderr belongs to the MCP host; never log request lines.
 
-        def json(self, value):
-            self.send(200, json.dumps(value).encode(), "application/json",
-                      [("Cache-Control", "no-store")])
+    def send(self, status, body=b"", kind="text/plain", headers=()):
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in headers:
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
 
-        def trusted(self) -> bool:
-            origin = self.headers.get("Origin")
-            return self.headers.get("Host") == f"{LOOPBACK}:{server.port}" and (
-                origin is None or origin == server.origin
-            )
+    def json(self, value):
+        self.send(200, json.dumps(value).encode(), "application/json",
+                  [("Cache-Control", "no-store")])
 
-        def authorized(self) -> bool:
-            prefix = f"{server.cookie_name}="
-            for item in self.headers.get("Cookie", "").split(";"):
-                item = item.strip()
-                if item.startswith(prefix):
-                    return hmac.compare_digest(item[len(prefix):], server._token)
-            return False
+    def trusted(self) -> bool:
+        origin = self.headers.get("Origin")
+        return self.headers.get("Host") == f"{LOOPBACK}:{self.viewer.port}" and (
+            origin is None or origin == self.viewer.origin
+        )
 
-        def do_GET(self):
-            path = self.path.split("?", 1)[0]
-            if not self.trusted():
-                return self.send(HTTPStatus.FORBIDDEN)
-            if path in server._static:
-                body, kind = server._static[path]
-                headers = [("Cache-Control", "no-cache")]
-                if path == "/":
-                    headers.append(("Content-Security-Policy", _PAGE_POLICY))
-                return self.send(200, body, kind, headers)
-            if not (path in ("/events", "/api/session") or _SCENE.fullmatch(path) or _MESH.fullmatch(path)):
-                return self.send(HTTPStatus.NOT_FOUND)
-            if not self.authorized():
-                return self.send(HTTPStatus.UNAUTHORIZED)
-            if path == "/events":
-                return self.events()
-            if path == "/api/session":
-                return self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
-            if match := _SCENE.fullmatch(path):
-                scene = server.store.scene(int(match[1]))
-                return self.json(scene) if scene else self.send(HTTPStatus.NOT_FOUND)
-            mesh = server.store.mesh(_MESH.fullmatch(path)[1])
-            if mesh is None:
-                return self.send(HTTPStatus.NOT_FOUND)
-            # content-addressed: unchanged parts are never downloaded twice.
-            self.send(200, mesh, "application/octet-stream",
-                      [("Cache-Control", "private, max-age=31536000, immutable")])
+    def authorized(self) -> bool:
+        prefix = f"{self.viewer.cookie_name}="
+        for item in self.headers.get("Cookie", "").split(";"):
+            item = item.strip()
+            if item.startswith(prefix):
+                return hmac.compare_digest(item[len(prefix):], self.viewer._token)
+        return False
 
-        def do_POST(self):
-            if self.path != "/api/session":
-                return self.send(HTTPStatus.NOT_FOUND)
-            # a session needs our exact Origin, not just "no foreign Origin".
-            if not self.trusted() or self.headers.get("Origin") != server.origin:
-                return self.send(HTTPStatus.FORBIDDEN)
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                token = json.loads(self.rfile.read(min(length, 4096)))["token"]
-            except (ValueError, KeyError, TypeError):
-                return self.send(HTTPStatus.BAD_REQUEST)
-            if not isinstance(token, str) or not hmac.compare_digest(token, server._token):
-                return self.send(HTTPStatus.FORBIDDEN)
-            cookie = f"{server.cookie_name}={server._token}; Path=/; HttpOnly; SameSite=Strict"
-            self.send(HTTPStatus.NO_CONTENT, headers=[("Set-Cookie", cookie)])
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if not self.trusted():
+            return self.send(HTTPStatus.FORBIDDEN)
+        if path in self.viewer._static:
+            body, kind = self.viewer._static[path]
+            headers = [("Cache-Control", "no-cache")]
+            if path == "/":
+                headers.append(("Content-Security-Policy", _PAGE_POLICY))
+            return self.send(200, body, kind, headers)
+        if not (path in ("/events", "/api/session") or _SCENE.fullmatch(path) or _MESH.fullmatch(path)):
+            return self.send(HTTPStatus.NOT_FOUND)
+        if not self.authorized():
+            return self.send(HTTPStatus.UNAUTHORIZED)
+        if path == "/events":
+            return self.events()
+        if path == "/api/session":
+            return self.send(HTTPStatus.NO_CONTENT, headers=[("Cache-Control", "no-store")])
+        if match := _SCENE.fullmatch(path):
+            scene = self.viewer.store.scene(int(match[1]))
+            return self.json(scene) if scene else self.send(HTTPStatus.NOT_FOUND)
+        mesh = self.viewer.store.mesh(_MESH.fullmatch(path)[1])
+        if mesh is None:
+            return self.send(HTTPStatus.NOT_FOUND)
+        # content-addressed: unchanged parts are never downloaded twice.
+        self.send(200, mesh, "application/octet-stream",
+                  [("Cache-Control", "private, max-age=31536000, immutable")])
 
-        def events(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.close_connection = True
-            sent_revision, sent_failure, version, idle = None, None, None, 0.0
-            try:
-                while not server._closing.is_set():
-                    if version is not None and not server.store.wait_for_change(version, 1):
-                        idle += 1
-                        if idle >= KEEPALIVE_SECONDS:
-                            self.wfile.write(b": keepalive\n\n")
-                            self.wfile.flush()
-                            idle = 0
-                        continue
-                    version, revision, failure = server.store.snapshot()
-                    out = b""
-                    if revision is not None and revision != sent_revision:
-                        out += _event("revision", {"revision": revision})
-                        sent_revision = revision
-                    if failure is not None and failure is not sent_failure:
-                        out += _event("failure", failure)
-                    sent_failure = failure
-                    if out:
-                        self.wfile.write(out)
+    def do_POST(self):
+        if self.path != "/api/session":
+            return self.send(HTTPStatus.NOT_FOUND)
+        # a session needs our exact Origin, not just "no foreign Origin".
+        if not self.trusted() or self.headers.get("Origin") != self.viewer.origin:
+            return self.send(HTTPStatus.FORBIDDEN)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            token = json.loads(self.rfile.read(min(length, 4096)))["token"]
+        except (ValueError, KeyError, TypeError):
+            return self.send(HTTPStatus.BAD_REQUEST)
+        if not isinstance(token, str) or not hmac.compare_digest(token, self.viewer._token):
+            return self.send(HTTPStatus.FORBIDDEN)
+        cookie = f"{self.viewer.cookie_name}={self.viewer._token}; Path=/; HttpOnly; SameSite=Strict"
+        self.send(HTTPStatus.NO_CONTENT, headers=[("Set-Cookie", cookie)])
+
+    def events(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.close_connection = True
+        sent_revision, sent_failure, version, idle = None, None, None, 0.0
+        try:
+            while not self.viewer._closing.is_set():
+                if version is not None and not self.viewer.store.wait_for_change(version, 1):
+                    idle += 1
+                    if idle >= KEEPALIVE_SECONDS:
+                        self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-
-    return Handler
+                        idle = 0
+                    continue
+                version, revision, failure = self.viewer.store.snapshot()
+                out = b""
+                if revision is not None and revision != sent_revision:
+                    out += _event("revision", {"revision": revision})
+                    sent_revision = revision
+                if failure is not None and failure is not sent_failure:
+                    out += _event("failure", failure)
+                sent_failure = failure
+                if out:
+                    self.wfile.write(out)
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
 
 def _event(name: str, data: dict) -> bytes:

@@ -59,6 +59,44 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     return data, counts, lo, hi
 
 
+def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) -> tuple[dict, dict[str, bytes]]:
+    """Validate and tessellate parts into (scene JSON, mesh bytes by content digest)."""
+    parts = list(parts)
+    names = [p.name for p in parts]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate part names in {names}")
+    for part in parts:
+        if part.color is not None and not _COLOR.fullmatch(part.color):
+            raise ValueError(f"part {part.name!r} color must be #rrggbb, got {part.color!r}")
+    meshes, scene_parts, lows, highs = {}, [], [], []
+    for index, part in enumerate(parts):
+        data, counts, lo, hi = _tessellate(part, tolerance)
+        digest = hashlib.sha256(data).hexdigest()[:32]
+        meshes[digest] = data
+        exact = part.shape.bounding_box()
+        scene_parts.append(
+            {
+                "name": part.name,
+                "color": part.color or PALETTE[index % len(PALETTE)],
+                "visible": part.visible,
+                "size": [exact.size.X, exact.size.Y, exact.size.Z],
+                "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
+            }
+        )
+        lows.append(lo)
+        highs.append(hi)
+    scene = {
+        "revision": revision,
+        "units": "mm",
+        "bbox": {
+            "min": [min(c) for c in zip(*lows)] if lows else [0, 0, 0],
+            "max": [max(c) for c in zip(*highs)] if highs else [0, 0, 0],
+        },
+        "parts": scene_parts,
+    }
+    return scene, meshes
+
+
 class ViewerSceneStore:
     """Holds the current and previous committed revision as tessellated named parts.
 
@@ -80,44 +118,11 @@ class ViewerSceneStore:
         self._failure: dict | None = None
 
     def publish(self, revision: int, parts: Iterable[ScenePart]) -> None:
-        parts = list(parts)
-        names = [p.name for p in parts]
-        if len(set(names)) != len(names):
-            raise ValueError(f"duplicate part names in {names}")
-        for part in parts:
-            if part.color is not None and not _COLOR.fullmatch(part.color):
-                raise ValueError(f"part {part.name!r} color must be #rrggbb, got {part.color!r}")
         with self._changed:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
-
         # tessellate outside the lock: readers keep serving the last scene meanwhile.
-        meshes, scene_parts, lows, highs = {}, [], [], []
-        for index, part in enumerate(parts):
-            data, counts, lo, hi = _tessellate(part, self.TOLERANCE)
-            digest = hashlib.sha256(data).hexdigest()[:32]
-            meshes[digest] = data
-            exact = part.shape.bounding_box()
-            scene_parts.append(
-                {
-                    "name": part.name,
-                    "color": part.color or PALETTE[index % len(PALETTE)],
-                    "visible": part.visible,
-                    "size": [exact.size.X, exact.size.Y, exact.size.Z],
-                    "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
-                }
-            )
-            lows.append(lo)
-            highs.append(hi)
-        scene = {
-            "revision": revision,
-            "units": "mm",
-            "bbox": {
-                "min": [min(c) for c in zip(*lows)] if lows else [0, 0, 0],
-                "max": [max(c) for c in zip(*highs)] if highs else [0, 0, 0],
-            },
-            "parts": scene_parts,
-        }
+        scene, meshes = _build_scene(revision, parts, self.TOLERANCE)
 
         with self._changed:
             if self._revision is not None and revision <= self._revision:
