@@ -927,6 +927,86 @@ def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
     }
 
 
+def _kind(node: Any) -> str:
+    """Human words for a graph node kind, for the viewer."""
+    if isinstance(node, Extrude) and node.operation == "join":
+        return "join extrude"
+    if isinstance(node, Hole):
+        return "hole feature"
+    if isinstance(node, BoardImport):
+        return "board import"
+    return type(node).__name__.lower()
+
+
+def _hole_names(node: Hole) -> list[str | None]:
+    return [position.name for position in node.positions] or [None]
+
+
+def _lineage(graph: Any, feature_id: str) -> tuple[dict[str, Any], ...]:
+    """The features that built a terminal part, oldest first, following each target."""
+    chain = []
+    node = graph.nodes.get(feature_id)
+    while node is not None:
+        entry = {"id": node.id, "kind": _kind(node)}
+        if isinstance(node, Hole):
+            entry["holes"] = _hole_names(node)
+        chain.append(entry)
+        node = graph.nodes.get(getattr(node, "target", None) or "")
+    return tuple(reversed(chain))
+
+
+def _mm(value: float | tuple[float, ...]) -> str:
+    if isinstance(value, tuple):
+        return "(" + ", ".join(f"{c:g}" for c in value) + ")"
+    return f"{value:g}"
+
+
+# the fields the update tools change, as the human reads them: a word, and old -> new values
+_EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
+    "height": ("distance", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "position": ("position", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "entities": ("profiles", lambda was, now: f"{len(was)} \u2192 {len(now)}"),
+}
+
+
+def _added(node: Any) -> str:
+    if isinstance(node, BoardImport):
+        return f"imported board {node.id}"
+    summary = f"added {_kind(node)} {node.id}"
+    target = getattr(node, "target", None)
+    if target:
+        summary += f" on {target}"
+    if isinstance(node, Sketch):
+        count = len(node.entities)
+        summary += f" ({count} {'profile' if count == 1 else 'profiles'})"
+    elif isinstance(node, Hole):
+        count = len(_hole_names(node))
+        summary += f" ({count} {'hole' if count == 1 else 'holes'})"
+    elif isinstance(node, Extrude):
+        summary += f" ({_mm(node.height)} mm)"
+    return summary
+
+
+def _edited(old: Any, node: Any) -> str:
+    if isinstance(node, BoardImport):
+        same = old.source_digest == node.source_digest
+        return f"refreshed board {node.id}, source {'unchanged' if same else 'changed'}"
+    edits = []
+    for name, (word, values) in _EDITED_FIELDS.items():
+        was, now = getattr(old, name, None), getattr(node, name, None)
+        if was != now:
+            edits.append(f"{word}: {values(was, now)}")
+    summary = f"edited {_kind(node)} {node.id}"
+    return f"{summary} {', '.join(edits)}" if edits else f"{summary}, no value changed"
+
+
+def _change(before: Any, after: Any, changed_id: str) -> dict[str, str]:
+    """One line that tells the human what a commit did: added what, or which values changed."""
+    node = after.nodes[changed_id]
+    old = before.nodes.get(changed_id)
+    return {"featureId": changed_id, "summary": _added(node) if old is None else _edited(old, node)}
+
+
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     from .viewer import ScenePart
 
@@ -939,6 +1019,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
             terminal_feature=part.terminal_feature,
             area=part.shape.area,
             volume=part.shape.volume,
+            features=_lineage(result.graph, part.terminal_feature),
         )
 
 
@@ -950,8 +1031,11 @@ class _ScenePublisher:
         self._jobs: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue()
         threading.Thread(target=self._run, name="coalesce-viewer-publisher", daemon=True).start()
 
-    def publish(self, revision: int, result: RegenResult) -> None:
-        self._jobs.put(("publish", (revision, result)))
+    def publish(
+        self, revision: int, result: RegenResult, before: Any = None, changed_id: str | None = None
+    ) -> None:
+        """``before`` and ``changed_id`` describe the commit; none for a document opened from disk."""
+        self._jobs.put(("publish", (revision, result, before, changed_id)))
 
     def publish_failure(self, feature_ids: list[str], error: dict[str, str]) -> None:
         self._jobs.put(("publish_failure", (feature_ids, error)))
@@ -961,8 +1045,9 @@ class _ScenePublisher:
             method, arguments = self._jobs.get()
             try:
                 if method == "publish":
-                    revision, result = arguments
-                    self._store.publish(revision, _scene_parts(result))
+                    revision, result, before, changed_id = arguments
+                    change = _change(before, result.graph, changed_id) if changed_id else None
+                    self._store.publish(revision, _scene_parts(result), change)
                 else:
                     self._store.publish_failure(*arguments)
             except Exception:  # noqa: BLE001 - viewer work must not affect document calls.
@@ -1187,11 +1272,12 @@ class DocumentService:
                     ][-MAX_REQUEST_HASHES:],
                 )
                 durable = self.store.save(document)
+                before = self._document.graph
                 self._document = document
                 self._regen = result
                 self._graph_error = None
                 if self._publisher is not None:
-                    self._publisher.publish(document.revision, result)
+                    self._publisher.publish(document.revision, result, before, changed_id)
                 if not durable:
                     _LOG.warning(
                         "document rename committed but directory fsync failed; durability is unconfirmed"

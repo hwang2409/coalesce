@@ -19,6 +19,7 @@
   <section class="revision" aria-live="polite">
     <p class="revision-line"><span class="revision-name">Revision</span>
       <span class="revision-number" id="revision" data-testid="revision" data-empty>none</span></p>
+    <p class="revision-change" id="change" hidden></p>
     <p class="revision-meta" id="revision-meta">No committed geometry yet</p>
   </section>
 
@@ -60,7 +61,7 @@
 
     <div class="scale" id="scale" hidden>
       <span class="scale-bar" id="scale-bar"></span>
-      <span class="scale-text" id="scale-text"></span>
+      <span class="scale-text"><span id="scale-text"></span><span class="scale-grid" id="scale-grid"></span></span>
     </div>
 
     <nav class="views" aria-label="Camera">
