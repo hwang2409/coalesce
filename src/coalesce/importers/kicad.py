@@ -1,6 +1,7 @@
 """Dependency-free reader for the mechanical part of KiCad PCB files."""
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
@@ -12,6 +13,7 @@ from typing import Any
 _NM_PER_MM = 1_000_000
 _MIN_BOARD_NM = -(1 << 31)
 _MAX_BOARD_NM = (1 << 31) - 1
+_PARSER_VERSION = "2"
 
 
 def _ki_round(value: float) -> int:
@@ -74,6 +76,7 @@ class OutlineLoop:
     segments: list[Segment]
     closed: bool
     inner: bool = False
+    id: str = ""
 
     @property
     def bbox(self) -> dict[str, float]:
@@ -100,6 +103,8 @@ class Hole:
     drill: Drill
     plated: bool
     footprint_id: str | None
+    id: str = ""
+    pad_number: str | None = None
 
 
 @dataclass
@@ -136,6 +141,8 @@ class Board:
     warnings: list[str]
     errors: list[Error] = field(default_factory=list)
     units: str = "mm"
+    source_digest: str = ""
+    parser_version: str = _PARSER_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -640,7 +647,12 @@ def _holes(node: list[Any], footprint_id: str, transform: _FootprintTransform, p
         rotated_offset = _rotate_point(offset, local_angle)
         hole_position = _canonical_point((local[0] + rotated_offset[0], local[1] + rotated_offset[1]))
         pad_type = str(pad[2]) if len(pad) > 2 else ""
-        holes.append(Hole(transform.point(hole_position), drill, pad_type == "thru_hole", footprint_id))
+        pad_number = str(pad[1]) if len(pad) > 1 else ""
+        pad_uuid = _uuid(pad)
+        identity = f"footprint:{footprint_id}|pad:{pad_number}|uuid:{pad_uuid or ''}"
+        hole_id = "hole-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        holes.append(Hole(transform.point(hole_position), drill, pad_type == "thru_hole", footprint_id,
+                          hole_id, pad_number))
     return holes
 
 
@@ -653,7 +665,10 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
         if len(node) < 2:
             raise ValueError(f"{path}: requires a library id")
         transform = _footprint_transform(node, path)
-        footprint_id = _uuid(node) or f"footprint-{len(footprints)}"
+        footprint_id = _uuid(node)
+        if footprint_id is None:
+            identity = f"library:{node[1]}|at:{transform.position}|rotation:{transform.rotation}|side:{'B' if transform.back else 'F'}"
+            footprint_id = "footprint-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
         scope = f"{path} {node[1]!r}"
         courtyard = _courtyard(node, transform, scope)
         footprints.append(Footprint(
@@ -663,6 +678,15 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
         ))
         holes.extend(_holes(node, footprint_id, transform, path))
         edges.extend(_graphics(node, "Edge.Cuts", transform, scope))
+    for index, via in enumerate(_children(root, "via")):
+        position = _point(via, "at")
+        drill_node = _child(via, "drill")
+        if position is None or drill_node is None:
+            continue
+        drill = _drill(drill_node, _FootprintTransform((0.0, 0.0), 0.0, False))
+        identity = f"via|at:{_endpoint_key(position)}|drill:{_to_nm(drill.width)}|shape:{drill.shape}|height:{_to_nm(drill.height)}"
+        hole_id = "hole-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        holes.append(Hole(position, drill, True, None, hole_id, None))
     return footprints, holes, edges
 
 
@@ -698,23 +722,70 @@ def _unsupported_geometry(root: list[Any]) -> list[Error]:
     return errors
 
 
-def _parse_board(root: list[Any]) -> Board:
+def _segment_key(segment: Segment) -> tuple[Any, ...]:
+    points = tuple(_endpoint_key(point) for point in (segment.start, segment.mid, segment.end) if point is not None)
+    return (segment.kind, *points)
+
+
+def _reverse_segment_key(segment: Segment) -> tuple[Any, ...]:
+    if segment.kind == "circle":
+        return _segment_key(segment)
+    return _segment_key(Segment(segment.kind, segment.end, segment.start, segment.mid, segment.id))
+
+
+def _loop_id(loop: OutlineLoop) -> str:
+    sequences: list[tuple[Any, ...]] = []
+    for segments in (loop.segments, list(reversed(loop.segments))):
+        keys = [_segment_key(segment) if segments is loop.segments else _reverse_segment_key(segment)
+                for segment in segments]
+        sequences.extend(tuple(keys[index:] + keys[:index]) for index in range(len(keys)))
+    canonical = min(sequences)
+    payload = json.dumps(canonical, separators=(",", ":"))
+    return "loop-" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def _assign_loop_ids(loops: list[OutlineLoop]) -> list[Error]:
+    seen: dict[str, OutlineLoop] = {}
+    errors: list[Error] = []
+    for loop in loops:
+        loop.id = _loop_id(loop)
+        if loop.id in seen:
+            errors.append(Error("id_collision", f"outline loop id collision: {loop.id}", [loop.id]))
+        seen[loop.id] = loop
+    return errors
+
+
+def _parse_board(root: list[Any], source_digest: str = "") -> Board:
     thickness, thickness_source = _thickness(root)
     footprints, holes, footprint_edges = _extract_footprints(root)
     loops = _chain(_graphics(root, "Edge.Cuts") + footprint_edges)
     outline, inner = _classify(loops)
     warnings, errors = _open_errors(loops)
+    errors.extend(_assign_loop_ids(outline + inner))
+    seen_footprints: set[str] = set()
+    for footprint in footprints:
+        if footprint.id in seen_footprints:
+            errors.append(Error("id_collision", f"footprint id collision: {footprint.id}", [footprint.id]))
+        seen_footprints.add(footprint.id)
+    seen_holes: set[str] = set()
+    for hole in holes:
+        if hole.id in seen_holes:
+            errors.append(Error("id_collision", f"hole id collision: {hole.id}", [hole.id]))
+        seen_holes.add(hole.id)
     warnings.extend(_unsupported_courtyard_warnings(root))
     errors.extend(_unsupported_geometry(root))
     if not outline and not errors:
         errors.append(Error("missing_outline", "no recognized closed Edge.Cuts outline"))
-    return Board(thickness, thickness_source, outline, inner, holes, footprints, warnings, errors)
+    return Board(thickness, thickness_source, outline, inner, holes, footprints, warnings, errors,
+                 source_digest=source_digest)
 
 
 def parse_kicad_pcb(path: str | Path) -> Board:
     """Parse board mechanics and return structured errors for all invalid input."""
     try:
-        return _parse_board(_parse(Path(path).read_text(encoding="utf-8")))
+        raw = Path(path).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        return _parse_board(_parse(raw.decode("utf-8")), digest)
     except (OSError, ValueError, TypeError, IndexError, RecursionError) as exc:
         message = str(exc) or exc.__class__.__name__
         return Board(None, "unavailable", [], [], [], [], [message], [Error("parse", message)])
