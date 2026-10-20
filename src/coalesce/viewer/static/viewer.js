@@ -24,6 +24,7 @@ renderer.autoClear = false;
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 10000);
 camera.up.set(0, 0, 1);
+camera.position.set(...VIEWS.iso); // a valid orientation before the first scene arrives
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
 keyLight.position.set(-0.5, 0.6, 1);
 camera.add(keyLight);

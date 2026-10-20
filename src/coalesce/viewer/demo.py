@@ -35,12 +35,12 @@ def main() -> None:
             store.publish_failure(["edge_fillet"], str(error))
             print(f"edge_fillet failed: {error}", file=sys.stderr, flush=True)
         print("serving; press Ctrl-C to stop", file=sys.stderr, flush=True)
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            pass
+        while True:
+            time.sleep(3600)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

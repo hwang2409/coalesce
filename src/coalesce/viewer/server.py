@@ -17,6 +17,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from typing import Self
 
 from coalesce.viewer.scene import ViewerSceneStore
 
@@ -79,7 +80,7 @@ class ViewerServer:
         self._httpd.shutdown()
         self._httpd.server_close()
 
-    def __enter__(self) -> ViewerServer:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -90,7 +91,7 @@ def _handler(server: ViewerServer) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        def log_message(self, format, *args):
             pass  # stderr belongs to the MCP host; never log request lines.
 
         def send(self, status, body=b"", kind="text/plain", headers=()):

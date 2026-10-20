@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 import sys
 import threading
@@ -40,7 +41,7 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     edges = []
     for edge in part.shape.edges():
         points = edge.positions(deflection=tolerance)
-        for a, b in zip(points, points[1:]):
+        for a, b in itertools.pairwise(points):
             edges += [*a, *b]
     flat = [c for v in vertices for c in v]
     data = (
