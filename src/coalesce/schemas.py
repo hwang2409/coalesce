@@ -469,7 +469,15 @@ FEATURE_UPDATE_SCHEMA = {
     "properties": {
         "action": {"const": "update"},
         **FEATURE_PROPERTIES,
-        "set": {"oneOf": [EXTRUDE_UPDATE_SET, TARGET_UPDATE_SET]},
+        "set": {
+            "oneOf": [
+                EXTRUDE_UPDATE_SET,
+                TARGET_UPDATE_SET,
+                PCB_BASE_UPDATE_SET,
+                STANDOFFS_UPDATE_SET,
+                PCB_LID_UPDATE_SET,
+            ]
+        },
     },
     "required": ["action", *FEATURE_PROPERTIES, "set"],
     "additionalProperties": False,

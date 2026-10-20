@@ -179,6 +179,35 @@ def _join_extrude(
     )
 
 
+def _regenerate_pcb_lid(
+    node: PcbLid,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+) -> None:
+    base_node = graph.nodes[node.base]
+    if not isinstance(base_node, PcbBase):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} base must reference a pcb_base",
+            feature=node.id,
+            parameter="base",
+        )
+    board_node = graph.nodes[base_node.board]
+    if not isinstance(board_node, BoardImport):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} base must reference a valid board import",
+            feature=node.id,
+            parameter="base",
+        )
+    lid = build_pcb_lid(node, base_node, board_node)
+    shapes[node.id] = lid.shape
+    states[node.id] = lid.candidates
+    provenance[node.id] = lid.candidates
+
+
 def _regenerate_enclosure(
     node: PcbBase | PcbLid | Standoffs,
     graph: Graph,
@@ -188,26 +217,7 @@ def _regenerate_enclosure(
     joined_material: dict[str, bool],
 ) -> None:
     if isinstance(node, PcbLid):
-        base_node = graph.nodes[node.base]
-        if not isinstance(base_node, PcbBase):
-            raise GraphError(
-                "INVALID_PARAMETER",
-                f"pcb_lid {node.id} base must reference a pcb_base",
-                feature=node.id,
-                parameter="base",
-            )
-        board_node = graph.nodes[base_node.board]
-        if not isinstance(board_node, BoardImport):
-            raise GraphError(
-                "INVALID_PARAMETER",
-                f"pcb_lid {node.id} base must reference a valid board import",
-                feature=node.id,
-                parameter="base",
-            )
-        lid = build_pcb_lid(node, base_node, board_node)
-        shapes[node.id] = lid.shape
-        states[node.id] = lid.candidates
-        provenance[node.id] = lid.candidates
+        _regenerate_pcb_lid(node, graph, shapes, states, provenance)
         return
 
     board_node = graph.nodes[node.board]
