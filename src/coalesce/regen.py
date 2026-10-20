@@ -1,4 +1,4 @@
-"""Regenerate graph geometry and provenance as an immutable run result."""
+"""Regenerate graph geometry and provenance as a run result value."""
 
 from __future__ import annotations
 
