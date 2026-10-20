@@ -277,6 +277,30 @@ def test_reference_role_is_excluded_by_default_and_queryable_after_restart(tmp_p
     assert restarted == reference
 
 
+def test_board_reference_cannot_be_used_as_a_consumable_body_target(tmp_path):
+    service = DocumentService(tmp_path / "board.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+
+    result = service.feature(
+        {
+            "action": "create",
+            "expectedRevision": 1,
+            "requestId": "board-hole",
+            "featureId": "board_hole",
+            "kind": "hole",
+            "parameters": {
+                "target": {"featureId": "controller_board"},
+                "diameter": {"value": 3, "unit": "mm"},
+                "position": [0, 0],
+            },
+        }
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["message"] == "hole target must produce a body"
+    assert service.revision == 1
+
+
 def test_invalid_refresh_is_atomic_and_keeps_last_good_reference_scene(tmp_path):
     source = tmp_path / "board.kicad_pcb"
     shutil.copyfile(FIXTURES / "features.kicad_pcb", source)
