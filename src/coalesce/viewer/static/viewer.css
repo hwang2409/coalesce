@@ -157,33 +157,39 @@ button {
 
 .parts ul { list-style: none; padding: 0; }
 
-/* one row: the show/hide swatch (a 44 px target), then the part button that shows details */
-.parts li:not(.parts-empty) { display: grid; grid-template-columns: 44px 1fr; align-items: start; }
+/* one row: the show/hide swatch (a 44 px target as tall as the row), then the part button that shows details */
+.parts li:not(.parts-empty) { display: grid; grid-template-columns: 44px 1fr; }
 
 .visibility, .part { -webkit-tap-highlight-color: transparent; }
 .part:focus { background: rgba(29, 35, 41, 0.05); }
 
+/* the swatch sits on the name line: same top padding as the part button, centered in one line height */
 .visibility {
   display: grid;
-  place-items: center;
+  place-items: start center;
   width: 44px;
-  height: 44px;
+  min-height: 44px;
+  padding: calc(12px + (1.45em - 14px) / 2) 0 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
 }
 
-.visibility:hover, .part:hover { background: rgba(29, 35, 41, 0.05); }
+/* touch screens keep :hover after a tap; only a real pointer gets the hover wash */
+@media (hover: hover) {
+  .visibility:hover, .part:hover { background: rgba(29, 35, 41, 0.05); }
+}
 
 .part {
   display: grid;
   grid-template-columns: 1fr auto;
-  align-items: center;
+  align-content: start;
+  align-items: baseline;
   column-gap: 10px;
   row-gap: 4px;
   width: 100%;
   min-height: 44px;
-  padding: 8px 8px 8px 0;
+  padding: 12px 8px 12px 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -199,7 +205,10 @@ button {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
+.part-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+
 .part-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -208,7 +217,11 @@ button {
 
 /* a focused row (keyboard or tap) and a name with a distinguishing suffix show the full name */
 .part-name.collides { white-space: normal; }
-.part:focus .part-name { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
+.part:focus .part-title { grid-column: 1 / -1; }
+.part:focus .part-name { white-space: normal; overflow-wrap: anywhere; }
+
+/* narrow screens only: the detail line opens when the row has focus */
+.disclosure { display: none; flex: none; color: var(--mute); transition: transform 120ms; }
 
 .part-size { grid-column: 2; color: var(--mute); font-size: 12px; }
 
@@ -469,8 +482,9 @@ button {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .panel { max-height: 40vh; }
   .part:not(:focus) .part-detail { display: none; }
-  /* a row with hidden details says so before the tap */
-  .part.has-detail:not(:focus) .part-size::after { content: "  \25BE"; color: var(--faint); }
+  /* a row with hidden details says so beside its name, and flips the hint when open */
+  .part.has-detail .disclosure { display: inline-block; }
+  .part:focus .disclosure { transform: rotate(180deg); }
   /* a compact scale above the camera buttons; the grid square is the same length */
   .scale, .gizmo[hidden] + .scale { left: auto; right: 16px; bottom: 66px; }
   .scale-grid { display: none; }
