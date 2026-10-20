@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from jsonschema import ValidationError, validate
+from jsonschema.exceptions import best_match, relevance
 from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -99,6 +100,49 @@ def schema_error_message(error: ValidationError) -> str:
     return f"{text} (field: {path})" if path else text
 
 
+def _is_kind_union(error: ValidationError) -> bool:
+    return (
+        error.validator in ("oneOf", "anyOf")
+        and isinstance(error.instance, dict)
+        and "kind" in error.instance
+    )
+
+
+def _branch_error(error: ValidationError) -> ValidationError:
+    """Report a union failure from the branch the supplied `kind` selects, not a wrong branch."""
+    union = error
+    while union.parent is not None:
+        union = union.parent
+    if not _is_kind_union(union):
+        return error
+    while _is_kind_union(union):
+        kinds = [branch.get("properties", {}).get("kind", {}) for branch in union.validator_value]
+        allowed = [
+            value for k in kinds for value in ([k["const"]] if "const" in k else k.get("enum", []))
+        ]
+        index = next(
+            (
+                i
+                for i, k in enumerate(kinds)
+                if k and union.instance["kind"] in (k.get("const"), *k.get("enum", ()))
+            ),
+            None,
+        )
+        if index is None:
+            return ValidationError(
+                "kind",
+                validator="enum" if len(allowed) > 1 else "const",
+                validator_value=allowed if len(allowed) > 1 else allowed[0],
+                instance=union.instance["kind"],
+                path=[*union.absolute_path, "kind"],
+            )
+        branch = [e for e in union.context if e.relative_schema_path[0] == index]
+        if not branch:
+            return error
+        union = max(branch, key=relevance)
+    return best_match([union])
+
+
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return ACTION_SCHEMAS.get(name, {}).get(arguments.get("action"), TOOL_SCHEMAS[name])
 
@@ -143,7 +187,8 @@ def create_server(service: DocumentService) -> Server:
                 instance=arguments,
                 schema=_schema_for_action(name, arguments),
             )
-        except ValidationError as error:
+        except ValidationError as raised:
+            error = _branch_error(raised)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
                 details["allowedKinds"] = ["extrude", "boolean", "hole", "fillet"]

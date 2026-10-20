@@ -353,6 +353,51 @@ async def test_schema_invalid_feature_shows_coalesce_wording_in_viewer(tmp_path,
     }
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        (
+            {"filters": [{"kind": "Position", "direction": [0, 0, 1]}]},
+            "missing required field 'value' (field: select.reference.filters[0])",
+        ),
+        (
+            {"filters": [{"kind": "Normal", "direction": [0, 0, 1], "value": 6}]},
+            "unknown field 'value' (field: select.reference.filters[0])",
+        ),
+        (
+            {"filters": [{"kind": "Angle", "direction": [0, 0, 1]}]},
+            (
+                "kind must be one of 'Normal', 'MaxAlong', 'Position'"
+                " (field: select.reference.filters[0].kind)"
+            ),
+        ),
+        (
+            {"source": {"kind": "sketch_segment", "sketch": "s", "entity": "e"}},
+            "missing required field 'segment' (field: select.reference.source)",
+        ),
+        (
+            {"source": {"kind": "edge"}},
+            "kind must be 'sketch_segment' (field: select.reference.source.kind)",
+        ),
+        (
+            {"body": {"kind": "body_source", "feature": "plate_extrude"}},
+            "missing required field 'entity' (field: select.reference.body)",
+        ),
+    ],
+)
+async def test_schema_union_errors_come_from_the_branch_the_kind_selects(
+    tmp_path, changes, message
+):
+    service = DocumentService(tmp_path / "plate.coalesce.json")
+    reference = {"feature": "plate_extrude", "role": "cap_end", **changes}
+    result = await call_server_tool(
+        service, "query", {"select": {"kind": "reference", "reference": reference}}
+    )
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["message"] == message
+
+
 def _stdio(path, *args, env=None):
     return StdioServerParameters(
         command=shutil.which("coalesce") or "coalesce",
