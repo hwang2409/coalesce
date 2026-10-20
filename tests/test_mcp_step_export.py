@@ -280,7 +280,7 @@ async def test_validation_mismatch_removes_temporary_and_final_files(tmp_path, m
     target = tmp_path / "mismatch.step"
     service = DocumentService(document)
 
-    def mismatched(_path):
+    def mismatched(_path, **_kwargs):
         return {
             "partCount": 0,
             "solidCount": 0,

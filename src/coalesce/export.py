@@ -108,7 +108,9 @@ def _read_step_metrics(path: Path) -> dict[str, Any]:
     return _metrics(shapes, [shape.label for shape in shapes])
 
 
-def verify_step_fresh(path: Path) -> dict[str, Any]:
+def verify_step_fresh(
+    path: Path, *, inherited_fd: int | None = None
+) -> dict[str, Any]:
     """Reimport one STEP in a new interpreter and return only its measured evidence."""
     try:
         completed = subprocess.run(
@@ -117,6 +119,7 @@ def verify_step_fresh(path: Path) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=120,
+            pass_fds=() if inherited_fd is None else (inherited_fd,),
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise ExportFailure(
@@ -282,12 +285,16 @@ def _publish_step(
     linked_stat: os.stat_result | None = None
     try:
         temporary_name, temporary_fd = _create_temporary(directory_fd, path.name)
-        temporary_path = path.parent / temporary_name
-        export_step(Compound(children=shapes, label="coalesce_export"), temporary_path)
+        with os.fdopen(os.dup(temporary_fd), "w+b") as stream:
+            export_step(Compound(children=shapes, label="coalesce_export"), stream)
+            stream.flush()
         os.fsync(temporary_fd)
         _require_named_inode(directory_fd, temporary_name, temporary_fd)
         digest = _sha256(temporary_fd)
-        actual = verify_step_fresh(temporary_path)
+        os.lseek(temporary_fd, 0, os.SEEK_SET)
+        actual = verify_step_fresh(
+            Path(f"/dev/fd/{temporary_fd}"), inherited_fd=temporary_fd
+        )
         _validate(expected, actual)
         _require_named_inode(directory_fd, temporary_name, temporary_fd)
         if _sha256(temporary_fd) != digest:
