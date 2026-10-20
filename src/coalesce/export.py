@@ -1,4 +1,4 @@
-"""STEP export with fresh-process geometric validation and atomic no-overwrite publish."""
+"""STEP export with fresh-process validation and no-overwrite publication."""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import hashlib
 import json
 import math
 import os
-import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,9 +110,7 @@ def _read_step_metrics(path: Path) -> dict[str, Any]:
     return _metrics(shapes, [shape.label for shape in shapes])
 
 
-def verify_step_fresh(
-    path: Path, *, inherited_fd: int | None = None
-) -> dict[str, Any]:
+def verify_step_fresh(path: Path) -> dict[str, Any]:
     """Reimport one STEP in a new interpreter and return only its measured evidence."""
     try:
         completed = subprocess.run(
@@ -119,7 +119,6 @@ def verify_step_fresh(
             capture_output=True,
             text=True,
             timeout=120,
-            pass_fds=() if inherited_fd is None else (inherited_fd,),
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise ExportFailure(
@@ -189,6 +188,23 @@ def _validate(expected: dict[str, Any], actual: dict[str, Any]) -> None:
         )
 
 
+def _validated_step_bytes(
+    shapes: list[Any], expected: dict[str, Any]
+) -> tuple[bytes, str, dict[str, Any]]:
+    from build123d import Compound, export_step
+
+    temporary_directory = Path(tempfile.mkdtemp())
+    temporary_path = temporary_directory / "export.step"
+    try:
+        export_step(Compound(children=shapes, label="coalesce_export"), temporary_path)
+        actual = verify_step_fresh(temporary_path)
+        _validate(expected, actual)
+        content = temporary_path.read_bytes()
+        return content, hashlib.sha256(content).hexdigest(), actual
+    finally:
+        shutil.rmtree(temporary_directory)
+
+
 def _open_directory(path: Path) -> int:
     if not path.is_absolute():
         raise ExportFailure(
@@ -203,130 +219,87 @@ def _open_directory(path: Path) -> int:
             "export parent directory does not exist or is not writable",
             hint="create a writable parent directory and retry with a new path",
         )
-    return os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-
-
-def _create_temporary(directory_fd: int, destination_name: str) -> tuple[str, int]:
-    for _attempt in range(10):
-        name = f".{destination_name}.{secrets.token_hex(8)}.tmp"
-        try:
-            descriptor = os.open(
-                name,
-                os.O_RDWR | os.O_CREAT | os.O_EXCL,
-                0o600,
-                dir_fd=directory_fd,
-            )
-        except FileExistsError:
-            continue
-        return name, descriptor
-    raise OSError("could not allocate a private export temporary file")
-
-
-def _sha256(descriptor: int) -> str:
-    digest = hashlib.sha256()
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    while block := os.read(descriptor, 1024 * 1024):
-        digest.update(block)
-    return digest.hexdigest()
+    return os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
 
 
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
     return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
 
 
-def _require_named_inode(directory_fd: int, name: str, descriptor: int) -> None:
-    named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-    if not _same_inode(named, os.fstat(descriptor)):
-        raise OSError("private export temporary file was replaced")
-
-
-def _unlink_if_same(directory_fd: int, name: str, expected: os.stat_result) -> None:
+def _remove_published(
+    directory_fd: int, name: str, expected: os.stat_result
+) -> bool:
     try:
         actual = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except FileNotFoundError:
-        return
-    if _same_inode(actual, expected):
-        os.unlink(name, dir_fd=directory_fd)
+        return True
+    if not _same_inode(actual, expected):
+        return False
+    os.unlink(name, dir_fd=directory_fd)
+    os.fsync(directory_fd)
+    return True
 
 
-def _after_link(
-    _directory_fd: int, _destination_name: str, _linked_stat: os.stat_result
-) -> None:
-    """Internal test seam for replacement races after publication."""
+def _publication_failure(error: Exception, removed: bool) -> ExportFailure:
+    if isinstance(error, ExportFailure):
+        code = error.code
+        message = error.message
+        details = error.details
+    else:
+        code = "EXPORT_WRITE_FAILED"
+        message = "STEP export could not be written"
+        details = {
+            "hint": "check that the absolute parent directory is writable and retry",
+        }
+    if not removed:
+        message += "; the destination was replaced, so the foreign file was preserved"
+        details = {**details, "foreignFilePreserved": True}
+    return ExportFailure(code, message, **details)
 
 
-def _link(
-    directory_fd: int, temporary_name: str, destination_name: str
-) -> None:
-    try:
-        os.link(
-            temporary_name,
-            destination_name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-    except FileExistsError as error:
-        raise ExportFailure(
-            "EXPORT_PATH_EXISTS",
-            "export path already exists; STEP export never overwrites",
-            hint="choose a new path",
-        ) from error
-
-
-def _publish_step(
-    path: Path, shapes: list[Any], expected: dict[str, Any]
-) -> tuple[str, dict[str, Any]]:
-    from build123d import Compound, export_step
-
+def _publish_bytes(
+    path: Path, content: bytes, record: Callable[[], dict[str, Any]]
+) -> dict[str, Any]:
     directory_fd = _open_directory(path)
-    temporary_name: str | None = None
-    temporary_fd: int | None = None
-    linked_stat: os.stat_result | None = None
+    descriptor: int | None = None
+    published_stat: os.stat_result | None = None
     try:
-        temporary_name, temporary_fd = _create_temporary(directory_fd, path.name)
-        with os.fdopen(os.dup(temporary_fd), "w+b") as stream:
-            export_step(Compound(children=shapes, label="coalesce_export"), stream)
-            stream.flush()
-        os.fsync(temporary_fd)
-        _require_named_inode(directory_fd, temporary_name, temporary_fd)
-        digest = _sha256(temporary_fd)
-        os.lseek(temporary_fd, 0, os.SEEK_SET)
-        actual = verify_step_fresh(
-            Path(f"/dev/fd/{temporary_fd}"), inherited_fd=temporary_fd
-        )
-        _validate(expected, actual)
-        _require_named_inode(directory_fd, temporary_name, temporary_fd)
-        if _sha256(temporary_fd) != digest:
-            raise OSError("private export temporary file changed during validation")
-        _link(directory_fd, temporary_name, path.name)
-        linked_stat = os.fstat(temporary_fd)
-        _after_link(directory_fd, path.name, linked_stat)
-        os.fsync(directory_fd)
-        return digest, actual
-    except ExportFailure:
-        if linked_stat is not None:
-            _unlink_if_same(directory_fd, path.name, linked_stat)
-        raise
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        if linked_stat is not None:
-            _unlink_if_same(directory_fd, path.name, linked_stat)
-        raise ExportFailure(
-            "EXPORT_WRITE_FAILED",
-            "STEP export could not be written",
-            hint="check that the absolute parent directory is writable and retry with a new path",
-        ) from error
-    finally:
         try:
-            if temporary_name is not None:
-                try:
-                    os.unlink(temporary_name, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
-        finally:
-            if temporary_fd is not None:
-                os.close(temporary_fd)
-            os.close(directory_fd)
+            descriptor = os.open(
+                path.name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                0o644,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError as error:
+            raise ExportFailure(
+                "EXPORT_PATH_EXISTS",
+                "export path already exists; STEP export never overwrites",
+                hint="choose a new path",
+            ) from error
+        published_stat = os.fstat(descriptor)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("STEP export write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.fsync(directory_fd)
+        return record()
+    except Exception as error:
+        removed = published_stat is None or _remove_published(
+            directory_fd, path.name, published_stat
+        )
+        raise _publication_failure(error, removed) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(directory_fd)
 
 
 def _export_fields(
@@ -357,14 +330,19 @@ def _export_fields(
     }
 
 
-def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
-    """Write, validate, and publish selected terminal parts without replacement."""
+def export_parts(
+    path: Path,
+    parts: list[Any],
+    record: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate bytes, publish without replacement, then durably record success."""
     from build123d import Solid
 
     shapes = [Solid(part.shape.wrapped, label=part.label) for part in parts]
     expected = _metrics(shapes, [part.label for part in parts])
-    digest, actual = _publish_step(path, shapes, expected)
-    return _export_fields(path, parts, digest, actual)
+    content, digest, actual = _validated_step_bytes(shapes, expected)
+    fields = _export_fields(path, parts, digest, actual)
+    return _publish_bytes(path, content, lambda: record(fields))
 
 
 def _main() -> None:

@@ -1347,8 +1347,15 @@ class DocumentService:
         return selected
 
     def _record_export(
-        self, request_id: Any, body_hash: str, response: dict[str, Any]
-    ) -> None:
+        self, request_id: Any, body_hash: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        response = {
+            "ok": True,
+            "revision": self._document.revision,
+            "requestId": request_id,
+            "units": "mm",
+            **fields,
+        }
         receipt = {
             "requestId": request_id,
             "requestHash": body_hash,
@@ -1357,6 +1364,7 @@ class DocumentService:
         }
         self._export_journal.append(receipt)
         self._export_receipts.append(receipt)
+        return response
 
     def _perform_export(
         self, payload: dict[str, Any], request_id: Any
@@ -1370,16 +1378,11 @@ class DocumentService:
             return replay
         self._check_export_revision(payload["expectedRevision"])
         selected = self._select_export_parts(payload.get("partIds"))
-        fields = export_parts(Path(payload.get("path", "")), selected)
-        response = {
-            "ok": True,
-            "revision": self._document.revision,
-            "requestId": request_id,
-            "units": "mm",
-            **fields,
-        }
-        self._record_export(request_id, body_hash, response)
-        return response
+        return export_parts(
+            Path(payload.get("path", "")),
+            selected,
+            lambda fields: self._record_export(request_id, body_hash, fields),
+        )
 
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
