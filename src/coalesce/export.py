@@ -110,13 +110,20 @@ def _read_step_metrics(path: Path) -> dict[str, Any]:
 
 def verify_step_fresh(path: Path) -> dict[str, Any]:
     """Reimport one STEP in a new interpreter and return only its measured evidence."""
-    completed = subprocess.run(
-        [sys.executable, "-m", "coalesce.export", "--verify", str(path)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "coalesce.export", "--verify", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "the fresh Python process could not validate the STEP file",
+            hint="inspect the model and retry export to a different new path",
+        ) from error
     if completed.returncode != 0:
         raise ExportFailure(
             "EXPORT_VALIDATION_FAILED",
