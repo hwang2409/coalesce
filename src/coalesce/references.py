@@ -54,7 +54,7 @@ ElementSource = SketchSegmentSource | ToolCapSource | HoleSurfaceSource | str
 class ElementKey:
     feature: str
     role: str
-    source: ElementSource | tuple[ElementKey, ...] | None = None
+    source: ElementSource | ElementKey | tuple[ElementKey, ...] | None = None
     body: BodySource | None = None
 
 
@@ -94,7 +94,7 @@ class Reference:
     role: str
     cardinality: Cardinality = Cardinality.ONE
     count: int | None = None
-    source: ElementSource | None = None
+    source: ElementSource | ElementKey | None = None
     body: BodySource | None = None
     filters: list[Filter] = field(default_factory=list)
 
@@ -122,7 +122,9 @@ class Reference:
         }
 
 
-def _source_dict(source: ElementSource | None) -> dict[str, Any] | str | None:
+def _source_dict(
+    source: ElementSource | ElementKey | tuple[ElementKey, ...] | None,
+) -> dict[str, Any] | str | None:
     kinds = {
         SketchSegmentSource: "sketch_segment",
         ToolCapSource: "tool_cap",
@@ -130,7 +132,51 @@ def _source_dict(source: ElementSource | None) -> dict[str, Any] | str | None:
     }
     if isinstance(source, str) or source is None:
         return source
+    if isinstance(source, tuple):
+        return {"kind": "element_keys", "items": [_source_dict(item) for item in source]}
+    if isinstance(source, ElementKey):
+        return {
+            "kind": "element_key",
+            "feature": source.feature,
+            "role": source.role,
+            "source": _source_dict(source.source),
+            "body": (
+                {"kind": "body_source", **asdict(source.body)}
+                if source.body is not None
+                else None
+            ),
+        }
     return {"kind": kinds[type(source)], **asdict(source)}
+
+
+def _source_from_dict(
+    source: dict[str, Any] | str | None,
+) -> ElementSource | ElementKey | tuple[ElementKey, ...] | None:
+    if isinstance(source, str) or source is None:
+        return source
+    kind = source.get("kind")
+    source_types = {
+        "sketch_segment": SketchSegmentSource,
+        "tool_cap": ToolCapSource,
+        "hole_surface": HoleSurfaceSource,
+    }
+    if kind in source_types:
+        return source_types[kind](
+            **{key: value for key, value in source.items() if key != "kind"}
+        )
+    if kind == "element_keys":
+        return tuple(_source_from_dict(item) for item in source["items"])
+    if kind == "element_key":
+        body = source.get("body")
+        return ElementKey(
+            source["feature"],
+            source["role"],
+            _source_from_dict(source.get("source")),
+            BodySource(**{key: value for key, value in body.items() if key != "kind"})
+            if body is not None
+            else None,
+        )
+    raise ValueError(f"unknown reference source kind: {kind}")
 
 
 @dataclass
@@ -221,13 +267,24 @@ def _filter(candidates: list[Candidate], predicate: Filter) -> _FilterResult:
     return _FilterResult(selected, tied=len(selected) > 1)
 
 
+def reference_matches_key(ref: Reference, key: ElementKey) -> bool:
+    return (
+        key.feature == ref.feature
+        and key.role == ref.role
+        and (ref.source is None or key.source == ref.source)
+        and (ref.body is None or key.body == ref.body)
+    )
+
+
 def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> _FilterResult:
     candidates = [
         candidate
-        for candidate in provenance.get(ref.feature, [])
-        if candidate.key.role == ref.role
-        and (ref.source is None or candidate.key.source == ref.source)
-        and (ref.body is None or candidate.key.body == ref.body)
+        for feature_candidates in provenance.values()
+        for candidate in feature_candidates
+        if any(
+            reference_matches_key(ref, key)
+            for key in (candidate.key, *candidate.merged_from)
+        )
     ]
     tied = False
     for predicate in ref.filters:

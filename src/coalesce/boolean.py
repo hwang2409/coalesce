@@ -112,9 +112,15 @@ def _deduplicate(feature: str, result: Shape, faces: list[Candidate]) -> list[Ca
                 feature=feature,
                 bodies=sorted(str(body) for body in bodies),
             )
-        primary = sources[0]
-        if len(keys) > 1:
-            primary.merged_from = tuple(sorted(keys - {primary.key}, key=str))
+        primary = min(sources, key=lambda item: str(item.key))
+        merged_keys = {
+            key
+            for source in sources
+            for key in (source.key, *source.merged_from)
+        }
+        primary.merged_from = tuple(
+            sorted(merged_keys - {primary.key}, key=str)
+        )
         resolved.append(primary)
     return resolved
 
