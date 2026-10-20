@@ -494,12 +494,16 @@ def test_scene_parts_are_named_by_the_body_that_owns_each_solid(tmp_path):
     while store.current_revision != 4 and time.monotonic() < deadline:
         time.sleep(0.02)
 
-    parts = {(part["name"], part["label"]): part["size"] for part in store.scene(4)["parts"]}
-    assert parts == {
-        ("split/left", "split · left"): pytest.approx([10, 10, 5]),
-        ("split/right (1)", "split · right (1)"): pytest.approx([14, 10, 5]),
-        ("split/right (2)", "split · right (2)"): pytest.approx([14, 10, 5]),
-    }
+    parts = store.scene(4)["parts"]
+    assert len(parts) == 3
+    assert {part["label"] for part in parts} == {"base"}
+    assert all(part["partId"].startswith("base/") for part in parts)
+    assert all(part["terminalFeatureId"] == "split" for part in parts)
+    assert sorted(part["size"] for part in parts) == [
+        pytest.approx([10, 10, 5]),
+        pytest.approx([14, 10, 5]),
+        pytest.approx([14, 10, 5]),
+    ]
 
 
 def test_single_body_part_is_labelled_by_its_feature(tmp_path):
@@ -519,9 +523,11 @@ def test_single_body_part_is_labelled_by_its_feature(tmp_path):
     while store.current_revision != 6 and time.monotonic() < deadline:
         time.sleep(0.02)
 
-    labels = {part["name"]: part["label"] for part in store.scene(6)["parts"]}
-    assert labels == {
-        "split/outline (1)": "split (1)",
-        "split/outline (2)": "split (2)",
-        "boss_extrude/boss": "boss_extrude",
-    }
+    parts = store.scene(6)["parts"]
+    assert len(parts) == 3
+    assert {part["label"] for part in parts} == {"plate", "boss_extrude"}
+    assert all(part["partId"].startswith("plate/") for part in parts if part["label"] == "plate")
+    assert all(part["terminalFeatureId"] == "split" for part in parts if part["label"] == "plate")
+    boss = next(part for part in parts if part["label"] == "boss_extrude")
+    assert boss["partId"] == "boss_extrude/boss"
+    assert boss["terminalFeatureId"] == "boss_extrude"

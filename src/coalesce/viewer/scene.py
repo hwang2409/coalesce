@@ -9,11 +9,13 @@ import sys
 import threading
 from array import array
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from build123d import Shape
+
+    from coalesce.references import BodySource
 
 # restrained engineering-review colors, assigned in part order when no color is given.
 PALETTE = ("#8c9bab", "#a9a08e", "#7e9a8a", "#a08c9b", "#9aa7b8", "#b3a37c")
@@ -28,6 +30,10 @@ class ScenePart:
     visible: bool = True
     # short part-list text; name stays the stable identity.
     label: str | None = None
+    source_body: BodySource | None = None
+    terminal_feature: str | None = None
+    area: float | None = None
+    volume: float | None = None
 
 
 def _bytes(kind: str, values: list) -> bytes:
@@ -81,7 +87,12 @@ def _build_scene(revision: int, parts: Iterable[ScenePart], tolerance: float) ->
         scene_parts.append(
             {
                 "name": part.name,
+                "partId": part.name,
                 "label": part.label or part.name,
+                "sourceBody": asdict(part.source_body) if part.source_body else None,
+                "terminalFeatureId": part.terminal_feature,
+                "area": {"value": part.area if part.area is not None else part.shape.area, "unit": "mm^2"},
+                "volume": {"value": part.volume if part.volume is not None else part.shape.volume, "unit": "mm^3"},
                 "color": part.color or PALETTE[index % len(PALETTE)],
                 "visible": part.visible,
                 "size": [exact.size.X, exact.size.Y, exact.size.Z],

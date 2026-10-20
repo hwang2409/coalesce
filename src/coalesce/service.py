@@ -28,6 +28,7 @@ from .graph import (
     Rectangle,
     Sketch,
 )
+from .parts import terminal_parts
 from .references import (
     BodySource,
     Cardinality,
@@ -845,35 +846,6 @@ def _apply_feature(
     return applier(graph, operation)
 
 
-def _terminal_shapes(result: RegenResult) -> list[tuple[str, Any]]:
-    consumed = {
-        node.target
-        for node in result.graph.nodes.values()
-        if getattr(node, "target", None) in result.shapes
-    }
-    return [(feature, shape) for feature, shape in result.shapes.items() if feature not in consumed]
-
-
-def _body_name(solid: Any, owned: list[Any]) -> str:
-    faces = [face.wrapped for face in solid.faces()]
-    bodies = sorted(
-        {
-            candidate.key.body.entity
-            for candidate in owned
-            if any(candidate.entity.wrapped.IsSame(face) for face in faces)
-        }
-    )
-    return "+".join(bodies) or "solid"
-
-
-def _split_suffixes(names: list[str]) -> list[str]:
-    # a cut can split one body into several solids; scene names must stay unique.
-    return [
-        f" ({names[: index + 1].count(name)})" if names.count(name) > 1 else ""
-        for index, name in enumerate(names)
-    ]
-
-
 def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
     return {
         entity["id"]: (
@@ -888,19 +860,16 @@ def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     from .viewer import ScenePart
 
-    owned = [
-        candidate
-        for candidates in result.provenance.values()
-        for candidate in candidates
-        if candidate.key.body is not None and candidate.entity is not None
-    ]
-    for feature, shape in _terminal_shapes(result):
-        solids = shape.solids()
-        bodies = [_body_name(solid, owned) for solid in solids]
-        several = len(set(bodies)) > 1
-        for body, suffix, solid in zip(bodies, _split_suffixes(bodies), solids, strict=True):
-            label = f"{feature} · {body}{suffix}" if several else f"{feature}{suffix}"
-            yield ScenePart(f"{feature}/{body}{suffix}", solid, label=label)
+    for part in terminal_parts(result):
+        yield ScenePart(
+            part.part_id,
+            part.shape,
+            label=part.label,
+            source_body=part.source_body,
+            terminal_feature=part.terminal_feature,
+            area=part.shape.area,
+            volume=part.shape.volume,
+        )
 
 
 class _ScenePublisher:
@@ -1400,26 +1369,29 @@ class DocumentService:
         }
 
     def _metrics(self) -> dict[str, Any]:
-        terminal = _terminal_shapes(self._regen)
-        solids = [solid for _, shape in terminal for solid in shape.solids()]
-        bodies = [
+        parts = terminal_parts(self._regen)
+        solids = [part.shape for part in parts]
+        catalog = [
             {
-                "featureId": feature,
-                "bodyIndex": index,
-                "bbox": self._bbox([solid]),
-                "volume": {"value": solid.volume, "unit": "mm^3"},
-                "area": {"value": solid.area, "unit": "mm^2"},
+                "partId": part.part_id,
+                "label": part.label,
+                "sourceBody": asdict(part.source_body),
+                "terminalFeatureId": part.terminal_feature,
+                "featureId": part.terminal_feature,
+                "bbox": self._bbox([part.shape]),
+                "volume": {"value": part.shape.volume, "unit": "mm^3"},
+                "area": {"value": part.shape.area, "unit": "mm^2"},
                 "solidCount": 1,
             }
-            for feature, shape in terminal
-            for index, solid in enumerate(shape.solids())
+            for part in parts
         ]
         return {
             "bbox": self._bbox(solids),
-            "volume": {"value": sum(solid.volume for solid in solids), "unit": "mm^3"},
-            "area": {"value": sum(solid.area for solid in solids), "unit": "mm^2"},
-            "solidCount": len(solids),
-            "bodies": bodies,
+            "volume": {"value": sum(part.shape.volume for part in parts), "unit": "mm^3"},
+            "area": {"value": sum(part.shape.area for part in parts), "unit": "mm^2"},
+            "solidCount": len(parts),
+            "parts": catalog,
+            "bodies": catalog,
         }
 
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:

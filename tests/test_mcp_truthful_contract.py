@@ -62,16 +62,20 @@ async def test_translated_plate_reports_bbox_placement_and_terminal_body_metrics
         "max": {"x": 40, "y": 40, "z": 40, "unit": "mm"},
         "center": {"x": 10, "y": 20, "z": 35, "unit": "mm"},
     }
-    assert metrics["bodies"] == [
+    assert metrics["parts"] == [
         {
+            "partId": "plate_extrude/outline",
+            "label": "plate_extrude",
+            "sourceBody": {"feature": "plate_extrude", "entity": "outline"},
+            "terminalFeatureId": "plate_extrude",
             "featureId": "plate_extrude",
-            "bodyIndex": 0,
             "bbox": metrics["bbox"],
             "volume": {"value": 24000, "unit": "mm^3"},
             "area": {"value": 6800, "unit": "mm^2"},
             "solidCount": 1,
         }
     ]
+    assert metrics["bodies"] == metrics["parts"]
 
 
 def test_feature_query_returns_only_requested_feature_and_rejects_unknown_id(tmp_path):
