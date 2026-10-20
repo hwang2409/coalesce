@@ -2,6 +2,8 @@ import hashlib
 import json
 import multiprocessing
 import os
+import stat
+import subprocess
 
 import pytest
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
@@ -133,7 +135,37 @@ def export_request(path, request_id="export-all", part_ids=None, revision=7):
 def append_export_receipts(document, prefix):
     journal = ExportJournal(document)
     for index in range(50):
-        journal.append({"requestId": f"{prefix}-{index}", "response": {"ok": True}})
+        journal.append(
+            {
+                "requestId": f"{prefix}-{index}",
+                "requestHash": f"hash-{prefix}-{index}",
+                "revision": 0,
+                "response": {"ok": True},
+            }
+        )
+
+
+def validation_timeout_worker(temporary_directory):
+    from build123d import Box
+
+    shape = Box(1, 1, 1)
+    expected = export_module._metrics([shape], ["box"])
+
+    def make_temporary_directory():
+        temporary_directory.mkdir(mode=0o700)
+        return str(temporary_directory)
+
+    def time_out(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("STEP verifier", 120)
+
+    export_module.tempfile.mkdtemp = make_temporary_directory
+    export_module.subprocess.run = time_out
+    try:
+        export_module._validated_step_bytes([shape], expected)
+    except export_module.ExportFailure as error:
+        assert error.code == "EXPORT_VALIDATION_FAILED"
+    else:
+        raise AssertionError("validation timeout unexpectedly succeeded")
 
 
 @pytest.mark.anyio
@@ -337,6 +369,34 @@ async def test_destination_created_after_validation_is_preserved(tmp_path, monke
 
 
 @pytest.mark.anyio
+async def test_replacement_before_receipt_is_preserved(tmp_path, monkeypatch):
+    document = tmp_path / "replaced.coalesce.json"
+    await run_server(document, enclosure_calls())
+    target = tmp_path / "replaced.step"
+    foreign = b"replacement from another process"
+    service = DocumentService(document)
+
+    def replace_then_fail(_receipt):
+        target.unlink()
+        target.write_bytes(foreign)
+        raise OSError("injected receipt failure after replacement")
+
+    monkeypatch.setattr(service._export_journal, "append", replace_then_fail)
+    result = await call_server_tool(
+        service,
+        "export",
+        export_request(target, request_id="replaced"),
+    )
+
+    assert result["error"]["code"] == "EXPORT_RECEIPT_FAILED"
+    assert result["error"]["path"] == str(target)
+    assert len(result["error"]["expectedSha256"]) == 64
+    assert result["error"]["expectedBytes"] > 0
+    assert "same requestId" in result["error"]["hint"]
+    assert target.read_bytes() == foreign
+
+
+@pytest.mark.anyio
 async def test_interrupted_short_write_preserves_replacement(tmp_path, monkeypatch):
     document = tmp_path / "short-write.coalesce.json"
     await run_server(document, enclosure_calls())
@@ -365,12 +425,14 @@ async def test_interrupted_short_write_preserves_replacement(tmp_path, monkeypat
     )
 
     assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
-    assert result["error"]["foreignFilePreserved"] is True
+    assert result["error"]["path"] == str(target)
+    assert len(result["error"]["expectedSha256"]) == 64
+    assert result["error"]["expectedBytes"] > 0
     assert target.read_bytes() == foreign
 
 
 @pytest.mark.anyio
-async def test_receipt_failure_removes_final_and_retry_succeeds(tmp_path, monkeypatch):
+async def test_receipt_failure_leaves_final_and_retry_adopts_it(tmp_path, monkeypatch):
     document = tmp_path / "receipt-failure.coalesce.json"
     await run_server(document, enclosure_calls())
     target = tmp_path / "receipt-failure.step"
@@ -386,8 +448,12 @@ async def test_receipt_failure_removes_final_and_retry_succeeds(tmp_path, monkey
         "export",
         export_request(target, request_id="receipt-failure"),
     )
-    assert failed["error"]["code"] == "EXPORT_WRITE_FAILED"
-    assert not target.exists()
+    assert failed["error"]["code"] == "EXPORT_RECEIPT_FAILED"
+    assert failed["error"]["path"] == str(target)
+    assert failed["error"]["expectedBytes"] == target.stat().st_size
+    assert failed["error"]["expectedSha256"] == hashlib.sha256(
+        target.read_bytes()
+    ).hexdigest()
 
     monkeypatch.setattr(service._export_journal, "append", original_append)
     retried = await call_server_tool(
@@ -396,7 +462,81 @@ async def test_receipt_failure_removes_final_and_retry_succeeds(tmp_path, monkey
         export_request(target, request_id="receipt-failure"),
     )
     assert retried["ok"] is True
-    assert target.exists()
+    assert retried["adopted"] is True
+    assert retried["sha256"] == failed["error"]["expectedSha256"]
+    journal = document.with_name(f"{document.name}.exports.jsonl")
+    assert len(journal.read_text().splitlines()) == 1
+
+
+@pytest.mark.anyio
+async def test_retry_rejects_changed_existing_file(tmp_path, monkeypatch):
+    document = tmp_path / "changed-retry.coalesce.json"
+    await run_server(document, enclosure_calls())
+    target = tmp_path / "changed-retry.step"
+    service = DocumentService(document)
+    original_append = service._export_journal.append
+
+    monkeypatch.setattr(
+        service._export_journal,
+        "append",
+        lambda _receipt: (_ for _ in ()).throw(OSError("injected receipt failure")),
+    )
+    failed = await call_server_tool(
+        service,
+        "export",
+        export_request(target, request_id="changed-retry"),
+    )
+    assert failed["error"]["code"] == "EXPORT_RECEIPT_FAILED"
+
+    foreign = b"changed after failed export"
+    target.write_bytes(foreign)
+    monkeypatch.setattr(service._export_journal, "append", original_append)
+    retried = await call_server_tool(
+        service,
+        "export",
+        export_request(target, request_id="changed-retry"),
+    )
+
+    assert retried["error"]["code"] == "EXPORT_PATH_EXISTS"
+    assert target.read_bytes() == foreign
+    journal = document.with_name(f"{document.name}.exports.jsonl")
+    assert not journal.exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure_target", ["file", "directory"])
+async def test_fsync_failure_leaves_final_for_retry(
+    tmp_path, monkeypatch, failure_target
+):
+    document = tmp_path / f"{failure_target}-fsync.coalesce.json"
+    await run_server(document, enclosure_calls())
+    target = tmp_path / f"{failure_target}-fsync.step"
+    original_fsync = export_module.os.fsync
+    failed = False
+
+    def fail_selected_fsync(descriptor):
+        nonlocal failed
+        mode = os.fstat(descriptor).st_mode
+        selected = stat.S_ISREG(mode) if failure_target == "file" else stat.S_ISDIR(mode)
+        if selected and not failed:
+            failed = True
+            raise OSError(f"injected {failure_target} fsync failure")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(export_module.os, "fsync", fail_selected_fsync)
+    result = await call_server_tool(
+        DocumentService(document),
+        "export",
+        export_request(target, request_id=f"{failure_target}-fsync"),
+    )
+
+    assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
+    assert result["error"]["path"] == str(target)
+    assert result["error"]["expectedBytes"] == target.stat().st_size
+    assert result["error"]["expectedSha256"] == hashlib.sha256(
+        target.read_bytes()
+    ).hexdigest()
+    assert "same requestId" in result["error"]["hint"]
 
 
 @pytest.mark.anyio
@@ -426,6 +566,52 @@ async def test_malformed_complete_journal_line_blocks_only_export(tmp_path):
     assert result["error"]["code"] == "EXPORT_JOURNAL_CORRUPT"
     assert result["error"]["line"] == 2
     assert not (tmp_path / "blocked.step").exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "journal_contents",
+    [
+        None,
+        "{}\n",
+        '{"requestId":"old","requestHash":"hash","revision":"7","response":{}}\n',
+        '{"requestId":"old","requestHash":"hash","revision":7,"response":{},"extra":true}\n',
+    ],
+    ids=["directory", "missing-fields", "wrong-type", "extra-field"],
+)
+async def test_invalid_journal_shape_blocks_only_export(tmp_path, journal_contents):
+    document = tmp_path / "invalid-journal.coalesce.json"
+    journal = document.with_name(f"{document.name}.exports.jsonl")
+    if journal_contents is None:
+        journal.mkdir()
+    else:
+        journal.write_text(journal_contents)
+
+    service = DocumentService(document, warmup=False)
+    query = await call_server_tool(service, "query", {"select": {"kind": "revision"}})
+    result = await call_server_tool(
+        service,
+        "export",
+        export_request(tmp_path / "blocked.step", request_id="blocked", revision=0),
+    )
+
+    assert query["ok"] is True
+    assert result["error"]["code"] == "EXPORT_JOURNAL_CORRUPT"
+    assert result["error"]["path"] == str(journal)
+    assert not (tmp_path / "blocked.step").exists()
+
+
+def test_private_validation_directory_removed_after_timeout_in_fresh_process(tmp_path):
+    temporary_directory = tmp_path / "private-validation"
+    process = multiprocessing.get_context("spawn").Process(
+        target=validation_timeout_worker,
+        args=(temporary_directory,),
+    )
+    process.start()
+    process.join(timeout=30)
+
+    assert process.exitcode == 0
+    assert not temporary_directory.exists()
 
 
 def test_export_journal_serializes_processes(tmp_path):
@@ -462,4 +648,6 @@ async def test_export_contract_describes_absolute_no_overwrite_fresh_validation(
     assert "fresh python process" in description
     assert "never overwrite" in TOOLS_GUIDE.lower()
     assert "fresh python process" in TOOLS_GUIDE.lower()
+    assert "briefly visible" in TOOLS_GUIDE.lower()
+    assert "retry" in TOOLS_GUIDE.lower()
     assert os.path.isabs(str(tmp_path))
