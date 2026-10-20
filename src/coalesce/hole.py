@@ -5,10 +5,10 @@ from itertools import combinations
 from math import hypot
 
 from build123d import Compound, Face, Location, Shape, Wire
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
+from .boolean import _has_solid_common
 from .graph import GraphError, Hole, HolePosition
 from .provenance import candidate
 from .references import BodySource, Candidate, HoleSurfaceSource
@@ -92,21 +92,6 @@ def _intersecting_pairs(cutters: list[_NamedCutter], diameter: float) -> list[li
     ]
 
 
-def _has_effect(target: Shape, cutter: Shape) -> bool:
-    operation = BRepAlgoAPI_Cut(target.wrapped, cutter.wrapped)
-    operation.Build()
-    if not operation.IsDone():
-        raise GraphError("boolean_failed", "hole cutter contact check failed")
-    return any(
-        operation.IsDeleted(face.wrapped) or len(operation.Modified(face.wrapped)) > 0
-        for face in target.faces()
-    ) or any(
-        len(operation.Modified(face.wrapped)) > 0
-        or len(operation.Generated(face.wrapped)) > 0
-        for face in cutter.faces()
-    )
-
-
 def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) -> None:
     pairs = _intersecting_pairs(cutters, node.diameter)
     if pairs:
@@ -116,7 +101,11 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
             feature=node.id,
             pairs=pairs,
         )
-    missing = [cutter.name for cutter in cutters if not _has_effect(target, cutter.shape)]
+    missing = [
+        cutter.name
+        for cutter in cutters
+        if not _has_solid_common(target, cutter.shape)
+    ]
     if missing and len(missing) != len(cutters):
         raise GraphError(
             "hole_no_effect",
@@ -128,7 +117,7 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
         )
 
 
-def make_hole_tool(node: Hole, target: Shape) -> HoleTool:
+def _validate_parameters(node: Hole) -> None:
     if node.diameter <= 0:
         raise GraphError(
             "invalid_hole",
@@ -142,15 +131,18 @@ def make_hole_tool(node: Hole, target: Shape) -> HoleTool:
             feature=node.id,
         )
 
+
+def _cutter_span(node: Hole, target: Shape) -> tuple[float, float]:
     bounds = target.bounding_box()
     margin = max(bounds.size.Z, node.diameter, 1.0)
     if node.depth is None:
-        start = bounds.min.Z - margin
-        height = bounds.size.Z + 2 * margin
-    else:
-        start = bounds.max.Z - node.depth
-        height = node.depth + margin
+        return bounds.min.Z - margin, bounds.size.Z + 2 * margin
+    return bounds.max.Z - node.depth, node.depth + margin
 
+
+def make_hole_tool(node: Hole, target: Shape) -> HoleTool:
+    _validate_parameters(node)
+    start, height = _cutter_span(node, target)
     positions = node.positions or (HolePosition(None, node.position),)
     cutters = [
         _build_cutter(node, position, position.name or f"h{index}", start, height)

@@ -136,6 +136,12 @@ def _deduplicate(feature: str, result: Shape, faces: list[Candidate]) -> list[Ca
     return resolved
 
 
+def _has_solid_common(target: Shape, tool: Shape) -> bool:
+    common = BRepAlgoAPI_Common(target.wrapped, tool.wrapped)
+    common.Build()
+    return common.IsDone() and bool(Shape.cast(common.Shape()).solids())
+
+
 def _removed_material(
     algorithm: BRepAlgoAPI_Cut,
     target: Shape,
@@ -144,9 +150,7 @@ def _removed_material(
     tool_candidates: list[Candidate],
     output_faces: list[Face],
 ) -> bool:
-    common = BRepAlgoAPI_Common(target.wrapped, tool.wrapped)
-    common.Build()
-    if not common.IsDone() or not Shape.cast(common.Shape()).solids():
+    if not _has_solid_common(target, tool):
         return False
 
     tool_face_appears = any(
