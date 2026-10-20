@@ -97,7 +97,7 @@ def _common_volume(first, second):
 
 
 def test_courtyard_port_has_exact_opening_and_only_cuts_nearest_wall(tmp_path):
-    service = _service(tmp_path)
+    service = _service(tmp_path, lid=False)
     before = service._regen
     unchanged = {
         ("X", 23): _planar_face_area(before, "outer_wall", "X", 23),
@@ -105,9 +105,8 @@ def test_courtyard_port_has_exact_opening_and_only_cuts_nearest_wall(tmp_path):
         ("Y", 13): _planar_face_area(before, "outer_wall", "Y", 13),
     }
     standoff_volume = before.shapes["mounts"].volume
-    lid_volume = before.shapes["lid"].volume
 
-    created = service.feature(port_request())
+    created = service.feature(port_request(revision=3))
 
     assert created["ok"] is True
     assert created["portCutout"] == {
@@ -138,9 +137,7 @@ def test_courtyard_port_has_exact_opening_and_only_cuts_nearest_wall(tmp_path):
     )
     for (axis, value), area in unchanged.items():
         assert _planar_face_area(service._regen, "outer_wall", axis, value) == pytest.approx(area)
-    assert service._regen.shapes["lid"].volume == pytest.approx(lid_volume)
     assert port.volume == pytest.approx(standoff_volume - 30)
-    assert _common_volume(port, service._regen.shapes["lid"])[1] == pytest.approx(0, abs=1e-8)
     assert all(
         face.area == pytest.approx(math.pi * (2.5**2 - 0.8**2))
         for face in _faces(service._regen, "mounts", "standoff_top")
@@ -259,3 +256,153 @@ def test_reference_resolution_update_and_restart_preserve_port_lineage(tmp_path)
     assert restarted._regen.shapes["port"].volume == pytest.approx(
         service._regen.shapes["port"].volume
     )
+
+
+def _ordered_modifiers(tmp_path, order):
+    service = DocumentService(tmp_path / f"{'-'.join(order)}.coalesce.json")
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    for revision, feature in enumerate(order, start=2):
+        request = (
+            port_request(
+                revision=revision,
+                footprint="center-id",
+                wall="back",
+                envelope=explicit_envelope(),
+            )
+            if feature == "port"
+            else standoffs_request(revision=revision)
+        )
+        assert service.feature(request)["ok"]
+    return service
+
+
+def _terminal_shape(service):
+    [terminal] = service.query({"select": {"kind": "measurements"}})["parts"]
+    return service._regen.shapes[terminal["terminalFeatureId"]]
+
+
+def _body_signature(service):
+    shape = _terminal_shape(service)
+    roles = sorted(
+        (item.key.feature, item.key.role, item.key.source)
+        for candidates in service._regen.provenance.values()
+        for item in candidates
+        if item.key.feature in {"base", "mounts", "port"}
+    )
+    return (
+        shape.volume,
+        sorted(face.area for face in shape.faces()),
+        roles,
+    )
+
+
+def test_standoffs_and_port_compose_identically_in_both_creation_orders(tmp_path):
+    port_first = _ordered_modifiers(tmp_path, ("port", "mounts"))
+    standoffs_first = _ordered_modifiers(tmp_path, ("mounts", "port"))
+
+    first_volume, first_areas, first_roles = _body_signature(port_first)
+    second_volume, second_areas, second_roles = _body_signature(standoffs_first)
+    assert first_volume == pytest.approx(second_volume, abs=1e-8)
+    assert first_areas == pytest.approx(second_areas, abs=1e-8)
+    assert first_roles == second_roles
+
+
+def test_port_first_still_reports_standoff_collision_atomically(tmp_path):
+    service = DocumentService(tmp_path / "collision.coalesce.json")
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    assert service.feature(port_request(revision=2))["ok"]
+    before = service.store.path.read_bytes()
+
+    failed = service.feature(standoffs_request(revision=3))
+
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "INVALID_PARAMETER"
+    assert failed["error"]["feature"] == "port"
+    assert failed["error"]["conflict"] in FEATURE_HOLES
+    assert service.revision == 3
+    assert service.store.path.read_bytes() == before
+
+
+def _lid_conflict_service(tmp_path, order, *, port_changes=None, lid_changes=None):
+    service = DocumentService(tmp_path / f"lid-{'-'.join(order)}.coalesce.json")
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    results = []
+    for revision, feature in enumerate(order, start=2):
+        request = (
+            port_request(revision=revision, **(port_changes or {}))
+            if feature == "port"
+            else lid_request(revision=revision, **(lid_changes or {}))
+        )
+        results.append(service.feature(request))
+    return service, results
+
+
+@pytest.mark.parametrize("order", [("port", "lid"), ("lid", "port")])
+def test_lid_lip_blocking_opening_is_structured_and_atomic_in_both_orders(tmp_path, order):
+    service, results = _lid_conflict_service(tmp_path, order)
+
+    assert results[0]["ok"] is True
+    failed = results[1]
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "PORT_BLOCKED_BY_LID"
+    assert failed["error"]["port"] == "port"
+    assert failed["error"]["lid"] == "lid"
+    assert failed["error"]["overlapVolume"] == pytest.approx(9.375)
+    assert failed["error"]["overlapBounds"] == {
+        "min": pytest.approx([-0.75, 2.5, 2.2]),
+        "max": pytest.approx([0, 7.5, 4.7]),
+        "unit": "mm",
+    }
+    assert any("height" in hint for hint in failed["error"]["hints"])
+    assert any("bottomOffset" in hint for hint in failed["error"]["hints"])
+    assert any("lip" in hint or "lid" in hint for hint in failed["error"]["hints"])
+    assert service.revision == 3
+
+
+@pytest.mark.parametrize("order", [("port", "lid"), ("lid", "port")])
+def test_opening_reaching_lid_slab_at_rim_is_rejected_in_both_orders(tmp_path, order):
+    _, results = _lid_conflict_service(
+        tmp_path,
+        order,
+        port_changes={"envelope": explicit_envelope(height=3)},
+        lid_changes={"include_lip": False},
+    )
+
+    assert results[0]["ok"] is True
+    assert results[1]["ok"] is False
+    assert results[1]["error"]["code"] == "PORT_BLOCKED_BY_LID"
+    assert results[1]["error"]["overlapVolume"] > 0
+
+
+def test_non_overlapping_opening_with_lid_succeeds(tmp_path):
+    service, results = _lid_conflict_service(
+        tmp_path,
+        ("lid", "port"),
+        port_changes={"envelope": explicit_envelope(height=2)},
+        lid_changes={"include_lip": False},
+    )
+
+    assert all(result["ok"] for result in results)
+    assert _common_volume(service._regen.opening_tools["port"], service._regen.shapes["lid"])[1] == pytest.approx(
+        0, abs=1e-8
+    )
+
+
+def test_lowering_blocked_opening_repairs_lid_conflict(tmp_path):
+    service, results = _lid_conflict_service(tmp_path, ("lid", "port"))
+    assert results[1]["error"]["code"] == "PORT_BLOCKED_BY_LID"
+
+    repaired = service.feature(
+        port_request(
+            revision=3,
+            request_id="lower-port",
+            clearance=quantity(0.1),
+            envelope=explicit_envelope(height=0.4, bottom=0.1),
+        )
+    )
+
+    assert repaired["ok"] is True
+    assert service._regen.metadata["port"]["opening"]["top"]["value"] < 2.2
