@@ -183,9 +183,9 @@ button {
 }
 
 /* a focused row (keyboard or tap) shows its full name */
-.part:focus .part-name { white-space: normal; overflow-wrap: anywhere; }
+.part:focus .part-name { grid-column: 2 / -1; white-space: normal; overflow-wrap: anywhere; }
 
-.part-size { color: var(--mute); font-size: 12px; }
+.part-size { grid-column: 3; color: var(--mute); font-size: 12px; }
 
 .part[aria-pressed="false"] { color: var(--mute); }
 .part[aria-pressed="false"] .swatch { background: transparent !important; }
