@@ -12,20 +12,23 @@ from pathlib import Path
 
 from .server import run_stdio
 from .service import DocumentService
-from .viewer import ViewerSceneStore, ViewerServer
 
 
 async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> None:
     if not viewer_enabled:
-        await run_stdio(DocumentService(document))
+        await run_stdio(DocumentService(document, warmup=False))
         return
+
+    from .viewer import ViewerSceneStore, ViewerServer
 
     store = ViewerSceneStore()
     with ViewerServer(store) as viewer:
         print(f"coalesce viewer: {viewer.url}", file=sys.stderr, flush=True)
         if open_browser:
             webbrowser.open(viewer.url)
-        await run_stdio(DocumentService(document, scene_store=store, viewer_url=viewer.url))
+        await run_stdio(
+            DocumentService(document, scene_store=store, viewer_url=viewer.url, warmup=False)
+        )
 
 
 def main() -> None:

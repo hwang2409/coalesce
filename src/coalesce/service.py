@@ -12,10 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar
-
-from build123d import Compound
-from OCP.BRepCheck import BRepCheck_Analyzer
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .graph import Circle, Cut, Extrude, GraphError, Hole, Plane, Rectangle, Sketch
@@ -28,12 +25,74 @@ from .references import (
     Reference,
     SketchSegmentSource,
 )
-from .regen import RegenResult, regenerate
 from .serialization import dumps, loads
-from .viewer import ScenePart, ViewerSceneStore
+
+if TYPE_CHECKING:
+    from .regen import RegenResult
+    from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
 _ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole"]
+
+
+class _KernelLoaderInterface(Protocol):
+    def start(self) -> None: ...
+
+    def wait(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class _KernelLoadResult:
+    error: BaseException | None = None
+
+
+class _KernelLoader:
+    """Load the process-wide CAD kernel once and retain its result."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._result: _KernelLoadResult | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(
+                target=self._load, name="coalesce-kernel-loader", daemon=True
+            )
+            self._thread.start()
+
+    def wait(self) -> None:
+        self.start()
+        self._ready.wait()
+        assert self._result is not None
+        if self._result.error is not None:
+            raise self._result.error
+
+    def _load(self) -> None:
+        global regenerate, RegenResult, BRepCheck_Analyzer, Compound
+        try:
+            from build123d import Compound as _Compound
+            from OCP.BRepCheck import BRepCheck_Analyzer as _BRepCheck_Analyzer
+
+            from .regen import RegenResult as _RegenResult
+            from .regen import regenerate as _regenerate
+
+            Compound = _Compound
+            BRepCheck_Analyzer = _BRepCheck_Analyzer
+            RegenResult = _RegenResult
+            regenerate = _regenerate
+            result = _KernelLoadResult()
+        except Exception as error:  # noqa: BLE001 - preserve the original startup failure
+            result = _KernelLoadResult(error=error)
+        with self._lock:
+            self._result = result
+            self._ready.set()
+
+
+_KERNEL_LOADER = _KernelLoader()
 
 
 class RequestError(ValueError):
@@ -614,6 +673,8 @@ def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
+    from .viewer import ScenePart
+
     owned = [
         candidate
         for candidates in result.provenance.values()
@@ -665,16 +726,55 @@ class DocumentService:
         *,
         scene_store: ViewerSceneStore | None = None,
         viewer_url: str | None = None,
+        warmup: bool = True,
+        kernel_loader: _KernelLoaderInterface | None = None,
+        startup_regeneration_gate: Callable[[], None] | None = None,
     ):
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
-        self._regen = regenerate(self._document.graph)
-        self._assert_valid(self._regen)
+        self._regen = None
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
-        if self._publisher is not None and self._document.revision > 0:
-            self._publisher.publish(self._document.revision, self._regen)
+        self._kernel_loader = kernel_loader or _KERNEL_LOADER
+        self._startup_regeneration_gate = startup_regeneration_gate
+        self._warmup_started = False
+        self._warmup_lock = threading.Lock()
+        if warmup:
+            self.start_kernel_warmup()
+
+    def start_kernel_warmup(self) -> None:
+        with self._warmup_lock:
+            if self._warmup_started:
+                return
+            self._warmup_started = True
+            threading.Thread(target=self._finish_startup, name="coalesce-kernel", daemon=True).start()
+
+    def _finish_startup(self) -> None:
+        try:
+            self._kernel_loader.start()
+            self._kernel_loader.wait()
+            with self._lock:
+                if self._regen is not None:
+                    return
+                if self._startup_regeneration_gate is not None:
+                    self._startup_regeneration_gate()
+                result = regenerate(self._document.graph)
+                self._assert_valid(result)
+                self._regen = result
+                if self._publisher is not None and self._document.revision > 0:
+                    self._publisher.publish(self._document.revision, result)
+        except Exception:  # noqa: BLE001 - startup errors must not kill the server
+            _LOG.exception("kernel startup failed")
+
+    def _ensure_geometry(self) -> None:
+        self.start_kernel_warmup()
+        self._kernel_loader.wait()
+        with self._lock:
+            if self._regen is None:
+                result = regenerate(self._document.graph)
+                self._assert_valid(result)
+                self._regen = result
 
     @property
     def revision(self) -> int:
@@ -857,6 +957,7 @@ class DocumentService:
                 return failure
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         entities = payload.get("entities") or payload.get("set", {}).get("entities")
         response = {"sketchId": payload.get("sketchId")}
         if entities:
@@ -870,6 +971,7 @@ class DocumentService:
         )
 
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         return self._mutate(
             "feature",
             payload,
@@ -879,6 +981,9 @@ class DocumentService:
         )
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+        kind = payload.get("select", {}).get("kind")
+        if kind in {"measurements", "reference"}:
+            self._ensure_geometry()
         with self._lock:
             requested_revision = payload.get("revision", self._document.revision)
             if requested_revision != self._document.revision:
@@ -890,7 +995,6 @@ class DocumentService:
                     operation="query",
                 )
             select = payload.get("select", {})
-            kind = select.get("kind")
             base = {"ok": True, "revision": self._document.revision, "units": "mm"}
             if kind in {"document", "graph", "timeline"}:
                 return {**base, "graph": json.loads(dumps(self._document.graph))}
@@ -1018,6 +1122,7 @@ class DocumentService:
         }
 
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
         with self._lock:
             if payload.get("action") != "evaluate":
                 return _safe_error(
