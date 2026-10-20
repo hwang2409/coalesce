@@ -483,7 +483,7 @@ FEATURE_SCHEMA = {
     "properties": {
         "action": {
             "enum": ["create", "update"],
-            "description": "Use create with parameters; use update with set. For update, extrude sets distance; cut and hole set target.featureId.",
+            "description": "Use create with parameters; use update with set. Updates accept extrude distance, cut or hole target.featureId, and numeric pcb_base or standoff parameters.",
         },
         **FEATURE_PROPERTIES,
         "parameters": {
@@ -492,7 +492,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create. For extrude, set distance; for cut and hole, set target.featureId.",
+            "description": "Required for update; not allowed for create. Accepts extrude distance, cut or hole target.featureId, and numeric pcb_base or standoff parameters.",
         },
     },
     "required": ["action", *FEATURE_PROPERTIES],

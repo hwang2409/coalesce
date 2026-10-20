@@ -307,7 +307,7 @@ def create_server(service: DocumentService) -> Server:
                 error = _prefer_unknown_field(error)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
-                details["allowedKinds"] = ["extrude", "cut", "hole"]
+                details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
             failure = {

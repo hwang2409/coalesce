@@ -24,22 +24,19 @@ class EnclosureResult:
 
 
 def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
-    try:
-        offsets = [wire.offset_2d(distance), wire.offset_2d(-distance)]
-        wires = [item if isinstance(item, Wire) else Wire([item]) for item in offsets]
-        outward = max(wires, key=lambda item: Face(item).area)
-    except Exception as error:
+    wires = []
+    for signed_distance in (distance, -distance):
+        try:
+            offset = wire.offset_2d(signed_distance)
+            wires.append(offset if isinstance(offset, Wire) else Wire([offset]))
+        except RuntimeError:
+            continue
+    original_area = Face(wire).area
+    outward = max(wires, key=lambda item: Face(item).area, default=None)
+    if outward is None or Face(outward).area <= original_area:
         raise GraphError(
             "INVALID_PARAMETER",
-            f"{feature} {parameter} cannot offset the board outline",
-            feature=feature,
-            parameter=parameter,
-            value=distance,
-        ) from error
-    if Face(outward).area <= Face(wire).area:
-        raise GraphError(
-            "INVALID_PARAMETER",
-            f"{feature} {parameter} must produce an outer clearance",
+            f"{feature} {parameter} cannot offset the board outline outward",
             feature=feature,
             parameter=parameter,
             value=distance,
