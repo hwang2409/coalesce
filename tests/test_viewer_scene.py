@@ -1,7 +1,7 @@
 import struct
 
 import pytest
-from build123d import Align, Box, Cylinder
+from build123d import Align, Box, Cylinder, Pos
 
 from coalesce.viewer import ScenePart, ViewerSceneStore
 
@@ -126,3 +126,25 @@ def test_hidden_part_is_still_published_with_its_visibility():
     assert parts["plate"]["visible"] is True
     assert parts["ref"]["visible"] is False
     assert parts["plate"]["color"] != parts["ref"]["color"]
+
+
+def test_edge_lines_follow_the_face_mesh_and_small_holes_look_round():
+    store = ViewerSceneStore()
+    # a 1.5 mm drill through a plate, and a 5 mm standoff on it
+    shape = plate(2) - Cylinder(0.75, 10) + Pos(15, 0, 4.5) * Cylinder(2.5, 5)
+    store.publish(1, [ScenePart("board", shape)])
+
+    [part] = store.scene(1)["parts"]
+    points, _ = decode(store, part)
+    mesh = part["mesh"]
+    data = store.mesh(mesh["id"])
+    lines = struct.unpack_from(f"<{3 * mesh['edgeVertexCount']}f", data, 12 * mesh["vertexCount"] + 12 * mesh["triangleCount"])
+    ends = {tuple(round(c, 4) for c in lines[i : i + 3]) for i in range(0, len(lines), 3)}
+    # every edge-line point is a face-mesh vertex: lines and faces meet exactly
+    assert ends <= {tuple(round(c, 4) for c in p) for p in points}
+    for radius, center in ((0.75, (0, 0)), (2.5, (15, 0))):
+        on_circle = {
+            (x, y) for x, y, _ in ends if abs(((x - center[0]) ** 2 + (y - center[1]) ** 2) ** 0.5 - radius) < 1e-3
+        }
+        # a drawn circle has at least 48 corners: round, not a polygon, at normal zoom
+        assert len(on_circle) >= 48, (radius, len(on_circle))
