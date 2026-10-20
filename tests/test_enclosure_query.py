@@ -5,6 +5,7 @@ import pytest
 from build123d import Align, Box, Compound, Face, Location, Shape
 from jsonschema import validate
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from test_mcp_cut_hole_circle import cut, rectangle_sketch
 from test_mcp_truthful_contract import list_server_tools
 from test_mcp_vertical import run_server
@@ -18,7 +19,12 @@ from test_pcb_enclosure import (
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 
+from coalesce.enclosure_inspection import inspect_enclosure
+from coalesce.graph import Fillet
 from coalesce.pcb import board_loop_wire
+from coalesce.references import Cardinality, Reference
+from coalesce.regen import regenerate
+from coalesce.serialization import dumps, loads
 from coalesce.service import DocumentService
 
 UNUSED_HOLE = "hole-9ddb205ba1bc297f95347452"
@@ -50,6 +56,48 @@ def _common_volume(first, second):
     common.Build()
     assert common.IsDone()
     return Shape.cast(common.Shape()).volume
+
+
+def _exact_distance(first, second):
+    extrema = BRepExtrema_DistShapeShape(first.wrapped, second.wrapped)
+    extrema.Perform()
+    assert extrema.IsDone()
+    return extrema.Value()
+
+
+def _filleted_inspection(service, filleted_role):
+    graph = loads(dumps(service._document.graph))
+    graph.add(
+        Fillet(
+            "wall_round",
+            target="base",
+            edges=[
+                Reference(
+                    "base",
+                    f"between({filleted_role},rim)",
+                    Cardinality.ONE_OR_MORE,
+                )
+            ],
+            radius=0.25,
+        )
+    )
+    regenerated = regenerate(graph)
+    blend = Compound(
+        children=[
+            candidate.entity
+            for candidate in regenerated.provenance["wall_round"]
+            if candidate.key.role.startswith("blend(")
+        ]
+    )
+    opposite_role = "outer_wall" if filleted_role == "inner_wall" else "inner_wall"
+    opposite = Compound(
+        children=[
+            candidate.entity
+            for candidate in regenerated.provenance["base"]
+            if candidate.key.role == opposite_role
+        ]
+    )
+    return inspect_enclosure(graph, regenerated, "base"), _exact_distance(blend, opposite)
 
 
 def _assert_bbox(actual, expected):
@@ -361,6 +409,28 @@ async def test_enclosure_query_without_lid_or_ports_returns_empty_lists(tmp_path
     assert result["ports"] == []
     assert result["standoffs"]["count"] == 0
     assert result["standoffs"]["items"] == []
+
+
+@pytest.mark.parametrize("filleted_role", ["outer_wall", "inner_wall"])
+def test_enclosure_query_measures_wall_fillet_from_final_faces(tmp_path, filleted_role):
+    service, _, _ = _base_service(tmp_path)
+
+    result, exact = _filleted_inspection(service, filleted_role)
+
+    assert exact == pytest.approx(1.75, abs=1e-6)
+    assert _value(result["base"]["minimumWallThickness"]) == pytest.approx(exact, abs=1e-6)
+
+
+def test_enclosure_query_returns_unknown_thickness_for_circular_outline(tmp_path):
+    service = DocumentService(tmp_path / "circle.coalesce.json")
+    assert service.import_board(import_request(FIXTURES / "circle.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    assert result["ok"] is True
+    assert result["base"]["minimumWallThickness"]["status"] == "unknown"
+    assert result["base"]["floorThickness"]["status"] == "unknown"
 
 
 def test_enclosure_query_measures_wall_pocket_from_terminal_solid(tmp_path):
