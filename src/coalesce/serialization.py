@@ -64,6 +64,10 @@ def dumps(graph: Graph) -> str:
                 {"type": entity.__class__.__name__, **asdict(entity)}
                 for entity in node.entities
             ]
+        elif isinstance(node, Extrude) and node.operation == "new_body":
+            payload.pop("operation")
+            if node.target is None:
+                payload.pop("target")
         elif isinstance(node, Fillet):
             payload["edges"] = [reference.to_dict() for reference in node.edges]
         nodes.append({"type": node.__class__.__name__, **payload})

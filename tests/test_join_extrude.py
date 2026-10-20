@@ -195,6 +195,10 @@ def test_join_without_contact_is_structured_error() -> None:
 def test_join_json_round_trip_preserves_operation_and_target() -> None:
     graph = wall_graph()
 
+    payload = json.loads(graph.to_json())
+    serialized_wall = next(node for node in payload["nodes"] if node["id"] == "wall")
+    assert serialized_wall["operation"] == "join"
+    assert serialized_wall["target"] == "plate"
     restored = loads(graph.to_json())
     wall = restored.nodes["wall"]
 
@@ -208,6 +212,10 @@ def test_default_extrude_operation_remains_new_body() -> None:
     graph.add(Sketch("sketch", entities=[Rectangle("profile", 2, 2)]))
     graph.add(Extrude("part", sketch="sketch", height=3))
 
+    payload = json.loads(graph.to_json())
+    serialized_part = next(node for node in payload["nodes"] if node["id"] == "part")
+    assert "operation" not in serialized_part
+    assert "target" not in serialized_part
     restored = loads(graph.to_json())
 
     assert restored.nodes["part"].operation == "new_body"
