@@ -13,6 +13,7 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
 from .graph import BoardImport, GraphError
+from .kicad_angles import kicad_angle
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate
 
@@ -100,7 +101,7 @@ def _drill_wire(hole: dict[str, Any]) -> tuple[Wire, list[Edge]]:
 
     major = max(width, height)
     radius = min(width, height) / 2
-    angle = math.radians(drill["rotation"] + (90 if height > width else 0))
+    angle = math.radians(kicad_angle(drill["rotation"]) + (90 if height > width else 0))
     ux, uy = math.cos(angle), math.sin(angle)
     vx, vy = -uy, ux
     half_straight = (major - 2 * radius) / 2

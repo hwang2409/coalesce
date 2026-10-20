@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..kicad_angles import kicad_angle
+
 _NM_PER_MM = 1_000_000
 _MIN_BOARD_NM = -(1 << 31)
 _MAX_BOARD_NM = (1 << 31) - 1
@@ -38,19 +40,19 @@ def _canonical_point(point: tuple[float, float]) -> tuple[float, float]:
 
 def _rotate_point(point: tuple[float, float], degrees: float) -> tuple[float, float]:
     x, y = _to_nm(point[0]), _to_nm(point[1])
-    angle = degrees % 360.0
+    angle = kicad_angle(degrees)
     if angle == 0.0:
         rotated = x, y
     elif angle == 90.0:
-        rotated = y, -x
+        rotated = -y, x
     elif angle == 180.0:
         rotated = -x, -y
     elif angle == 270.0:
-        rotated = -y, x
+        rotated = y, -x
     else:
         radians = math.radians(angle)
-        rotated = (_ki_round(x * math.cos(radians) + y * math.sin(radians)),
-                   _ki_round(-x * math.sin(radians) + y * math.cos(radians)))
+        rotated = (_ki_round(x * math.cos(radians) - y * math.sin(radians)),
+                   _ki_round(x * math.sin(radians) + y * math.cos(radians)))
     return _from_nm(rotated[0]), _from_nm(rotated[1])
 
 
