@@ -376,8 +376,9 @@ button {
 
 .segmented button:enabled:active, .fit:enabled:active { scale: 0.96; }
 
-/* no scene yet: nothing to aim at */
+/* no scene yet: nothing to aim at, so the controls sit flat and faint */
 .segmented button:disabled, .fit:disabled { color: var(--faint); cursor: not-allowed; }
+.segmented:has(:disabled), .fit:disabled { background: transparent; box-shadow: 0 0 0 1px var(--rule); }
 
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
