@@ -68,6 +68,8 @@ function render() {
   renderer.setScissorTest(false);
   renderer.clear();
   renderer.render(scene, camera);
+  updateScale(h);
+  if ($('gizmo').hidden) return;
 
   // corner axes follow the main camera's orientation
   const size = 88;
@@ -89,7 +91,6 @@ function render() {
     // an axis pointing at the viewer collapses to a dot; fade its label instead of stacking it
     label.style.opacity = String(Math.min(1, Math.hypot(p.x, p.y) * 1.6));
   }
-  updateScale(h);
 }
 
 new ResizeObserver(requestRender).observe(canvas);
@@ -215,9 +216,13 @@ function rebuildHelpers(bbox) {
 const geometries = new Map(); // mesh id -> {surface, edges}; parts borrow these
 const hiddenByUser = new Map(); // part name -> visible override
 
+// the server answers 204 for a revision or mesh it dropped for a newer one
+class Superseded extends Error {}
+
 async function loadMesh(mesh) {
-  if (geometries.has(mesh.id)) return geometries.get(mesh.id);
+  if (geometries.has(mesh.id)) return;
   const response = await fetch(mesh.url);
+  if (response.status === 204) throw new Superseded();
   if (!response.ok) throw new Error(`mesh ${mesh.id}: HTTP ${response.status}`);
   const buffer = await response.arrayBuffer();
   const v = mesh.vertexCount * 3;
@@ -228,9 +233,7 @@ async function loadMesh(mesh) {
   surface.computeVertexNormals();
   const edges = new THREE.BufferGeometry();
   edges.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buffer, (v + t) * 4, mesh.edgeVertexCount * 3), 3));
-  const loaded = { surface, edges };
-  geometries.set(mesh.id, loaded);
-  return loaded;
+  geometries.set(mesh.id, { surface, edges });
 }
 
 function partObject(part, { surface, edges }) {
@@ -300,15 +303,35 @@ function notice(title, body = '') {
   $('notice-body').textContent = body;
 }
 
+const NEW_LINK = 'Open the new viewer link';
+const NEW_LINK_HELP = 'coalesce restarted with a new access key and printed the new link to its '
+  + 'error output (stderr): your terminal, or your agent\'s MCP server log. '
+  + 'The line starts with \u201ccoalesce viewer:\u201d.';
+
+// states: connecting, live, lost (retrying), ended (server has a new key), denied
 function setLink(state, text) {
   $('link').dataset.state = state;
   $('link-text').textContent = text;
-  const stale = state === 'lost' && current !== null;
-  $('stale').hidden = !stale;
-  $('stale-body').textContent = stale
-    ? `Revision ${current.revision} may be out of date. This page reconnects by itself.`
-    : '';
-  $('view').parentElement.toggleAttribute('data-stale', stale);
+  const stale = (state === 'lost' || state === 'ended') && current !== null;
+  const line = $('stale');
+  line.hidden = !stale;
+  line.dataset.state = state;
+  if (state === 'ended') {
+    const title = document.createElement('strong');
+    title.textContent = `${NEW_LINK}.`;
+    line.replaceChildren(title, ` ${NEW_LINK_HELP}`);
+  } else {
+    line.textContent = stale ? `Revision ${current.revision} may be out of date. This page reconnects by itself.` : '';
+  }
+  $('stage').toggleAttribute('data-stale', stale);
+  syncGizmo();
+}
+
+// orientation means nothing without a model, or once the page can no longer follow it
+function syncGizmo() {
+  const state = $('link').dataset.state;
+  $('gizmo').hidden = !current || state === 'ended' || state === 'denied';
+  requestRender();
 }
 
 function showRevision(sceneData) {
@@ -362,18 +385,23 @@ async function loadOne(revision) {
   else $('revision-meta').textContent = `Loading revision ${revision}`;
   try {
     const response = await fetch(`/api/scene/${revision}`, { cache: 'no-store' });
+    if (response.status === 204) throw new Superseded();
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    const meshes = [];
-    for (const part of data.parts) meshes.push(await loadMesh(part.mesh)); // one by one: shared ids load once
+    // all unique meshes at once; allSettled so none is still in flight when this load ends
+    const unique = new Map(data.parts.map((part) => [part.mesh.id, part.mesh]));
+    const results = await Promise.allSettled([...unique.values()].map(loadMesh));
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     clearGroup(model, { ownsGeometry: false });
-    data.parts.forEach((part, i) => model.add(partObject(part, meshes[i])));
+    for (const part of data.parts) model.add(partObject(part, geometries.get(part.mesh.id)));
     current = data;
     rebuildHelpers(data.bbox);
     renderPartList(data.parts);
     showRevision(data);
     notice(null);
+    syncGizmo();
     if (!fitted) {
       fitted = true;
       for (const button of document.querySelectorAll('.views button')) button.disabled = false;
@@ -381,7 +409,8 @@ async function loadOne(revision) {
     }
     requestRender();
   } catch (error) {
-    if (revision !== wanted) return;
+    // superseded: the event for the newer revision is already here or on its way
+    if (error instanceof Superseded || revision !== wanted) return;
     if (!current) notice(`Could not load revision ${revision}`, String(error.message));
     else $('revision-meta').textContent = `Could not load revision ${revision}: ${error.message}`;
   } finally {
@@ -410,16 +439,17 @@ async function connect() {
     return;
   }
 
+  listen();
+}
+
+function listen() {
   const events = new EventSource('/events');
   events.addEventListener('open', () => {
     setLink('live', 'Live');
     if (!current) notice('Waiting for the first revision',
       'Geometry appears here after your agent commits its first edit. This page updates by itself.');
   });
-  events.addEventListener('error', () => {
-    setLink('lost', 'Disconnected, retrying');
-    if (!current) notice('Disconnected from coalesce', 'The server stopped or restarted. This page retries on its own; a restarted server prints a new link.');
-  });
+  events.addEventListener('error', () => lost(events));
   events.addEventListener('revision', (event) => {
     const { revision } = JSON.parse(event.data);
     failure = null;
@@ -430,6 +460,21 @@ async function connect() {
     failure = JSON.parse(event.data);
     showFailure();
   });
+}
+
+// EventSource retries a stopped server by itself, but a restarted server has a new key:
+// ask it whether our cookie still works before promising a reconnect.
+async function lost(events) {
+  setLink('lost', 'Not live');
+  if (!current) notice('Disconnected from coalesce', 'This page reconnects by itself when coalesce runs again.');
+  const session = await fetch('/api/session', { cache: 'no-store' }).catch(() => null);
+  if (session?.status === 401) {
+    events.close();
+    setLink('ended', 'Link expired');
+    if (!current) notice(NEW_LINK, NEW_LINK_HELP);
+  } else if (events.readyState === EventSource.CLOSED) {
+    setTimeout(listen, 2000); // EventSource gives up after a non-200 answer; keep trying
+  }
 }
 
 window.coalesceViewer = {

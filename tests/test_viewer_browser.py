@@ -73,12 +73,14 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             empty = step("empty")
             assert empty["label"] == "none" and empty["link"] == "Live"
             assert empty["disabled"] == [True] * 5  # nothing to aim the camera at yet
+            assert empty["gizmo"] is False  # no orientation to show before a model
             store.publish(1, [ScenePart("plate", plate(6))])
             next_step()
 
             first = step("revision-1")
             assert first["label"] == "1"
             assert first["disabled"] == [False] * 5
+            assert first["gizmo"] is True
             assert "#token" not in first["url"]  # the token leaves the address bar
             assert first["dark"] > 0.0003  # edge lines of the plate are on the canvas
             store.publish(2, [ScenePart("plate", plate(10))])
@@ -87,6 +89,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             second = step("revision-2")
             assert second["label"] == "2"
             assert second["top"] < first["top"]  # same camera, taller plate reaches higher
+            assert (second["viewTop"], second["viewBottom"]) == (0, 800)  # no status: full height
             try:
                 fillet(plate(10).edges(), radius=20)
             except ValueError as error:
@@ -106,9 +109,14 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             next_step()
 
             lost = step("disconnected")
-            assert lost["link"] == "Disconnected, retrying"
+            assert lost["link"] == "Not live"
             assert "Revision 2 may be out of date" in lost["banner"]
+            assert "Not live" not in lost["banner"]  # the sidebar names the state once
             assert "grayscale(1)" in lost["filter"]
+            # the status row pushes the model down instead of covering it
+            assert lost["viewTop"] == lost["statusBottom"] > 0 and lost["viewBottom"] == 800
+            # the old edit failure stays readable but no longer looks current
+            assert lost["failureColor"] != failed["failureColor"]
             # same port and key, as after a brief drop: the page must recover by itself
             restarted = ViewerServer(store, port=server.port)
             restarted._token = server._token  # test-only: a real restart would print a new key
@@ -123,9 +131,25 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             stress = step("stress")
             # 50 more revisions free what they replace: gpu counts match the one-part baseline
             assert stress["memory"] == second["memory"], (stress["memory"], second["memory"])
-            # the store keeps two revisions, so skipped ones may 404; the page then catches up
-            dropped = "the server responded with a status of 404"
-            assert [e for e in stress["errors"] if dropped not in e] == []
+            # skipped revisions must not look like failures in the browser console
+            assert stress["errors"] == []
+            restarted.close()
+            restarted = ViewerServer(store, port=server.port)  # a real restart: a new key
+            next_step()
+
+            ended = step("new-link")
+            assert ended["link"] == "Link expired"
+            assert "Open the new viewer link" in ended["status"]
+            assert "stderr" in ended["status"]
+            assert ended["eventRequestsAfter"] == 0  # the page stopped retrying the old key
+            assert ended["gizmo"] is False
+            # only the expected answers to the old key (event stream and session probe)
+            denied = "the server responded with a status of 401"
+            assert ended["errors"] and all(denied in e for e in ended["errors"]), ended["errors"]
+            next_step()
+
+            bare = step("no-access")
+            assert bare["link"] == "No access" and bare["gizmo"] is False
             next_step()
             assert driver.wait(timeout=30) == 0
         finally:

@@ -6,7 +6,7 @@
   --faint: #8a949d;
   --rule: rgba(29, 35, 41, 0.1);
   --live: #2f7d4f;
-  --wait: #a06a12;
+  --wait: #8a5a0c;
   --fail: #b42318;
   --fail-wash: #fdf1ef;
   --focus: #2e5f9e;
@@ -88,8 +88,8 @@ button {
 
 .link[data-state="live"] .dot { background: var(--live); }
 .link[data-state="lost"] .dot { background: var(--wait); }
-.link[data-state="denied"] .dot { background: var(--fail); }
-.link[data-state="lost"], .link[data-state="denied"] { color: var(--ink); }
+.link[data-state="ended"] .dot, .link[data-state="denied"] .dot { background: var(--fail); }
+.link:is([data-state="lost"], [data-state="ended"], [data-state="denied"]) { color: var(--ink); }
 
 .revision {
   padding: 20px 16px 16px;
@@ -121,7 +121,7 @@ button {
   transition-duration: 0ms;
 }
 
-.revision-number[data-empty] { color: var(--faint); font-weight: 500; }
+.revision-number[data-empty] { color: var(--mute); font-weight: 500; }
 
 .revision-meta {
   margin-top: 2px;
@@ -144,7 +144,7 @@ button {
   font-weight: 600;
 }
 
-.unit { color: var(--faint); font-weight: 400; }
+.unit { color: var(--mute); font-weight: 400; }
 
 .parts ul { list-style: none; padding: 0; }
 
@@ -182,17 +182,24 @@ button {
 
 .part-size { color: var(--mute); font-size: 12px; }
 
-.part[aria-pressed="false"] { color: var(--faint); }
+.part[aria-pressed="false"] { color: var(--mute); }
 .part[aria-pressed="false"] .swatch { background: transparent !important; }
 .part[aria-pressed="false"] .part-name { text-decoration: line-through; text-decoration-color: var(--faint); }
 
-.parts-empty { padding: 0 8px; color: var(--faint); }
+.parts-empty { padding: 0 8px; color: var(--mute); }
 
 /* stage */
 
 .stage {
-  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
+}
+
+.viewport {
+  grid-row: 2; /* stays in the model row while the status row is hidden */
+  position: relative;
   min-height: 0;
 }
 
@@ -228,51 +235,38 @@ button {
   text-wrap: pretty;
 }
 
-.banners {
-  position: absolute;
-  top: 16px;
-  left: 50%;
-  translate: -50% 0;
-  width: min(560px, calc(100% - 32px));
-  display: flex;
-  flex-direction: column;
+/* status row: in the layout flow above the model, so it never covers geometry */
+
+.status {
+  display: grid;
   gap: 8px;
-  pointer-events: none;
+  padding: 10px 16px;
+  background: var(--panel);
+  box-shadow: 0 1px 0 var(--rule);
 }
 
-.stale, .failure {
-  padding: 12px 14px 12px 16px;
-  border-radius: 8px;
-}
+.status:not(:has(> :not([hidden]))) { display: none; }
+
+.stale, .failure { padding-left: 12px; }
 
 .stale {
-  background: #fdf6e9;
-  box-shadow: inset 3px 0 0 var(--wait), 0 0 0 1px rgba(160, 106, 18, 0.24),
-    0 6px 20px rgba(29, 35, 41, 0.1);
+  box-shadow: inset 3px 0 0 var(--wait);
+  text-wrap: pretty;
 }
 
-.stale[hidden] { display: none; }
+.stale[data-state="ended"] { box-shadow: inset 3px 0 0 var(--fail); }
 
-.stale-title { color: var(--wait); font-weight: 650; }
-
-.stale-body { color: var(--ink); text-wrap: pretty; }
+.stale strong { font-weight: 650; }
 
 /* a dropped connection leaves the last scene on screen, visibly not current */
-#view { transition: filter 200ms; }
+#view { transition-property: filter; transition-duration: 200ms; }
 .stage[data-stale] #view { filter: grayscale(1) opacity(0.45); }
 
-.failure {
-  pointer-events: auto;
-  background: var(--fail-wash);
-  box-shadow: inset 3px 0 0 var(--fail), 0 0 0 1px rgba(180, 35, 24, 0.22),
-    0 6px 20px rgba(29, 35, 41, 0.1);
-}
-
-.failure[hidden] { display: none; }
+.failure { box-shadow: inset 3px 0 0 var(--fail); }
 
 .failure-title { color: var(--fail); font-weight: 650; }
 
-.failure-features { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.failure-features { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
 
 .feature-id {
   padding: 1px 6px;
@@ -284,11 +278,16 @@ button {
 }
 
 .failure-error {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--ink);
   overflow-wrap: anywhere;
   text-wrap: pretty;
 }
+
+/* not live: the old failure stays readable, but the connection is the news */
+.stage[data-stale] .failure { box-shadow: inset 3px 0 0 var(--rule); }
+.stage[data-stale] :is(.failure-title, .failure-error, .feature-id) { color: var(--mute); }
+.stage[data-stale] .feature-id { background: rgba(29, 35, 41, 0.06); }
 
 .gizmo {
   position: absolute;
@@ -323,6 +322,8 @@ button {
 }
 
 .scale[hidden] { display: none; }
+
+.gizmo[hidden] + .scale { left: 16px; }
 
 .scale-bar {
   height: 6px;

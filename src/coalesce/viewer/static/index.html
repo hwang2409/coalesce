@@ -28,14 +28,10 @@
   </section>
 </aside>
 
-<main class="stage">
-  <canvas id="view" aria-label="3D view of the current revision"></canvas>
-
-  <div class="banners">
-    <div class="stale" id="stale" role="status" hidden>
-      <p class="stale-title">Not live</p>
-      <p class="stale-body" id="stale-body"></p>
-    </div>
+<main class="stage" id="stage">
+  <!-- one status row above the model, in the layout flow: it never covers geometry -->
+  <div class="status" id="status">
+    <p class="stale" id="stale" role="status" hidden></p>
     <div class="failure" id="failure" role="alert" hidden>
       <p class="failure-title" id="failure-title"></p>
       <p class="failure-features" id="failure-features"></p>
@@ -43,31 +39,35 @@
     </div>
   </div>
 
-  <div class="notice" id="notice">
-    <p class="notice-title" id="notice-title">Connecting to coalesce</p>
-    <p class="notice-body" id="notice-body"></p>
-  </div>
+  <div class="viewport">
+    <canvas id="view" aria-label="3D view of the current revision"></canvas>
 
-  <div class="gizmo" aria-hidden="true">
-    <span class="gizmo-label" id="gx">X</span>
-    <span class="gizmo-label" id="gy">Y</span>
-    <span class="gizmo-label" id="gz">Z</span>
-  </div>
-
-  <div class="scale" id="scale" hidden>
-    <span class="scale-bar" id="scale-bar"></span>
-    <span class="scale-text" id="scale-text"></span>
-  </div>
-
-  <nav class="views" aria-label="Camera">
-    <div class="segmented" role="group" aria-label="View direction">
-      <button type="button" data-view="iso" aria-pressed="false" disabled>Iso</button>
-      <button type="button" data-view="front" aria-pressed="false" disabled>Front</button>
-      <button type="button" data-view="right" aria-pressed="false" disabled>Right</button>
-      <button type="button" data-view="top" aria-pressed="false" disabled>Top</button>
+    <div class="notice" id="notice">
+      <p class="notice-title" id="notice-title">Connecting to coalesce</p>
+      <p class="notice-body" id="notice-body"></p>
     </div>
-    <button type="button" class="fit" id="fit" disabled>Fit</button>
-  </nav>
+
+    <div class="gizmo" id="gizmo" aria-hidden="true" hidden>
+      <span class="gizmo-label" id="gx">X</span>
+      <span class="gizmo-label" id="gy">Y</span>
+      <span class="gizmo-label" id="gz">Z</span>
+    </div>
+
+    <div class="scale" id="scale" hidden>
+      <span class="scale-bar" id="scale-bar"></span>
+      <span class="scale-text" id="scale-text"></span>
+    </div>
+
+    <nav class="views" aria-label="Camera">
+      <div class="segmented" role="group" aria-label="View direction">
+        <button type="button" data-view="iso" aria-pressed="false" disabled>Iso</button>
+        <button type="button" data-view="front" aria-pressed="false" disabled>Front</button>
+        <button type="button" data-view="right" aria-pressed="false" disabled>Right</button>
+        <button type="button" data-view="top" aria-pressed="false" disabled>Top</button>
+      </div>
+      <button type="button" class="fit" id="fit" disabled>Fit</button>
+    </nav>
+  </div>
 </main>
 </body>
 </html>
