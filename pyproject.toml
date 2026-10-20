@@ -3,7 +3,10 @@ name = "coalesce"
 version = "0.1.0"
 description = "typed feature graphs with semantic CAD references"
 requires-python = ">=3.12,<3.14"
-dependencies = ["build123d>=0.13,<0.14"]
+dependencies = [
+    "build123d>=0.13,<0.14",
+    "mcp>=1.12,<2",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "ruff>=0.8"]
