@@ -51,6 +51,7 @@ async function step(name, check) {
   // console errors since the previous step
   console.log(`step ${name} ${JSON.stringify({ ...result, errors: errors.splice(0) })}`);
   await lines.next();
+  return result;
 }
 
 const STRESS_LAST = 52; // tests/test_viewer_browser.py publishes revisions 3..52 after 'front'
@@ -75,8 +76,18 @@ const layout = () => page.evaluate(() => {
 let eventRequests = 0;
 page.on('request', (request) => new URL(request.url()).pathname === '/events' && (eventRequests += 1));
 const waitRevision = (n) => page.waitForFunction((n) => window.coalesceViewer?.revision === n, n, { timeout: 15000 });
-// the canvas has its final size and position and a frame for them is drawn
+// the canvas has its final size and position and a new frame for them is drawn
+const settledAfter = async (frames) => {
+  await page.waitForFunction(
+    (frames) => window.coalesceViewer.drawn.frames > frames && window.coalesceViewer.drawn.settled,
+    frames,
+    { timeout: 15000 },
+  );
+  // The render callback updates the counter before Chromium presents that frame.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+};
 const settled = () => page.waitForFunction(() => window.coalesceViewer.drawn.settled, null, { timeout: 15000 });
+const currentFrames = () => page.evaluate(() => window.coalesceViewer.drawn.frames);
 
 await page.goto(url);
 await step('empty', async () => {
@@ -95,32 +106,34 @@ await step('revision-1', async () => ({
 }));
 await waitRevision(2);
 await settled();
-await step('revision-2', async () => ({
+const second = await step('revision-2', async () => ({
   label: await revision().textContent(),
   ...(await layout()),
   memory: await page.evaluate(() => window.coalesceViewer.memory),
   ...(await drawn()),
 }));
 await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
-await settled();
+await settledAfter(second.scene.frames);
 await step('failure', async () => ({
   label: await revision().textContent(),
   failure: await page.locator('#failure').innerText(),
   failureColor: await page.locator('#failure-title').evaluate((el) => getComputedStyle(el).color),
   ...(await drawn()),
 }));
+const beforeFront = await currentFrames();
 await page.getByRole('button', { name: 'Front' }).click();
-await settled();
+await settledAfter(beforeFront);
 await step('front', async () => ({ pressed: await page.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), ...(await drawn()) }));
+const beforeIso = await currentFrames();
 await page.getByRole('button', { name: 'Iso' }).click();
-await settled();
+await settledAfter(beforeIso);
 const iso = await drawn(); // the model's place before the connection drops
 await page.locator('#stale').waitFor({ state: 'visible', timeout: 15000 });
-await settled();
+await settledAfter(iso.scene.frames);
 await page.waitForTimeout(300); // let the dim transition finish before the screenshot
-await step('disconnected', async () => ({ ...(await stale()), before: iso.pageTop, ...(await drawn()) }));
+const disconnected = await step('disconnected', async () => ({ ...(await stale()), before: iso.pageTop, ...(await drawn()) }));
 await page.locator('#stale').waitFor({ state: 'hidden', timeout: 15000 });
-await settled();
+await settledAfter(disconnected.scene.frames);
 await page.waitForTimeout(300);
 await step('reconnected', async () => ({ ...(await stale()), before: iso.pageTop, ...(await drawn()) }));
 await waitRevision(STRESS_LAST);
