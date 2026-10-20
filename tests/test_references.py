@@ -32,28 +32,50 @@ def test_cardinality_reports_split_with_structured_candidates():
             "cardinality": "one",
             "count": None,
             "source": None,
+            "body": None,
             "filters": [],
         },
         "status": "SPLIT",
         "candidates": [
             {
-                "keys": [{"feature": "base", "role": "cap_end", "source": "top"}],
+                "keys": [
+                    {"feature": "base", "role": "cap_end", "source": "top", "body": None}
+                ],
                 "descriptor": {"center": (0, 0, 0), "normal": (0, 0, 1)},
             },
             {
-                "keys": [{"feature": "base", "role": "cap_end", "source": "top"}],
+                "keys": [
+                    {"feature": "base", "role": "cap_end", "source": "top", "body": None}
+                ],
                 "descriptor": {"center": (0, 0, 0), "normal": (0, 0, 1)},
             },
         ],
         "suggestion": "use one_or_more or add a provenance-set filter",
     }
-    assert (
-        resolve(
-            Reference("base", "cap_end", Cardinality.ONE_OR_MORE),
-            {"base": pieces},
-        ).status
-        is Status.OK
+    accepted_split = resolve(
+        Reference("base", "cap_end", Cardinality.ONE_OR_MORE),
+        {"base": pieces},
     )
+    assert accepted_split.status is Status.SPLIT
+    assert accepted_split.error is None
+    assert accepted_split.candidates == pieces
+
+
+def test_any_cardinality_accepts_empty_and_non_empty_topology():
+    empty = resolve(
+        Reference("base", "cap_end", Cardinality.ANY),
+        {"base": []},
+    )
+    pieces = [candidate("cap_end", "top"), candidate("cap_end", "top")]
+    non_empty = resolve(
+        Reference("base", "cap_end", Cardinality.ANY),
+        {"base": pieces},
+    )
+
+    assert empty.status is Status.EMPTY
+    assert empty.error is None
+    assert non_empty.status is Status.SPLIT
+    assert non_empty.error is None
 
 
 def test_filters_only_reduce_the_selected_provenance_set():
@@ -87,12 +109,41 @@ def test_exact_cardinality_and_merged_status_are_explicit():
 
     merged_resolution = resolve(Reference("base", "cap_end"), {"base": [merged]})
 
-    assert exact.status is Status.OK
+    assert exact.status is Status.SPLIT
+    assert exact.error is None
     assert merged_resolution.status is Status.MERGED
-    assert merged_resolution.error["candidates"][0]["keys"] == [
-        {"feature": "base", "role": "cap_end", "source": "top"},
-        {"feature": "boss", "role": "cap_end", "source": "boss_top"},
-    ]
+    assert merged_resolution.error is None
+    assert merged_resolution.candidates[0].merged_from == (
+        ElementKey("boss", "cap_end", "boss_top"),
+    )
+
+
+def test_accepted_distinct_key_collections_are_ok():
+    pieces = [candidate("cap_end", "a"), candidate("cap_end", "b")]
+
+    one_or_more = resolve(
+        Reference("base", "cap_end", Cardinality.ONE_OR_MORE),
+        {"base": pieces},
+    )
+    exact = resolve(
+        Reference("base", "cap_end", Cardinality.EXACTLY, count=2),
+        {"base": pieces},
+    )
+
+    assert one_or_more.status is Status.OK
+    assert one_or_more.error is None
+    assert exact.status is Status.OK
+    assert exact.error is None
+
+
+def test_count_above_contract_is_ambiguous_with_structured_error():
+    pieces = [candidate("cap_end", "a"), candidate("cap_end", "b")]
+
+    resolution = resolve(Reference("base", "cap_end"), {"base": pieces})
+
+    assert resolution.status is Status.AMBIGUOUS
+    assert resolution.error["status"] == "AMBIGUOUS"
+    assert len(resolution.error["candidates"]) == 2
 
 
 def test_equal_maximum_is_ambiguous_instead_of_picking_by_index():
@@ -108,6 +159,28 @@ def test_equal_maximum_is_ambiguous_instead_of_picking_by_index():
     )
 
     assert resolution.status is Status.AMBIGUOUS
+    assert resolution.error["status"] == "AMBIGUOUS"
+    assert len(resolution.candidates) == 2
+
+
+def test_equal_maximum_between_split_pieces_is_ambiguous():
+    pieces = [
+        candidate("cap_end", "top", (0, 0, 10)),
+        candidate("cap_end", "top", (5, 0, 10)),
+    ]
+
+    resolution = resolve(
+        Reference(
+            "base",
+            "cap_end",
+            Cardinality.ONE_OR_MORE,
+            filters=[MaxAlong((0, 0, 1))],
+        ),
+        {"base": pieces},
+    )
+
+    assert resolution.status is Status.AMBIGUOUS
+    assert resolution.error["status"] == "AMBIGUOUS"
     assert len(resolution.candidates) == 2
 
 

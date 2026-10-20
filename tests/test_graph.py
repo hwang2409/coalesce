@@ -7,12 +7,16 @@ from math import isclose
 import pytest
 
 from coalesce import (
+    Cardinality,
     Cut,
     Extrude,
+    Fillet,
     Graph,
+    GraphError,
     Rectangle,
     Reference,
     Sketch,
+    SketchSegmentSource,
     Status,
     regenerate,
 )
@@ -55,6 +59,28 @@ def snapshot(result):
             ],
         },
     }
+
+
+def test_duplicate_sketch_entity_ids_fail_graph_validation_before_regen():
+    graph = Graph()
+    graph.add(
+        Sketch(
+            "sk",
+            entities=[
+                Rectangle("dup", 2, 2),
+                Rectangle("dup", 2, 2, position=(4, 0)),
+            ],
+        )
+    )
+    graph.add(Extrude("parts", sketch="sk", height=3))
+
+    with pytest.raises(GraphError) as caught:
+        graph.validate()
+
+    assert caught.value.error["code"] == "duplicate_entity_id"
+    assert caught.value.error["sketch"] == "sk"
+    assert caught.value.error["entity"] == "dup"
+
 
 
 def test_case_1_cap_end_height_geometry():
@@ -148,6 +174,42 @@ def test_anti_guessing_rotated_rectangle_uses_constructed_segment_history():
     wall = resolution.candidates[0].entity
     assert isclose(wall.center().X, 7 - 5 * 3**0.5 / 2)
     assert isclose(wall.center().Y, -5.5)
+
+
+def test_json_round_trip_preserves_typed_segment_source_and_body_scope():
+    from coalesce import BodySource
+
+    graph = base()
+    source = SketchSegmentSource("sk", "profile", "left")
+    body = BodySource("base", "profile")
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", "side(left)", source=source, body=body)],
+        )
+    )
+
+    restored = loads(graph.to_json())
+
+    reference = restored.nodes["round"].edges[0]
+    assert reference.source == source
+    assert reference.body == body
+
+
+def test_json_round_trip_preserves_any_cardinality():
+    graph = base()
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", "side(left)", Cardinality.ANY)],
+        )
+    )
+
+    restored = loads(graph.to_json())
+
+    assert restored.nodes["round"].edges[0].cardinality is Cardinality.ANY
 
 
 def test_json_round_trip_regenerates_the_same_geometry():

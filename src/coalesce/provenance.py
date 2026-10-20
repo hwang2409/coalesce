@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from build123d import Face, Shape
+
+from .references import BodySource, Candidate, ElementKey
+
+
+def descriptor(entity: Shape) -> dict[str, object]:
+    center = entity.center()
+    value: dict[str, object] = {
+        "type": entity.geom_type.name,
+        "center": (center.X, center.Y, center.Z),
+    }
+    if isinstance(entity, Face):
+        try:
+            normal = entity.normal_at()
+        except ValueError:
+            pass
+        else:
+            value["normal"] = (normal.X, normal.Y, normal.Z)
+        value["area"] = entity.area
+    else:
+        value["length"] = entity.length
+    return value
+
+
+def candidate(
+    feature: str,
+    role: str,
+    source: object,
+    entity: Shape,
+    *,
+    body: BodySource,
+) -> Candidate:
+    return Candidate(ElementKey(feature, role, source, body), entity, descriptor(entity))
+
+
+def _between_role(roles: list[str]) -> str:
+    ordered = sorted(roles, key=lambda role: (role.startswith("cap_"), role))
+    return f"between({ordered[0]},{ordered[1]})"
+
+
+def _adjacent_keys(edge: Shape, faces: list[Candidate]) -> list[ElementKey]:
+    adjacent = [
+        face
+        for face in faces
+        if any(edge.is_same(face_edge) for face_edge in face.entity.edges())
+    ]
+    return sorted(
+        {face.key for face in adjacent},
+        key=lambda key: (key.feature, key.role, str(key.source)),
+    )
+
+
+def _same_body(keys: list[ElementKey]) -> BodySource:
+    bodies = {key.body for key in keys}
+    if len(bodies) != 1 or None in bodies:
+        raise RuntimeError("an edge must be bounded by faces from one body")
+    body = bodies.pop()
+    assert body is not None
+    return body
+
+
+def derive_edge_candidates(
+    feature: str,
+    shape: Shape,
+    faces: list[Candidate],
+) -> list[Candidate]:
+    result: list[Candidate] = []
+    for edge in shape.edges():
+        keys = _adjacent_keys(edge, faces)
+        if len(keys) == 2:
+            result.append(
+                candidate(
+                    feature,
+                    _between_role([key.role for key in keys]),
+                    tuple(keys),
+                    edge,
+                    body=_same_body(keys),
+                )
+            )
+    return result
