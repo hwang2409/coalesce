@@ -8,7 +8,6 @@ import pytest
 
 from coalesce import (
     Cardinality,
-    Cut,
     Extrude,
     Fillet,
     Graph,
@@ -223,10 +222,9 @@ def test_json_round_trip_regenerates_the_same_geometry():
     assert snapshot(restored) == snapshot(original)
 
 
-def test_step_b_features_fail_clearly_instead_of_guessing():
+def test_step_c_feature_fails_clearly_instead_of_guessing():
     graph = base()
-    graph.add(Sketch("tool", entities=[Rectangle("slot", 2, 20)]))
-    graph.add(Cut("cut", target="base", tool="tool"))
+    graph.add(Fillet("round", target="base"))
 
-    with pytest.raises(NotImplementedError, match="Cut regeneration requires step B"):
+    with pytest.raises(NotImplementedError, match="Fillet regeneration requires step C"):
         regenerate(graph)

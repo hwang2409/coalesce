@@ -6,8 +6,10 @@ from dataclasses import dataclass
 
 from build123d import Shape
 
+from .boolean import cut_shape
 from .extrusion import extrude_sketch
 from .graph import Cut, Extrude, Fillet, Graph, Hole, Sketch
+from .hole import make_hole_tool
 from .references import Candidate, Reference, Resolution, resolve
 
 
@@ -27,10 +29,24 @@ class RegenResult:
         )
 
 
+def _replace_provenance(
+    provenance: dict[str, list[Candidate]],
+    previous: list[Candidate],
+    current: list[Candidate],
+) -> None:
+    groups: dict[str, list[Candidate]] = {}
+    for item in current:
+        groups.setdefault(item.key.feature, []).append(item)
+    affected = {item.key.feature for item in previous} | set(groups)
+    for feature in affected:
+        provenance[feature] = groups.get(feature, [])
+
+
 def regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
     provenance: dict[str, list[Candidate]] = {}
+    states: dict[str, list[Candidate]] = {}
 
     for node in ordered:
         if isinstance(node, Sketch):
@@ -38,9 +54,32 @@ def regenerate(graph: Graph) -> RegenResult:
         if isinstance(node, Extrude):
             result = extrude_sketch(node, graph.nodes[node.sketch])
             shapes[node.id] = result.shape
+            states[node.id] = result.candidates
             provenance[node.id] = result.candidates
-        elif isinstance(node, (Cut, Hole)):
-            raise NotImplementedError(f"{type(node).__name__} regeneration requires step B")
+        elif isinstance(node, Cut):
+            result = cut_shape(
+                node.id,
+                shapes[node.target],
+                states[node.target],
+                shapes[node.tool],
+                states[node.tool],
+            )
+            shapes[node.id] = result.shape
+            states[node.id] = result.candidates
+            _replace_provenance(provenance, states[node.target], result.candidates)
+        elif isinstance(node, Hole):
+            tool = make_hole_tool(node, shapes[node.target])
+            result = cut_shape(
+                node.id,
+                shapes[node.target],
+                states[node.target],
+                tool.shape,
+                tool.candidates,
+                kind="hole",
+            )
+            shapes[node.id] = result.shape
+            states[node.id] = result.candidates
+            _replace_provenance(provenance, states[node.target], result.candidates)
         elif isinstance(node, Fillet):
             raise NotImplementedError("Fillet regeneration requires step C")
 
