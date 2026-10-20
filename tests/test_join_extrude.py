@@ -1,4 +1,5 @@
 import json
+import json
 import subprocess
 import sys
 from math import isclose, pi
@@ -223,17 +224,11 @@ def test_disjoint_join_next_to_split_body_is_structured_error() -> None:
     assert caught.value.error["code"] == "JOIN_NO_CONTACT"
 
 
-def test_join_without_contact_is_structured_error() -> None:
+def join_contact_graph(*profiles: Rectangle | Circle) -> Graph:
     graph = Graph()
     graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 10, 10)]))
     graph.add(Extrude("plate", sketch="plate_sketch", height=3))
-    graph.add(
-        Sketch(
-            "boss_sketch",
-            entities=[Circle("boss_profile", 1)],
-            position=(20, 0, 3),
-        )
-    )
+    graph.add(Sketch("boss_sketch", entities=list(profiles), position=(0, 0, 3)))
     graph.add(
         Extrude(
             "boss",
@@ -243,15 +238,85 @@ def test_join_without_contact_is_structured_error() -> None:
             target="plate",
         )
     )
+    return graph
+
+
+def test_join_rejects_disjoint_profile_even_when_another_profile_joins() -> None:
+    graph = join_contact_graph(
+        Circle("attached_profile", 1),
+        Circle("disjoint_profile", 1, position=(20, 0)),
+    )
+    graph_before = graph.to_json()
+    plate_before = regenerate(join_contact_graph(Circle("attached_profile", 1))).shapes[
+        "plate"
+    ]
+    bounds_before = plate_before.bounding_box()
+    plate_geometry_before = (
+        plate_before.volume,
+        len(plate_before.solids()),
+        (bounds_before.min.X, bounds_before.min.Y, bounds_before.min.Z),
+        (bounds_before.max.X, bounds_before.max.Y, bounds_before.max.Z),
+    )
 
     with pytest.raises(GraphError) as caught:
         regenerate(graph)
 
     assert caught.value.error == {
         "code": "JOIN_NO_CONTACT",
-        "message": "join extrude boss does not contact target plate",
+        "message": "join extrude boss has profiles that do not contact target plate",
         "feature": "boss",
         "target": "plate",
+        "entities": ["disjoint_profile"],
+    }
+    assert graph.to_json() == graph_before
+    plate_after = regenerate(join_contact_graph(Circle("attached_profile", 1))).shapes[
+        "plate"
+    ]
+    bounds_after = plate_after.bounding_box()
+    assert (
+        plate_after.volume,
+        len(plate_after.solids()),
+        (bounds_after.min.X, bounds_after.min.Y, bounds_after.min.Z),
+        (bounds_after.max.X, bounds_after.max.Y, bounds_after.max.Z),
+    ) == plate_geometry_before
+
+
+def test_join_without_contact_is_structured_error() -> None:
+    graph = join_contact_graph(Circle("boss_profile", 1, position=(20, 0)))
+
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+
+    assert caught.value.error == {
+        "code": "JOIN_NO_CONTACT",
+        "message": "join extrude boss has profiles that do not contact target plate",
+        "feature": "boss",
+        "target": "plate",
+        "entities": ["boss_profile"],
+    }
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        Rectangle("edge_profile", 2, 2, position=(6, 0)),
+        Rectangle("vertex_profile", 2, 2, position=(6, 6)),
+    ],
+    ids=["edge-only", "vertex-only"],
+)
+def test_join_rejects_non_manifold_contact(profile: Rectangle) -> None:
+    graph = join_contact_graph(profile)
+
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+
+    assert caught.value.error == {
+        "code": "JOIN_NON_MANIFOLD",
+        "message": f"join extrude boss profile {profile.id} only touches target plate along an edge or point",
+        "feature": "boss",
+        "target": "plate",
+        "entity": profile.id,
+        "hint": "extend the profile so faces overlap or touch",
     }
 
 
