@@ -48,7 +48,7 @@ def _get_json(parsed, headers, path):
         return json.load(response)
 
 
-def _wait_for_scene(parsed, headers, revision):
+def _wait_for_scene(parsed, headers, revision, errlog):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         try:
@@ -57,7 +57,16 @@ def _wait_for_scene(parsed, headers, revision):
             if error.code != 404:
                 raise
         time.sleep(0.02)
-    raise AssertionError(f"viewer did not publish revision {revision}")
+    try:
+        viewer_state = _next_viewer_event(parsed, headers)
+    except TimeoutError:
+        viewer_state = "no revision or failure event"
+    errlog.flush()
+    errlog.seek(0)
+    raise AssertionError(
+        f"viewer did not publish revision {revision}; "
+        f"viewer store state: {viewer_state!r}; server stderr:\n{errlog.read()}"
+    )
 
 
 def _next_viewer_event(parsed, headers):
@@ -100,7 +109,7 @@ async def test_persisted_hole_publishes_viewer_scene_after_restart(tmp_path):
             if line.startswith("coalesce viewer: ")
         )
         parsed, headers = _viewer_access(viewer_url)
-        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 3)
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 3, errlog)
 
     assert scene["revision"] == 3
     assert scene["parts"][0]["terminalFeatureId"] == "hole"
@@ -234,7 +243,7 @@ async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_
             )
         )
         assert repaired["revision"] == 8
-        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8)
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8, errlog)
         assert len(scene["parts"]) == 1
         assert scene["parts"][0]["terminalFeatureId"] == "portcut"
 
@@ -254,7 +263,9 @@ async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_
             if line.startswith("coalesce viewer: ")
         )
         parsed, headers = _viewer_access(viewer_url)
-        restarted_scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8)
+        restarted_scene = await asyncio.to_thread(
+            _wait_for_scene, parsed, headers, 8, restart_log
+        )
 
     assert restarted_scene["revision"] == 8
     assert restarted_scene["parts"][0]["terminalFeatureId"] == "portcut"
@@ -286,7 +297,7 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
 
         assert result_json(await session.call_tool("sketch", SKETCH))["revision"] == 1
         assert result_json(await session.call_tool("feature", FEATURE))["revision"] == 2
-        scene = _wait_for_scene(parsed, headers, 2)
+        scene = _wait_for_scene(parsed, headers, 2, errlog)
         assert scene["revision"] == 2
         assert len(scene["parts"]) == 1
         assert scene["parts"][0]["size"] == pytest.approx([60, 40, 6])
@@ -308,7 +319,7 @@ async def test_real_stdio_server_publishes_committed_plate_to_its_viewer(tmp_pat
             "set": {"distance": {"value": 10, "unit": "mm"}},
         }
         assert result_json(await session.call_tool("feature", updated))["revision"] == 3
-        assert _wait_for_scene(parsed, headers, 3)["parts"][0]["size"] == pytest.approx(
+        assert _wait_for_scene(parsed, headers, 3, errlog)["parts"][0]["size"] == pytest.approx(
             [60, 40, 10]
         )
 
