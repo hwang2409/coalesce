@@ -885,39 +885,56 @@ def _lineage(graph: Any, feature_id: str) -> tuple[dict[str, Any], ...]:
     return tuple(reversed(chain))
 
 
-_FIELD_WORDS = {"height": "distance"}
+def _mm(value: float | tuple[float, ...]) -> str:
+    if isinstance(value, tuple):
+        return "(" + ", ".join(f"{c:g}" for c in value) + ")"
+    return f"{value:g}"
+
+
+# the fields the update tools change, as the human reads them: a word, and old -> new values
+_EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
+    "height": ("distance", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "position": ("position", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "entities": ("profiles", lambda was, now: f"{len(was)} \u2192 {len(now)}"),
+}
+
+
+def _added(node: Any) -> str:
+    if isinstance(node, BoardImport):
+        return f"imported board {node.id}"
+    summary = f"added {_kind(node)} {node.id}"
+    target = getattr(node, "target", None)
+    if target:
+        summary += f" on {target}"
+    if isinstance(node, Sketch):
+        count = len(node.entities)
+        summary += f" ({count} {'profile' if count == 1 else 'profiles'})"
+    elif isinstance(node, Hole):
+        count = len(_hole_names(node))
+        summary += f" ({count} {'hole' if count == 1 else 'holes'})"
+    elif isinstance(node, Extrude):
+        summary += f" ({_mm(node.height)} mm)"
+    return summary
+
+
+def _edited(old: Any, node: Any) -> str:
+    if isinstance(node, BoardImport):
+        same = old.source_digest == node.source_digest
+        return f"refreshed board {node.id}, source {'unchanged' if same else 'changed'}"
+    edits = []
+    for name, (word, values) in _EDITED_FIELDS.items():
+        was, now = getattr(old, name, None), getattr(node, name, None)
+        if was != now:
+            edits.append(f"{word}: {values(was, now)}")
+    summary = f"edited {_kind(node)} {node.id}"
+    return f"{summary} {', '.join(edits)}" if edits else f"{summary}, no value changed"
 
 
 def _change(before: Any, after: Any, changed_id: str) -> dict[str, str]:
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = after.nodes[changed_id]
-    name = f"{_kind(node)} {changed_id}"
     old = before.nodes.get(changed_id)
-    if old is None:
-        target = getattr(node, "target", None)
-        summary = f"added {name}" + (f" on {target}" if target else "")
-        if isinstance(node, Sketch):
-            count = len(node.entities)
-            summary += f" ({count} {'profile' if count == 1 else 'profiles'})"
-        elif isinstance(node, Hole):
-            count = len(_hole_names(node))
-            summary += f" ({count} {'hole' if count == 1 else 'holes'})"
-        elif isinstance(node, Extrude):
-            summary += f" ({node.height:g} mm)"
-        elif isinstance(node, BoardImport):
-            summary = f"imported {name}"
-        return {"featureId": changed_id, "summary": summary}
-    edits = []
-    for item in fields(node):
-        was, now = getattr(old, item.name), getattr(node, item.name)
-        if was == now:
-            continue
-        word = _FIELD_WORDS.get(item.name, item.name)
-        numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (was, now))
-        edits.append(f"{word}: {was:g} \u2192 {now:g} mm" if numbers else word)
-    verb = "refreshed" if isinstance(node, BoardImport) else "edited"
-    summary = f"{verb} {name} " + ", ".join(edits) if edits else f"{verb} {name}, no value changed"
-    return {"featureId": changed_id, "summary": summary}
+    return {"featureId": changed_id, "summary": _added(node) if old is None else _edited(old, node)}
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
