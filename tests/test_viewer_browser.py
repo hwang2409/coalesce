@@ -130,10 +130,10 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             assert lost["banner"] == "Revision 2 may be out of date. Reconnecting to coalesce."
             assert "grayscale(1)" in lost["filter"]
             # the status row pushes the model down instead of covering it
-            assert lost["viewTop"] == lost["statusBottom"] > 0 and lost["viewBottom"] == 800
+            assert lost["viewTop"] == lost["statusBottom"] > 0 and lost["viewBottom"] == 800, lost
             # the old edit failure stays readable but no longer looks current
             assert lost["failureColor"] != failed["failureColor"]
-            assert abs(lost["pageTop"] - lost["before"]) <= 2  # a second row: still no jump
+            assert abs(lost["pageTop"] - lost["before"]) <= 2, (lost["pageTop"], lost["before"])
             # same port and key, as after a brief drop: the page must recover by itself
             restarted = ViewerServer(store, port=server.port)
             restarted._token = server._token  # test-only: a real restart would print a new key
@@ -141,7 +141,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
 
             back = step("reconnected", outage=True)
             assert (back["link"], back["banner"], back["filter"]) == ("Live", None, "none")
-            assert abs(back["pageTop"] - back["before"]) <= 2
+            assert abs(back["pageTop"] - back["before"]) <= 2, (back["pageTop"], back["before"])
             for revision in range(3, 53):  # back to back, so some loads lose the race
                 store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
             next_step()
