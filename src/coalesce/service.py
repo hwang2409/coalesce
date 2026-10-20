@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
+from .export import ExportFailure, export_parts
 from .graph import (
     BoardImport,
     Circle,
@@ -1437,6 +1438,97 @@ class DocumentService:
                 **self._node_metadata(graph, result, changed_id),
             },
         )
+
+    def _check_export_revision(self, expected_revision: int) -> None:
+        if expected_revision == self._document.revision:
+            return
+        raise RequestError(
+            "STALE_REVISION",
+            f"expected revision {expected_revision}; current revision is "
+            f"{self._document.revision}",
+            expected=expected_revision,
+            actual=self._document.revision,
+            hint="query the current revision and review the changed model before exporting",
+        )
+
+    def _select_export_parts(self, requested: list[str] | None) -> list[Any]:
+        available = [
+            part
+            for part in terminal_parts(self._regen)
+            if not isinstance(
+                self._document.graph.nodes.get(part.source_body.feature), BoardImport
+            )
+        ]
+        if requested is None:
+            selected = available
+            unknown = []
+        else:
+            by_id = {part.part_id: part for part in available}
+            selected = [by_id.get(part_id) for part_id in requested]
+            unknown = [
+                part_id
+                for part_id, part in zip(requested, selected, strict=True)
+                if part is None
+            ]
+        if unknown:
+            raise RequestError(
+                "UNKNOWN_ID",
+                "one or more partIds are not exportable terminal manufacturing parts",
+                unknownPartIds=unknown,
+                hint="query measurements and use a listed manufacturing partId",
+            )
+        if not selected:
+            raise RequestError(
+                "UNKNOWN_ID",
+                "the document has no terminal manufacturing parts to export",
+                hint="create manufacturing geometry before exporting",
+            )
+        return selected
+
+    def export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
+        with self._lock:
+            try:
+                self._check_export_revision(payload["expectedRevision"])
+                fields = export_parts(
+                    Path(payload.get("path", "")),
+                    self._select_export_parts(payload.get("partIds")),
+                )
+                return {
+                    "ok": True,
+                    "revision": self._document.revision,
+                    "units": "mm",
+                    **fields,
+                }
+            except ExportFailure as error:
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    error.code,
+                    error.message,
+                    operation="export",
+                    **error.details,
+                )
+            except RequestError as error:
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    error.code,
+                    str(error),
+                    operation="export",
+                    retryable=error.code == "STALE_REVISION",
+                    **error.details,
+                )
+            except Exception:  # noqa: BLE001 - filesystem failures are translated at this seam.
+                _LOG.exception("unexpected failure during export")
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    "EXPORT_WRITE_FAILED",
+                    "STEP export could not be completed",
+                    operation="export",
+                    hint="check the target directory and retry with a new path",
+                )
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")
