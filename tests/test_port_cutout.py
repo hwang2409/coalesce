@@ -4,6 +4,9 @@ import re
 import shutil
 from pathlib import Path
 
+from test_mcp_cut_hole_circle import cut, hole, rectangle_sketch
+from test_mcp_vertical import call_server_tool
+
 import pytest
 from build123d import Face, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
@@ -18,8 +21,13 @@ from test_pcb_enclosure import (
 )
 from test_pcb_lid import lid_request
 
+from coalesce.graph import Fillet, PortCutout
+from coalesce.parts import terminal_parts
 from coalesce.references import Cardinality, Reference, Status
-from coalesce.service import DocumentService
+from coalesce.regen import regenerate
+from coalesce.serialization import dumps, loads
+from coalesce.service import DocumentService, _scene_parts
+from coalesce.viewer import ViewerSceneStore
 
 
 def port_request(
@@ -303,6 +311,168 @@ def _body_signature(service):
         sorted(face.area for face in shape.faces()),
         roles,
     )
+
+
+def _manufacturing_scene_features(service):
+    [part] = [part for part in _scene_parts(service._regen) if part.role == "manufacturing"]
+    return [feature["id"] for feature in part.features]
+
+
+@pytest.mark.parametrize("order", [("port", "mounts"), ("mounts", "port")])
+def test_viewer_history_follows_semantic_modifier_order(tmp_path, order):
+    service = _ordered_modifiers(tmp_path, order)
+
+    assert _manufacturing_scene_features(service) == ["base", *order]
+
+
+def _expected_enclosure_volume(*, removed=0):
+    base = (200 + 60 * 3 + math.pi * 3**2) * 8.2 - (200 + 60 + math.pi) * 6.2
+    standoffs = 2 * math.pi * (2.5**2 - 0.8**2)
+    port = 3 * 3 * 2
+    return base + standoffs - removed - port
+
+
+@pytest.mark.anyio
+async def test_public_hole_between_semantic_modifiers_has_one_complete_query_viewer_and_step_part(
+    tmp_path,
+):
+    scene_store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "mixed-hole.coalesce.json", scene_store=scene_store)
+    calls = [
+        ("import", import_request(FIXTURES / "features.kicad_pcb")),
+        ("feature", base_request()),
+        ("feature", standoffs_request()),
+        (
+            "feature",
+            hole(
+                request_id="generic-hole",
+                revision=3,
+                feature_id="generic_hole",
+                target="base",
+                position=(10, 5),
+                diameter=1,
+            ),
+        ),
+        (
+            "feature",
+            port_request(
+                revision=4,
+                footprint="center-id",
+                wall="back",
+                envelope=explicit_envelope(),
+            ),
+        ),
+    ]
+    for tool, payload in calls:
+        assert (await call_server_tool(service, tool, payload))["ok"] is True
+
+    measured = await call_server_tool(service, "query", {"select": {"kind": "measurements"}})
+    exported = await call_server_tool(
+        service,
+        "export",
+        {"expectedRevision": 5, "path": str(tmp_path / "mixed-hole.step")},
+    )
+    while scene_store.current_revision != 5:
+        version, _, _ = scene_store.snapshot()
+        assert scene_store.wait_for_change(version, 10)
+    scene = scene_store.scene(5)
+    assert scene is not None
+    manufacturing = [part for part in scene["parts"] if part["role"] == "manufacturing"]
+
+    assert measured["solidCount"] == 1
+    assert measured["volume"]["value"] == pytest.approx(
+        _expected_enclosure_volume(removed=math.pi * 0.5**2 * 2)
+    )
+    assert [part["terminalFeatureId"] for part in manufacturing] == ["port"]
+    assert [feature["id"] for feature in manufacturing[0]["features"]] == [
+        "base",
+        "mounts",
+        "generic_hole",
+        "port",
+    ]
+    assert exported["ok"] is True
+    assert exported["validation"]["reimport"]["partCount"] == 1
+    assert exported["validation"]["reimport"]["solidCount"] == 1
+
+
+def test_cut_between_semantic_modifiers_has_one_complete_base_body(tmp_path):
+    service = _service(tmp_path, lid=False)
+    assert service.sketch(
+        rectangle_sketch(
+            request_id="cut-sketch",
+            revision=3,
+            sketch_id="cut_sketch",
+            entity_id="cut_profile",
+            width=2,
+            height=2,
+            center=(10, 5),
+        )
+    )["ok"]
+    assert service.feature(
+        cut(
+            request_id="generic-cut",
+            revision=4,
+            feature_id="generic_cut",
+            target="base",
+            tool="cut_sketch",
+        )
+    )["ok"]
+    assert service.feature(
+        port_request(
+            revision=5,
+            footprint="center-id",
+            wall="back",
+            envelope=explicit_envelope(),
+        )
+    )["ok"]
+
+    [part] = service.query({"select": {"kind": "measurements"}})["parts"]
+    assert part["terminalFeatureId"] == "port"
+    assert part["volume"]["value"] == pytest.approx(_expected_enclosure_volume(removed=8))
+
+
+def test_fillet_between_semantic_modifiers_has_one_complete_base_body(tmp_path):
+    service = _service(tmp_path, lid=False)
+    graph = loads(dumps(service._document.graph))
+    graph.add(
+        Fillet(
+            "generic_fillet",
+            target="base",
+            edges=[
+                Reference(
+                    "base",
+                    "between(outer_wall,rim)",
+                    Cardinality.ONE_OR_MORE,
+                )
+            ],
+            radius=0.25,
+        )
+    )
+    graph.add(
+        PortCutout(
+            "port",
+            base="base",
+            footprint="center-id",
+            wall="back",
+            clearance=0.5,
+            envelope_source="explicit",
+            envelope_width=2,
+            envelope_height=2,
+            bottom_offset=1,
+        )
+    )
+
+    result = regenerate(graph)
+    [part] = terminal_parts(result)
+    [scene_part] = [part for part in _scene_parts(result) if part.role == "manufacturing"]
+    assert part.terminal_feature == "port"
+    assert [feature["id"] for feature in scene_part.features] == [
+        "base",
+        "mounts",
+        "generic_fillet",
+        "port",
+    ]
+    assert part.shape.volume < _expected_enclosure_volume()
 
 
 def test_legacy_port_target_document_loads_into_base_lineage(tmp_path):
