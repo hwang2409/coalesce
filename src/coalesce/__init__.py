@@ -13,7 +13,8 @@ from .graph import (
     Rectangle,
     Sketch,
 )
-from .references import Cardinality, Reference, Resolution, Status
+from .references import Cardinality, MaxAlong, Normal, Position, Reference, Resolution, Status
+from .regen import RegenResult, regenerate
 
 __all__ = [
     "Cardinality",
@@ -24,11 +25,16 @@ __all__ = [
     "Graph",
     "GraphError",
     "Hole",
+    "MaxAlong",
+    "Normal",
     "Parameter",
     "Plane",
+    "Position",
     "Rectangle",
     "Reference",
+    "RegenResult",
     "Resolution",
     "Sketch",
     "Status",
+    "regenerate",
 ]

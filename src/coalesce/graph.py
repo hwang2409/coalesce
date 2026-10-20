@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
-from .references import Candidate, Cardinality, Reference, Resolution, Status
+from .references import Reference
 
 
 @dataclass
@@ -35,6 +35,8 @@ class Sketch:
     id: str
     plane: Plane = field(default_factory=Plane)
     entities: list[Rectangle | Circle] = field(default_factory=list)
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass
@@ -77,10 +79,8 @@ class GraphError(ValueError):
 
 
 class Graph:
-    def __init__(self):
+    def __init__(self) -> None:
         self.nodes: dict[str, Any] = {}
-        self.provenance: dict[str, list[Candidate]] = {}
-        self.shapes: dict[str, Any] = {}
 
     def add(self, node: Any) -> Any:
         if node.id in self.nodes:
@@ -88,55 +88,67 @@ class Graph:
         self.nodes[node.id] = node
         return node
 
-    def remove(self, feature: str) -> None:
+    def delete(self, feature: str) -> None:
         if feature not in self.nodes:
             raise GraphError("unknown_id", f"unknown id: {feature}")
-        self.nodes.pop(feature)
-        self.shapes.pop(feature, None)
-        self.provenance.pop(feature, None)
+        del self.nodes[feature]
+
+    @staticmethod
+    def _dependencies(node: Any) -> list[str]:
+        dependencies = list(getattr(node, "depends_on", []))
+        dependencies.extend(
+            getattr(node, field)
+            for field in ("sketch", "target", "tool")
+            if getattr(node, field, None)
+        )
+        return dependencies
 
     def validate(self) -> None:
         for node in self.nodes.values():
-            refs = list(getattr(node, "depends_on", []))
-            refs += [getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)]
-            for ref in refs:
-                if ref not in self.nodes:
-                    raise GraphError("unknown_id", f"unknown id: {ref}", feature=node.id)
-        visiting: set[str] = set(); done: set[str] = set()
+            for dependency in self._dependencies(node):
+                if dependency not in self.nodes:
+                    raise GraphError(
+                        "unknown_id",
+                        f"unknown id: {dependency}",
+                        feature=node.id,
+                    )
+
+        visiting: set[str] = set()
+        done: set[str] = set()
+
         def visit(key: str) -> None:
             if key in visiting:
                 raise GraphError("cycle", "feature graph contains a cycle", feature=key)
-            if key in done: return
+            if key in done:
+                return
             visiting.add(key)
-            node = self.nodes[key]
-            for dep in getattr(node, "depends_on", []) + [getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)]:
-                visit(dep)
-            visiting.remove(key); done.add(key)
-        for key in self.nodes: visit(key)
+            for dependency in self._dependencies(self.nodes[key]):
+                visit(dependency)
+            visiting.remove(key)
+            done.add(key)
+
+        for key in self.nodes:
+            visit(key)
 
     def ordered(self) -> list[Any]:
-        self.validate(); result: list[Any] = []; seen: set[str] = set()
-        def add(key: str) -> None:
-            if key in seen: return
-            node = self.nodes[key]
-            for dep in getattr(node, "depends_on", []) + [getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)]: add(dep)
-            seen.add(key); result.append(node)
-        for key in self.nodes: add(key)
-        return result
+        self.validate()
+        result: list[Any] = []
+        seen: set[str] = set()
 
-    def resolve(self, ref: Reference) -> Resolution:
-        if ref.feature not in self.provenance:
-            return Resolution(Status.EMPTY, error={"ref": ref.to_dict(), "feature": ref.feature, "suggestion": "restore the referenced feature"})
-        candidates = [c for c in self.provenance[ref.feature] if c.key.role == ref.role and (not ref.source or c.key.source == ref.source)]
-        if not candidates:
-            return Resolution(Status.EMPTY, error={"ref": ref.to_dict(), "feature": ref.feature, "suggestion": "check the feature id and role"})
-        if ref.cardinality == Cardinality.ONE and len(candidates) != 1:
-            status = Status.SPLIT if len(candidates) > 1 else Status.EMPTY
-            return Resolution(status, candidates, {"ref": ref.to_dict(), "candidates": [asdict(x) for x in candidates]})
-        if ref.cardinality == Cardinality.EXACTLY and len(candidates) != ref.count:
-            return Resolution(Status.AMBIGUOUS, candidates, {"ref": ref.to_dict(), "candidates": [asdict(x) for x in candidates]})
-        return Resolution(Status.OK, candidates)
+        def add(key: str) -> None:
+            if key in seen:
+                return
+            node = self.nodes[key]
+            for dependency in self._dependencies(node):
+                add(dependency)
+            seen.add(key)
+            result.append(node)
+
+        for key in self.nodes:
+            add(key)
+        return result
 
     def to_json(self) -> str:
         from .serialization import dumps
+
         return dumps(self)
