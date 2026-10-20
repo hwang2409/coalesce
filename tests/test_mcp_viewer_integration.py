@@ -71,6 +71,39 @@ def _next_viewer_event(parsed, headers):
 
 
 @pytest.mark.anyio
+async def test_persisted_hole_publishes_viewer_scene_after_restart(tmp_path):
+    path = tmp_path / "hole.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=3))
+    graph.add(Hole("hole", target="plate", diameter=3, position=(0, 0)))
+    DocumentStore(path).save(Document(graph, revision=3))
+    errlog = (tmp_path / "hole.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        await session.list_tools()
+        errlog.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 3)
+
+    assert scene["revision"] == 3
+    assert scene["parts"][0]["terminalFeatureId"] == "hole"
+
+
+@pytest.mark.anyio
 async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_path):
     path = tmp_path / "fork.coalesce.json"
     graph = Graph()
@@ -201,6 +234,25 @@ async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_
         scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8)
         assert len(scene["parts"]) == 1
         assert scene["parts"][0]["terminalFeatureId"] == "portcut"
+
+    restart_log = (tmp_path / "restart.stderr").open("w+")
+    async with stdio_client(parameters, errlog=restart_log) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        await session.list_tools()
+        restart_log.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in restart_log.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+        restarted_scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 8)
+
+    assert restarted_scene["revision"] == 8
+    assert restarted_scene["parts"][0]["terminalFeatureId"] == "portcut"
+    assert restarted_scene["parts"][0]["mesh"]["id"] == scene["parts"][0]["mesh"]["id"]
 
 
 @pytest.mark.anyio

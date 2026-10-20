@@ -397,6 +397,7 @@ FEATURE_SCHEMA = {
     },
     "required": ["action", *FEATURE_PROPERTIES],
     "additionalProperties": False,
+    "oneOf": list(FEATURE_ACTION_SCHEMAS.values()),
 }
 IMPORT_PROPERTIES = {
     **MUTATION_PROPERTIES,

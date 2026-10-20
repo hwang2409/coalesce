@@ -22,7 +22,7 @@ _LOG = logging.getLogger(__name__)
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot mechanical facts from one explicit absolute local kicad_pcb path into a persisted BoardImport asset. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Import records metadata and stable ids only; it does not create board geometry. Use refresh to re-read the persisted path explicitly.",
     "sketch": "Create or update rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list.",
-    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Only extrudes can be updated.",
+    "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Extrude updates change distance; cut and hole updates change target.featureId.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
 }
@@ -180,6 +180,24 @@ def _branch_error(error: ValidationError) -> ValidationError:
     return best_match([union])
 
 
+def _prefer_unknown_field(error: ValidationError) -> ValidationError:
+    if error.validator != "required" or not isinstance(error.schema, dict):
+        return error
+    properties = error.schema.get("properties", {})
+    unknown = sorted(set(error.instance) - set(properties)) if isinstance(error.instance, dict) else []
+    if unknown:
+        return ValidationError(
+            "unexpected fields",
+            validator="additionalProperties",
+            validator_value=False,
+            instance=error.instance,
+            schema=error.schema,
+            path=error.absolute_path,
+            schema_path=error.absolute_schema_path,
+        )
+    return error
+
+
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "feature":
         return FEATURE_ACTION_SCHEMAS.get(
@@ -245,6 +263,8 @@ def create_server(service: DocumentService) -> Server:
             )
         except ValidationError as raised:
             error = _branch_error(raised)
+            if name == "feature" and arguments.get("action") == "update":
+                error = _prefer_unknown_field(error)
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
                 details["allowedKinds"] = ["extrude", "cut", "hole"]

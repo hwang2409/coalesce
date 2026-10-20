@@ -47,6 +47,20 @@ def _bytes(kind: str, values: list) -> bytes:
 
 def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, tuple]:
     """Binary mesh: float32 xyz vertices, uint32 triangle indices, float32 edge segment pairs."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepTools import BRepTools
+
+    if part.shape.wrapped is None:
+        raise ValueError(f"part {part.name!r} is empty")
+    BRepTools.Clean_s(part.shape.wrapped)
+    for face in part.shape.faces():
+        BRepMesh_IncrementalMesh(
+            face.wrapped,
+            tolerance,
+            False,
+            ViewerSceneStore.ANGULAR_TOLERANCE,
+            False,
+        )
     vertices, triangles = part.shape.tessellate(tolerance, ViewerSceneStore.ANGULAR_TOLERANCE)
     if not triangles:
         raise ValueError(f"part {part.name!r} has no faces to show")
