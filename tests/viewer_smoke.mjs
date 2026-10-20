@@ -77,11 +77,15 @@ let eventRequests = 0;
 page.on('request', (request) => new URL(request.url()).pathname === '/events' && (eventRequests += 1));
 const waitRevision = (n) => page.waitForFunction((n) => window.coalesceViewer?.revision === n, n, { timeout: 15000 });
 // the canvas has its final size and position and a new frame for them is drawn
-const settledAfter = (frames) => page.waitForFunction(
-  (frames) => window.coalesceViewer.drawn.frames > frames && window.coalesceViewer.drawn.settled,
-  frames,
-  { timeout: 15000 },
-);
+const settledAfter = async (frames) => {
+  await page.waitForFunction(
+    (frames) => window.coalesceViewer.drawn.frames > frames && window.coalesceViewer.drawn.settled,
+    frames,
+    { timeout: 15000 },
+  );
+  // The render callback updates the counter before Chromium presents that frame.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+};
 const settled = () => page.waitForFunction(() => window.coalesceViewer.drawn.settled, null, { timeout: 15000 });
 const currentFrames = () => page.evaluate(() => window.coalesceViewer.drawn.frames);
 
