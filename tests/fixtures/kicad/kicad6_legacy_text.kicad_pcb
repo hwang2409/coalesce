@@ -1,8 +1,0 @@
-(kicad_pcb (version 20211014) (generator pcbnew)
-  (general (thickness 1.6))
-  (footprint "Legacy:Part" (layer "F.Cu")
-    (tstamp legacy-id)
-    (at 4 5 30)
-    (fp_text reference "Café \"quoted\"" (at 0 0) (layer "F.SilkS"))
-    (fp_text value "Legacy\\Path" (at 0 1) (layer "F.Fab")))
-  (gr_rect (start 0 0) (end 10 10) (layer "Edge.Cuts")))
