@@ -693,12 +693,18 @@ QUERY_SCHEMA = {
                         "revision",
                         "timeline",
                         "measurements",
+                        "enclosure",
                         "feature",
                         "reference",
                         "server",
                     ]
                 },
                 "id": {"type": "string", "minLength": 1},
+                "base": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "pcb_base id required for enclosure inspection.",
+                },
                 "role": {"enum": ["manufacturing", "reference"]},
                 "reference": REFERENCE,
             },

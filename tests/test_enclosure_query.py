@@ -56,21 +56,29 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
     calls = [
         ("import", import_request(FIXTURES / "features.kicad_pcb")),
         ("feature", base_request(clearance={"value": 0.5, "unit": "mm"})),
-        ("feature", {
-            "action": "create",
-            "expectedRevision": 2,
-            "requestId": "standoffs",
-            "featureId": "mounts",
-            "kind": "standoffs",
-            "parameters": {
-                "target": {"featureId": "base"},
-                "board": {"featureId": "controller_board"},
-                "selection": {"mode": "explicit", "holeIds": FEATURE_HOLES},
-                "bossDiameter": {"value": 4, "unit": "mm"},
-                "pilotDiameter": {"value": 1.6, "unit": "mm"},
+        (
+            "feature",
+            {
+                "action": "create",
+                "expectedRevision": 2,
+                "requestId": "standoffs",
+                "featureId": "mounts",
+                "kind": "standoffs",
+                "parameters": {
+                    "target": {"featureId": "base"},
+                    "board": {"featureId": "controller_board"},
+                    "selection": {"mode": "explicit", "holeIds": FEATURE_HOLES},
+                    "bossDiameter": {"value": 4, "unit": "mm"},
+                    "pilotDiameter": {"value": 1.6, "unit": "mm"},
+                },
             },
-        }),
-        ("feature", lid_request()),
+        ),
+        (
+            "feature",
+            lid_request(
+                lip={"depth": {"value": 0.2, "unit": "mm"}, "width": {"value": 1, "unit": "mm"}}
+            ),
+        ),
         ("feature", port_request()),
         ("query", {"select": {"kind": "enclosure", "base": "base"}}),
     ]
@@ -112,20 +120,24 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
     assert _value(result["base"]["floorThickness"]) == pytest.approx(floor, abs=1e-6)
 
     inner = Compound(children=_faces(service, "base", "inner_wall")).bounding_box()
-    assert (_value(result["cavity"]["innerSize"]["x"]), _value(result["cavity"]["innerSize"]["y"])) == pytest.approx(
-        (inner.max.X - inner.min.X, inner.max.Y - inner.min.Y), abs=1e-6
-    )
+    assert (
+        _value(result["cavity"]["innerSize"]["x"]),
+        _value(result["cavity"]["innerSize"]["y"]),
+    ) == pytest.approx((inner.max.X - inner.min.X, inner.max.Y - inner.min.Y), abs=1e-6)
     assert {
         "left": _value(result["cavity"]["boardClearance"]["left"]),
         "right": _value(result["cavity"]["boardClearance"]["right"]),
         "front": _value(result["cavity"]["boardClearance"]["front"]),
         "back": _value(result["cavity"]["boardClearance"]["back"]),
-    } == pytest.approx({
-        "left": board_box["min"][0] - inner.min.X,
-        "right": inner.max.X - board_box["max"][0],
-        "front": board_box["min"][1] - inner.min.Y,
-        "back": inner.max.Y - board_box["max"][1],
-    }, abs=1e-6)
+    } == pytest.approx(
+        {
+            "left": board_box["min"][0] - inner.min.X,
+            "right": inner.max.X - board_box["max"][0],
+            "front": board_box["min"][1] - inner.min.Y,
+            "back": inner.max.Y - board_box["max"][1],
+        },
+        abs=1e-6,
+    )
 
     assert result["standoffs"]["count"] == 2
     assert result["standoffs"]["mountingHoleCount"] == 3
@@ -145,7 +157,12 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
         ]
         side_box = side.bounding_box()
         assert (item["axis"]["x"], item["axis"]["y"], item["axis"]["z"]) == pytest.approx(
-            ((side_box.min.X + side_box.max.X) / 2, (side_box.min.Y + side_box.max.Y) / 2, side_box.min.Z), abs=1e-6
+            (
+                (side_box.min.X + side_box.max.X) / 2,
+                (side_box.min.Y + side_box.max.Y) / 2,
+                side_box.min.Z,
+            ),
+            abs=1e-6,
         )
         assert item["axis"]["unit"] == "mm"
         assert _value(item["bossDiameter"]) == pytest.approx(side.radius * 2, abs=1e-6)
@@ -157,30 +174,52 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
     reported_lid = result["lids"][0]
     assert reported_lid["featureId"] == "lid"
     _assert_bbox(reported_lid["outerBBox"], lid_box)
-    assert _value(reported_lid["seatingZ"]) == pytest.approx(lid_box["min"][2] + 3, abs=1e-6)
+    seating_z = min(face.bounding_box().min.Z for face in _faces(service, "lid", "underside"))
+    assert _value(reported_lid["seatingZ"]) == pytest.approx(seating_z, abs=1e-6)
     gaps = [
-        lip.distance_to(inner_wall)
+        min(
+            lip.distance_to(inner_wall)
+            for inner_wall in _faces(service, "base", "inner_wall")
+            if lip.distance_to(inner_wall) > 1e-7
+        )
         for lip in _faces(service, "lid", "lip_outer")
-        for inner_wall in _faces(service, "base", "inner_wall")
-        if lip.distance_to(inner_wall) > 1e-7
     ]
     assert _value(reported_lid["fitGap"]["min"]) == pytest.approx(min(gaps), abs=1e-6)
     assert _value(reported_lid["fitGap"]["max"]) == pytest.approx(max(gaps), abs=1e-6)
     lip_box = Compound(children=_faces(service, "lid", "lip_outer")).bounding_box()
-    assert _value(reported_lid["lipDepth"]) == pytest.approx(lip_box.max.Z - lip_box.min.Z, abs=1e-6)
+    assert _value(reported_lid["lipDepth"]) == pytest.approx(
+        lip_box.max.Z - lip_box.min.Z, abs=1e-6
+    )
 
     assert len(result["ports"]) == 1
     port = result["ports"][0]
     assert (port["featureId"], port["footprintId"], port["reference"], port["wall"]) == (
-        "port", "front-id", "J1", "left"
+        "port",
+        "front-id",
+        "J1",
+        "left",
     )
     opening_box = _bbox(service._regen.opening_tools["port"])
     assert port["opening"]["axes"] == ["y", "z"]
-    assert tuple(_value(port["opening"][key]) for key in ("uMin", "uMax", "vMin", "vMax")) == pytest.approx(
-        (opening_box["min"][1], opening_box["max"][1], opening_box["min"][2], opening_box["max"][2]), abs=1e-6
+    assert tuple(
+        _value(port["opening"][key]) for key in ("uMin", "uMax", "vMin", "vMax")
+    ) == pytest.approx(
+        (
+            opening_box["min"][1],
+            opening_box["max"][1],
+            opening_box["min"][2],
+            opening_box["max"][2],
+        ),
+        abs=1e-6,
     )
-    footprint = next(item for item in service._document.graph.nodes["controller_board"].mechanics["footprints"] if item["id"] == "front-id")
-    courtyard, _ = board_loop_wire({"id": "front-id", "closed": True, "segments": footprint["courtyard"]})
+    footprint = next(
+        item
+        for item in service._document.graph.nodes["controller_board"].mechanics["footprints"]
+        if item["id"] == "front-id"
+    )
+    courtyard, _ = board_loop_wire(
+        {"id": "front-id", "closed": True, "segments": footprint["courtyard"]}
+    )
     courtyard_box = courtyard.bounding_box()
     measured_clearances = (
         courtyard_box.min.Y - opening_box["min"][1],
@@ -190,7 +229,9 @@ async def test_enclosure_query_measures_complete_fixture_through_public_mcp(tmp_
     )
     assert _value(port["clearance"]["min"]) == pytest.approx(min(measured_clearances), abs=1e-6)
     assert _value(port["clearance"]["max"]) == pytest.approx(max(measured_clearances), abs=1e-6)
-    assert port["blocked"] is (_common_volume(service._regen.opening_tools["port"], Compound(children=[base, lid])) > 1e-7)
+    assert port["blocked"] is (
+        _common_volume(service._regen.opening_tools["port"], Compound(children=[base, lid])) > 1e-7
+    )
 
     assembled = Compound(children=[base, lid])
     assembled_box = _bbox(assembled)
