@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
+from .export import ExportFailure, export_parts
 from .graph import (
     BoardImport,
     Circle,
@@ -1245,6 +1246,158 @@ class DocumentService:
                 **self._node_metadata(graph, result, changed_id),
             },
         )
+
+    def export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
+        request_id = payload.get("requestId")
+        target = Path(payload.get("path", ""))
+        published = False
+        with self._lock:
+            try:
+                body_hash = hashlib.sha256(
+                    json.dumps(
+                        {"type": "Export", **_canonical(payload)},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode()
+                ).hexdigest()
+                receipt = next(
+                    (
+                        item
+                        for item in self._document.receipts
+                        if item["requestId"] == request_id
+                    ),
+                    None,
+                )
+                if receipt is not None:
+                    if receipt["requestHash"] == body_hash:
+                        return receipt["response"]
+                    raise RequestError(
+                        "REQUEST_ID_REUSED",
+                        "requestId was already used for a different request body",
+                    )
+                request_hash = next(
+                    (
+                        item["requestHash"]
+                        for item in self._document.request_hashes
+                        if item["requestId"] == request_id
+                    ),
+                    None,
+                )
+                if request_hash is not None:
+                    message = (
+                        "requestId was already used for a different request body"
+                        if request_hash != body_hash
+                        else "requestId replay is outside the full receipt window"
+                    )
+                    raise RequestError("REQUEST_ID_REUSED", message)
+                expected_revision = payload["expectedRevision"]
+                if expected_revision != self._document.revision:
+                    raise RequestError(
+                        "STALE_REVISION",
+                        f"expected revision {expected_revision}; current revision is "
+                        f"{self._document.revision}",
+                        expected=expected_revision,
+                        actual=self._document.revision,
+                        hint="query the current revision and review the changed model before exporting",
+                    )
+
+                available = [
+                    part
+                    for part in terminal_parts(self._regen)
+                    if not isinstance(
+                        self._document.graph.nodes.get(part.source_body.feature), BoardImport
+                    )
+                ]
+                by_id = {part.part_id: part for part in available}
+                requested = payload.get("partIds")
+                selected = available if requested is None else [by_id.get(part_id) for part_id in requested]
+                unknown = (
+                    [
+                        part_id
+                        for part_id, part in zip(requested, selected, strict=True)
+                        if part is None
+                    ]
+                    if requested is not None
+                    else []
+                )
+                if unknown:
+                    raise RequestError(
+                        "UNKNOWN_ID",
+                        "one or more partIds are not exportable terminal manufacturing parts",
+                        unknownPartIds=unknown,
+                        hint="query measurements and use a listed manufacturing partId",
+                    )
+                if not selected:
+                    raise RequestError(
+                        "UNKNOWN_ID",
+                        "the document has no terminal manufacturing parts to export",
+                        hint="create manufacturing geometry before exporting",
+                    )
+
+                fields = export_parts(target, selected)
+                published = True
+                response = {
+                    "ok": True,
+                    "revision": self._document.revision,
+                    "requestId": request_id,
+                    "units": "mm",
+                    **fields,
+                }
+                receipt = {
+                    "requestId": request_id,
+                    "requestHash": body_hash,
+                    "revision": self._document.revision,
+                    "response": response,
+                }
+                document = Document(
+                    graph=self._document.graph,
+                    revision=self._document.revision,
+                    receipts=[*self._document.receipts, receipt][-MAX_RECEIPTS:],
+                    request_hashes=[
+                        *self._document.request_hashes,
+                        {"requestId": request_id, "requestHash": body_hash},
+                    ][-MAX_REQUEST_HASHES:],
+                )
+                durable = self.store.save(document)
+                self._document = document
+                if not durable:
+                    _LOG.warning(
+                        "export receipt committed but directory fsync failed; durability is unconfirmed"
+                    )
+                return response
+            except ExportFailure as error:
+                return _safe_error(
+                    self._document.revision,
+                    request_id,
+                    error.code,
+                    error.message,
+                    operation="export",
+                    **error.details,
+                )
+            except RequestError as error:
+                return _safe_error(
+                    self._document.revision,
+                    request_id,
+                    error.code,
+                    str(error),
+                    operation="export",
+                    retryable=error.code == "STALE_REVISION",
+                    **error.details,
+                )
+            except Exception:  # noqa: BLE001 - filesystem failures are translated at this seam.
+                _LOG.exception("unexpected failure during export")
+                if published:
+                    target.unlink(missing_ok=True)
+                return _safe_error(
+                    self._document.revision,
+                    request_id,
+                    "EXPORT_WRITE_FAILED",
+                    "STEP export could not be completed",
+                    operation="export",
+                    hint="check the target directory and retry with a new path",
+                )
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")

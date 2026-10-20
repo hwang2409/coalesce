@@ -25,6 +25,7 @@ _TOOL_DESCRIPTIONS = {
     "feature": "Create a normal new-body or target-join extrude, sketch cut, or global +Z hole. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Only extrudes can be updated.",
     "query": "Read one feature, the graph, revision, exact mm metrics, or resolve a typed reference.",
     "check": "Run exact validity checks against the current regenerated B-rep.",
+    "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. Before publishing, a fresh Python process reimports the temporary STEP and validates part and solid counts, bounding box, per-part and aggregate volume and area, and cylinder radii and axes.",
 }
 
 TOOLS_GUIDE = """# coalesce tools
@@ -53,8 +54,14 @@ Mutations need the current `expectedRevision` and a unique `requestId`; exact re
 idempotent. Supplied update entities replace the full list; omitted entities stay unchanged.
 All lengths are explicit mm quantities. Rectangle angles accept `deg` or `rad`.
 Use `query` with `measurements` for bbox placement, area, volume, and terminal bodies, or
-`select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying
-on the model. Domain failures have `ok: false` and a stable code.
+`select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying on the model. Use `export` with the current
+`expectedRevision`, a unique `requestId`, and an explicit absolute new path. Export defaults
+to all terminal manufacturing parts; select stable `partIds` from measurements when needed.
+BoardImport reference geometry is never included. STEP export never overwrites. It writes a
+temporary file in the destination directory, then a fresh Python process reimports it and
+compares part and solid counts, bounding boxes, per-part and aggregate volume and area, and
+cylinder radii and axes before atomic publication. Geometry and STEP product-label
+preservation are reported separately. Domain failures have `ok: false` and a stable code.
 
 ## Claude Code
 
@@ -213,7 +220,7 @@ def create_server(service: DocumentService) -> Server:
                     readOnlyHint=name in {"query", "check"},
                     destructiveHint=name in {"import", "sketch", "feature"},
                     idempotentHint=True,
-                    openWorldHint=False,
+                    openWorldHint=name in {"import", "export"},
                 ),
             )
             for name, schema in TOOL_SCHEMAS.items()
