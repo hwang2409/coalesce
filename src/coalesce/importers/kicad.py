@@ -237,6 +237,12 @@ def parse_kicad_pcb(path: str | Path) -> Board:
             p = (pos[0] + lx * math.cos(angle) - ly * math.sin(angle), pos[1] + lx * math.sin(angle) + ly * math.cos(angle))
             shape = str(pad[2]) if len(pad) > 2 else ""
             holes.append(Hole(p, d, "np_thru_hole" not in pad, fid, shape))
-    outer = [x for x in outline if x.closed]; inner: list[OutlineLoop] = []
+    closed = [x for x in outline if x.closed]
+    def contains(a: OutlineLoop, b: OutlineLoop) -> bool:
+        aa, bb = a.bbox, b.bbox
+        return (aa["min_x"] < bb["min_x"] and aa["max_x"] > bb["max_x"] and
+                aa["min_y"] < bb["min_y"] and aa["max_y"] > bb["max_y"])
+    inner = [x for x in closed if any(contains(other, x) for other in closed if other is not x)]
+    outer = [x for x in closed if x not in inner]
     errors = [Error("open_outline", "Edge.Cuts loop is open", [s.id for s in x.segments if s.id], [x.segments[0].start, x.segments[-1].end]) for x in outline if not x.closed]
     return Board(thickness, source, outer, inner, holes, footprints, warnings, errors)
