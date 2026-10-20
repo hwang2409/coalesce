@@ -1,6 +1,36 @@
 """A typed, history-aware feature graph for build123d."""
 
 from importlib import import_module
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import (
+        Circle,
+        Cut,
+        Extrude,
+        Fillet,
+        Graph,
+        GraphError,
+        Hole,
+        Parameter,
+        Plane,
+        Rectangle,
+        Sketch,
+    )
+    from .references import (
+        BodySource,
+        Cardinality,
+        HoleSurfaceSource,
+        MaxAlong,
+        Normal,
+        Position,
+        Reference,
+        Resolution,
+        SketchSegmentSource,
+        Status,
+        ToolCapSource,
+    )
+    from .regen import RegenResult, regenerate
 
 __all__ = [
     "BodySource", "Cardinality", "Circle", "Cut", "Extrude", "Fillet", "Graph",

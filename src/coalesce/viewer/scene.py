@@ -10,8 +10,10 @@ import threading
 from array import array
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from build123d import Shape
+if TYPE_CHECKING:
+    from build123d import Shape
 
 # restrained engineering-review colors, assigned in part order when no color is given.
 PALETTE = ("#8c9bab", "#a9a08e", "#7e9a8a", "#a08c9b", "#9aa7b8", "#b3a37c")
