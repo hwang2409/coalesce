@@ -106,7 +106,14 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
 
     feature_schema = tools["feature"].inputSchema
-    assert feature_schema["properties"]["kind"]["enum"] == ["extrude", "cut", "hole"]
+    assert feature_schema["properties"]["kind"]["enum"] == [
+        "extrude",
+        "cut",
+        "hole",
+        "pcb_base",
+        "standoffs",
+        "pcb_lid",
+    ]
     assert set(feature_schema["properties"]["set"]["oneOf"][0]["properties"]) == {"distance"}
     assert set(feature_schema["properties"]["set"]["oneOf"][1]["properties"]) == {"target"}
     assert "extrude" in feature_schema["properties"]["set"]["description"]

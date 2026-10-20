@@ -79,6 +79,36 @@ class Extrude(Feature):
 
 
 @dataclass
+class PcbBase(Feature):
+    board: str = ""
+    wall_thickness: float = 2
+    floor_thickness: float = 2
+    clearance: float = 1
+    wall_height_above_board: float = 4
+    board_seat_height: float = 1
+
+
+@dataclass
+class Standoffs(Feature):
+    target: str = ""
+    board: str = ""
+    selection: str = "explicit"
+    hole_ids: tuple[str, ...] = ()
+    minimum_diameter: float | None = None
+    boss_diameter: float = 5
+    pilot_diameter: float = 2
+
+
+@dataclass
+class PcbLid(Feature):
+    base: str = ""
+    thickness: float = 2
+    fit_gap: float = 0.25
+    lip_depth: float | None = None
+    lip_width: float | None = None
+
+
+@dataclass
 class Cut(Feature):
     target: str = ""
     tool: str = ""
@@ -174,7 +204,7 @@ class Graph:
         dependencies = list(getattr(node, "depends_on", []))
         dependencies.extend(
             getattr(node, field)
-            for field in ("sketch", "target", "tool")
+            for field in ("sketch", "target", "tool", "board", "base")
             if getattr(node, field, None)
         )
         return dependencies
@@ -199,7 +229,7 @@ class Graph:
 
     @staticmethod
     def _body_target(node: Any) -> str | None:
-        if isinstance(node, (Cut, Hole, Fillet)):
+        if isinstance(node, (Cut, Hole, Fillet, Standoffs)):
             return node.target
         if isinstance(node, Extrude) and node.operation == "join":
             return node.target

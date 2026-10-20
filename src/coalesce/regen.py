@@ -8,9 +8,22 @@ from build123d import Edge, Shape
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
+from .enclosure import build_pcb_base, build_pcb_lid, build_standoffs
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
-from .graph import BoardImport, Cut, Extrude, Fillet, Graph, GraphError, Hole, Sketch
+from .graph import (
+    BoardImport,
+    Cut,
+    Extrude,
+    Fillet,
+    Graph,
+    GraphError,
+    Hole,
+    PcbBase,
+    PcbLid,
+    Sketch,
+    Standoffs,
+)
 from .hole import make_hole_tool
 from .pcb import build_pcb
 from .references import (
@@ -166,6 +179,83 @@ def _join_extrude(
     )
 
 
+def _regenerate_pcb_lid(
+    node: PcbLid,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+) -> None:
+    base_node = graph.nodes[node.base]
+    if not isinstance(base_node, PcbBase):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} base must reference a pcb_base",
+            feature=node.id,
+            parameter="base",
+        )
+    board_node = graph.nodes[base_node.board]
+    if not isinstance(board_node, BoardImport):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"pcb_lid {node.id} base must reference a valid board import",
+            feature=node.id,
+            parameter="base",
+        )
+    lid = build_pcb_lid(node, base_node, board_node)
+    shapes[node.id] = lid.shape
+    states[node.id] = lid.candidates
+    provenance[node.id] = lid.candidates
+
+
+def _regenerate_enclosure(
+    node: PcbBase | PcbLid | Standoffs,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    joined_material: dict[str, bool],
+) -> None:
+    if isinstance(node, PcbLid):
+        _regenerate_pcb_lid(node, graph, shapes, states, provenance)
+        return
+
+    board_node = graph.nodes[node.board]
+    if isinstance(node, PcbBase):
+        if not isinstance(board_node, BoardImport):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"pcb_base {node.id} board must reference a board import",
+                feature=node.id,
+                parameter="board",
+            )
+        base = build_pcb_base(node, board_node)
+        shapes[node.id] = base.shape
+        states[node.id] = base.candidates
+        provenance[node.id] = base.candidates
+        return
+
+    base_node = graph.nodes[node.target]
+    if not isinstance(board_node, BoardImport) or not isinstance(base_node, PcbBase):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"standoffs {node.id} requires a pcb_base target and board import",
+            feature=node.id,
+            parameter="target",
+        )
+    mounts = build_standoffs(
+        node,
+        base_node,
+        board_node,
+        shapes[node.target],
+        states[node.target],
+    )
+    shapes[node.id] = mounts.shape
+    states[node.id] = mounts.candidates
+    joined_material[node.id] = True
+    _replace_provenance(provenance, states[node.target], mounts.candidates)
+
+
 def regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
@@ -184,6 +274,15 @@ def regenerate(graph: Graph) -> RegenResult:
             shapes[node.id] = board.shape
             states[node.id] = board.candidates
             provenance[node.id] = board.candidates
+        elif isinstance(node, (PcbBase, PcbLid, Standoffs)):
+            _regenerate_enclosure(
+                node,
+                graph,
+                shapes,
+                states,
+                provenance,
+                joined_material,
+            )
         elif isinstance(node, Extrude):
             if node.operation == "new_body":
                 prism = extrude_sketch(node, graph.nodes[node.sketch])

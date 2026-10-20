@@ -49,8 +49,16 @@ def _bytes(kind: str, values: list) -> bytes:
 
 def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, tuple]:
     """Binary mesh: float32 xyz vertices, uint32 triangle indices, float32 edge segment pairs."""
+    from OCP.BRep import BRep_Tool
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.BRepTools import BRepTools
+    from OCP.collections import (
+        IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher as FacesOfEdge,
+    )
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
 
     shape = copy.deepcopy(part.shape)
     if shape.wrapped is None:
@@ -67,11 +75,20 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     vertices, triangles = shape.tessellate(tolerance, ViewerSceneStore.ANGULAR_TOLERANCE)
     if not triangles:
         raise ValueError(f"part {part.name!r} has no faces to show")
+    # edge lines are the face meshes' own boundary polygons, so lines and faces meet exactly.
+    faces_of = FacesOfEdge()
+    TopExp.MapShapesAndAncestors_s(shape.wrapped, TopAbs_EDGE, TopAbs_FACE, faces_of)
     edges = []
-    for edge in shape.edges():
-        points = edge.positions(deflection=tolerance)
+    for index in range(1, faces_of.Extent() + 1):
+        location = TopLoc_Location()
+        mesh = BRep_Tool.Triangulation_s(TopoDS.Face(faces_of.FindFromIndex(index).First()), location)
+        polygon = BRep_Tool.PolygonOnTriangulation_s(TopoDS.Edge(faces_of.FindKey(index)), mesh, location)
+        if polygon is None:  # a degenerated edge, such as a cone apex, has no length to draw
+            continue
+        move = location.Transformation()
+        points = [mesh.Node(polygon.Node(i)).Transformed(move) for i in range(1, polygon.NbNodes() + 1)]
         for a, b in itertools.pairwise(points):
-            edges += [*a, *b]
+            edges += [a.X(), a.Y(), a.Z(), b.X(), b.Y(), b.Z()]
     flat = [c for v in vertices for c in v]
     data = (
         _bytes("f", flat)

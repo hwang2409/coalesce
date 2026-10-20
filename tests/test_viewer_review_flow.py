@@ -13,12 +13,16 @@ import time
 from pathlib import Path
 
 import pytest
-from build123d import Align, Box, Pos
+from build123d import Align, Box, GeomType, Pos
+from OCP.BRepAdaptor import BRepAdaptor_Surface
 from test_mcp_cut_hole_circle import cut, extrude, rectangle_sketch
 from test_mcp_join_holes_frames import join_extrude, patterned_hole
 from test_mcp_kicad_import import FIXTURE as KICAD_FIXTURE
 from test_mcp_kicad_import import import_request
 from test_mcp_vertical import call_server_tool
+from test_pcb_enclosure import FIXTURES as ENCLOSURE_FIXTURES
+from test_pcb_enclosure import base_request, standoffs_request
+from test_pcb_enclosure import import_request as enclosure_import
 from test_viewer_browser import OUTAGE_ERRORS, playwright_module
 
 from coalesce.service import DocumentService
@@ -354,6 +358,77 @@ def test_unrelated_part_in_front_is_not_pushed_behind(module, viewport):
                         flat={"fx": [0.45, 0.55], "fy": [0.45, 0.55]})
             red, _, blue = seen["flat"]["median"]
             assert blue > red, (view, seen["flat"])  # the cover's blue, not the plate's red
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+def circle_centers(shape, radius):
+    """Exact centers of the cylinder faces of one radius, from the kernel shape."""
+    faces = [face for face in shape.faces() if face.geom_type == GeomType.CYLINDER and abs(face.radius - radius) < 1e-6]
+    assert faces, radius
+    axes = [BRepAdaptor_Surface(face.wrapped).Cylinder().Location() for face in faces]
+    return {(round(axis.X(), 6), round(axis.Y(), 6)) for axis in axes}
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_path):
+    """An MCP-built enclosure: round features draw round, and the part rows line up."""
+    narrow = viewport[0] < 720
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        for tool, arguments in [
+            ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", standoffs_request()),
+        ]:
+            result = call(service, tool, arguments)
+            assert result.get("ok"), result
+        shown = step("enclosure", wait={"revision": 3})
+        assert [name.strip() for name in shown["names"]] == ["pcb reference", "base"]
+
+        board, base = store.scene(3)["parts"]
+        # 5 mm bosses, their 1.6 mm pilots, and the board's 1.5 mm drill: each drawn circle has
+        # at least 48 corners at every height, so it reads round at normal zoom
+        rounds = [(base, service._regen.shapes["mounts"], radius) for radius in (2.5, 0.8)]
+        rounds.append((board, service._regen.shapes["controller_board"], 0.75))
+        for part, shape, radius in rounds:
+            for center in circle_centers(shape, radius):
+                [counted] = step(f"circle-{radius}", do=[{"circle": {"mesh": part["mesh"], "center": center, "radius": radius}}])["actions"]
+                assert counted["corners"] and min(counted["corners"]) >= 48, (radius, center, counted)
+
+        for row in shown["rows"]:
+            toggle, part, swatch, name = row["toggle"], row["part"], row["swatch"], row["name"]
+            # the show/hide target fills its row: same top and bottom as the part button, 24 px+
+            assert row["row"]["top"] <= toggle["top"] and toggle["bottom"] <= row["row"]["bottom"], row
+            assert (toggle["top"], toggle["bottom"]) == (part["top"], part["bottom"]), row
+            assert toggle["width"] >= 24 and toggle["height"] >= 24, row
+            # the swatch sits on the name line, centered within a pixel
+            middle = (swatch["top"] + swatch["bottom"]) / 2
+            assert abs(middle - (name["top"] + name["bottom"]) / 2) <= 1, row
+            if narrow:
+                # the details hint sits just after the name, on its line, in the muted ink (not --faint)
+                assert row["hint"]["left"] >= name["right"] and row["hint"]["left"] - name["right"] <= 8, row
+                assert name["top"] <= (row["hint"]["top"] + row["hint"]["bottom"]) / 2 <= name["bottom"], row
+                assert row["hintColor"] == "rgb(93, 104, 115)", row
+            else:
+                assert row["hint"] is None  # wide rows always show their details
+        # narrow rows say whether their details are open; wide rows have nothing to open
+        assert shown["expanded"] == (["false", "false"] if narrow else [None, None])
+        opened = step("row-open", do=[{"tapPart": 0}])
+        assert opened["expanded"] == (["true", "false"] if narrow else [None, None])
+        closed = step("row-closed", do=[{"blur": True}])
+        assert closed["expanded"] == shown["expanded"]
+
+        # keyboard: the swatch control shows a visible focus ring
+        keys = step("swatch-focus", do=[{"tabTo": "pcb reference", "press": "Shift+Tab"}])
+        assert keys["focus"] == {"className": "visibility", "outline": "solid 2px"}, keys["focus"]
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

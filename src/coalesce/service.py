@@ -25,9 +25,12 @@ from .graph import (
     GraphError,
     Hole,
     HolePosition,
+    PcbBase,
+    PcbLid,
     Plane,
     Rectangle,
     Sketch,
+    Standoffs,
 )
 from .parts import terminal_parts
 from .references import (
@@ -47,7 +50,7 @@ if TYPE_CHECKING:
     from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
-_ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole"]
+_ALLOWED_FEATURE_KINDS = ["extrude", "cut", "hole", "pcb_base", "standoffs", "pcb_lid"]
 
 
 class _KernelLoaderInterface(Protocol):
@@ -251,8 +254,71 @@ class HoleParameters:
 
 
 @dataclass(frozen=True)
+class PcbBaseParameters:
+    board: FeatureTarget
+    wallThickness: float
+    floorThickness: float
+    clearance: float
+    wallHeightAboveBoard: float
+    boardSeatHeight: float
+
+
+@dataclass(frozen=True)
+class StandoffSelection:
+    mode: str
+    holeIds: tuple[str, ...]
+    minimumDiameter: float | None
+
+
+@dataclass(frozen=True)
+class StandoffsParameters:
+    target: FeatureTarget
+    board: FeatureTarget
+    selection: StandoffSelection
+    bossDiameter: float
+    pilotDiameter: float
+
+
+@dataclass(frozen=True)
+class LidLip:
+    depth: float
+    width: float
+
+
+@dataclass(frozen=True)
+class PcbLidParameters:
+    base: FeatureTarget
+    thickness: float
+    fitGap: float
+    lip: LidLip | None
+
+
+@dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
+
+
+@dataclass(frozen=True)
+class PcbBaseChanges:
+    wallThickness: float | None = None
+    floorThickness: float | None = None
+    clearance: float | None = None
+    wallHeightAboveBoard: float | None = None
+    boardSeatHeight: float | None = None
+
+
+@dataclass(frozen=True)
+class StandoffsChanges:
+    minimumDiameter: float | None = None
+    bossDiameter: float | None = None
+    pilotDiameter: float | None = None
+
+
+@dataclass(frozen=True)
+class PcbLidChanges:
+    thickness: float | None = None
+    fitGap: float | None = None
+    lip: LidLip | None = None
 
 
 @dataclass(frozen=True)
@@ -319,6 +385,36 @@ class HoleCreate(_FeatureCreate):
 
 
 @dataclass(frozen=True)
+class PcbBaseCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: PcbBaseParameters
+    kind: ClassVar[str] = "pcb_base"
+
+
+@dataclass(frozen=True)
+class StandoffsCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: StandoffsParameters
+    kind: ClassVar[str] = "standoffs"
+
+
+@dataclass(frozen=True)
+class PcbLidCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: PcbLidParameters
+    kind: ClassVar[str] = "pcb_lid"
+
+
+@dataclass(frozen=True)
 class ExtrudeUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -326,6 +422,48 @@ class ExtrudeUpdate(_Operation):
     featureId: str
     set: ExtrudeChanges
     kind: ClassVar[str] = "extrude"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class PcbBaseUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: PcbBaseChanges
+    kind: ClassVar[str] = "pcb_base"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class StandoffsUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: StandoffsChanges
+    kind: ClassVar[str] = "standoffs"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class PcbLidUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: PcbLidChanges
+    kind: ClassVar[str] = "pcb_lid"
 
     @classmethod
     def wire_fields(cls) -> set[str]:
@@ -367,7 +505,13 @@ MutationOperation = (
     | ExtrudeCreate
     | CutCreate
     | HoleCreate
+    | PcbBaseCreate
+    | StandoffsCreate
+    | PcbLidCreate
     | ExtrudeUpdate
+    | PcbBaseUpdate
+    | StandoffsUpdate
+    | PcbLidUpdate
     | CutUpdate
     | HoleUpdate
 )
@@ -573,11 +717,199 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate |
     )
 
 
+def _feature_quantity(value: Any, parameter: str, feature: str) -> float:
+    try:
+        return _positive_quantity(value, parameter)
+    except RequestError as error:
+        error.details.update(feature=feature, parameter=parameter)
+        raise
+
+
+def _parse_positive_changes(
+    payload: dict[str, Any], allowed: set[str], kind: str, feature: str
+) -> dict[str, float]:
+    changes = payload.get("set")
+    if not isinstance(changes, dict) or not changes or not set(changes) <= allowed:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"{kind} update requires one or more numeric parameters",
+        )
+    return {
+        name: _feature_quantity(value, name, feature)
+        for name, value in changes.items()
+    }
+
+
+def _parse_pcb_base(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> PcbBaseCreate | PcbBaseUpdate:
+    names = {
+        "wallThickness",
+        "floorThickness",
+        "clearance",
+        "wallHeightAboveBoard",
+        "boardSeatHeight",
+    }
+    if common["action"] is Action.UPDATE:
+        return PcbBaseUpdate(
+            **common,
+            set=PcbBaseChanges(**_parse_positive_changes(payload, names, "pcb_base", common["featureId"])),
+        )
+    parameters = payload.get("parameters", {})
+    return PcbBaseCreate(
+        **common,
+        parameters=PcbBaseParameters(
+            board=FeatureTarget(parameters.get("board", {}).get("featureId")),
+            **{
+                name: _feature_quantity(
+                    parameters.get(name), name, common["featureId"]
+                )
+                for name in names
+            },
+        ),
+    )
+
+
+def _standoff_selection(parameters: dict[str, Any], feature: str) -> StandoffSelection:
+    selection = parameters.get("selection", {})
+    mode = selection.get("mode")
+    if mode == "explicit":
+        hole_ids = selection.get("holeIds")
+        if not isinstance(hole_ids, list) or not hole_ids or not all(
+            isinstance(item, str) and item for item in hole_ids
+        ):
+            raise RequestError("INVALID_PARAMETER", "explicit selection requires holeIds")
+        if len(hole_ids) != len(set(hole_ids)):
+            raise RequestError("INVALID_PARAMETER", "selection holeIds must be unique")
+        return StandoffSelection(mode, tuple(hole_ids), None)
+    if mode == "all_mounting":
+        minimum = _feature_quantity(
+            selection.get("minimumDiameter"), "minimumDiameter", feature
+        )
+        return StandoffSelection(mode, (), minimum)
+    raise RequestError("INVALID_PARAMETER", "unknown standoff selection mode")
+
+
+def _parse_standoffs(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> StandoffsCreate | StandoffsUpdate:
+    names = {"minimumDiameter", "bossDiameter", "pilotDiameter"}
+    if common["action"] is Action.UPDATE:
+        return StandoffsUpdate(
+            **common,
+            set=StandoffsChanges(
+                **_parse_positive_changes(payload, names, "standoffs", common["featureId"])
+            ),
+        )
+    parameters = payload.get("parameters", {})
+    return StandoffsCreate(
+        **common,
+        parameters=StandoffsParameters(
+            target=FeatureTarget(parameters.get("target", {}).get("featureId")),
+            board=FeatureTarget(parameters.get("board", {}).get("featureId")),
+            selection=_standoff_selection(parameters, common["featureId"]),
+            bossDiameter=_feature_quantity(
+                parameters.get("bossDiameter"), "bossDiameter", common["featureId"]
+            ),
+            pilotDiameter=_feature_quantity(
+                parameters.get("pilotDiameter"), "pilotDiameter", common["featureId"]
+            ),
+        ),
+    )
+
+
+def _parse_lid_lip(value: Any, feature: str) -> LidLip:
+    if not isinstance(value, dict) or set(value) != {"depth", "width"}:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "pcb_lid lip requires depth and width",
+            feature=feature,
+            parameter="lip",
+        )
+    return LidLip(
+        depth=_feature_quantity(value["depth"], "lip.depth", feature),
+        width=_feature_quantity(value["width"], "lip.width", feature),
+    )
+
+
+def _parse_pcb_lid(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> PcbLidCreate | PcbLidUpdate:
+    values = payload.get("set" if common["action"] is Action.UPDATE else "parameters", {})
+    if common["action"] is Action.UPDATE:
+        if not isinstance(values, dict) or not values or not set(values) <= {
+            "thickness",
+            "fitGap",
+            "lip",
+        }:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "pcb_lid update requires thickness, fitGap, or lip",
+            )
+        return PcbLidUpdate(
+            **common,
+            set=PcbLidChanges(
+                thickness=(
+                    _feature_quantity(values["thickness"], "thickness", common["featureId"])
+                    if "thickness" in values
+                    else None
+                ),
+                fitGap=(
+                    _feature_quantity(values["fitGap"], "fitGap", common["featureId"])
+                    if "fitGap" in values
+                    else None
+                ),
+                lip=(
+                    _parse_lid_lip(values["lip"], common["featureId"])
+                    if "lip" in values
+                    else None
+                ),
+            ),
+        )
+    return PcbLidCreate(
+        **common,
+        parameters=PcbLidParameters(
+            base=FeatureTarget(values.get("base", {}).get("featureId")),
+            thickness=_feature_quantity(
+                values.get("thickness"), "thickness", common["featureId"]
+            ),
+            fitGap=_feature_quantity(
+                values.get("fitGap"), "fitGap", common["featureId"]
+            ),
+            lip=(
+                _parse_lid_lip(values["lip"], common["featureId"])
+                if "lip" in values
+                else None
+            ),
+        ),
+    )
+
+
 def _parse_feature(
     payload: dict[str, Any],
-) -> ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate | CutUpdate | HoleUpdate:
+) -> (
+    ExtrudeCreate
+    | CutCreate
+    | HoleCreate
+    | PcbBaseCreate
+    | StandoffsCreate
+    | PcbLidCreate
+    | ExtrudeUpdate
+    | PcbBaseUpdate
+    | StandoffsUpdate
+    | PcbLidUpdate
+    | CutUpdate
+    | HoleUpdate
+):
     kind = payload.get("kind")
-    parser = {"extrude": _parse_extrude, "cut": _parse_cut, "hole": _parse_hole}.get(kind)
+    parser = {
+        "extrude": _parse_extrude,
+        "cut": _parse_cut,
+        "hole": _parse_hole,
+        "pcb_base": _parse_pcb_base,
+        "standoffs": _parse_standoffs,
+        "pcb_lid": _parse_pcb_lid,
+    }.get(kind)
     if parser is None:
         raise RequestError(
             "INVALID_PARAMETER",
@@ -654,6 +986,8 @@ def _graph_error_response(
         "HOLES_INTERSECT",
         "HOLE_NO_EFFECT",
         "TARGET_ALREADY_CONSUMED",
+        "INVALID_PARAMETER",
+        "MISSING",
     }
     details = {
         key: value
@@ -902,10 +1236,155 @@ def _apply_hole(graph: Any, operation: HoleCreate | HoleUpdate) -> str:
     return operation.featureId
 
 
-def _apply_feature(
-    graph: Any,
-    operation: ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate | CutUpdate | HoleUpdate,
+def _require_board(graph: Any, board_id: str, feature: str) -> BoardImport:
+    board = graph.nodes.get(board_id)
+    if not isinstance(board, BoardImport):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"{feature} board must reference a board import",
+            feature=feature,
+            parameter="board",
+        )
+    return board
+
+
+def _apply_pcb_base(graph: Any, operation: PcbBaseCreate | PcbBaseUpdate) -> str:
+    if isinstance(operation, PcbBaseUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, PcbBase):
+            raise RequestError("UNKNOWN_ID", f"unknown pcb_base: {operation.featureId}")
+        mapping = {
+            "wallThickness": "wall_thickness",
+            "floorThickness": "floor_thickness",
+            "clearance": "clearance",
+            "wallHeightAboveBoard": "wall_height_above_board",
+            "boardSeatHeight": "board_seat_height",
+        }
+        for name, value in asdict(operation.set).items():
+            if value is not None:
+                setattr(node, mapping[name], value)
+        return operation.featureId
+    parameters = operation.parameters
+    _require_board(graph, parameters.board.featureId, operation.featureId)
+    graph.add(
+        PcbBase(
+            operation.featureId,
+            board=parameters.board.featureId,
+            wall_thickness=parameters.wallThickness,
+            floor_thickness=parameters.floorThickness,
+            clearance=parameters.clearance,
+            wall_height_above_board=parameters.wallHeightAboveBoard,
+            board_seat_height=parameters.boardSeatHeight,
+        )
+    )
+    return operation.featureId
+
+
+def _validate_standoff_diameters(feature: str, boss: float, pilot: float) -> None:
+    if pilot >= boss:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"standoffs {feature} pilotDiameter must be smaller than bossDiameter",
+            feature=feature,
+            parameter="pilotDiameter",
+        )
+
+
+def _apply_standoffs(
+    graph: Any, operation: StandoffsCreate | StandoffsUpdate
 ) -> str:
+    if isinstance(operation, StandoffsUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, Standoffs):
+            raise RequestError("UNKNOWN_ID", f"unknown standoffs: {operation.featureId}")
+        changes = asdict(operation.set)
+        if changes["minimumDiameter"] is not None and node.selection != "all_mounting":
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "minimumDiameter only applies to all_mounting selection",
+                feature=node.id,
+                parameter="minimumDiameter",
+            )
+        boss = changes["bossDiameter"] or node.boss_diameter
+        pilot = changes["pilotDiameter"] or node.pilot_diameter
+        _validate_standoff_diameters(node.id, boss, pilot)
+        if changes["minimumDiameter"] is not None:
+            node.minimum_diameter = changes["minimumDiameter"]
+        node.boss_diameter = boss
+        node.pilot_diameter = pilot
+        return operation.featureId
+    parameters = operation.parameters
+    board = _require_board(graph, parameters.board.featureId, operation.featureId)
+    target = graph.nodes.get(parameters.target.featureId)
+    if not isinstance(target, PcbBase):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "standoffs target must reference a pcb_base",
+            feature=operation.featureId,
+            parameter="target",
+        )
+    if target.board != board.id:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "standoffs board must match the pcb_base board",
+            feature=operation.featureId,
+            parameter="board",
+        )
+    _validate_standoff_diameters(
+        operation.featureId, parameters.bossDiameter, parameters.pilotDiameter
+    )
+    graph.add(
+        Standoffs(
+            operation.featureId,
+            target=target.id,
+            board=board.id,
+            selection=parameters.selection.mode,
+            hole_ids=parameters.selection.holeIds,
+            minimum_diameter=parameters.selection.minimumDiameter,
+            boss_diameter=parameters.bossDiameter,
+            pilot_diameter=parameters.pilotDiameter,
+        )
+    )
+    return operation.featureId
+
+
+def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
+    if isinstance(operation, PcbLidUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, PcbLid):
+            raise RequestError("UNKNOWN_ID", f"unknown pcb_lid: {operation.featureId}")
+        if operation.set.thickness is not None:
+            node.thickness = operation.set.thickness
+        if operation.set.fitGap is not None:
+            node.fit_gap = operation.set.fitGap
+        if operation.set.lip is not None:
+            node.lip_depth = operation.set.lip.depth
+            node.lip_width = operation.set.lip.width
+        return operation.featureId
+
+    parameters = operation.parameters
+    base = graph.nodes.get(parameters.base.featureId)
+    if not isinstance(base, PcbBase):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "pcb_lid base must reference a pcb_base",
+            feature=operation.featureId,
+            parameter="base",
+        )
+    graph.add(
+        PcbLid(
+            operation.featureId,
+            base=base.id,
+            thickness=parameters.thickness,
+            fit_gap=parameters.fitGap,
+            lip_depth=parameters.lip.depth if parameters.lip else None,
+            lip_width=parameters.lip.width if parameters.lip else None,
+        )
+    )
+    return operation.featureId
+
+
+def _apply_feature(graph: Any, operation: MutationOperation) -> str:
     applier = {
         ExtrudeCreate: _apply_extrude,
         ExtrudeUpdate: _apply_extrude,
@@ -913,6 +1392,12 @@ def _apply_feature(
         CutUpdate: _apply_cut,
         HoleCreate: _apply_hole,
         HoleUpdate: _apply_hole,
+        PcbBaseCreate: _apply_pcb_base,
+        PcbBaseUpdate: _apply_pcb_base,
+        StandoffsCreate: _apply_standoffs,
+        StandoffsUpdate: _apply_standoffs,
+        PcbLidCreate: _apply_pcb_lid,
+        PcbLidUpdate: _apply_pcb_lid,
     }[type(operation)]
     return applier(graph, operation)
 
@@ -934,6 +1419,12 @@ def _kind(node: Any) -> str:
         return "join extrude"
     if isinstance(node, Hole):
         return "hole feature"
+    if isinstance(node, PcbBase):
+        return "pcb base"
+    if isinstance(node, Standoffs):
+        return "standoffs"
+    if isinstance(node, PcbLid):
+        return "pcb lid"
     if isinstance(node, BoardImport):
         return "board import"
     return type(node).__name__.lower()
@@ -967,6 +1458,17 @@ _EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
     "height": ("distance", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
     "position": ("position", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
     "entities": ("profiles", lambda was, now: f"{len(was)} \u2192 {len(now)}"),
+    "wall_thickness": ("wall thickness", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "floor_thickness": ("floor thickness", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "clearance": ("clearance", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "wall_height_above_board": (
+        "wall height above board",
+        lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm",
+    ),
+    "board_seat_height": ("board seat height", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "minimum_diameter": ("minimum diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "boss_diameter": ("boss diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "pilot_diameter": ("pilot diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
 }
 
 
