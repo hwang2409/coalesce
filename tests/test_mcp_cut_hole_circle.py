@@ -105,7 +105,13 @@ def hole(*, request_id, revision, feature_id, target, position, diameter=3, dept
 async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
 
-    assert tools["feature"].inputSchema["properties"]["kind"]["enum"] == ["extrude", "cut", "hole"]
+    feature_schema = tools["feature"].inputSchema
+    assert feature_schema["properties"]["kind"]["enum"] == ["extrude", "cut", "hole"]
+    assert set(feature_schema["properties"]["set"]["oneOf"][0]["properties"]) == {"distance"}
+    assert set(feature_schema["properties"]["set"]["oneOf"][1]["properties"]) == {"target"}
+    assert "extrude" in feature_schema["properties"]["set"]["description"]
+    assert "cut" in feature_schema["properties"]["set"]["description"]
+    assert "hole" in feature_schema["properties"]["set"]["description"]
     sketch = tools["sketch"].inputSchema
     assert sketch["properties"]["plane"]["properties"]["name"]["enum"] == ["XY", "XZ", "YZ"]
     assert {branch["properties"]["kind"]["const"] for branch in sketch["properties"]["entities"]["items"]["oneOf"]} == {"rectangle", "circle"}
@@ -164,6 +170,27 @@ async def test_feature_schema_uses_kind_to_validate_parameters(tmp_path):
         "missing required field 'target' (field: parameters)",
     ]
     assert all(result["revision"] == 0 for result in results)
+
+
+@pytest.mark.anyio
+async def test_cut_update_rejects_extrude_distance_with_allowed_target_field(tmp_path):
+    service = DocumentService(tmp_path / "cut-update-schema.coalesce.json")
+
+    result = await call_server_tool(
+        service,
+        "feature",
+        {
+            "action": "update",
+            "expectedRevision": 0,
+            "requestId": "bad-cut-update",
+            "featureId": "cut",
+            "kind": "cut",
+            "set": {"distance": {"value": 2, "unit": "mm"}},
+        },
+    )
+
+    assert result["error"]["message"] == "unknown field 'distance' (field: set)"
+    assert result["error"]["allowedFields"] == ["target"]
 
 
 @pytest.mark.anyio

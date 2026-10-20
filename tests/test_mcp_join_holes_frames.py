@@ -5,7 +5,7 @@ from test_mcp_cut_hole_circle import cut, extrude, hole, rectangle_sketch
 from test_mcp_vertical import run_server
 
 from coalesce.document_store import Document, DocumentStore
-from coalesce.graph import Extrude, Fillet, Graph, Rectangle, Sketch
+from coalesce.graph import Extrude, Fillet, Graph, Hole, HolePosition, Rectangle, Sketch
 from coalesce.references import Reference
 
 
@@ -23,6 +23,17 @@ def join_extrude(
     payload["parameters"]["operation"] = "join"
     payload["parameters"]["target"] = {"featureId": target}
     return payload
+
+
+def target_update(*, request_id, revision, feature_id, kind, target):
+    return {
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": request_id,
+        "featureId": feature_id,
+        "kind": kind,
+        "set": {"target": {"featureId": target}},
+    }
 
 
 def patterned_hole(*, request_id, revision, feature_id, target, positions):
@@ -193,6 +204,259 @@ async def test_real_stdio_detached_join_is_atomic_and_names_entity(tmp_path):
     assert results[0]["error"]["entities"] == ["detached_boss"]
     assert results[0]["error"]["hint"] == "move or extend the listed profiles to contact the target"
     assert results[0]["revision"] == results[1]["revision"] == 3
+
+
+@pytest.mark.anyio
+async def test_real_stdio_rejects_review_fork_and_accepts_terminal_target(tmp_path):
+    path = tmp_path / "review-fork.coalesce.json"
+    setup = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="plate-sketch",
+                    revision=0,
+                    sketch_id="plate_sketch",
+                    entity_id="plate",
+                    width=60,
+                    height=40,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="plate",
+                    revision=1,
+                    feature_id="plate",
+                    sketch_id="plate_sketch",
+                    profile_ids=["plate"],
+                    distance=3,
+                ),
+            ),
+            (
+                "sketch",
+                {
+                    "action": "create",
+                    "expectedRevision": 2,
+                    "requestId": "wall-sketch",
+                    "sketchId": "wall_sketch",
+                    "plane": {
+                        "kind": "origin",
+                        "name": "XY",
+                        "offset": {"value": 3, "unit": "mm"},
+                    },
+                    "entities": [
+                        {
+                            "id": "outer",
+                            "kind": "rectangle",
+                            "width": {"value": 60, "unit": "mm"},
+                            "height": {"value": 40, "unit": "mm"},
+                        },
+                        {
+                            "id": "inner",
+                            "kind": "rectangle",
+                            "width": {"value": 54, "unit": "mm"},
+                            "height": {"value": 34, "unit": "mm"},
+                        },
+                    ],
+                },
+            ),
+            (
+                "feature",
+                join_extrude(
+                    request_id="wall",
+                    revision=3,
+                    feature_id="wall",
+                    sketch_id="wall_sketch",
+                    profile_ids=["outer", "inner"],
+                    distance=22,
+                    target="plate",
+                ),
+            ),
+            (
+                "feature",
+                patterned_hole(
+                    request_id="holes",
+                    revision=4,
+                    feature_id="holes",
+                    target="wall",
+                    positions=[
+                        {"name": "nw", "point": [-28, 18]},
+                        {"name": "ne", "point": [28, 18]},
+                        {"name": "sw", "point": [-28, -18]},
+                        {"name": "se", "point": [28, -18]},
+                    ],
+                ),
+            ),
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="port-sketch",
+                    revision=5,
+                    sketch_id="port_sketch",
+                    entity_id="port",
+                    width=10,
+                    height=8,
+                    plane="XZ",
+                    offset=-20,
+                    center=(0, 14),
+                ),
+            ),
+        ],
+    )
+    assert setup[-1]["revision"] == 6
+    before = path.read_bytes()
+
+    rejected = (
+        await run_server(
+            path,
+            [
+                (
+                    "feature",
+                    cut(
+                        request_id="portcut-wall",
+                        revision=6,
+                        feature_id="portcut",
+                        target="wall",
+                        tool="port_sketch",
+                    ),
+                )
+            ],
+        )
+    )[0]
+
+    assert rejected["revision"] == 6
+    assert rejected["error"] == {
+        "code": "TARGET_ALREADY_CONSUMED",
+        "message": "target wall is already consumed by holes",
+        "retryable": False,
+        "operation": "feature",
+        "feature": "portcut",
+        "target": "wall",
+        "consumer": "holes",
+        "terminalFeatureId": "holes",
+        "hint": "target holes to apply this after holes",
+    }
+    assert path.read_bytes() == before
+
+    accepted = await run_server(
+        path,
+        [
+            (
+                "feature",
+                cut(
+                    request_id="portcut-holes",
+                    revision=6,
+                    feature_id="portcut",
+                    target="holes",
+                    tool="port_sketch",
+                ),
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert accepted[0]["revision"] == 7
+    assert len(accepted[1]["parts"]) == accepted[1]["solidCount"] == 1
+    assert accepted[1]["parts"][0]["terminalFeatureId"] == "portcut"
+
+
+@pytest.mark.anyio
+async def test_real_stdio_repairs_persisted_hole_fork_and_rejects_bad_targets_atomically(
+    tmp_path,
+):
+    path = tmp_path / "hole-fork.coalesce.json"
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("wall", sketch="plate_sketch", height=10))
+    graph.add(
+        Hole(
+            "holes",
+            target="wall",
+            diameter=3,
+            positions=[HolePosition("left", (-5, 0))],
+        )
+    )
+    graph.add(
+        Hole(
+            "vent",
+            target="wall",
+            diameter=3,
+            positions=[HolePosition("right", (5, 0))],
+        )
+    )
+    DocumentStore(path).save(Document(graph, revision=4))
+
+    repaired = await run_server(
+        path,
+        [
+            (
+                "feature",
+                target_update(
+                    request_id="repair-vent",
+                    revision=4,
+                    feature_id="vent",
+                    kind="hole",
+                    target="holes",
+                ),
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert repaired[0]["revision"] == 5
+    assert len(repaired[1]["parts"]) == repaired[1]["solidCount"] == 1
+    assert repaired[1]["parts"][0]["terminalFeatureId"] == "vent"
+    before = path.read_bytes()
+
+    rejected = await run_server(
+        path,
+        [
+            (
+                "feature",
+                target_update(
+                    request_id="unknown-target",
+                    revision=5,
+                    feature_id="vent",
+                    kind="hole",
+                    target="missing",
+                ),
+            ),
+            (
+                "feature",
+                target_update(
+                    request_id="non-body-target",
+                    revision=5,
+                    feature_id="vent",
+                    kind="hole",
+                    target="plate_sketch",
+                ),
+            ),
+            (
+                "feature",
+                target_update(
+                    request_id="consumed-target",
+                    revision=5,
+                    feature_id="vent",
+                    kind="hole",
+                    target="wall",
+                ),
+            ),
+            ("query", {"select": {"kind": "revision"}}),
+        ],
+    )
+
+    assert [result["error"]["code"] for result in rejected[:3]] == [
+        "UNKNOWN_ID",
+        "INVALID_PARAMETER",
+        "TARGET_ALREADY_CONSUMED",
+    ]
+    assert rejected[2]["error"]["target"] == "wall"
+    assert rejected[2]["error"]["consumer"] == "holes"
+    assert rejected[2]["error"]["terminalFeatureId"] == "holes"
+    assert rejected[3]["revision"] == 5
+    assert path.read_bytes() == before
 
 
 @pytest.mark.anyio
