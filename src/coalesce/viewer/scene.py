@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import itertools
 import re
@@ -50,10 +51,11 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.BRepTools import BRepTools
 
-    if part.shape.wrapped is None:
+    shape = copy.deepcopy(part.shape)
+    if shape.wrapped is None:
         raise ValueError(f"part {part.name!r} is empty")
-    BRepTools.Clean_s(part.shape.wrapped)
-    for face in part.shape.faces():
+    BRepTools.Clean_s(shape.wrapped)
+    for face in shape.faces():
         BRepMesh_IncrementalMesh(
             face.wrapped,
             tolerance,
@@ -61,11 +63,11 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
             ViewerSceneStore.ANGULAR_TOLERANCE,
             False,
         )
-    vertices, triangles = part.shape.tessellate(tolerance, ViewerSceneStore.ANGULAR_TOLERANCE)
+    vertices, triangles = shape.tessellate(tolerance, ViewerSceneStore.ANGULAR_TOLERANCE)
     if not triangles:
         raise ValueError(f"part {part.name!r} has no faces to show")
     edges = []
-    for edge in part.shape.edges():
+    for edge in shape.edges():
         points = edge.positions(deflection=tolerance)
         for a, b in itertools.pairwise(points):
             edges += [*a, *b]

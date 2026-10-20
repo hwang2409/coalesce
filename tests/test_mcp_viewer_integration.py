@@ -89,7 +89,10 @@ async def test_persisted_hole_publishes_viewer_scene_after_restart(tmp_path):
         read, write
     ) as session:
         await session.initialize()
-        await session.list_tools()
+        measurements = result_json(
+            await session.call_tool("query", {"select": {"kind": "measurements"}})
+        )
+        assert measurements["ok"]
         errlog.seek(0)
         viewer_url = next(
             line.removeprefix("coalesce viewer: ")
@@ -240,7 +243,10 @@ async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_
         read, write
     ) as session:
         await session.initialize()
-        await session.list_tools()
+        measurements = result_json(
+            await session.call_tool("query", {"select": {"kind": "measurements"}})
+        )
+        assert measurements["ok"]
         restart_log.seek(0)
         viewer_url = next(
             line.removeprefix("coalesce viewer: ")
