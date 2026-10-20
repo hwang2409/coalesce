@@ -3,7 +3,14 @@ from dataclasses import asdict
 from typing import Any
 
 from .graph import Circle, Cut, Extrude, Fillet, Graph, Hole, Plane, Rectangle, Sketch
-from .references import Cardinality, MaxAlong, Normal, Position, Reference
+from .references import (
+    Cardinality,
+    MaxAlong,
+    Normal,
+    Position,
+    Reference,
+    SketchSegmentSource,
+)
 
 _TYPES = {cls.__name__: cls for cls in (Sketch, Rectangle, Circle, Extrude, Cut, Hole, Fillet)}
 _FILTERS = {cls.__name__: cls for cls in (Normal, Position, MaxAlong)}
@@ -12,6 +19,11 @@ _FILTERS = {cls.__name__: cls for cls in (Normal, Position, MaxAlong)}
 def _reference(payload: dict[str, Any]) -> Reference:
     value = dict(payload)
     value["cardinality"] = Cardinality(value.get("cardinality", Cardinality.ONE))
+    source = value.get("source")
+    if isinstance(source, dict) and source.get("kind") == "sketch_segment":
+        value["source"] = SketchSegmentSource(
+            **{key: field for key, field in source.items() if key != "kind"}
+        )
     value["filters"] = [
         _FILTERS[item["kind"]](
             **{

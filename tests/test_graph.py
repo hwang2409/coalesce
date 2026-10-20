@@ -9,11 +9,13 @@ import pytest
 from coalesce import (
     Cut,
     Extrude,
+    Fillet,
     Graph,
     Rectangle,
     Reference,
     Sketch,
     Status,
+    SketchSegmentSource,
     regenerate,
 )
 from coalesce.serialization import loads
@@ -148,6 +150,23 @@ def test_anti_guessing_rotated_rectangle_uses_constructed_segment_history():
     wall = resolution.candidates[0].entity
     assert isclose(wall.center().X, 7 - 5 * 3**0.5 / 2)
     assert isclose(wall.center().Y, -5.5)
+
+
+def test_json_round_trip_preserves_typed_segment_source():
+    graph = base()
+    source = SketchSegmentSource("sk", "profile", "left")
+    graph.add(
+        Fillet(
+            "round",
+            target="base",
+            edges=[Reference("base", "side(left)", source=source)],
+        )
+    )
+
+    restored = loads(graph.to_json())
+
+    reference = restored.nodes["round"].edges[0]
+    assert reference.source == source
 
 
 def test_json_round_trip_regenerates_the_same_geometry():

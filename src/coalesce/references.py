@@ -22,10 +22,17 @@ class Status(str, Enum):
 
 
 @dataclass(frozen=True)
+class SketchSegmentSource:
+    sketch: str
+    entity: str
+    segment: str
+
+
+@dataclass(frozen=True)
 class ElementKey:
     feature: str
     role: str
-    source: str | tuple[ElementKey, ...] | None = None
+    source: SketchSegmentSource | str | tuple[ElementKey, ...] | None = None
 
 
 @dataclass
@@ -64,7 +71,7 @@ class Reference:
     role: str
     cardinality: Cardinality = Cardinality.ONE
     count: int | None = None
-    source: str | None = None
+    source: SketchSegmentSource | str | None = None
     filters: list[Filter] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -81,7 +88,11 @@ class Reference:
             "role": self.role,
             "cardinality": self.cardinality.value,
             "count": self.count,
-            "source": self.source,
+            "source": (
+                {"kind": "sketch_segment", **asdict(self.source)}
+                if isinstance(self.source, SketchSegmentSource)
+                else self.source
+            ),
             "filters": filters,
         }
 
@@ -163,6 +174,38 @@ def _filter(candidates: list[Candidate], predicate: Filter) -> list[Candidate]:
     ]
 
 
+def _select(ref: Reference, provenance: dict[str, list[Candidate]]) -> list[Candidate]:
+    candidates = [
+        candidate
+        for candidate in provenance.get(ref.feature, [])
+        if candidate.key.role == ref.role
+        and (ref.source is None or candidate.key.source == ref.source)
+    ]
+    for predicate in ref.filters:
+        candidates = _filter(candidates, predicate)
+    return candidates
+
+
+def _classify(candidates: list[Candidate]) -> Status:
+    if not candidates:
+        return Status.EMPTY
+    if any(candidate.merged_from for candidate in candidates):
+        return Status.MERGED
+    if len(candidates) > 1:
+        if len({candidate.key for candidate in candidates}) == 1:
+            return Status.SPLIT
+        return Status.AMBIGUOUS
+    return Status.OK
+
+
+def _violates_cardinality(ref: Reference, count: int) -> bool:
+    if ref.cardinality is Cardinality.ONE:
+        return count != 1
+    if ref.cardinality is Cardinality.ONE_OR_MORE:
+        return count < 1
+    return count != ref.count
+
+
 def resolve(
     ref: Reference,
     provenance: dict[str, list[Candidate]],
@@ -177,34 +220,9 @@ def resolve(
         and before_feature in ordered_features
         and ordered_features.index(ref.feature) >= ordered_features.index(before_feature)
     ):
-        status = Status.ORDER
-        return Resolution(status, error=_error(ref, status, []))
+        return Resolution(Status.ORDER, error=_error(ref, Status.ORDER, []))
 
-    candidates = [
-        candidate
-        for candidate in provenance.get(ref.feature, [])
-        if candidate.key.role == ref.role
-        and (ref.source is None or candidate.key.source == ref.source)
-    ]
-    for predicate in ref.filters:
-        candidates = _filter(candidates, predicate)
-
-    violates_cardinality = (
-        ref.cardinality is Cardinality.ONE
-        and len(candidates) > 1
-        or ref.cardinality is Cardinality.EXACTLY
-        and len(candidates) != ref.count
-    )
-    if not candidates:
-        status = Status.EMPTY
-    elif any(candidate.merged_from for candidate in candidates):
-        status = Status.MERGED
-    elif violates_cardinality:
-        status = (
-            Status.SPLIT
-            if len({candidate.key for candidate in candidates}) == 1
-            else Status.AMBIGUOUS
-        )
-    else:
-        return Resolution(Status.OK, candidates)
-    return Resolution(status, candidates, _error(ref, status, candidates))
+    candidates = _select(ref, provenance)
+    status = _classify(candidates)
+    error = _error(ref, status, candidates) if _violates_cardinality(ref, len(candidates)) else None
+    return Resolution(status, candidates, error)

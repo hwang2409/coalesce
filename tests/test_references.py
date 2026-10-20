@@ -47,13 +47,13 @@ def test_cardinality_reports_split_with_structured_candidates():
         ],
         "suggestion": "use one_or_more or add a provenance-set filter",
     }
-    assert (
-        resolve(
-            Reference("base", "cap_end", Cardinality.ONE_OR_MORE),
-            {"base": pieces},
-        ).status
-        is Status.OK
+    accepted_split = resolve(
+        Reference("base", "cap_end", Cardinality.ONE_OR_MORE),
+        {"base": pieces},
     )
+    assert accepted_split.status is Status.SPLIT
+    assert accepted_split.error is None
+    assert accepted_split.candidates == pieces
 
 
 def test_filters_only_reduce_the_selected_provenance_set():
@@ -87,12 +87,13 @@ def test_exact_cardinality_and_merged_status_are_explicit():
 
     merged_resolution = resolve(Reference("base", "cap_end"), {"base": [merged]})
 
-    assert exact.status is Status.OK
+    assert exact.status is Status.SPLIT
+    assert exact.error is None
     assert merged_resolution.status is Status.MERGED
-    assert merged_resolution.error["candidates"][0]["keys"] == [
-        {"feature": "base", "role": "cap_end", "source": "top"},
-        {"feature": "boss", "role": "cap_end", "source": "boss_top"},
-    ]
+    assert merged_resolution.error is None
+    assert merged_resolution.candidates[0].merged_from == (
+        ElementKey("boss", "cap_end", "boss_top"),
+    )
 
 
 def test_equal_maximum_is_ambiguous_instead_of_picking_by_index():
