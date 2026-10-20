@@ -400,7 +400,7 @@ async def test_hole_positions_validation_is_atomic(tmp_path):
         "INVALID_PARAMETER",
         "INVALID_PARAMETER",
     ]
-    assert "64" in results[0]["error"]["message"]
+    assert results[0]["error"]["operation"] == "feature"
     assert "unique" in results[1]["error"]["message"]
-    assert "finite" in results[2]["error"]["message"]
+    assert "positions[0].point[0]" in results[2]["error"]["message"]
     assert results[-1]["revision"] == 0

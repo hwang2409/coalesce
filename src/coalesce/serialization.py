@@ -2,7 +2,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from .graph import Circle, Cut, Extrude, Fillet, Graph, Hole, Plane, Rectangle, Sketch
+from .graph import Circle, Cut, Extrude, Fillet, Graph, Hole, HolePosition, Plane, Rectangle, Sketch
 from .references import (
     BodySource,
     Cardinality,
@@ -66,6 +66,11 @@ def _node_payload(node: Any) -> dict[str, Any]:
         payload.pop("operation")
         if node.target is None:
             payload.pop("target")
+    elif isinstance(node, Hole):
+        if node.positions:
+            payload.pop("position")
+        else:
+            payload.pop("positions")
     elif isinstance(node, Fillet):
         payload["edges"] = [reference.to_dict() for reference in node.edges]
     return {"type": node.__class__.__name__, **payload}
@@ -86,6 +91,12 @@ def loads(value: str) -> Graph:
             raise ValueError(f"unknown node type: {kind}")
         if cls is Sketch:
             payload = _sketch(payload)
+        elif cls is Hole:
+            payload["position"] = tuple(payload.get("position", (0, 0)))
+            payload["positions"] = tuple(
+                HolePosition(item["name"], tuple(item["point"]))
+                for item in payload.get("positions", [])
+            )
         elif cls is Fillet:
             payload["edges"] = [_reference(item) for item in payload.get("edges", [])]
         graph.add(cls(**payload))

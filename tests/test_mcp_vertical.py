@@ -9,13 +9,12 @@ from pathlib import Path
 
 import pytest
 from mcp import ClientSession, StdioServerParameters, types
-
-import coalesce.service as service_module
-from coalesce.regen import regenerate as real_regenerate
 from mcp.client.stdio import stdio_client
 
+import coalesce.service as service_module
 from coalesce.document_store import Document, DocumentStore
 from coalesce.graph import Extrude, Graph, Hole, Rectangle, Sketch
+from coalesce.regen import regenerate as real_regenerate
 from coalesce.schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
 from coalesce.server import create_server
 from coalesce.service import (
@@ -149,12 +148,7 @@ def test_startup_regeneration_cannot_overwrite_a_concurrent_commit(tmp_path, mon
 
     startup_entered = threading.Event()
     release_startup = threading.Event()
-    class ReadyKernel:
-        def start(self):
-            pass
-
-        def wait(self):
-            pass
+    service_module._KERNEL_LOADER.wait()
 
     def blocked_regenerate(graph):
         startup_entered.set()
@@ -162,7 +156,7 @@ def test_startup_regeneration_cannot_overwrite_a_concurrent_commit(tmp_path, mon
         return real_regenerate(graph)
 
     monkeypatch.setattr(service_module, "regenerate", blocked_regenerate, raising=False)
-    service = DocumentService(path, warmup=False, kernel_loader=ReadyKernel())
+    service = DocumentService(path, warmup=False)
     service.start_kernel_warmup()
     assert startup_entered.wait(5)
 

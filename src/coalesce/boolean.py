@@ -97,7 +97,8 @@ def _body_for_face(
 def _tool_role(feature: str, tool: Candidate, kind: str) -> tuple[str, object]:
     if kind == "hole":
         role = "hole_wall" if tool.key.role.startswith("side(") else "hole_floor"
-        return role, HoleSurfaceSource(feature, role)
+        name = tool.key.source.name if isinstance(tool.key.source, HoleSurfaceSource) else None
+        return role, HoleSurfaceSource(feature, role, name)
     if tool.key.role.startswith("side("):
         return tool.key.role, tool.key.source
     return "pocket_floor", ToolCapSource(tool.key.feature, tool.key.role)

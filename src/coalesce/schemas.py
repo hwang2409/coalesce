@@ -75,6 +75,17 @@ REFERENCE_SOURCE = {
             "required": ["kind", "sketch", "entity", "segment"],
             "additionalProperties": False,
         },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "hole_surface"},
+                "feature": {"type": "string", "minLength": 1},
+                "name": {"type": "string", "minLength": 1},
+                "surface": {"enum": ["hole_wall", "hole_floor"]},
+            },
+            "required": ["kind", "feature", "name", "surface"],
+            "additionalProperties": False,
+        },
         {"type": "null"},
     ]
 }
@@ -218,7 +229,13 @@ EXTRUDE_PARAMETERS = {
     "properties": {
         "profile": PROFILE,
         "distance": QUANTITY,
-        "operation": {"const": "new_body"},
+        "operation": {"enum": ["new_body", "join"]},
+        "target": {
+            "type": "object",
+            "properties": {"featureId": {"type": "string", "minLength": 1}},
+            "required": ["featureId"],
+            "additionalProperties": False,
+        },
         "direction": {"const": "normal"},
     },
     "required": ["profile", "distance", "operation", "direction"],
@@ -263,6 +280,19 @@ CUT_PARAMETERS = {
     "required": ["target", "tool", "depth", "flip"],
     "additionalProperties": False,
 }
+HOLE_POSITION = {
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable caller-chosen identity; defaults to h1..hn in request order.",
+        },
+        "point": POINT_2D,
+    },
+    "required": ["point"],
+    "additionalProperties": False,
+}
 HOLE_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -270,8 +300,16 @@ HOLE_PARAMETERS = {
         "diameter": QUANTITY,
         "depth": QUANTITY,
         "position": POINT_2D,
+        "positions": {
+            "type": "array",
+            "items": HOLE_POSITION,
+            "minItems": 1,
+            "maxItems": 64,
+            "description": "Named XY positions in mm; names are caller identities and default to h1..hn.",
+        },
     },
-    "required": ["target", "diameter", "position"],
+    "required": ["target", "diameter"],
+    "oneOf": [{"required": ["position"]}, {"required": ["positions"]}],
     "additionalProperties": False,
 }
 FEATURE_PARAMETERS = {"oneOf": [EXTRUDE_PARAMETERS, CUT_PARAMETERS, HOLE_PARAMETERS]}
