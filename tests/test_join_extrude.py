@@ -74,11 +74,13 @@ def test_wall_ring_join_is_one_target_body_with_history_roles() -> None:
     assert isclose(shape.volume, 60 * 40 * 3 + (60 * 40 - 54 * 34) * 4)
     assert isclose(bounds.min.Z, 0)
     assert isclose(bounds.max.Z, 7)
+    assert result.joined_material == {"wall": True}
     assert {
         candidate.key.body
         for candidates in result.provenance.values()
         for candidate in candidates
     } == {BodySource("plate", "plate")}
+    assert result.resolve(Reference("wall", "cap_start")).status is Status.EMPTY
 
     plate_top = result.resolve(Reference("plate", "cap_end"))
     assert plate_top.status is Status.OK
