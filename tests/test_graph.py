@@ -38,6 +38,7 @@ def test_case_8_deleted_feature_is_empty():
     g = base()
     regenerate(g)
     del g.nodes["base"]
+    del g.provenance["base"]
     assert g.resolve(Reference("base", "cap_end")).status is Status.EMPTY
 
 
