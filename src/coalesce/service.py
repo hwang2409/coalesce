@@ -1052,44 +1052,64 @@ class DocumentService:
             "yAxis": coordinates(plane.y_dir),
         }
 
-    def _node_metadata(
-        self, graph: Any, result: RegenResult, node_id: str
+    def _extrude_metadata(self, graph: Any, node: Extrude) -> dict[str, Any]:
+        from .extrusion import extrude_sketch
+
+        sketch = graph.nodes[node.sketch]
+        tool = extrude_sketch(node, sketch).shape
+        return {
+            "frame": self._frame(sketch),
+            "direction": self._frame(sketch)["normal"],
+            "toolBBox": self._bbox([tool]),
+        }
+
+    def _cut_metadata(
+        self, graph: Any, result: RegenResult, node: Cut
     ) -> dict[str, Any]:
         from .cut import make_cut_tool
-        from .extrusion import extrude_sketch
-        from .hole import make_hole_tool
 
-        node = graph.nodes[node_id]
-        if isinstance(node, Sketch):
-            return {"frame": self._frame(node)}
-        if isinstance(node, Extrude):
-            sketch = graph.nodes[node.sketch]
-            tool = extrude_sketch(node, sketch).shape
-            direction = self._frame(sketch)["normal"]
-        elif isinstance(node, Cut):
-            sketch = graph.nodes[node.tool]
-            tool = make_cut_tool(node, sketch, result.shapes[node.target]).shape
-            normal = self._frame(sketch)["normal"]
-            direction = (
-                normal if node.depth is None else [value if node.flip else -value for value in normal]
-            )
-        elif isinstance(node, Hole):
-            sketch = Sketch("global_xy")
-            tool = make_hole_tool(node, result.shapes[node.target]).shape
-            direction = [0.0, 0.0, 1.0]
-        else:
-            return {}
-        metadata = {
+        sketch = graph.nodes[node.tool]
+        tool = make_cut_tool(node, sketch, result.shapes[node.target]).shape
+        normal = self._frame(sketch)["normal"]
+        direction = (
+            normal
+            if node.depth is None
+            else [value if node.flip else -value for value in normal]
+        )
+        return {
             "frame": self._frame(sketch),
             "direction": direction,
             "toolBBox": self._bbox([tool]),
         }
-        if isinstance(node, Hole):
-            metadata["positionNames"] = [
+
+    def _hole_metadata(self, result: RegenResult, node: Hole) -> dict[str, Any]:
+        from .hole import make_hole_tool
+
+        sketch = Sketch("global_xy")
+        tool = make_hole_tool(node, result.shapes[node.target]).shape
+        return {
+            "frame": self._frame(sketch),
+            "direction": [0.0, 0.0, 1.0],
+            "toolBBox": self._bbox([tool]),
+            "positionNames": [
                 position.name
                 for position in (node.positions or (HolePosition(None, node.position),))
-            ]
-        return metadata
+            ],
+        }
+
+    def _node_metadata(
+        self, graph: Any, result: RegenResult, node_id: str
+    ) -> dict[str, Any]:
+        node = graph.nodes[node_id]
+        if isinstance(node, Sketch):
+            return {"frame": self._frame(node)}
+        if isinstance(node, Extrude):
+            return self._extrude_metadata(graph, node)
+        if isinstance(node, Cut):
+            return self._cut_metadata(graph, result, node)
+        if isinstance(node, Hole):
+            return self._hole_metadata(result, node)
+        return {}
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
