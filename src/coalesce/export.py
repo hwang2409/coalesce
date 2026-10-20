@@ -238,6 +238,7 @@ def _publish_bytes(path: Path, content: bytes, digest: str) -> None:
     directory_fd = _open_directory(path)
     descriptor: int | None = None
     created = False
+    failure: Exception | None = None
     try:
         try:
             descriptor = os.open(
@@ -267,16 +268,25 @@ def _publish_bytes(path: Path, content: bytes, digest: str) -> None:
             view = view[written:]
         os.fsync(descriptor)
         os.fsync(directory_fd)
-    except ExportFailure:
-        raise
-    except Exception as error:
-        if created:
-            raise _publication_failure(path, digest, len(content)) from error
-        raise
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        os.close(directory_fd)
+    except (ExportFailure, OSError) as error:
+        failure = error
+
+    for open_descriptor in (descriptor, directory_fd):
+        if open_descriptor is None:
+            continue
+        try:
+            os.close(open_descriptor)
+        except OSError as error:
+            failure = failure or error
+
+    if failure is None:
+        return
+    if isinstance(failure, ExportFailure):
+        raise failure
+    if created:
+        raise _publication_failure(path, digest, len(content)) from failure
+    raise failure
+
 
 def _export_fields(
     path: Path, parts: list[Any], digest: str, actual: dict[str, Any]
