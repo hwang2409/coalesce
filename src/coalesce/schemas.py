@@ -383,7 +383,7 @@ FEATURE_SCHEMA = {
     "properties": {
         "action": {
             "enum": ["create", "update"],
-            "description": "Use create with parameters; use update with set.",
+            "description": "Use create with parameters; use update with set. For update, extrude sets distance; cut and hole set target.featureId.",
         },
         **FEATURE_PROPERTIES,
         "parameters": {
@@ -392,12 +392,11 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create.",
+            "description": "Required for update; not allowed for create. For extrude, set distance; for cut and hole, set target.featureId.",
         },
     },
     "required": ["action", *FEATURE_PROPERTIES],
     "additionalProperties": False,
-    "oneOf": list(FEATURE_ACTION_SCHEMAS.values()),
 }
 IMPORT_PROPERTIES = {
     **MUTATION_PROPERTIES,

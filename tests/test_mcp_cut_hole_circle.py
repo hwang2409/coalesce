@@ -107,15 +107,11 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
 
     feature_schema = tools["feature"].inputSchema
     assert feature_schema["properties"]["kind"]["enum"] == ["extrude", "cut", "hole"]
-    update_branches = [
-        branch
-        for branch in feature_schema["oneOf"]
-        if branch["properties"]["action"]["const"] == "update"
-    ]
-    assert {
-        (branch["properties"]["kind"]["const"], tuple(branch["properties"]["set"]["properties"]))
-        for branch in update_branches
-    } == {("extrude", ("distance",)), ("cut", ("target",)), ("hole", ("target",))}
+    assert set(feature_schema["properties"]["set"]["oneOf"][0]["properties"]) == {"distance"}
+    assert set(feature_schema["properties"]["set"]["oneOf"][1]["properties"]) == {"target"}
+    assert "extrude" in feature_schema["properties"]["set"]["description"]
+    assert "cut" in feature_schema["properties"]["set"]["description"]
+    assert "hole" in feature_schema["properties"]["set"]["description"]
     sketch = tools["sketch"].inputSchema
     assert sketch["properties"]["plane"]["properties"]["name"]["enum"] == ["XY", "XZ", "YZ"]
     assert {branch["properties"]["kind"]["const"] for branch in sketch["properties"]["entities"]["items"]["oneOf"]} == {"rectangle", "circle"}

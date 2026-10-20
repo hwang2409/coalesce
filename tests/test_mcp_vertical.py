@@ -375,9 +375,7 @@ async def test_real_stdio_publishes_root_object_schemas(tmp_path):
     assert tools
     for tool in tools:
         assert tool.inputSchema["type"] == "object"
-        assert not ({"anyOf", "allOf"} & tool.inputSchema.keys())
-        if tool.name != "feature":
-            assert "oneOf" not in tool.inputSchema
+        assert not ({"anyOf", "allOf", "oneOf"} & tool.inputSchema.keys())
 
 
 def test_mutation_schema_fields_match_typed_operations():
