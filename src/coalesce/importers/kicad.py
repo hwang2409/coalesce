@@ -124,7 +124,12 @@ class _FootprintTransform:
 
 
 _TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[^\s()]+|[()]')
-_GRAPHICS = {"gr_line", "gr_arc", "gr_circle", "gr_rect", "fp_line", "fp_arc", "fp_circle", "fp_rect"}
+_GRAPHICS = {
+    "gr_line", "gr_arc", "gr_circle", "gr_rect", "gr_poly",
+    "fp_line", "fp_arc", "fp_circle", "fp_rect", "fp_poly",
+}
+_UNSUPPORTED_GRAPHICS = {"gr_curve", "fp_curve"}
+_ENDPOINT_GRID_MM = 1e-6  # KiCad's one-nanometre coordinate grid; applied after transforms.
 
 
 def _expression(tokens: list[str], index: int) -> tuple[Any, int]:
@@ -244,6 +249,15 @@ def _on_layer(node: list[Any], name: str) -> bool:
 def _outline_item(item: list[Any]) -> list[Segment]:
     kind = str(item[0])
     ident = _uuid(item)
+    if kind in {"gr_poly", "fp_poly"}:
+        pts = _child(item, "pts")
+        if pts is None:
+            raise ValueError(f"{kind} requires pts")
+        points = [(_number(point[1]), _number(point[2])) for point in _children(pts, "xy") if len(point) >= 3]
+        if len(points) < 3 or len(points) != len(_children(pts, "xy")):
+            raise ValueError(f"{kind}.pts requires at least three xy points")
+        return [Segment("line", point, points[(index + 1) % len(points)], id=ident)
+                for index, point in enumerate(points)]
     if kind in {"gr_rect", "fp_rect"}:
         start, end = _point(item, "start"), _point(item, "end")
         if start is None or end is None:
@@ -318,7 +332,12 @@ def _segment_extrema(segment: Segment) -> list[tuple[float, float]]:
     return points
 
 
+def _endpoint_key(point: tuple[float, float]) -> tuple[int, int]:
+    return round(point[0] / _ENDPOINT_GRID_MM), round(point[1] / _ENDPOINT_GRID_MM)
+
+
 def _chain(segments: list[Segment]) -> list[OutlineLoop]:
+    """Chain on KiCad's 1 nm grid so transform roundoff cannot split an endpoint."""
     loops: list[OutlineLoop] = []
     remaining = segments[:]
     while remaining:
@@ -327,55 +346,76 @@ def _chain(segments: list[Segment]) -> list[OutlineLoop]:
             loops.append(OutlineLoop([first], True))
             continue
         chain = [first]
-        while remaining and chain[-1].end != first.start:
-            match = next((item for item in remaining if item.start == chain[-1].end or item.end == chain[-1].end), None)
+        while remaining and _endpoint_key(chain[-1].end) != _endpoint_key(first.start):
+            end_key = _endpoint_key(chain[-1].end)
+            match = next((item for item in remaining
+                          if _endpoint_key(item.start) == end_key or _endpoint_key(item.end) == end_key), None)
             if match is None:
                 break
             remaining.remove(match)
-            if match.end == chain[-1].end:
+            if _endpoint_key(match.end) == end_key:
                 match = Segment(match.kind, match.end, match.start, match.mid, match.id)
             chain.append(match)
-        loops.append(OutlineLoop(chain, chain[-1].end == first.start))
+        loops.append(OutlineLoop(chain, _endpoint_key(chain[-1].end) == _endpoint_key(first.start)))
     return loops
 
 
-def _arc_points(segment: Segment) -> list[tuple[float, float]]:
+def _line_winding(segment: Segment, point: tuple[float, float]) -> float:
+    y1, y2 = segment.start[1], segment.end[1]
+    if y1 == y2 or not min(y1, y2) <= point[1] <= max(y1, y2):
+        return 0.0
+    ratio = (point[1] - y1) / (y2 - y1)
+    crossing_x = segment.start[0] + ratio * (segment.end[0] - segment.start[0])
+    if crossing_x <= point[0]:
+        return 0.0
+    weight = 0.5 if ratio in {0.0, 1.0} else 1.0
+    return math.copysign(weight, y2 - y1)
+
+
+def _arc_winding(segment: Segment, point: tuple[float, float]) -> float:
     center, radius, start, end, ccw = _arc_geometry(segment)
-    sweep = (end - start) % math.tau if ccw else -((start - end) % math.tau)
-    steps = max(2, math.ceil(abs(sweep) / math.radians(10)))
-    return [
-        (center[0] + radius * math.cos(start + sweep * index / steps),
-         center[1] + radius * math.sin(start + sweep * index / steps))
-        for index in range(steps + 1)
-    ]
+    relative_y = (point[1] - center[1]) / radius
+    if not -1.0 <= relative_y <= 1.0:
+        return 0.0
+    first = math.asin(relative_y)
+    candidates = (first, math.pi - first)
+    winding = 0.0
+    direction = 1.0 if ccw else -1.0
+    for angle in candidates:
+        angle %= math.tau
+        if not _angle_on_arc(angle, start, end, ccw):
+            continue
+        crossing_x = center[0] + radius * math.cos(angle)
+        derivative = direction * radius * math.cos(angle)
+        if crossing_x <= point[0] or math.isclose(derivative, 0.0, abs_tol=1e-12):
+            continue
+        endpoint = math.isclose((angle - start) % math.tau, 0.0, abs_tol=1e-12) or math.isclose(
+            (angle - end) % math.tau, 0.0, abs_tol=1e-12
+        )
+        winding += math.copysign(0.5 if endpoint else 1.0, derivative)
+    return winding
 
 
-def _loop_points(loop: OutlineLoop) -> list[tuple[float, float]]:
-    if len(loop.segments) == 1 and loop.segments[0].kind == "circle":
-        center, edge = loop.segments[0].start, loop.segments[0].end
-        radius = math.dist(center, edge)
-        return [(center[0] + radius * math.cos(index * math.tau / 72),
-                 center[1] + radius * math.sin(index * math.tau / 72)) for index in range(72)]
-    points: list[tuple[float, float]] = []
-    for segment in loop.segments:
-        if segment.kind == "arc":
-            points.extend(_arc_points(segment)[:-1])
-        else:
-            points.append(segment.start)
-    return points
+def _circle_winding(segment: Segment, point: tuple[float, float]) -> float:
+    center, edge = segment.start, segment.end
+    radius = math.dist(center, edge)
+    relative_y = (point[1] - center[1]) / radius
+    if not -1.0 < relative_y < 1.0:
+        return 0.0
+    crossing_x = center[0] + radius * math.sqrt(1.0 - relative_y * relative_y)
+    return 1.0 if crossing_x > point[0] else 0.0
 
 
 def _contains(loop: OutlineLoop, point: tuple[float, float]) -> bool:
-    polygon = _loop_points(loop)
-    inside = False
-    previous = polygon[-1]
-    for current in polygon:
-        if (current[1] > point[1]) != (previous[1] > point[1]):
-            crossing = (previous[0] - current[0]) * (point[1] - current[1]) / (previous[1] - current[1]) + current[0]
-            if point[0] < crossing:
-                inside = not inside
-        previous = current
-    return inside
+    winding = 0.0
+    for segment in loop.segments:
+        if segment.kind == "arc":
+            winding += _arc_winding(segment, point)
+        elif segment.kind == "circle":
+            winding += _circle_winding(segment, point)
+        else:
+            winding += _line_winding(segment, point)
+    return abs(winding) > 0.5
 
 
 def _classify(loops: list[OutlineLoop]) -> tuple[list[OutlineLoop], list[OutlineLoop]]:
@@ -410,10 +450,20 @@ def _thickness(root: list[Any]) -> tuple[float | None, str]:
     return None, "unavailable"
 
 
-def _footprint_transform(node: list[Any]) -> _FootprintTransform:
+def _position(node: list[Any], path: str) -> tuple[tuple[float, float], float]:
     at = _child(node, "at")
-    position = (_number(at[1]), _number(at[2])) if at and len(at) > 2 else (0.0, 0.0)
-    rotation = _number(at[3]) if at and len(at) > 3 else 0.0
+    if at is None:
+        return (0.0, 0.0), 0.0
+    if len(at) < 3:
+        raise ValueError(f"{path}: requires x and y")
+    try:
+        return (_number(at[1]), _number(at[2])), _number(at[3]) if len(at) > 3 else 0.0
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _footprint_transform(node: list[Any], path: str) -> _FootprintTransform:
+    position, rotation = _position(node, f"{path}.at")
     layer = _child(node, "layer")
     back = bool(layer and len(layer) > 1 and str(layer[1]).startswith("B."))
     return _FootprintTransform(position, rotation, back)
@@ -464,19 +514,22 @@ def _drill(node: list[Any], transform: _FootprintTransform) -> Drill:
     return Drill(shape, width, height, transform.angle(0.0))
 
 
-def _holes(node: list[Any], footprint_id: str, transform: _FootprintTransform) -> list[Hole]:
+def _holes(node: list[Any], footprint_id: str, transform: _FootprintTransform, path: str) -> list[Hole]:
     holes: list[Hole] = []
-    for pad in _children(node, "pad"):
+    for index, pad in enumerate(_children(node, "pad")):
         drill_node = _child(pad, "drill")
         if drill_node is None:
             continue
-        at = _child(pad, "at")
-        local = (_number(at[1]), _number(at[2])) if at and len(at) > 2 else (0.0, 0.0)
-        local_angle = _number(at[3]) if at and len(at) > 3 else 0.0
+        local, local_angle = _position(pad, f"{path}.pad[{index}].at")
         drill = _drill(drill_node, transform)
         drill.rotation = transform.angle(local_angle)
+        offset = _point(drill_node, "offset") or (0.0, 0.0)
+        angle = math.radians(local_angle)
+        rotated_offset = (offset[0] * math.cos(angle) - offset[1] * math.sin(angle),
+                          offset[0] * math.sin(angle) + offset[1] * math.cos(angle))
+        hole_position = (local[0] + rotated_offset[0], local[1] + rotated_offset[1])
         pad_type = str(pad[2]) if len(pad) > 2 else ""
-        holes.append(Hole(transform.point(local), drill, pad_type == "thru_hole", footprint_id))
+        holes.append(Hole(transform.point(hole_position), drill, pad_type == "thru_hole", footprint_id))
     return holes
 
 
@@ -484,10 +537,11 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
     footprints: list[Footprint] = []
     holes: list[Hole] = []
     edges: list[Segment] = []
-    for node in _children(root, "footprint"):
+    for index, node in enumerate(_children(root, "footprint")):
+        path = f"footprint[{index}]"
         if len(node) < 2:
-            raise ValueError("footprint requires a library id")
-        transform = _footprint_transform(node)
+            raise ValueError(f"{path}: requires a library id")
+        transform = _footprint_transform(node, path)
         footprint_id = _uuid(node) or f"footprint-{len(footprints)}"
         courtyard = _courtyard(node, transform)
         footprints.append(Footprint(
@@ -495,7 +549,7 @@ def _extract_footprints(root: list[Any]) -> tuple[list[Footprint], list[Hole], l
             str(node[1]), transform.position, transform.rotation, "B" if transform.back else "F",
             courtyard or None, "present" if courtyard else "missing", _models(node),
         ))
-        holes.extend(_holes(node, footprint_id, transform))
+        holes.extend(_holes(node, footprint_id, transform, path))
         edges.extend(_graphics(node, "Edge.Cuts", transform))
     return footprints, holes, edges
 
@@ -508,12 +562,29 @@ def _open_errors(loops: list[OutlineLoop]) -> tuple[list[str], list[Error]]:
     return warnings, errors
 
 
+def _unsupported_geometry(root: list[Any]) -> list[Error]:
+    errors: list[Error] = []
+    scopes = [(root, "board")]
+    scopes.extend((footprint, f"footprint[{index}]") for index, footprint in enumerate(_children(root, "footprint")))
+    for node, path in scopes:
+        for index, item in enumerate(node[1:]):
+            if (not isinstance(item, list) or not item or item[0] not in _UNSUPPORTED_GRAPHICS
+                    or not _on_layer(item, "Edge.Cuts")):
+                continue
+            item_id = _uuid(item) or f"{path}.{item[0]}[{index}]"
+            errors.append(Error("unsupported_geometry", f"unsupported Edge.Cuts geometry: {item[0]}", [item_id]))
+    return errors
+
+
 def _parse_board(root: list[Any]) -> Board:
     thickness, thickness_source = _thickness(root)
     footprints, holes, footprint_edges = _extract_footprints(root)
     loops = _chain(_graphics(root, "Edge.Cuts") + footprint_edges)
     outline, inner = _classify(loops)
     warnings, errors = _open_errors(loops)
+    errors.extend(_unsupported_geometry(root))
+    if not outline and not errors:
+        errors.append(Error("missing_outline", "no recognized closed Edge.Cuts outline"))
     return Board(thickness, thickness_source, outline, inner, holes, footprints, warnings, errors)
 
 
