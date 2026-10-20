@@ -7,18 +7,22 @@ Set VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
+from build123d import Align, Box, Pos
 from test_mcp_cut_hole_circle import cut, extrude, rectangle_sketch
 from test_mcp_join_holes_frames import join_extrude, patterned_hole
+from test_mcp_kicad_import import FIXTURE as KICAD_FIXTURE
+from test_mcp_kicad_import import import_request
 from test_mcp_vertical import call_server_tool
 from test_viewer_browser import OUTAGE_ERRORS, playwright_module
 
 from coalesce.service import DocumentService
-from coalesce.viewer import ViewerSceneStore, ViewerServer
+from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 DRIVER = Path(__file__).with_name("viewer_review_smoke.mjs")
 NAMES = ["nw", "ne", "sw", "se"]
@@ -124,6 +128,40 @@ def test_scene_names_the_change_and_the_features_of_each_part(tmp_path, target, 
     assert wait_for(reopened, 8)["change"] is None
 
 
+def test_change_names_sketch_edits_and_board_import_and_refresh(tmp_path):
+    source = tmp_path / "board.kicad_pcb"
+    shutil.copyfile(KICAD_FIXTURE, source)
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    sketch = rectangle_sketch(request_id="s", revision=0, sketch_id="plate_sketch", entity_id="plate",
+                              width=60, height=40)
+
+    def refresh(request_id):
+        return {"action": "refresh", "requestId": request_id, "assetId": "controller_board", "format": "kicad_pcb"}
+
+    two = [*sketch["entities"], {**sketch["entities"][0], "id": "tab", "center": [40, 0]}]
+    mutations = [
+        ("sketch", sketch, "added sketch plate_sketch (1 profile)"),
+        ("sketch", {"action": "update", "requestId": "move", "sketchId": "plate_sketch",
+                    "set": {"position": [5, 2.5, 0]}},
+         "edited sketch plate_sketch position: (0, 0, 0) \u2192 (5, 2.5, 0) mm"),
+        ("sketch", {"action": "update", "requestId": "tab", "sketchId": "plate_sketch",
+                    "set": {"entities": two}},
+         "edited sketch plate_sketch profiles: 1 \u2192 2"),
+        ("import", import_request(source), "imported board controller_board"),
+        ("import", refresh("same"), "refreshed board controller_board, source unchanged"),
+        ("import", refresh("changed"), "refreshed board controller_board, source changed"),
+    ]
+    summaries = []
+    for revision, (tool, arguments, _) in enumerate(mutations, start=1):
+        if revision == 6:
+            source.write_bytes(source.read_bytes().replace(b"(thickness 1.2)", b"(thickness 1.6)"))
+        result = call(service, tool, {**arguments, "expectedRevision": revision - 1})
+        assert result.get("revision") == revision, result
+        summaries.append(wait_for(store, revision)["change"]["summary"])
+    assert summaries == [summary for *_, summary in mutations]
+
+
 @pytest.fixture(scope="module")
 def module():
     found = playwright_module()
@@ -132,16 +170,11 @@ def module():
     return found
 
 
-@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
-def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path, monkeypatch):
-    narrow = viewport[0] < 720
-    store = ViewerSceneStore()
-    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
-    server = ViewerServer(store)
-    restarted = None
+def open_driver(module, url, viewport):
+    """Start the browser driver on ``url``; ``step`` sends one command and checks the page has no errors."""
     shots = os.environ.get("VIEWER_SCREENSHOTS")
     driver = subprocess.Popen(
-        ["node", str(DRIVER), module, server.url, *map(str, viewport), *([shots] if shots else [])],
+        ["node", str(DRIVER), module, url, *map(str, viewport), *([shots] if shots else [])],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )
 
@@ -156,6 +189,17 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         assert errors == [], (name, errors)
         return result
 
+    return driver, step
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path, monkeypatch):
+    narrow = viewport[0] < 720
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    restarted = None
+    driver, step = open_driver(module, server.url, viewport)
     def commit(tool, arguments):
         result = call(service, tool, arguments)
         assert result.get("ok"), result
@@ -234,10 +278,22 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         assert fork["flat"]["pixels"] > 1000, fork["flat"]
         assert fork["flat"]["off"] <= fork["flat"]["pixels"] * 0.002, fork["flat"]
         step("fork-iso", do=[{"click": "Iso"}])
+        # the two bodies of the fork have the same label: each title adds the feature that ends it
+        names = ["plate_extrude \u00b7 portcut", "plate_extrude \u00b7 slot_cut"]
+        # a real tap (touch on narrow) on a row shows its details and does not hide the part
+        tapped = step("fork-tap", do=[{"blur": True}, {"tapPart": 1}])
+        assert tapped["pressed"] == ["true", "true"] and tapped["scene"]["visible"] == [True, True]
+        assert tapped["details"][1] == "4 holes: nw, ne, sw, se. Built by plate_extrude \u203a wall \u203a holes \u203a slot_cut"
+        assert tapped["names"] == names
+        # the swatch is the show/hide control, for that part only
+        hidden = step("fork-hide", do=[{"toggle": 1}])
+        assert hidden["pressed"] == ["true", "false"] and hidden["scene"]["visible"] == [True, False]
+        shown = step("fork-show", do=[{"toggle": 1}, {"blur": True}])
+        assert shown["pressed"] == ["true", "true"] and shown["scene"]["visible"] == [True, True]
 
         # keyboard only: tab from the page start to a part row, then to a view button
-        keys = step("keyboard-part", do=[{"blur": True}, {"tabTo": "plate_extrude"}])
-        assert keys["actions"][1]["visited"][-1] == "plate_extrude"
+        keys = step("keyboard-part", do=[{"blur": True}, {"tabTo": names[0]}])
+        assert keys["actions"][1]["visited"][-1] == names[0]
         assert keys["details"][0] is not None  # the focused part shows its detail, narrow too
         keys = step("keyboard-front", do=[{"tabTo": "Front", "press": "Enter"}])
         assert keys["actions"][0]["visited"][-1] == "Front"
@@ -265,6 +321,13 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         copied = step("ended-copied", outage=True, do=[{"click": "Copy request for your agent", "until": "Copied. Paste it to your agent"}])
         assert copied["clipboard"].startswith("The coalesce viewer I had open has ended.")
         assert '{"select": {"kind": "server"}}' in copied["clipboard"]
+        # a browser that refuses the clipboard gets the request as words instead
+        refused = step("ended-copy-refused", outage=True, do=[
+            {"rejectClipboard": True},
+            {"click": "Copied. Paste it to your agent",
+             "until": "Could not copy. Ask your agent to call query with select server"},
+        ])
+        assert "Could not copy. Ask your agent to call query with select server" in refused["status"]
         fresh = step("new-link", outage=True, do=[{"goto": restarted.url, "revision": revision}])
         assert fresh["link"] == "Live" and fresh["status"] is None
         driver.stdin.close()
@@ -274,3 +337,30 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         server.close()
         if restarted:
             restarted.close()
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_unrelated_part_in_front_is_not_pushed_behind(module, viewport):
+    """Depth priority is only for parts with the same box (a fork); a later part 0.3 mm above an
+    earlier plate still covers it, however many parts come between them in the list."""
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    plate = Box(60, 40, 3, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    # small parts inside the plate: hidden from view, they only move the cover down the list
+    inside = [ScenePart(f"inner_{x}_{y}", Pos(x * 5, y * 5, 1) * Box(1, 1, 1)) for x in range(-5, 6) for y in range(-3, 4)]
+    cover = Pos(0, 0, 3.3) * Box(40, 20, 1, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    try:
+        step("empty", wait={"ready": True})
+        store.publish(1, [ScenePart("plate", plate, color="#c03030"), *inside,
+                          ScenePart("cover", cover, color="#3050d0")])
+        for view in ("Iso", "Top"):
+            seen = step(f"cover-{view.lower()}", wait={"revision": 1}, do=[{"click": view}],
+                        flat={"fx": [0.45, 0.55], "fy": [0.45, 0.55]})
+            red, _, blue = seen["flat"]["median"]
+            assert blue > red, (view, seen["flat"])  # the cover's blue, not the plate's red
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()

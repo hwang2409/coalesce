@@ -8,9 +8,11 @@ const [modulePath, url, width, height, shots] = process.argv.slice(2);
 const { chromium } = await import(modulePath);
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const size = `${width}x${height}`;
+const touch = Number(width) < 720; // the narrow layout stands for a phone: taps, not clicks
 const context = await browser.newContext({
   viewport: { width: Number(width), height: Number(height) },
   deviceScaleFactor: 2,
+  hasTouch: touch,
   permissions: ['clipboard-read', 'clipboard-write'],
 });
 const page = await context.newPage();
@@ -30,6 +32,8 @@ async function snapshot() {
     link: await page.locator('#link-text').textContent(),
     change: await shown('#change'),
     parts: await page.locator('#parts li').allInnerTexts(),
+    names: await page.locator('.part-name').allTextContents(),
+    pressed: await page.locator('#parts [aria-pressed]').evaluateAll((controls) => controls.map((c) => c.getAttribute('aria-pressed'))),
     details: await page.locator('.part-detail').evaluateAll((lines) => lines.map((line) => (line.checkVisibility() ? line.textContent : null))),
     description: await page.locator('#view-description').textContent(),
     scale: await shown('#scale'),
@@ -75,8 +79,15 @@ const label = () => page.evaluate(() => {
   return (el.querySelector('.part-name') ?? el).textContent.trim();
 });
 
+const press = (locator) => (touch ? locator.tap() : locator.click());
+
 async function act(action) {
   if ('focusPart' in action) await page.locator('.part').nth(action.focusPart).focus();
+  if ('tapPart' in action) await press(page.locator('.part').nth(action.tapPart));
+  if ('toggle' in action) await press(page.locator('#parts li').nth(action.toggle).locator('.visibility'));
+  if ('rejectClipboard' in action) {
+    await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new DOMException('denied', 'NotAllowedError')); });
+  }
   if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
   if ('blur' in action) await page.evaluate(() => document.activeElement?.blur());

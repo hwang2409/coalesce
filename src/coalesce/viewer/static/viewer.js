@@ -161,7 +161,7 @@ function describeView() {
   const change = current?.change ? ` Latest change: ${current.change.summary}.` : '';
   $('view-description').textContent = parts.length
     ? `Revision ${current.revision}, ${framing}.${change} `
-      + parts.map((part) => [`${part.label}, ${formatSize(part)} mm`, partDetail(part)].filter(Boolean).join(', ')).join('; ') + '.'
+      + partTitles(parts).map((title, i) => [`${title}, ${formatSize(parts[i])} mm`, partDetail(parts[i])].filter(Boolean).join(', ')).join('; ') + '.'
     : 'No parts to show.';
 }
 
@@ -312,22 +312,45 @@ async function loadMesh(mesh) {
   geometries.set(mesh.id, { surface, edges });
 }
 
-function partObject(part, { surface, edges }, index) {
+// coincident parts (a graph fork leaves bodies with the same box) get rising depth priority, so
+// their shared faces show the earlier part instead of z-fighting stripes; every other part keeps
+// the default offset and is never pushed behind a part it lies in front of
+const MAX_DEPTH_RANK = 3; // shortcut: more coincident copies share the last rank, rare once forks are rejected
+
+function depthRanks(parts) {
+  const boxes = parts.map((part) => {
+    const { surface } = geometries.get(part.mesh.id);
+    if (!surface.boundingBox) surface.computeBoundingBox();
+    return surface.boundingBox;
+  });
+  const same = (a, b) => a.min.distanceTo(b.min) < 1e-3 && a.max.distanceTo(b.max) < 1e-3;
+  return boxes.map((box, i) => Math.min(MAX_DEPTH_RANK, boxes.slice(0, i).filter((other) => same(box, other)).length));
+}
+
+function partObject(part, { surface, edges }, rank) {
   const group = new THREE.Group();
   group.name = part.name;
   group.add(new THREE.Mesh(surface, new THREE.MeshStandardMaterial({
     color: part.color,
     roughness: 0.85,
     metalness: 0,
-    // a different depth offset per part: where parts overlap, coincident faces show the earlier
-    // part instead of z-fighting into triangle-shaped stripes
     polygonOffset: true,
-    polygonOffsetFactor: 1 + index,
-    polygonOffsetUnits: 1 + index * 16,
+    polygonOffsetFactor: 1 + rank,
+    polygonOffsetUnits: 1 + rank * 16, // a step of 4 units was not enough in SwiftShader
   })));
   group.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: EDGE })));
   group.visible = hiddenByUser.get(part.name) ?? part.visible;
   return group;
+}
+
+// a part's title: its label, plus the feature that ends it when another part has the same label
+function partTitles(parts) {
+  const counts = new Map();
+  for (const part of parts) counts.set(part.label, (counts.get(part.label) ?? 0) + 1);
+  return parts.map((part) => {
+    const last = part.features.at(-1)?.id;
+    return counts.get(part.label) > 1 && last && last !== part.label ? `${part.label} \u00b7 ${last}` : part.label;
+  });
 }
 
 function renderPartList(parts) {
@@ -340,42 +363,51 @@ function renderPartList(parts) {
     list.append(empty);
     return;
   }
-  for (const part of parts) {
+  const titles = partTitles(parts);
+  parts.forEach((part, index) => {
     const object = model.getObjectByName(part.name);
     const item = document.createElement('li');
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'part';
-    button.setAttribute('aria-pressed', String(object.visible));
-    button.title = `Show or hide ${part.label}`;
+    // the swatch is the show/hide control; the row itself only shows details
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'visibility';
+    toggle.setAttribute('aria-pressed', String(object.visible));
+    toggle.setAttribute('aria-label', `Show ${titles[index]}`);
+    toggle.title = `Show or hide ${titles[index]}`;
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = part.color;
+    toggle.append(swatch);
+    toggle.addEventListener('click', () => {
+      object.visible = !object.visible;
+      hiddenByUser.set(part.name, object.visible);
+      toggle.setAttribute('aria-pressed', String(object.visible));
+      requestRender();
+    });
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'part';
     const name = document.createElement('span');
     name.className = 'part-name';
-    name.textContent = part.label;
+    name.textContent = titles[index];
+    name.classList.toggle('collides', titles[index] !== part.label);
     name.title = part.name;
     const size = document.createElement('span');
     size.className = 'part-size';
     size.textContent = formatSize(part);
-    button.append(swatch, name, size);
+    button.append(name, size);
     const detail = partDetail(part);
     if (detail) {
       const line = document.createElement('span');
       line.className = 'part-detail';
       line.textContent = detail;
       button.append(line);
+      button.classList.add('has-detail');
     }
-    button.addEventListener('click', () => {
-      button.focus(); // safari does not focus a clicked button; focus shows the detail line
-      object.visible = !object.visible;
-      hiddenByUser.set(part.name, object.visible);
-      button.setAttribute('aria-pressed', String(object.visible));
-      requestRender();
-    });
-    item.append(button);
+    button.addEventListener('click', () => button.focus()); // safari does not focus a clicked button; focus shows the detail line
+    item.append(toggle, button);
     list.append(item);
-  }
+  });
 }
 
 // ---- state shown to the human
@@ -532,7 +564,8 @@ async function loadOne(revision) {
     await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     clearGroup(model, { ownsGeometry: false });
-    data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), index)));
+    const ranks = depthRanks(data.parts);
+    data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
     current = data;
     renderPartList(data.parts);
     showRevision(data);
@@ -654,6 +687,7 @@ if (window.coalesceDebug === true) {
       settled: frame === 0 && shownTop === canvas.getBoundingClientRect().top && shownHeight === canvas.clientHeight,
       revision: current?.revision ?? null,
       parts: model.children.map((group) => group.name),
+      visible: model.children.map((group) => group.visible),
       meshes: current?.parts.map((part) => part.mesh.id) ?? [],
       geometries: model.children.map((group) => group.children[0].geometry.uuid),
       camera: controls.enabled,
