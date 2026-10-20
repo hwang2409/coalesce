@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 _NM_PER_MM = 1_000_000
+_MIN_BOARD_NM = -(1 << 31)
+_MAX_BOARD_NM = (1 << 31) - 1
 
 
 def _ki_round(value: float) -> int:
@@ -18,7 +20,10 @@ def _ki_round(value: float) -> int:
 
 
 def _to_nm(value: float) -> int:
-    return _ki_round(value * _NM_PER_MM)
+    scaled = value * _NM_PER_MM
+    if not _MIN_BOARD_NM <= scaled <= _MAX_BOARD_NM:
+        raise ValueError(f"coordinate {value!r} mm is outside KiCad's signed 32-bit nanometre range")
+    return _ki_round(scaled)
 
 
 def _from_nm(value: int) -> float:
@@ -35,15 +40,15 @@ def _rotate_point(point: tuple[float, float], degrees: float) -> tuple[float, fl
     if angle == 0.0:
         rotated = x, y
     elif angle == 90.0:
-        rotated = -y, x
+        rotated = y, -x
     elif angle == 180.0:
         rotated = -x, -y
     elif angle == 270.0:
-        rotated = y, -x
+        rotated = -y, x
     else:
         radians = math.radians(angle)
-        rotated = (_ki_round(x * math.cos(radians) - y * math.sin(radians)),
-                   _ki_round(x * math.sin(radians) + y * math.cos(radians)))
+        rotated = (_ki_round(x * math.cos(radians) + y * math.sin(radians)),
+                   _ki_round(-x * math.sin(radians) + y * math.cos(radians)))
     return _from_nm(rotated[0]), _from_nm(rotated[1])
 
 
@@ -147,16 +152,12 @@ class _FootprintTransform:
 
     def point(self, point: tuple[float, float]) -> tuple[float, float]:
         x, y = point
-        # KiCad flips footprints across local X, then rotates integer coordinates with KiROUND:
-        # https://gitlab.com/kicad/code/kicad/-/blob/9.0.0/pcbnew/footprint.cpp
-        # https://gitlab.com/kicad/code/kicad/-/blob/9.0.0/libs/kimath/src/trigo.cpp
-        if self.back:
-            y = -y
+        # Back-footprint child coordinates are serialized after KiCad flips them.
         x, y = _rotate_point((x, y), self.rotation)
         return _canonical_point((self.position[0] + x, self.position[1] + y))
 
     def angle(self, local: float) -> float:
-        return (self.rotation + (-local if self.back else local)) % 360.0
+        return (self.rotation + local) % 360.0
 
 
 _TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[^\s()]+|[()]')
@@ -281,6 +282,12 @@ def _on_layer(node: list[Any], name: str) -> bool:
     return name in _layer_names(node)
 
 
+def _validated_segments(kind: str, segments: list[Segment]) -> list[Segment]:
+    if any(segment.kind == "line" and segment.start == segment.end for segment in segments):
+        raise ValueError(f"{kind} has a zero-length segment")
+    return segments
+
+
 def _outline_item(item: list[Any]) -> list[Segment]:
     kind = str(item[0])
     ident = _uuid(item)
@@ -292,21 +299,25 @@ def _outline_item(item: list[Any]) -> list[Segment]:
                   for point in _children(pts, "xy") if len(point) >= 3]
         if len(points) < 3 or len(points) != len(_children(pts, "xy")):
             raise ValueError(f"{kind}.pts requires at least three xy points")
-        return [Segment("line", point, points[(index + 1) % len(points)], id=ident)
-                for index, point in enumerate(points)]
+        return _validated_segments(
+            kind,
+            [Segment("line", point, points[(index + 1) % len(points)], id=ident)
+             for index, point in enumerate(points)],
+        )
     if kind in {"gr_rect", "fp_rect"}:
         start, end = _point(item, "start"), _point(item, "end")
         if start is None or end is None:
             raise ValueError(f"{kind} requires start and end")
         points = [start, (end[0], start[1]), end, (start[0], end[1])]
-        return [Segment("line", points[index], points[(index + 1) % 4], id=ident) for index in range(4)]
+        return _validated_segments(
+            kind,
+            [Segment("line", points[index], points[(index + 1) % 4], id=ident) for index in range(4)],
+        )
     if kind in {"gr_line", "fp_line"}:
         start, end = _point(item, "start"), _point(item, "end")
         if start is None or end is None:
             raise ValueError(f"{kind} requires start and end")
-        if start == end:
-            raise ValueError(f"{kind} has zero length")
-        return [Segment("line", start, end, id=ident)]
+        return _validated_segments(kind, [Segment("line", start, end, id=ident)])
     if kind in {"gr_arc", "fp_arc"}:
         start, mid, end = _point(item, "start"), _point(item, "mid"), _point(item, "end")
         if start is None or mid is None or end is None:
@@ -327,13 +338,14 @@ def _outline_item(item: list[Any]) -> list[Segment]:
 
 
 def _transform_segment(segment: Segment, transform: _FootprintTransform) -> Segment:
-    return Segment(
+    transformed = Segment(
         segment.kind,
         transform.point(segment.start),
         transform.point(segment.end),
         transform.point(segment.mid) if segment.mid else None,
         segment.id,
     )
+    return _validated_segments(segment.kind, [transformed])[0]
 
 
 def _arc_geometry(segment: Segment) -> tuple[tuple[float, float], float, float, float, bool]:

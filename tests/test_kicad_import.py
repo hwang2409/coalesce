@@ -60,9 +60,9 @@ def test_root_and_footprint_edges_accept_layer_and_layers_with_shared_transforms
     board = _parse_text(tmp_path, _board(root_layers, _line((1, 0), (0, 0)), front, back))
     segments = [segment for loop in board.outline + board.inner_cutouts for segment in loop.segments]
     endpoints = {(segment.start, segment.end) for segment in segments}
-    assert ((10.0, 20.0), (10.0, 22.0)) in endpoints
-    # KiCad back footprints mirror local Y, then apply the footprint rotation and translation.
-    assert ((30.0, 40.0), (30.0, 42.0)) in endpoints
+    assert ((10.0, 20.0), (10.0, 18.0)) in endpoints
+    # KiCad serializes back-footprint child coordinates after the flip.
+    assert ((30.0, 40.0), (30.0, 38.0)) in endpoints
 
 
 def test_shared_transform_applies_to_holes_and_courtyards_on_both_sides(tmp_path):
@@ -75,9 +75,9 @@ def test_shared_transform_applies_to_holes_and_courtyards_on_both_sides(tmp_path
                                                 footprint("Front", "F.Cu", 10),
                                                 footprint("Back", "B.Cu", 30)))
     front, back = board.footprints
-    assert (front.courtyard[0].start, front.courtyard[0].end) == ((8.0, 21.0), (8.0, 23.0))
-    assert (back.courtyard[0].start, back.courtyard[0].end) == ((32.0, 21.0), (32.0, 23.0))
-    assert [hole.position for hole in board.holes] == [(8.0, 21.0), (32.0, 21.0)]
+    assert (front.courtyard[0].start, front.courtyard[0].end) == ((12.0, 19.0), (12.0, 17.0))
+    assert (back.courtyard[0].start, back.courtyard[0].end) == ((32.0, 19.0), (32.0, 17.0))
+    assert [hole.position for hole in board.holes] == [(12.0, 19.0), (32.0, 19.0)]
 
 
 def test_typed_oval_drills_keep_dimensions_orientation_and_plating(tmp_path):
@@ -86,7 +86,7 @@ def test_typed_oval_drills_keep_dimensions_orientation_and_plating(tmp_path):
       (pad "2" np_thru_hole circle (at 0 0 15) (size 3 3) (drill 1.5)))"""
     board = _parse_text(tmp_path, _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]), footprint))
     slot, round_hole = board.holes
-    assert (slot.drill.shape, slot.drill.width, slot.drill.height, slot.drill.rotation) == ("oval", 1.0, 2.0, 60.0)
+    assert (slot.drill.shape, slot.drill.width, slot.drill.height, slot.drill.rotation) == ("oval", 1.0, 2.0, 120.0)
     assert slot.plated
     assert (round_hole.drill.shape, round_hole.drill.width, round_hole.drill.height) == ("circle", 1.5, 1.5)
     assert not round_hole.plated
@@ -157,14 +157,14 @@ def test_required_m5stack_extract_has_independent_mechanical_assertions():
     front, back, plated = board.footprints
     assert front.courtyard[0].start == (7.0, 3.0)
     assert front.courtyard[0].end == (9.45, 3.0)
-    # Back local (6.05, -4.1) mirrors to (6.05, 4.1), rotates -90°, then translates (14, 17).
-    assert back.courtyard[0].start == pytest.approx((18.1, 10.95))
-    assert back.courtyard[0].end == pytest.approx((9.9, 10.95))
+    # Back child coordinates are already flipped in the file; -90° then translates by (14, 17).
+    assert back.courtyard[0].start == pytest.approx((18.1, 23.05))
+    assert back.courtyard[0].end == pytest.approx((9.9, 23.05))
     assert back.models[0].path.endswith("SMDIP-6_W9.53mm.wrl")
     assert back.models[0].unresolved_variables
     assert (board.holes[0].position, board.holes[0].drill.width, board.holes[0].plated) == ((7.0, 3.0), 2.2, False)
-    # Back local (-3, 0) mirrors unchanged, rotates -90°, then translates (6.9, 33).
-    assert board.holes[1].position == pytest.approx((6.9, 36.0))
+    # Back local (-3, 0) rotates -90°, then translates (6.9, 33).
+    assert board.holes[1].position == pytest.approx((6.9, 30.0))
     assert (board.holes[1].drill.width, board.holes[1].plated) == (0.8, True)
     assert plated.reference == "CN5"
 
@@ -223,22 +223,22 @@ def test_transformed_endpoints_use_one_nanometre_canonical_keys(tmp_path):
     footprint = """(footprint "Quarter" (layer "F.Cu") (at 0 0 90)
       (fp_line (start 0 0) (end 1 0) (layer "Edge.Cuts")))"""
     closed = _parse_text(tmp_path, _board(footprint,
-                                           _line((0, 1), (-1, 1)),
-                                           _line((-1, 1), (-1, 0)),
+                                           _line((0, -1), (-1, -1)),
+                                           _line((-1, -1), (-1, 0)),
                                            _line((-1, 0), (0, 0))))
     assert len(closed.outline) == 1
     assert closed.errors == []
 
     gap = _parse_text(tmp_path, _board(footprint,
-                                        _line((0.001, 1), (-1, 1)),
-                                        _line((-1, 1), (-1, 0)),
+                                        _line((0.001, -1), (-1, -1)),
+                                        _line((-1, -1), (-1, 0)),
                                         _line((-1, 0), (0, 0))))
     assert [error.kind for error in gap.errors] == ["open_outline"]
-    assert gap.errors[0].endpoints[0] == pytest.approx((0.0, 1.0))
-    assert gap.errors[0].endpoints[1] == (0.001, 1.0)
+    assert gap.errors[0].endpoints[0] == pytest.approx((0.0, -1.0))
+    assert gap.errors[0].endpoints[1] == (0.001, -1.0)
 
 
-def test_drill_offsets_follow_pad_rotation_and_back_mirroring(tmp_path):
+def test_drill_offsets_follow_serialized_pad_and_footprint_rotation(tmp_path):
     def footprint(name, layer, position, rotation):
         return f"""(footprint "{name}" (layer "{layer}") (at {position[0]} {position[1]} {rotation})
           (pad "1" np_thru_hole circle (at 3 4 30) (size 2 2)
@@ -248,10 +248,10 @@ def test_drill_offsets_follow_pad_rotation_and_back_mirroring(tmp_path):
                                                 footprint("Front", "F.Cu", (10, 20), 90),
                                                 footprint("Back", "B.Cu", (30, 40), 90)))
     # Offset (1, 2) rotates 30 degrees around the pad, then the footprint transform is applied.
-    offset_x = 1 * 3**0.5 / 2 - 2 * 0.5
-    offset_y = 1 * 0.5 + 2 * 3**0.5 / 2
-    assert board.holes[0].position == pytest.approx((10 - (4 + offset_y), 20 + 3 + offset_x))
-    assert board.holes[1].position == pytest.approx((30 + (4 + offset_y), 40 + 3 + offset_x))
+    offset_x = 1 * 3**0.5 / 2 + 2 * 0.5
+    offset_y = -1 * 0.5 + 2 * 3**0.5 / 2
+    assert board.holes[0].position == pytest.approx((10 + 4 + offset_y, 20 - 3 - offset_x))
+    assert board.holes[1].position == pytest.approx((30 + 4 + offset_y, 40 - 3 - offset_x))
 
 
 def test_arc_containment_uses_the_true_curve_not_ten_degree_chords(tmp_path):
@@ -293,12 +293,12 @@ def test_non_cardinal_footprint_rotation_uses_integer_nanometres(tmp_path):
       (fp_line (start 0 0) (end 0.000001 0) (layer "Edge.Cuts") (uuid rotated-edge)))"""
     board = _parse_text(tmp_path, _board(
         footprint,
-        _line((0.000001, 0.000001), (0, 0.000001)),
-        _line((0, 0.000001), (0, 0)),
+        _line((0.000001, -0.000001), (0, -0.000001)),
+        _line((0, -0.000001), (0, 0)),
     ))
     assert board.errors == []
     rotated = next(segment for segment in board.outline[0].segments if segment.id == "rotated-edge")
-    assert {rotated.start, rotated.end} == {(0.0, 0.0), (0.000001, 0.000001)}
+    assert {rotated.start, rotated.end} == {(0.0, 0.0), (0.000001, -0.000001)}
 
 
 def test_arc_seam_y_uses_half_open_vertex_ownership(tmp_path):
