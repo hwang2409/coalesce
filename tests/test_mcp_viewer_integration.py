@@ -201,23 +201,16 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
                 "part": {"label": "plate_extrude", "title": "plate_extrude/outline"},
                 "errors": [],
             }
-            failed = {
-                "action": "update",
-                "expectedRevision": 3,
-                "requestId": "missing-1",
-                "featureId": "missing_extrude",
-                "kind": "extrude",
-                "set": {"distance": {"value": 12, "unit": "mm"}},
-            }
+            failed = {**updated, "expectedRevision": 3, "requestId": "bad-1", "colour": "red"}
             failure = result_json(await session.call_tool("feature", failed))
-            assert failure["error"]["code"] == "UNKNOWN_ID"
+            assert failure["error"]["code"] == "INVALID_PARAMETER"
             driver.stdin.write(b"failure\n")
             await driver.stdin.drain()
             third = json.loads(await driver.stdout.readline())
             assert third == {
                 "revision": "3",
                 "parts": 1,
-                "failure": "UNKNOWN_ID: unknown extrude: missing_extrude",
+                "failure": "INVALID_PARAMETER: unknown field 'colour'",
                 "errors": [],
             }
             assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
@@ -292,8 +285,7 @@ async def _wait_for_failure(store, previous):
     return store.snapshot()[2]
 
 
-@pytest.mark.anyio
-async def test_schema_invalid_mutations_publish_viewer_failure_and_keep_scene(tmp_path):
+async def _schema_failure(tmp_path, tool, arguments):
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / "plate.coalesce.json", scene_store=store)
     await call_server_tool(service, "sketch", SKETCH)
@@ -302,27 +294,63 @@ async def test_schema_invalid_mutations_publish_viewer_failure_and_keep_scene(tm
     while store.current_revision != 2 and time.monotonic() < deadline:
         await asyncio.sleep(0.02)
     good = store.scene(2)
-
-    bad_sketch = {**SKETCH, "expectedRevision": 2, "requestId": "bad-sketch", "entities": "outline"}
-    sketch = await call_server_tool(service, "sketch", bad_sketch)
-    sketch_failure = await _wait_for_failure(store, None)
-    bad_feature = {**FEATURE, "expectedRevision": 2, "requestId": "bad-feature", "colour": "red"}
-    feature = await call_server_tool(service, "feature", bad_feature)
-    feature_failure = await _wait_for_failure(store, sketch_failure)
-
-    assert sketch["error"]["code"] == feature["error"]["code"] == "INVALID_PARAMETER"
-    assert sketch_failure == {
-        "revision": 2,
-        "featureIds": ["plate_profile"],
-        "error": {"code": "INVALID_PARAMETER", "message": sketch["error"]["message"]},
-    }
-    assert feature_failure == {
-        "revision": 2,
-        "featureIds": ["plate_extrude"],
-        "error": {"code": "INVALID_PARAMETER", "message": feature["error"]["message"]},
-    }
+    result = await call_server_tool(service, tool, arguments)
+    failure = await _wait_for_failure(store, None)
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["message"] == failure["error"]["message"]
     assert store.current_revision == 2
     assert store.scene(2) == good
+    return failure
+
+
+def _entity(**changes):
+    return [{**SKETCH["entities"][0], **changes}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"entities": "outline"}, "entities must be an array (field: entities)"),
+        ({"entities": _entity(colour="red")}, "unknown field 'colour' (field: entities[0])"),
+        (
+            {"entities": [{k: v for k, v in _entity()[0].items() if k != "height"}]},
+            "missing required field 'height' (field: entities[0])",
+        ),
+        (
+            {"entities": _entity(rotation={"value": 1, "unit": "turn"})},
+            "unit must be one of 'deg', 'rad' (field: entities[0].rotation.unit)",
+        ),
+        ({"plane": {"kind": "origin", "name": "YZ"}}, "name must be 'XY' (field: plane.name)"),
+        ({"entities": []}, "invalid value (field: entities)"),
+    ],
+)
+async def test_schema_invalid_sketch_shows_coalesce_wording_in_viewer(tmp_path, changes, message):
+    arguments = {**SKETCH, "expectedRevision": 2, "requestId": "bad-sketch", **changes}
+    failure = await _schema_failure(tmp_path, "sketch", arguments)
+    assert failure == {
+        "revision": 2,
+        "featureIds": ["plate_profile"],
+        "error": {"code": "INVALID_PARAMETER", "message": message},
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"colour": "red"}, "unknown field 'colour'"),
+        ({"expectedRevision": -1}, "expectedRevision must be at least 0 (field: expectedRevision)"),
+    ],
+)
+async def test_schema_invalid_feature_shows_coalesce_wording_in_viewer(tmp_path, changes, message):
+    arguments = {**FEATURE, "expectedRevision": 2, "requestId": "bad-feature", **changes}
+    failure = await _schema_failure(tmp_path, "feature", arguments)
+    assert failure == {
+        "revision": 2,
+        "featureIds": ["plate_extrude"],
+        "error": {"code": "INVALID_PARAMETER", "message": message},
+    }
 
 
 def _stdio(path, *args, env=None):

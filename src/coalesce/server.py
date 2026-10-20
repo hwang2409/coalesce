@@ -56,6 +56,49 @@ def _tool_result(payload: dict[str, Any]) -> types.CallToolResult:
     )
 
 
+_TYPE_NAMES = {
+    "array": "an array",
+    "object": "an object",
+    "string": "a string",
+    "number": "a number",
+    "integer": "an integer",
+    "boolean": "a boolean",
+    "null": "null",
+}
+
+
+def _quoted(values) -> str:
+    return ", ".join(repr(value) for value in values)
+
+
+def schema_error_message(error: ValidationError) -> str:
+    """Stable coalesce wording for a schema failure; never the jsonschema library text."""
+    path = "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" for part in error.absolute_path
+    ).lstrip(".")
+    last = error.absolute_path[-1] if error.absolute_path else None
+    subject = last if isinstance(last, str) else "value"
+    kind, expected, instance = error.validator, error.validator_value, error.instance
+    if kind == "type":
+        types_ = [expected] if isinstance(expected, str) else expected
+        text = f"{subject} must be " + " or ".join(_TYPE_NAMES.get(t, t) for t in types_)
+    elif kind == "additionalProperties" and isinstance(instance, dict):
+        unknown = sorted(set(instance) - set(error.schema.get("properties", {})))
+        text = f"unknown field{'s' if len(unknown) > 1 else ''} {_quoted(unknown)}"
+    elif kind == "required" and isinstance(instance, dict):
+        missing = next(name for name in expected if name not in instance)
+        text = f"missing required field {missing!r}"
+    elif kind == "minimum":
+        text = f"{subject} must be at least {expected}"
+    elif kind == "enum":
+        text = f"{subject} must be one of {_quoted(expected)}"
+    elif kind == "const":
+        text = f"{subject} must be {expected!r}"
+    else:
+        text = "invalid value"
+    return f"{text} (field: {path})" if path else text
+
+
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return ACTION_SCHEMAS.get(name, {}).get(arguments.get("action"), TOOL_SCHEMAS[name])
 
@@ -113,7 +156,7 @@ def create_server(service: DocumentService) -> Server:
                 "units": "mm",
                 "error": {
                     "code": "INVALID_PARAMETER",
-                    "message": error.message,
+                    "message": schema_error_message(error),
                     "retryable": False,
                     "operation": name,
                     **details,
