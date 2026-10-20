@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,47 @@ class Document:
     revision: int = 0
     receipts: list[dict[str, Any]] = field(default_factory=list)
     request_hashes: list[dict[str, str]] = field(default_factory=list)
+
+
+class ExportJournal:
+    """Append-only durable receipts for mutation-free exports."""
+
+    def __init__(self, document_path: str | Path):
+        document = Path(document_path).expanduser().resolve()
+        self.path = document.with_name(f"{document.name}.exports.jsonl")
+
+    def load(self) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        receipts = []
+        for line in self.path.read_bytes().splitlines():
+            try:
+                receipts.append(json.loads(line))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                warnings.warn(
+                    f"torn export journal line ignored in {self.path}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        return receipts
+
+    def append(self, receipt: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = json.dumps(
+            receipt, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode() + b"\n"
+        descriptor = os.open(
+            self.path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o600,
+        )
+        try:
+            view = memoryview(encoded)
+            while view:
+                view = view[os.write(descriptor, view) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 class DocumentStore:

@@ -198,9 +198,10 @@ async def test_step_export_all_selected_restart_and_replay(tmp_path):
     with journal.open("ab") as stream:
         stream.write(b'{"requestId":"torn')
     with pytest.warns(RuntimeWarning, match="torn export journal line"):
-        replay_after_torn_line = (
-            await run_server(document, [("export", export_request(first_path))])
-        )[0]
+        restarted_service = DocumentService(document)
+    replay_after_torn_line = await call_server_tool(
+        restarted_service, "export", export_request(first_path)
+    )
     assert replay_after_torn_line == exported
     assert document.read_bytes() == document_bytes
 

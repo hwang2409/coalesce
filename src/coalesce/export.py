@@ -6,9 +6,9 @@ import hashlib
 import json
 import math
 import os
+import secrets
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -186,21 +186,12 @@ def _validate(expected: dict[str, Any], actual: dict[str, Any]) -> None:
         )
 
 
-def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
-    """Write, validate, and atomically publish selected terminal parts to a new path."""
-    from build123d import Compound, Solid, export_step
-
+def _open_directory(path: Path) -> int:
     if not path.is_absolute():
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
             "export path must be absolute",
             hint="provide an explicit absolute path whose parent directory already exists",
-        )
-    if os.path.lexists(path):
-        raise ExportFailure(
-            "EXPORT_PATH_EXISTS",
-            "export path already exists; STEP export never overwrites",
-            hint="choose a new path",
         )
     parent = path.parent
     if not parent.is_dir() or parent.stat().st_mode & 0o222 == 0:
@@ -209,80 +200,162 @@ def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
             "export parent directory does not exist or is not writable",
             hint="create a writable parent directory and retry with a new path",
         )
+    return os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
 
-    shapes = [Solid(part.shape.wrapped, label=part.label) for part in parts]
-    expected = _metrics(shapes, [part.label for part in parts])
-    temporary: Path | None = None
-    published = False
+
+def _create_temporary(directory_fd: int, destination_name: str) -> tuple[str, int]:
+    for _attempt in range(10):
+        name = f".{destination_name}.{secrets.token_hex(8)}.tmp"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError:
+            continue
+        return name, descriptor
+    raise OSError("could not allocate a private export temporary file")
+
+
+def _sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while block := os.read(descriptor, 1024 * 1024):
+        digest.update(block)
+    return digest.hexdigest()
+
+
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _require_named_inode(directory_fd: int, name: str, descriptor: int) -> None:
+    named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    if not _same_inode(named, os.fstat(descriptor)):
+        raise OSError("private export temporary file was replaced")
+
+
+def _unlink_if_same(directory_fd: int, name: str, expected: os.stat_result) -> None:
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as stream:
-            temporary = Path(stream.name)
-        export_step(Compound(children=shapes, label="coalesce_export"), temporary)
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        actual = verify_step_fresh(temporary)
+        actual = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if _same_inode(actual, expected):
+        os.unlink(name, dir_fd=directory_fd)
+
+
+def _after_link(
+    _directory_fd: int, _destination_name: str, _linked_stat: os.stat_result
+) -> None:
+    """Internal test seam for replacement races after publication."""
+
+
+def _link(
+    directory_fd: int, temporary_name: str, destination_name: str
+) -> None:
+    try:
+        os.link(
+            temporary_name,
+            destination_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError as error:
+        raise ExportFailure(
+            "EXPORT_PATH_EXISTS",
+            "export path already exists; STEP export never overwrites",
+            hint="choose a new path",
+        ) from error
+
+
+def _publish_step(
+    path: Path, shapes: list[Any], expected: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    from build123d import Compound, export_step
+
+    directory_fd = _open_directory(path)
+    temporary_name: str | None = None
+    temporary_fd: int | None = None
+    linked_stat: os.stat_result | None = None
+    try:
+        temporary_name, temporary_fd = _create_temporary(directory_fd, path.name)
+        temporary_path = path.parent / temporary_name
+        export_step(Compound(children=shapes, label="coalesce_export"), temporary_path)
+        os.fsync(temporary_fd)
+        _require_named_inode(directory_fd, temporary_name, temporary_fd)
+        digest = _sha256(temporary_fd)
+        actual = verify_step_fresh(temporary_path)
         _validate(expected, actual)
-        try:
-            os.link(temporary, path)
-        except FileExistsError as error:
-            raise ExportFailure(
-                "EXPORT_PATH_EXISTS",
-                "export path already exists; STEP export never overwrites",
-                hint="choose a new path",
-            ) from error
-        published = True
-        temporary.unlink()
-        temporary = None
-        directory_fd = os.open(parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        labels_expected = [part.label for part in parts]
-        labels_actual = [part.get("label", "") for part in actual["parts"]]
-        for part_id, evidence in zip(
-            [part.part_id for part in parts], actual["parts"], strict=True
-        ):
-            evidence["partId"] = part_id
-        return {
-            "path": str(path),
-            "partIds": [part.part_id for part in parts],
-            "sha256": digest,
-            "tolerance": {
-                "relative": RELATIVE_TOLERANCE,
-                "absolute": ABSOLUTE_TOLERANCE,
-            },
-            "validation": {
-                "geometry": {"status": "passed", "freshProcess": True},
-                "labels": {
-                    "status": "preserved" if labels_actual == labels_expected else "not preserved",
-                    "expected": labels_expected,
-                    "actual": labels_actual,
-                },
-                "reimport": actual,
-            },
-        }
+        _require_named_inode(directory_fd, temporary_name, temporary_fd)
+        if _sha256(temporary_fd) != digest:
+            raise OSError("private export temporary file changed during validation")
+        _link(directory_fd, temporary_name, path.name)
+        linked_stat = os.fstat(temporary_fd)
+        _after_link(directory_fd, path.name, linked_stat)
+        os.fsync(directory_fd)
+        return digest, actual
     except ExportFailure:
-        if published:
-            path.unlink(missing_ok=True)
+        if linked_stat is not None:
+            _unlink_if_same(directory_fd, path.name, linked_stat)
         raise
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        if published:
-            path.unlink(missing_ok=True)
+        if linked_stat is not None:
+            _unlink_if_same(directory_fd, path.name, linked_stat)
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
             "STEP export could not be written",
             hint="check that the absolute parent directory is writable and retry with a new path",
         ) from error
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        os.close(directory_fd)
+
+
+def _export_fields(
+    path: Path, parts: list[Any], digest: str, actual: dict[str, Any]
+) -> dict[str, Any]:
+    part_ids = [part.part_id for part in parts]
+    labels_expected = [part.label for part in parts]
+    labels_actual = [part.get("label", "") for part in actual["parts"]]
+    for part_id, evidence in zip(part_ids, actual["parts"], strict=True):
+        evidence["partId"] = part_id
+    return {
+        "path": str(path),
+        "partIds": part_ids,
+        "sha256": digest,
+        "tolerance": {
+            "relative": RELATIVE_TOLERANCE,
+            "absolute": ABSOLUTE_TOLERANCE,
+        },
+        "validation": {
+            "geometry": {"status": "passed", "freshProcess": True},
+            "labels": {
+                "status": "preserved" if labels_actual == labels_expected else "not preserved",
+                "expected": labels_expected,
+                "actual": labels_actual,
+            },
+            "reimport": actual,
+        },
+    }
+
+
+def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
+    """Write, validate, and publish selected terminal parts without replacement."""
+    from build123d import Solid
+
+    shapes = [Solid(part.shape.wrapped, label=part.label) for part in parts]
+    expected = _metrics(shapes, [part.label for part in parts])
+    digest, actual = _publish_step(path, shapes, expected)
+    return _export_fields(path, parts, digest, actual)
 
 
 def _main() -> None:
