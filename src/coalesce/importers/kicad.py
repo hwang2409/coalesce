@@ -33,6 +33,11 @@ class OutlineLoop:
 
     @property
     def bbox(self) -> dict[str, float]:
+        if len(self.segments) == 1 and self.segments[0].kind == "circle":
+            center, edge = self.segments[0].start, self.segments[0].end
+            radius = math.hypot(edge[0] - center[0], edge[1] - center[1])
+            return {"min_x": center[0] - radius, "min_y": center[1] - radius,
+                    "max_x": center[0] + radius, "max_y": center[1] + radius}
         points = [p for s in self.segments for p in (s.start, s.end, s.mid) if p]
         return {"min_x": min(p[0] for p in points), "min_y": min(p[1] for p in points),
                 "max_x": max(p[0] for p in points), "max_y": max(p[1] for p in points)}
@@ -155,8 +160,15 @@ def _transform(node: list[Any], name: str, default: tuple[float, float, float]) 
     return tuple(_num(v) for v in values[:3])  # type: ignore[return-value]
 
 
-def _outline_item(item: list[Any]) -> Segment | None:
+def _outline_item(item: list[Any]) -> Segment | list[Segment] | None:
     kind = str(item[0]); ident = _uuid(item)
+    if kind == "gr_rect":
+        a, b = _point(item, "start"), _point(item, "end")
+        if not (a and b):
+            return None
+        x1, y1 = a; x2, y2 = b
+        points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        return [Segment("line", points[i], points[(i + 1) % 4], id=ident) for i in range(4)]
     if kind in ("gr_line", "fp_line"):
         a, b = _point(item, "start"), _point(item, "end")
         return Segment("line", a, b, id=ident) if a and b else None
@@ -173,7 +185,11 @@ def _outline_item(item: list[Any]) -> Segment | None:
 def _chain(items: list[Segment], warnings: list[str]) -> list[OutlineLoop]:
     loops: list[OutlineLoop] = []; remaining = items[:]; tol = 1e-5
     while remaining:
-        first = remaining.pop(0); chain = [first]; end = first.end
+        first = remaining.pop(0)
+        if first.kind == "circle":
+            loops.append(OutlineLoop([first], True))
+            continue
+        chain = [first]; end = first.end
         while remaining and any(abs(end[i] - first.start[i]) > tol for i in (0, 1)):
             found = next((s for s in remaining if sum((s.start[i] - end[i]) ** 2 for i in (0, 1)) <= tol ** 2), None)
             reverse = False
@@ -208,8 +224,9 @@ def parse_kicad_pcb(path: str | Path) -> Board:
     general = _child(root, "general")
     if general and _child(general, "thickness"):
         thickness, source = _num(_child(general, "thickness")[1]), "general.thickness"
-    edge_items = [_outline_item(x) for x in root[1:] if isinstance(x, list) and x and x[0] in ("gr_line", "gr_arc", "gr_circle") and _child(x, "layer") and _child(x, "layer")[1] == "Edge.Cuts"]
-    outline = _chain([x for x in edge_items if x], warnings)
+    edge_items = [_outline_item(x) for x in root[1:] if isinstance(x, list) and x and x[0] in ("gr_line", "gr_arc", "gr_circle", "gr_rect") and _child(x, "layer") and _child(x, "layer")[1] == "Edge.Cuts"]
+    edge_segments = [segment for item in edge_items if item for segment in (item if isinstance(item, list) else [item])]
+    outline = _chain(edge_segments, warnings)
     holes: list[Hole] = []; footprints: list[Footprint] = []
     for fp in _children(root, "footprint"):
         fid = _uuid(fp) or f"footprint-{len(footprints)}"; at = _child(fp, "at")
@@ -242,7 +259,7 @@ def parse_kicad_pcb(path: str | Path) -> Board:
         aa, bb = a.bbox, b.bbox
         return (aa["min_x"] < bb["min_x"] and aa["max_x"] > bb["max_x"] and
                 aa["min_y"] < bb["min_y"] and aa["max_y"] > bb["max_y"])
-    inner = [x for x in closed if any(contains(other, x) for other in closed if other is not x)]
-    outer = [x for x in closed if x not in inner]
+    inner = [OutlineLoop(x.segments, x.closed, True) for x in closed if any(contains(other, x) for other in closed if other is not x)]
+    outer = [x for x in closed if not any(contains(other, x) for other in closed if other is not x)]
     errors = [Error("open_outline", "Edge.Cuts loop is open", [s.id for s in x.segments if s.id], [x.segments[0].start, x.segments[-1].end]) for x in outline if not x.closed]
     return Board(thickness, source, outer, inner, holes, footprints, warnings, errors)
