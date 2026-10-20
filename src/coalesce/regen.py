@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from build123d import Edge, Shape
 
-from .boolean import cut_shape, fuse_shape
+from .boolean import FuseResult, cut_shape, fuse_shape
 from .cut import make_cut_tool
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
@@ -119,6 +119,36 @@ def _resolve_fillet_edges(
     return unique
 
 
+def _join_extrude(
+    node: Extrude,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+) -> FuseResult:
+    if node.target is None:
+        raise GraphError(
+            "join_target_required",
+            f"join extrude {node.id} requires a target",
+            feature=node.id,
+        )
+    prism = extrude_sketch(node, graph.nodes[node.sketch])
+    result = fuse_shape(
+        node.id,
+        shapes[node.target],
+        states[node.target],
+        prism.shape,
+        prism.candidates,
+    )
+    if not result.joined_material:
+        raise GraphError(
+            "JOIN_NO_CONTACT",
+            f"join extrude {node.id} does not contact target {node.target}",
+            feature=node.id,
+            target=node.target,
+        )
+    return result
+
+
 def regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
@@ -133,8 +163,8 @@ def regenerate(graph: Graph) -> RegenResult:
         if isinstance(node, Sketch):
             continue
         if isinstance(node, Extrude):
-            prism = extrude_sketch(node, graph.nodes[node.sketch])
             if node.operation == "new_body":
+                prism = extrude_sketch(node, graph.nodes[node.sketch])
                 shapes[node.id] = prism.shape
                 states[node.id] = prism.candidates
                 provenance[node.id] = prism.candidates
@@ -146,29 +176,11 @@ def regenerate(graph: Graph) -> RegenResult:
                     feature=node.id,
                     operation=node.operation,
                 )
-            if node.target is None:
-                raise GraphError(
-                    "join_target_required",
-                    f"join extrude {node.id} requires a target",
-                    feature=node.id,
-                )
-            result = fuse_shape(
-                node.id,
-                shapes[node.target],
-                states[node.target],
-                prism.shape,
-                prism.candidates,
-            )
+            result = _join_extrude(node, graph, shapes, states)
             joined_material[node.id] = result.joined_material
-            if not result.joined_material:
-                raise GraphError(
-                    "JOIN_NO_CONTACT",
-                    f"join extrude {node.id} does not contact target {node.target}",
-                    feature=node.id,
-                    target=node.target,
-                )
             shapes[node.id] = result.shape
             states[node.id] = result.candidates
+            assert node.target is not None
             _replace_provenance(provenance, states[node.target], result.candidates)
         elif isinstance(node, Cut):
             tool_sketch = graph.nodes[node.tool]

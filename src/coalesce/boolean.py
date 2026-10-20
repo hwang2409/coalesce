@@ -236,17 +236,18 @@ def _join_body(feature: str, target_candidates: list[Candidate]) -> BodySource:
 def _joined_material(
     algorithm: BRepAlgoAPI_Fuse,
     result: Shape,
+    target: Shape,
     target_candidates: list[Candidate],
-    tool_candidates: list[Candidate],
+    tool: Shape,
 ) -> bool:
-    changed = any(
+    fewer_solids = len(result.solids()) < len(target.solids()) + len(tool.solids())
+    target_changed = any(
         algorithm.IsDeleted(source.entity.wrapped)
-        or bool(algorithm.Modified(source.entity.wrapped))
-        or bool(algorithm.Generated(source.entity.wrapped))
-        for source in [*target_candidates, *tool_candidates]
+        or len(algorithm.Modified(source.entity.wrapped)) > 0
+        for source in target_candidates
         if isinstance(source.entity, Face)
     )
-    return changed and len(result.solids()) == 1
+    return fewer_solids or target_changed
 
 
 def fuse_shape(
@@ -292,5 +293,5 @@ def fuse_shape(
         result,
         [*result_faces, *edges],
         algorithm,
-        _joined_material(algorithm, result, target_candidates, tool_candidates),
+        _joined_material(algorithm, result, target, target_candidates, tool),
     )

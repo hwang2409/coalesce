@@ -55,23 +55,24 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _node_payload(node: Any) -> dict[str, Any]:
+    payload = asdict(node)
+    if isinstance(node, Sketch):
+        payload["entities"] = [
+            {"type": entity.__class__.__name__, **asdict(entity)}
+            for entity in node.entities
+        ]
+    elif isinstance(node, Extrude) and node.operation == "new_body":
+        payload.pop("operation")
+        if node.target is None:
+            payload.pop("target")
+    elif isinstance(node, Fillet):
+        payload["edges"] = [reference.to_dict() for reference in node.edges]
+    return {"type": node.__class__.__name__, **payload}
+
+
 def dumps(graph: Graph) -> str:
-    nodes = []
-    for node in graph.nodes.values():
-        payload = asdict(node)
-        if isinstance(node, Sketch):
-            payload["entities"] = [
-                {"type": entity.__class__.__name__, **asdict(entity)}
-                for entity in node.entities
-            ]
-        elif isinstance(node, Extrude) and node.operation == "new_body":
-            payload.pop("operation")
-            if node.target is None:
-                payload.pop("target")
-        elif isinstance(node, Fillet):
-            payload["edges"] = [reference.to_dict() for reference in node.edges]
-        nodes.append({"type": node.__class__.__name__, **payload})
-    return json.dumps({"nodes": nodes})
+    return json.dumps({"nodes": [_node_payload(node) for node in graph.nodes.values()]})
 
 
 def loads(value: str) -> Graph:
