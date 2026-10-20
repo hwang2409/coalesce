@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         Hole,
         Parameter,
         PcbBase,
+        PcbLid,
         Plane,
         Rectangle,
         Sketch,
@@ -37,13 +38,13 @@ if TYPE_CHECKING:
 __all__ = [
     "BodySource", "Cardinality", "Circle", "Cut", "Extrude", "Fillet", "Graph",
     "GraphError", "Hole", "HoleSurfaceSource", "MaxAlong", "Normal", "Parameter",
-    "PcbBase", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
+    "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
     "Sketch", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
 ]
 
 _GRAPH_NAMES = {
     "Circle", "Cut", "Extrude", "Fillet", "Graph", "GraphError", "Hole", "Parameter",
-    "PcbBase", "Plane", "Rectangle", "Sketch", "Standoffs",
+    "PcbBase", "PcbLid", "Plane", "Rectangle", "Sketch", "Standoffs",
 }
 _REFERENCE_NAMES = {
     "BodySource", "Cardinality", "HoleSurfaceSource", "MaxAlong", "Normal", "Position",

@@ -603,6 +603,7 @@ def test_unknown_feature_kind_and_invalid_geometry_are_safe(tmp_path):
         "hole",
         "pcb_base",
         "standoffs",
+        "pcb_lid",
     ]
 
     failed = service.sketch(

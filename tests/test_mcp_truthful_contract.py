@@ -17,6 +17,7 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         "hole",
         "pcb_base",
         "standoffs",
+        "pcb_lid",
     ]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
     assert "fillet" not in advertised
@@ -136,6 +137,7 @@ def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup()
     assert "flip has no effect for through-all" in guide
     assert "pcb_base" in guide
     assert "stable `holeids`" in guide
-    assert "import` the board, create `pcb_base`, create `standoffs`" in guide
+    assert "import` the board, create `pcb_base`, create `standoffs`, create" in guide
+    assert "`pcb_lid`, run `check`" in guide
     assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE
     assert '"mcpServers"' in TOOLS_GUIDE

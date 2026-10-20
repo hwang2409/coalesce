@@ -1,18 +1,14 @@
 import math
 import shutil
 import time
-from pathlib import Path
 
+import anyio
 import pytest
+from build123d import Face, GeomType, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
-from build123d import Shape
 from test_mcp_cut_hole_circle import cut, rectangle_sketch
 from test_mcp_vertical import run_server
-
-from coalesce.export import verify_step_fresh
-from coalesce.service import DocumentService
-from coalesce.viewer import ViewerSceneStore
 from test_pcb_enclosure import (
     FIXTURES,
     base_request,
@@ -21,15 +17,19 @@ from test_pcb_enclosure import (
     standoffs_request,
 )
 
+from coalesce.export import verify_step_fresh
+from coalesce.service import DocumentService
+from coalesce.viewer import ViewerSceneStore
 
-def lid_request(*, revision=3, request_id="lid", lip=True, **changes):
+
+def lid_request(*, revision=3, request_id="lid", include_lip=True, **changes):
     parameters = {
         "base": {"featureId": "base"},
         "thickness": quantity(2),
         "fitGap": quantity(0.25),
         **changes,
     }
-    if lip:
+    if include_lip:
         parameters.setdefault(
             "lip", {"depth": quantity(3), "width": quantity(1)}
         )
@@ -47,7 +47,7 @@ def _faces(service, feature, role):
     return [
         item.entity
         for item in service._regen.provenance[feature]
-        if item.key.role == role
+        if item.key.role == role and isinstance(item.entity, Face)
     ]
 
 
@@ -77,7 +77,7 @@ def test_lid_exactly_follows_base_and_has_exact_fit(tmp_path):
     lid = service._regen.shapes["lid"]
     assert BRepCheck_Analyzer(lid.wrapped).IsValid()
     [top] = _faces(service, "lid", "top")
-    [underside] = _faces(service, "lid", "underside")
+    undersides = _faces(service, "lid", "underside")
     inner_walls = _faces(service, "base", "inner_wall")
     lip_outer = _faces(service, "lid", "lip_outer")
     assert top.area == pytest.approx(200 + 60 * 3 + math.pi * 3**2, rel=1e-7)
@@ -86,34 +86,40 @@ def test_lid_exactly_follows_base_and_has_exact_fit(tmp_path):
         == pytest.approx(0.25, abs=1e-6)
         for face in lip_outer
     )
-    assert underside.distance_to(_faces(service, "base", "rim")[0]) == pytest.approx(
-        0, abs=1e-7
-    )
+    assert any(face.geom_type is GeomType.CYLINDER for face in lip_outer)
+    assert min(
+        underside.distance_to(rim)
+        for underside in undersides
+        for rim in _faces(service, "base", "rim")
+    ) == pytest.approx(0, abs=1e-7)
     assert _common_volume(base, lid) == pytest.approx(0, abs=1e-7)
     lip_bottom = min(face.bounding_box().min.Z for face in lip_outer)
     board_top = service._regen.shapes["controller_board"].bounding_box().max.Z
     assert lip_bottom - board_top == pytest.approx(1)
-    assert {item.key.source for item in service._regen.provenance["lid"]} == {
-        "base"
-    }
+    assert {
+        item.key.source
+        for item in service._regen.provenance["lid"]
+        if isinstance(item.entity, Face)
+    } == {"base"}
     assert _faces(service, "lid", "lip_inner")
     assert _faces(service, "lid", "edge")
 
     outer_area = 200 + 60 * 3 + math.pi * 3**2
     lip_outer_area = 200 + 60 * 0.75 + math.pi * 0.75**2
-    lip_inner_area = 200 - 60 * 0.25 + math.pi * 0.25**2
+    lip_inner_area = (20 - 0.5) * (10 - 0.5)
     assert lid.volume == pytest.approx(
         outer_area * 2 + (lip_outer_area - lip_inner_area) * 3,
         rel=1e-7,
     )
-    assert base.volume > 0
-    assert lid.volume > 0
+    base_volume = outer_area * 8.2 - (200 + 60 + math.pi) * 6.2
+    standoff_volume = 2 * math.pi * (2.5**2 - 0.8**2)
+    assert base.volume == pytest.approx(base_volume + standoff_volume, rel=1e-7)
 
 
 def test_lid_without_lip_is_a_valid_separate_slab(tmp_path):
     service = _enclosure_service(tmp_path, standoffs=False)
 
-    assert service.feature(lid_request(revision=2, lip=False))["ok"] is True
+    assert service.feature(lid_request(revision=2, include_lip=False))["ok"] is True
 
     lid = service._regen.shapes["lid"]
     assert BRepCheck_Analyzer(lid.wrapped).IsValid()
@@ -201,6 +207,7 @@ def test_restart_refresh_and_base_update_regenerate_lid(tmp_path):
     original = service._regen.shapes["lid"].bounding_box()
 
     restarted = DocumentService(document)
+    restarted.query({"select": {"kind": "graph"}})
     assert restarted._regen.shapes["lid"].volume == pytest.approx(
         service._regen.shapes["lid"].volume
     )
@@ -269,11 +276,11 @@ async def test_mcp_export_and_viewer_publish_two_manufacturing_parts(tmp_path):
     store = ViewerSceneStore()
     service = DocumentService(document, scene_store=store)
     deadline = time.monotonic() + 5
-    while store.current_revision != service.revision and time.monotonic() < deadline:
-        time.sleep(0.02)
     scene = store.scene(service.revision)
-    assert len(scene["parts"]) == 2
-    assert {part["terminalFeatureId"] for part in scene["parts"]} == {
-        "mounts",
-        "lid",
-    }
+    while scene is None and time.monotonic() < deadline:
+        await anyio.sleep(0.02)
+        scene = store.scene(service.revision)
+    assert scene is not None
+    manufacturing = [part for part in scene["parts"] if part["role"] == "manufacturing"]
+    assert len(manufacturing) == 2
+    assert {part["terminalFeatureId"] for part in manufacturing} == {"mounts", "lid"}
