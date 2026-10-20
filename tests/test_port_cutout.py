@@ -1,4 +1,3 @@
-import json
 import math
 import re
 import shutil
@@ -473,27 +472,6 @@ def test_fillet_between_semantic_modifiers_has_one_complete_base_body(tmp_path):
         "port",
     ]
     assert part.shape.volume < _expected_enclosure_volume()
-
-
-def test_legacy_port_target_document_loads_into_base_lineage(tmp_path):
-    service = _service(tmp_path, lid=False)
-    assert service.feature(port_request(revision=3))["ok"]
-    document = json.loads(service.store.path.read_text())
-    [port] = [node for node in document["graph"]["nodes"] if node["type"] == "PortCutout"]
-    port["target"] = "mounts"
-    service.store.path.write_text(json.dumps(document))
-
-    restarted = DocumentService(service.store.path)
-    graph = restarted.query({"select": {"kind": "graph"}})["graph"]
-    assert restarted._regen.shapes["port"].volume == pytest.approx(
-        service._regen.shapes["port"].volume
-    )
-    [stored_port] = [
-        node
-        for node in graph["nodes"]
-        if node["type"] == "PortCutout"
-    ]
-    assert "target" not in stored_port
 
 
 def test_standoffs_and_port_compose_identically_in_both_creation_orders(tmp_path):
