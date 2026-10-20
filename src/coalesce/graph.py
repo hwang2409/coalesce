@@ -59,6 +59,8 @@ class Extrude(Feature):
 class Cut(Feature):
     target: str = ""
     tool: str = ""
+    depth: float | None = None
+    flip: bool = False
 
 
 @dataclass
