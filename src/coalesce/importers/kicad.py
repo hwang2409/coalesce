@@ -127,6 +127,23 @@ _TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[^\s()]+|[()]')
 _GRAPHICS = {"gr_line", "gr_arc", "gr_circle", "gr_rect", "fp_line", "fp_arc", "fp_circle", "fp_rect"}
 
 
+def _expression(tokens: list[str], index: int) -> tuple[Any, int]:
+    if index >= len(tokens):
+        raise ValueError("truncated S-expression")
+    if tokens[index] != "(":
+        if tokens[index] == ")":
+            raise ValueError("unexpected closing parenthesis")
+        return _atom(tokens[index]), index + 1
+    output: list[Any] = []
+    index += 1
+    while index < len(tokens) and tokens[index] != ")":
+        value, index = _expression(tokens, index)
+        output.append(value)
+    if index >= len(tokens):
+        raise ValueError("unterminated S-expression")
+    return output, index + 1
+
+
 def _parse(text: str) -> list[Any]:
     tokens: list[str] = []
     end = 0
@@ -138,23 +155,7 @@ def _parse(text: str) -> list[Any]:
     if text[end:].strip() or not tokens:
         raise ValueError("empty or invalid S-expression")
 
-    def expression(index: int) -> tuple[Any, int]:
-        if index >= len(tokens):
-            raise ValueError("truncated S-expression")
-        if tokens[index] != "(":
-            if tokens[index] == ")":
-                raise ValueError("unexpected closing parenthesis")
-            return _atom(tokens[index]), index + 1
-        output: list[Any] = []
-        index += 1
-        while index < len(tokens) and tokens[index] != ")":
-            value, index = expression(index)
-            output.append(value)
-        if index >= len(tokens):
-            raise ValueError("unterminated S-expression")
-        return output, index + 1
-
-    result, final = expression(0)
+    result, final = _expression(tokens, 0)
     if final != len(tokens):
         raise ValueError("trailing S-expression data")
     if not isinstance(result, list) or not result or result[0] != "kicad_pcb":
