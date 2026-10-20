@@ -53,6 +53,18 @@ class Sketch:
 
 
 @dataclass
+class BoardImport:
+    id: str
+    source_path: str
+    source_digest: str
+    parser_version: str
+    mechanics: dict[str, Any]
+    availability: dict[str, str]
+    warnings: list[str] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class Feature:
     id: str
     depends_on: list[str] = field(default_factory=list)

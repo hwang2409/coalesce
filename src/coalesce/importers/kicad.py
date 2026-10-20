@@ -798,12 +798,20 @@ def _parse_board(root: list[Any], source_digest: str = "") -> Board:
                  source_digest=source_digest)
 
 
+def parse_kicad_pcb_bytes(raw: bytes) -> Board:
+    """Parse one captured source snapshot and hash those exact bytes."""
+    try:
+        digest = hashlib.sha256(raw).hexdigest()
+        return _parse_board(_parse(raw.decode("utf-8")), digest)
+    except (UnicodeDecodeError, ValueError, TypeError, IndexError, RecursionError) as exc:
+        message = str(exc) or exc.__class__.__name__
+        return Board(None, "unavailable", [], [], [], [], [message], [Error("parse", message)])
+
+
 def parse_kicad_pcb(path: str | Path) -> Board:
     """Parse board mechanics and return structured errors for all invalid input."""
     try:
-        raw = Path(path).read_bytes()
-        digest = hashlib.sha256(raw).hexdigest()
-        return _parse_board(_parse(raw.decode("utf-8")), digest)
-    except (OSError, ValueError, TypeError, IndexError, RecursionError) as exc:
+        return parse_kicad_pcb_bytes(Path(path).read_bytes())
+    except OSError as exc:
         message = str(exc) or exc.__class__.__name__
         return Board(None, "unavailable", [], [], [], [], [message], [Error("parse", message)])

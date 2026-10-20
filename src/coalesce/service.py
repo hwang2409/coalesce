@@ -14,8 +14,10 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from .board_import import BoardImportError, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .graph import (
+    BoardImport,
     Circle,
     Cut,
     Extrude,
@@ -169,6 +171,7 @@ def _angle(value: Any) -> float:
 class Action(str, Enum):
     CREATE = "create"
     UPDATE = "update"
+    REFRESH = "refresh"
 
 
 class _Operation:
@@ -179,6 +182,16 @@ class _Operation:
     @classmethod
     def wire_fields(cls) -> set[str]:
         return {field.name for field in fields(cls)}
+
+
+@dataclass(frozen=True)
+class BoardImportOperation(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    assetId: str
+    format: str
+    path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -313,8 +326,29 @@ class ExtrudeUpdate(_Operation):
 
 
 MutationOperation = (
-    SketchCreate | SketchUpdate | ExtrudeCreate | CutCreate | HoleCreate | ExtrudeUpdate
+    BoardImportOperation
+    | SketchCreate
+    | SketchUpdate
+    | ExtrudeCreate
+    | CutCreate
+    | HoleCreate
+    | ExtrudeUpdate
 )
+
+
+def _parse_import(payload: dict[str, Any]) -> BoardImportOperation:
+    action = Action(payload.get("action"))
+    path = payload.get("path")
+    if action is Action.CREATE and not isinstance(path, str):
+        raise RequestError("INVALID_PARAMETER", "create import requires path")
+    return BoardImportOperation(
+        action=action,
+        expectedRevision=_finite_number(payload.get("expectedRevision"), "expectedRevision"),
+        requestId=payload.get("requestId"),
+        assetId=payload.get("assetId"),
+        format=payload.get("format"),
+        path=path,
+    )
 
 
 def _entities(payload: Any) -> tuple[Rectangle | Circle, ...]:
@@ -615,6 +649,88 @@ def _reference(payload: dict[str, Any]) -> Reference:
         body=body,
         filters=filters,
     )
+
+
+def _camel_key(value: str) -> str:
+    head, *tail = value.split("_")
+    return head + "".join(part.title() for part in tail)
+
+
+def _wire_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {_camel_key(key): _wire_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_wire_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_wire_value(item) for item in value]
+    return value
+
+
+def _board_availability(board: Any) -> dict[str, str]:
+    courtyards = [footprint.courtyard_availability for footprint in board.footprints]
+    models = [model for footprint in board.footprints for model in footprint.models]
+    return {
+        "thickness": "available" if board.thickness is not None else "missing",
+        "outline": "available",
+        "innerCutouts": "available",
+        "holes": "available",
+        "footprints": "available",
+        "courtyards": (
+            "available"
+            if courtyards and all(status == "present" for status in courtyards)
+            else "partial"
+            if any(status == "present" for status in courtyards)
+            else "missing"
+        ),
+        "models": (
+            "missing"
+            if not models
+            else "unresolved"
+            if any(model.unresolved_variables for model in models)
+            else "declared"
+        ),
+    }
+
+
+def _apply_import(graph: Any, operation: BoardImportOperation) -> str:
+    if operation.format != "kicad_pcb":
+        raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
+    current = graph.nodes.get(operation.assetId)
+    if operation.action is Action.REFRESH:
+        if not isinstance(current, BoardImport):
+            raise RequestError("UNKNOWN_ID", f"unknown board import: {operation.assetId}")
+        source_path = current.source_path
+    else:
+        if current is not None:
+            raise RequestError("DUPLICATE_ID", f"duplicate id: {operation.assetId}")
+        assert operation.path is not None
+        source_path = operation.path
+    try:
+        resolved, board = read_kicad_board(source_path)
+    except BoardImportError as error:
+        raise RequestError(
+            "IMPORT_FAILED",
+            str(error),
+            hint=(
+                "use an explicit absolute path to a readable regular kicad_pcb file "
+                "of 16 MiB or less with one closed, valid board outline"
+            ),
+        ) from None
+    snapshot = board.to_dict()
+    for key in ("source_digest", "parser_version", "warnings", "errors"):
+        snapshot.pop(key)
+    imported = BoardImport(
+        id=operation.assetId,
+        source_path=str(resolved),
+        source_digest=board.source_digest,
+        parser_version=board.parser_version,
+        mechanics=_wire_value(snapshot),
+        availability=_board_availability(board),
+        warnings=list(board.warnings),
+        errors=[_wire_value(asdict(error)) for error in board.errors],
+    )
+    graph.nodes[operation.assetId] = imported
+    return operation.assetId
 
 
 def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
@@ -1110,6 +1226,25 @@ class DocumentService:
         if isinstance(node, Hole):
             return self._hole_metadata(result, node)
         return {}
+
+    def import_board(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_geometry()
+
+        def response(graph: Any, result: RegenResult, changed_id: str) -> dict[str, Any]:
+            node = next(
+                item
+                for item in json.loads(dumps(graph))["nodes"]
+                if item["id"] == changed_id
+            )
+            return {"assetId": changed_id, "boardImport": node}
+
+        return self._mutate(
+            "import",
+            payload,
+            _parse_import,
+            _apply_import,
+            response,
+        )
 
     def sketch(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
