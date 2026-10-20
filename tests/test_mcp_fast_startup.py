@@ -14,11 +14,11 @@ from coalesce.service import DocumentService
 
 
 def _message(process: subprocess.Popen[bytes], timeout: float = 3) -> dict:
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    if not selector.select(timeout):
-        raise TimeoutError("server did not answer within the handshake budget")
-    return json.loads(process.stdout.readline())
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        if not selector.select(timeout):
+            raise TimeoutError("server did not answer within the handshake budget")
+        return json.loads(process.stdout.readline())
 
 
 @pytest.mark.parametrize("viewer_enabled", [True, False])
@@ -83,9 +83,6 @@ def test_revision_query_does_not_wait_for_slow_kernel_loader(tmp_path):
     service = DocumentService(
         tmp_path / "empty.coalesce.json", warmup=False, kernel_loader=loader
     )
-    service.start_kernel_warmup()
-    assert loader.started.wait(1)
-
     finished = threading.Event()
     result = {}
 
@@ -97,6 +94,7 @@ def test_revision_query_does_not_wait_for_slow_kernel_loader(tmp_path):
     thread.start()
     try:
         assert finished.wait(0.2), "revision query waited for the kernel"
+        assert not loader.started.is_set()
         assert result == {"ok": True, "revision": 0, "units": "mm"}
     finally:
         loader.release.set()
