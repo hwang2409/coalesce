@@ -375,8 +375,11 @@ async def test_replacement_before_receipt_is_preserved(tmp_path, monkeypatch):
     target = tmp_path / "replaced.step"
     foreign = b"replacement from another process"
     service = DocumentService(document)
+    original_append = service._export_journal.append
 
-    def replace_then_fail(_receipt):
+    def replace_then_fail(receipt):
+        if receipt.get("kind") == "pending":
+            return original_append(receipt)
         target.unlink()
         target.write_bytes(foreign)
         raise OSError("injected receipt failure after replacement")
@@ -439,7 +442,9 @@ async def test_receipt_failure_leaves_final_and_retry_adopts_it(tmp_path, monkey
     service = DocumentService(document)
     original_append = service._export_journal.append
 
-    def fail_append(_receipt):
+    def fail_append(receipt):
+        if receipt.get("kind") == "pending":
+            return original_append(receipt)
         raise OSError("injected receipt failure")
 
     monkeypatch.setattr(service._export_journal, "append", fail_append)
@@ -455,9 +460,8 @@ async def test_receipt_failure_leaves_final_and_retry_adopts_it(tmp_path, monkey
         target.read_bytes()
     ).hexdigest()
 
-    monkeypatch.setattr(service._export_journal, "append", original_append)
     retried = await call_server_tool(
-        service,
+        DocumentService(document),
         "export",
         export_request(target, request_id="receipt-failure"),
     )
@@ -465,7 +469,9 @@ async def test_receipt_failure_leaves_final_and_retry_adopts_it(tmp_path, monkey
     assert retried["adopted"] is True
     assert retried["sha256"] == failed["error"]["expectedSha256"]
     journal = document.with_name(f"{document.name}.exports.jsonl")
-    assert len(journal.read_text().splitlines()) == 1
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert len([record for record in records if "response" in record]) == 1
+    assert records[0]["sha256"] == failed["error"]["expectedSha256"]
 
 
 @pytest.mark.anyio
@@ -476,11 +482,12 @@ async def test_retry_rejects_changed_existing_file(tmp_path, monkeypatch):
     service = DocumentService(document)
     original_append = service._export_journal.append
 
-    monkeypatch.setattr(
-        service._export_journal,
-        "append",
-        lambda _receipt: (_ for _ in ()).throw(OSError("injected receipt failure")),
-    )
+    def fail_append(receipt):
+        if receipt.get("kind") == "pending":
+            return original_append(receipt)
+        raise OSError("injected receipt failure")
+
+    monkeypatch.setattr(service._export_journal, "append", fail_append)
     failed = await call_server_tool(
         service,
         "export",
@@ -500,7 +507,8 @@ async def test_retry_rejects_changed_existing_file(tmp_path, monkeypatch):
     assert retried["error"]["code"] == "EXPORT_PATH_EXISTS"
     assert target.read_bytes() == foreign
     journal = document.with_name(f"{document.name}.exports.jsonl")
-    assert not journal.exists()
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert all("response" not in record for record in records)
 
 
 @pytest.mark.anyio
@@ -518,7 +526,7 @@ async def test_fsync_failure_leaves_final_for_retry(
         nonlocal failed
         mode = os.fstat(descriptor).st_mode
         selected = stat.S_ISREG(mode) if failure_target == "file" else stat.S_ISDIR(mode)
-        if selected and not failed:
+        if selected and target.exists() and not failed:
             failed = True
             raise OSError(f"injected {failure_target} fsync failure")
         return original_fsync(descriptor)

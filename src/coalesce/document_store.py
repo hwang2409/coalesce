@@ -43,6 +43,45 @@ class ExportJournalError(Exception):
         Exception.__init__(self, message)
 
 
+def _valid_export_record(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if set(record) == {"requestId", "requestHash", "revision", "response"}:
+        return (
+            isinstance(record["requestId"], str)
+            and bool(record["requestId"])
+            and isinstance(record["requestHash"], str)
+            and type(record["revision"]) is int
+            and record["revision"] >= 0
+            and isinstance(record["response"], dict)
+        )
+    if set(record) == {
+        "kind",
+        "requestId",
+        "requestHash",
+        "revision",
+        "path",
+        "sha256",
+        "byteCount",
+        "fields",
+    }:
+        return (
+            record["kind"] == "pending"
+            and isinstance(record["requestId"], str)
+            and bool(record["requestId"])
+            and isinstance(record["requestHash"], str)
+            and type(record["revision"]) is int
+            and record["revision"] >= 0
+            and isinstance(record["path"], str)
+            and isinstance(record["sha256"], str)
+            and len(record["sha256"]) == 64
+            and type(record["byteCount"]) is int
+            and record["byteCount"] >= 0
+            and isinstance(record["fields"], dict)
+        )
+    return False
+
+
 class ExportJournal:
     """POSIX append-only durable receipts for mutation-free exports."""
 
@@ -61,12 +100,19 @@ class ExportJournal:
     def load(self) -> list[dict[str, Any]]:
         self._require_posix()
         try:
-            stream = self.path.open("rb")
-        except FileNotFoundError:
-            return []
-        with stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
-            content = stream.read()
+            try:
+                stream = self.path.open("rb")
+            except FileNotFoundError:
+                return []
+            with stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+                content = stream.read()
+        except OSError as error:
+            raise ExportJournalError(
+                "EXPORT_JOURNAL_CORRUPT",
+                "export journal could not be read",
+                path=str(self.path),
+            ) from error
         receipts = []
         for line_number, line in enumerate(content.splitlines(keepends=True), start=1):
             if not line.endswith(b"\n"):
@@ -78,7 +124,7 @@ class ExportJournal:
                 break
             try:
                 receipt = json.loads(line)
-                if not isinstance(receipt, dict):
+                if not _valid_export_record(receipt):
                     raise TypeError
             except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as error:
                 raise ExportJournalError(

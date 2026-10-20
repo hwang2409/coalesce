@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -222,25 +223,9 @@ def _open_directory(path: Path) -> int:
     return os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
 
 
-def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
-    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
-
-
-def _remove_published(
-    directory_fd: int, name: str, expected: os.stat_result
-) -> bool:
-    try:
-        actual = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return True
-    if not _same_inode(actual, expected):
-        return False
-    os.unlink(name, dir_fd=directory_fd)
-    os.fsync(directory_fd)
-    return True
-
-
-def _publication_failure(error: Exception, removed: bool) -> ExportFailure:
+def _publication_failure(
+    error: Exception, path: Path, digest: str, byte_count: int
+) -> ExportFailure:
     if isinstance(error, ExportFailure):
         code = error.code
         message = error.message
@@ -248,21 +233,106 @@ def _publication_failure(error: Exception, removed: bool) -> ExportFailure:
     else:
         code = "EXPORT_WRITE_FAILED"
         message = "STEP export could not be written"
-        details = {
-            "hint": "check that the absolute parent directory is writable and retry",
-        }
-    if not removed:
-        message += "; the destination was replaced, so the foreign file was preserved"
-        details = {**details, "foreignFilePreserved": True}
-    return ExportFailure(code, message, **details)
+        details = {}
+    return ExportFailure(
+        code,
+        message,
+        **{
+            **details,
+            "path": str(path),
+            "expectedSha256": digest,
+            "expectedBytes": byte_count,
+            "hint": "retry with the same requestId to complete the export",
+        },
+    )
+
+
+def _matches_content(descriptor: int, digest: str, byte_count: int) -> bool:
+    file_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size != byte_count:
+        return False
+    actual = hashlib.sha256()
+    while chunk := os.read(descriptor, 1024 * 1024):
+        actual.update(chunk)
+    return actual.hexdigest() == digest
+
+
+def _record_export(
+    record: Callable[[bool], dict[str, Any]], adopted: bool
+) -> dict[str, Any]:
+    try:
+        return record(adopted)
+    except Exception as error:
+        raise ExportFailure(
+            "EXPORT_RECEIPT_FAILED",
+            "STEP export was written but its receipt could not be recorded",
+        ) from error
+
+
+def _adopt_existing(
+    path: Path,
+    directory_fd: int,
+    digest: str,
+    byte_count: int,
+    record: Callable[[bool], dict[str, Any]],
+) -> dict[str, Any] | None:
+    try:
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ExportFailure(
+            "EXPORT_PATH_EXISTS",
+            "export path already exists; STEP export never overwrites",
+            hint="choose a new path",
+        ) from error
+    try:
+        if not _matches_content(descriptor, digest, byte_count):
+            raise ExportFailure(
+                "EXPORT_PATH_EXISTS",
+                "export path already exists with different content; STEP export never overwrites",
+                hint="choose a new path",
+            )
+        os.fsync(descriptor)
+        os.fsync(directory_fd)
+        return _record_export(record, True)
+    except ExportFailure as error:
+        if error.code == "EXPORT_PATH_EXISTS":
+            raise
+        raise _publication_failure(error, path, digest, byte_count) from error
+    except Exception as error:
+        raise _publication_failure(error, path, digest, byte_count) from error
+    finally:
+        os.close(descriptor)
+
+
+def adopt_export(
+    path: Path,
+    digest: str,
+    byte_count: int,
+    record: Callable[[bool], dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Record an existing final file only when it matches a pending export."""
+    directory_fd = _open_directory(path)
+    try:
+        return _adopt_existing(path, directory_fd, digest, byte_count, record)
+    finally:
+        os.close(directory_fd)
 
 
 def _publish_bytes(
-    path: Path, content: bytes, record: Callable[[], dict[str, Any]]
+    path: Path,
+    content: bytes,
+    digest: str,
+    record: Callable[[bool], dict[str, Any]],
 ) -> dict[str, Any]:
     directory_fd = _open_directory(path)
     descriptor: int | None = None
-    published_stat: os.stat_result | None = None
+    final_exists = False
     try:
         try:
             descriptor = os.open(
@@ -275,13 +345,19 @@ def _publish_bytes(
                 0o644,
                 dir_fd=directory_fd,
             )
+            final_exists = True
         except FileExistsError as error:
-            raise ExportFailure(
-                "EXPORT_PATH_EXISTS",
-                "export path already exists; STEP export never overwrites",
-                hint="choose a new path",
-            ) from error
-        published_stat = os.fstat(descriptor)
+            adopted = _adopt_existing(
+                path, directory_fd, digest, len(content), record
+            )
+            if adopted is None:
+                raise ExportFailure(
+                    "EXPORT_WRITE_FAILED",
+                    "export path disappeared during publication",
+                    hint="retry with the same requestId to complete the export",
+                ) from error
+            return adopted
+
         view = memoryview(content)
         while view:
             written = os.write(descriptor, view)
@@ -290,12 +366,11 @@ def _publish_bytes(
             view = view[written:]
         os.fsync(descriptor)
         os.fsync(directory_fd)
-        return record()
+        return _record_export(record, False)
     except Exception as error:
-        removed = published_stat is None or _remove_published(
-            directory_fd, path.name, published_stat
-        )
-        raise _publication_failure(error, removed) from error
+        if not final_exists and isinstance(error, ExportFailure):
+            raise
+        raise _publication_failure(error, path, digest, len(content)) from error
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -333,6 +408,7 @@ def _export_fields(
 def export_parts(
     path: Path,
     parts: list[Any],
+    prepare: Callable[[dict[str, Any], int], None],
     record: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
     """Validate bytes, publish without replacement, then durably record success."""
@@ -342,7 +418,15 @@ def export_parts(
     expected = _metrics(shapes, [part.label for part in parts])
     content, digest, actual = _validated_step_bytes(shapes, expected)
     fields = _export_fields(path, parts, digest, actual)
-    return _publish_bytes(path, content, lambda: record(fields))
+    prepare(fields, len(content))
+    return _publish_bytes(
+        path,
+        content,
+        digest,
+        lambda adopted: record(
+            {**fields, **({"adopted": True} if adopted else {})}
+        ),
+    )
 
 
 def _main() -> None:

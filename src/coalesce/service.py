@@ -23,7 +23,7 @@ from .document_store import (
     ExportJournal,
     ExportJournalError,
 )
-from .export import ExportFailure, export_parts
+from .export import ExportFailure, adopt_export, export_parts
 from .graph import (
     BoardImport,
     Circle,
@@ -1009,10 +1009,17 @@ class DocumentService:
         self._lock = threading.RLock()
         self._document = self.store.load()
         try:
-            self._export_receipts = self._export_journal.load()
+            export_records = self._export_journal.load()
+            self._export_receipts = [
+                record for record in export_records if "response" in record
+            ]
+            self._pending_exports = [
+                record for record in export_records if record.get("kind") == "pending"
+            ]
             self._export_journal_error = None
         except ExportJournalError as error:
             self._export_receipts = []
+            self._pending_exports = []
             self._export_journal_error = error
         self._regen = None
         self._viewer_url = viewer_url
@@ -1432,6 +1439,26 @@ class DocumentService:
             )
         return selected
 
+    def _prepare_export(
+        self,
+        request_id: Any,
+        body_hash: str,
+        fields: dict[str, Any],
+        byte_count: int,
+    ) -> None:
+        pending = {
+            "kind": "pending",
+            "requestId": request_id,
+            "requestHash": body_hash,
+            "revision": self._document.revision,
+            "path": fields["path"],
+            "sha256": fields["sha256"],
+            "byteCount": byte_count,
+            "fields": fields,
+        }
+        self._export_journal.append(pending)
+        self._pending_exports.append(pending)
+
     def _record_export(
         self, request_id: Any, body_hash: str, fields: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1463,10 +1490,42 @@ class DocumentService:
         if replay is not None:
             return replay
         self._check_export_revision(payload["expectedRevision"])
+        pending = next(
+            (
+                record
+                for record in reversed(self._pending_exports)
+                if record["requestId"] == request_id
+            ),
+            None,
+        )
+        if pending is not None:
+            if pending["requestHash"] != body_hash:
+                raise RequestError(
+                    "REQUEST_ID_REUSED",
+                    "requestId was already used for a different request body",
+                )
+            adopted = adopt_export(
+                Path(pending["path"]),
+                pending["sha256"],
+                pending["byteCount"],
+                lambda was_adopted: self._record_export(
+                    request_id,
+                    body_hash,
+                    {
+                        **pending["fields"],
+                        **({"adopted": True} if was_adopted else {}),
+                    },
+                ),
+            )
+            if adopted is not None:
+                return adopted
         selected = self._select_export_parts(payload.get("partIds"))
         return export_parts(
             Path(payload.get("path", "")),
             selected,
+            lambda fields, byte_count: self._prepare_export(
+                request_id, body_hash, fields, byte_count
+            ),
             lambda fields: self._record_export(request_id, body_hash, fields),
         )
 
