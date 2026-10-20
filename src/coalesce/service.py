@@ -21,6 +21,7 @@ from .document_store import (
     Document,
     DocumentStore,
     ExportJournal,
+    ExportJournalError,
 )
 from .export import ExportFailure, export_parts
 from .graph import (
@@ -922,7 +923,12 @@ class DocumentService:
         self._export_journal = ExportJournal(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
-        self._export_receipts = self._export_journal.load()
+        try:
+            self._export_receipts = self._export_journal.load()
+            self._export_journal_error = None
+        except ExportJournalError as error:
+            self._export_receipts = []
+            self._export_journal_error = error
         self._regen = None
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
@@ -1355,6 +1361,9 @@ class DocumentService:
     def _perform_export(
         self, payload: dict[str, Any], request_id: Any
     ) -> dict[str, Any]:
+        if self._export_journal_error is not None:
+            error = self._export_journal_error
+            raise ExportFailure(error.code, error.message, **error.details)
         body_hash = self._export_hash(payload)
         replay = self._export_replay(request_id, body_hash)
         if replay is not None:

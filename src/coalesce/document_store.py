@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - export journals are POSIX-only.
+    fcntl = None  # type: ignore[assignment]
+
 from .graph import Graph
 from .serialization import dumps, loads
 
@@ -25,29 +30,68 @@ class Document:
     request_hashes: list[dict[str, str]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ExportJournalError(Exception):
+    code: str
+    message: str
+    details: dict[str, Any]
+
+    def __init__(self, code: str, message: str, **details: Any):
+        object.__setattr__(self, "code", code)
+        object.__setattr__(self, "message", message)
+        object.__setattr__(self, "details", details)
+        Exception.__init__(self, message)
+
+
 class ExportJournal:
-    """Append-only durable receipts for mutation-free exports."""
+    """POSIX append-only durable receipts for mutation-free exports."""
 
     def __init__(self, document_path: str | Path):
         document = Path(document_path).expanduser().resolve()
         self.path = document.with_name(f"{document.name}.exports.jsonl")
 
+    @staticmethod
+    def _require_posix() -> None:
+        if fcntl is None:
+            raise ExportJournalError(
+                "EXPORT_UNSUPPORTED",
+                "durable export receipts are not supported on Windows",
+            )
+
     def load(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
+        self._require_posix()
+        try:
+            stream = self.path.open("rb")
+        except FileNotFoundError:
             return []
+        with stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            content = stream.read()
         receipts = []
-        for line in self.path.read_bytes().splitlines():
-            try:
-                receipts.append(json.loads(line))
-            except (json.JSONDecodeError, UnicodeDecodeError):
+        for line_number, line in enumerate(content.splitlines(keepends=True), start=1):
+            if not line.endswith(b"\n"):
                 warnings.warn(
                     f"torn export journal line ignored in {self.path}",
                     RuntimeWarning,
                     stacklevel=2,
                 )
+                break
+            try:
+                receipt = json.loads(line)
+                if not isinstance(receipt, dict):
+                    raise TypeError
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as error:
+                raise ExportJournalError(
+                    "EXPORT_JOURNAL_CORRUPT",
+                    f"export journal has a malformed complete line {line_number}",
+                    line=line_number,
+                    path=str(self.path),
+                ) from error
+            receipts.append(receipt)
         return receipts
 
     def append(self, receipt: dict[str, Any]) -> None:
+        self._require_posix()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         encoded = json.dumps(
             receipt, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -58,9 +102,19 @@ class ExportJournal:
             0o600,
         )
         try:
-            view = memoryview(encoded)
-            while view:
-                view = view[os.write(descriptor, view) :]
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            start = os.lseek(descriptor, 0, os.SEEK_END)
+            written = os.write(descriptor, encoded)
+            if written != len(encoded):
+                os.ftruncate(descriptor, start)
+                os.fsync(descriptor)
+                raise ExportJournalError(
+                    "EXPORT_WRITE_FAILED",
+                    "export receipt journal write was incomplete",
+                    path=str(self.path),
+                    expectedBytes=len(encoded),
+                    writtenBytes=written,
+                )
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
