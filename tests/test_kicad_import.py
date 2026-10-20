@@ -459,3 +459,70 @@ def test_generated_usb_c_hub_fixture_records_public_mechanical_facts():
     assert board.holes[0].position == (106.68, 84.582)
     assert board.holes[1].position == (56.896, 104.902)
     assert board.holes[0].drill.width == board.holes[1].drill.width == 3.2
+
+
+def test_stable_ids_survive_reordering_and_duplicate_references(tmp_path):
+    outline = _polygon([(0, 0), (20, 0), (20, 20), (0, 20)])
+    pads = '(pad "1" thru_hole circle (at 3 4) (size 2 2) (drill 1))'
+    first = _board(*outline,
+                   '(footprint "Mount" (layer "F.Cu") (at 0 0) (uuid fp-a) '
+                   '(property "Reference" "REF**") ' + pads + ')',
+                   '(footprint "Mount" (layer "F.Cu") (at 10 0) (uuid fp-b) '
+                   '(property "Reference" "REF**") ' + pads + ')')
+    second = _board(*reversed(outline),
+                    '(footprint "Mount" (layer "F.Cu") (at 10 0) (uuid fp-b) '
+                    '(property "Reference" "REF**") ' + pads + ')',
+                    '(footprint "Mount" (layer "F.Cu") (at 0 0) (uuid fp-a) '
+                    '(property "Reference" "REF**") ' + pads + ')')
+    left, right = _parse_text(tmp_path, first), _parse_text(tmp_path, second)
+    assert {loop.id for loop in left.outline} == {loop.id for loop in right.outline}
+    assert {footprint.id for footprint in left.footprints} == {"fp-a", "fp-b"}
+    assert {hole.id for hole in left.holes} == {hole.id for hole in right.holes}
+    assert len({footprint.id for footprint in left.footprints}) == 2
+
+
+def test_uuid_less_pads_use_stable_local_pose_ids(tmp_path):
+    pads = (
+        '(pad "1" thru_hole circle (at 3 4 15) (size 2 2) (drill 1)) '
+        '(pad "" thru_hole circle (at 6 4 15) (size 2 2) (drill 1)) '
+        '(pad "" thru_hole circle (at 9 4 15) (size 2 2) (drill 1))'
+    )
+    def board_at(pose):
+        return _parse_text(tmp_path, _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]),
+            f'(footprint "Mount" (layer "F.Cu") (at {pose}) (uuid fp-a) ' + pads + ')'))
+    first = board_at("0 0")
+    moved = board_at("10 8 90")
+    assert first.errors == moved.errors == []
+    assert len({hole.id for hole in first.holes}) == 3
+    assert {hole.id for hole in first.holes} == {hole.id for hole in moved.holes}
+
+
+def test_equivalent_circle_encodings_have_one_loop_id(tmp_path):
+    def board_with_circle(end):
+        circle = f'(gr_circle (center 5 5) (end {end[0]} {end[1]}) (layer "Edge.Cuts"))'
+        return _parse_text(tmp_path, _board(circle))
+    first = board_with_circle((8, 5))
+    equivalent = board_with_circle((5, 8))
+    reversed_encoding = board_with_circle((2, 5))
+    assert {loop.id for loop in first.outline} == {loop.id for loop in equivalent.outline}
+    assert {loop.id for loop in first.outline} == {loop.id for loop in reversed_encoding.outline}
+
+
+def test_hole_ids_follow_identity_or_geometry_and_digest_is_raw_bytes(tmp_path):
+    via = '(via (at 5 5) (size 2) (drill 1) (layers "F.Cu" "B.Cu"))'
+    text = _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]), via)
+    board = _parse_text(tmp_path, text)
+    moved = _parse_text(tmp_path, text.replace("(at 5 5)", "(at 6 5)"))
+    assert board.holes[0].id != moved.holes[0].id
+    assert board.source_digest == __import__("hashlib").sha256(text.encode()).hexdigest()
+    assert json.loads(board.to_json())["source_digest"] == board.source_digest
+    changed = _parse_text(tmp_path, text + "\n")
+    assert changed.source_digest != board.source_digest
+
+
+def test_footprint_pad_ids_ignore_position_changes(tmp_path):
+    def board_at(x):
+        return _parse_text(tmp_path, _board(*_polygon([(0, 0), (20, 0), (20, 20), (0, 20)]),
+            f'(footprint "Mount" (layer "F.Cu") (at {x} 0) (uuid fp-a) '
+            '(pad "1" thru_hole circle (at 3 4) (size 2 2) (drill 1)))'))
+    assert board_at(0).holes[0].id == board_at(7).holes[0].id
