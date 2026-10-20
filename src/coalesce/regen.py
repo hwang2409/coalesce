@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from build123d import Edge, Shape
 
-from .boolean import FuseResult, cut_shape, fuse_shape
+from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
@@ -132,23 +132,22 @@ def _join_extrude(
             feature=node.id,
         )
     prism = extrude_sketch(node, graph.nodes[node.sketch])
-    result = fuse_shape(
+    unjoined_entities, non_manifold_entities = join_contact_failures(
         node.id,
         shapes[node.target],
-        states[node.target],
         prism.shape,
         prism.candidates,
     )
-    if result.unjoined_entities:
+    if unjoined_entities:
         raise GraphError(
             "JOIN_NO_CONTACT",
             f"join extrude {node.id} has profiles that do not contact target {node.target}",
             feature=node.id,
             target=node.target,
-            entities=result.unjoined_entities,
+            entities=unjoined_entities,
         )
-    if result.non_manifold_entities:
-        entity = result.non_manifold_entities[0]
+    if non_manifold_entities:
+        entity = non_manifold_entities[0]
         raise GraphError(
             "JOIN_NON_MANIFOLD",
             f"join extrude {node.id} profile {entity} only touches target {node.target} along an edge or point",
@@ -157,7 +156,13 @@ def _join_extrude(
             entity=entity,
             hint="extend the profile so faces overlap or touch",
         )
-    return result
+    return fuse_shape(
+        node.id,
+        shapes[node.target],
+        states[node.target],
+        prism.shape,
+        prism.candidates,
+    )
 
 
 def regenerate(graph: Graph) -> RegenResult:
