@@ -466,7 +466,7 @@ QUERY_FEATURE_SCHEMA = {
 EXPORT_SCHEMA = {
     "type": "object",
     "properties": {
-        **MUTATION_PROPERTIES,
+        "expectedRevision": {"type": "integer", "minimum": 0},
         "path": {"type": "string", "minLength": 1},
         "partIds": {
             "type": "array",
@@ -475,7 +475,7 @@ EXPORT_SCHEMA = {
             "uniqueItems": True,
         },
     },
-    "required": [*MUTATION_PROPERTIES, "path"],
+    "required": ["expectedRevision", "path"],
     "additionalProperties": False,
 }
 

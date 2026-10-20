@@ -1,8 +1,6 @@
 import hashlib
-import json
 import multiprocessing
 import os
-import stat
 import subprocess
 
 import pytest
@@ -11,7 +9,6 @@ from test_mcp_join_holes_frames import join_extrude, patterned_hole
 from test_mcp_vertical import call_server_tool, list_server_tools, run_server
 
 import coalesce.export as export_module
-from coalesce.document_store import ExportJournal
 from coalesce.server import TOOLS_GUIDE
 from coalesce.service import DocumentService
 
@@ -121,28 +118,11 @@ def enclosure_calls():
     ]
 
 
-def export_request(path, request_id="export-all", part_ids=None, revision=7):
-    request = {
-        "expectedRevision": revision,
-        "requestId": request_id,
-        "path": str(path),
-    }
+def export_request(path, part_ids=None, revision=7):
+    request = {"expectedRevision": revision, "path": str(path)}
     if part_ids is not None:
         request["partIds"] = part_ids
     return request
-
-
-def append_export_receipts(document, prefix):
-    journal = ExportJournal(document)
-    for index in range(50):
-        journal.append(
-            {
-                "requestId": f"{prefix}-{index}",
-                "requestHash": f"hash-{prefix}-{index}",
-                "revision": 0,
-                "response": {"ok": True},
-            }
-        )
 
 
 def validation_timeout_worker(temporary_directory):
@@ -169,493 +149,236 @@ def validation_timeout_worker(temporary_directory):
 
 
 @pytest.mark.anyio
-async def test_step_export_all_selected_restart_and_replay(tmp_path):
+async def test_step_export_success_is_stateless(tmp_path):
     document = tmp_path / "enclosure.coalesce.json"
-    first_path = tmp_path / "enclosure.step"
+    target = tmp_path / "enclosure.step"
     await run_server(document, enclosure_calls())
     document_bytes = document.read_bytes()
-    exported = (
-        await run_server(document, [("export", export_request(first_path))])
-    )[0]
 
-    assert document.read_bytes() == document_bytes
+    exported = (await run_server(document, [("export", export_request(target))]))[0]
 
+    content = target.read_bytes()
     assert exported["ok"] is True
     assert exported["revision"] == 7
     assert exported["partIds"] == ["plate/plate", "lid/lid"]
-    assert exported["path"] == str(first_path)
-    assert len(exported["sha256"]) == 64
-    assert hashlib.sha256(first_path.read_bytes()).hexdigest() == exported["sha256"]
-    assert exported["tolerance"] == {"relative": 1e-07, "absolute": 1e-07}
-    assert exported["validation"]["geometry"]["status"] == "passed"
-    assert exported["validation"]["geometry"]["freshProcess"] is True
+    assert exported["path"] == str(target)
+    assert exported["sha256"] == hashlib.sha256(content).hexdigest()
+    assert exported["byteCount"] == len(content)
+    assert exported["validation"]["geometry"] == {
+        "status": "passed",
+        "freshProcess": True,
+    }
     assert exported["validation"]["reimport"]["partCount"] == 2
     assert exported["validation"]["reimport"]["solidCount"] == 2
-    assert len(exported["validation"]["reimport"]["parts"][0]["cylinders"]) == 4
-    assert exported["validation"]["labels"] == {
-        "status": "preserved",
-        "expected": ["plate", "lid"],
-        "actual": ["plate", "lid"],
-    }
-
-    selected_path = tmp_path / "plate.step"
-    selected = (
-        await run_server(
-            document,
-            [
-                (
-                    "export",
-                    export_request(
-                        selected_path,
-                        request_id="export-plate",
-                        part_ids=["plate/plate"],
-                    ),
-                )
-            ],
-        )
-    )[0]
-    assert selected["partIds"] == ["plate/plate"]
-    assert selected["validation"]["reimport"]["partCount"] == 1
-    assert selected["validation"]["reimport"]["solidCount"] == 1
     assert document.read_bytes() == document_bytes
-
-    second_path = tmp_path / "enclosure-restarted.step"
-    restarted = (
-        await run_server(
-            document,
-            [("export", export_request(second_path, request_id="export-restarted"))],
-        )
-    )[0]
-    assert restarted["validation"] == exported["validation"]
-    assert document.read_bytes() == document_bytes
-
-    replay = (
-        await run_server(document, [("export", export_request(first_path))])
-    )[0]
-    assert replay == exported
-    assert document.read_bytes() == document_bytes
-
-    journal = document.with_name(f"{document.name}.exports.jsonl")
-    with journal.open("ab") as stream:
-        stream.write(b'{"requestId":"torn')
-    with pytest.warns(RuntimeWarning, match="torn export journal line"):
-        restarted_service = DocumentService(document)
-    replay_after_torn_line = await call_server_tool(
-        restarted_service, "export", export_request(first_path)
-    )
-    assert replay_after_torn_line == exported
-    assert document.read_bytes() == document_bytes
+    assert not list(tmp_path.glob("*.exports.jsonl"))
 
 
 @pytest.mark.anyio
-async def test_export_rejects_existing_stale_unknown_and_bad_parent(tmp_path):
-    document = tmp_path / "errors.coalesce.json"
+async def test_step_export_selected_part(tmp_path):
+    document = tmp_path / "selected.coalesce.json"
+    target = tmp_path / "plate.step"
     await run_server(document, enclosure_calls())
-    document_bytes = document.read_bytes()
+
+    result = (
+        await run_server(
+            document,
+            [("export", export_request(target, part_ids=["plate/plate"]))],
+        )
+    )[0]
+
+    assert result["partIds"] == ["plate/plate"]
+    assert result["validation"]["reimport"]["partCount"] == 1
+    assert result["validation"]["reimport"]["solidCount"] == 1
+
+
+@pytest.mark.anyio
+async def test_export_refuses_existing_path_and_symlink_untouched(tmp_path):
+    document = tmp_path / "existing.coalesce.json"
+    await run_server(document, enclosure_calls())
     existing = tmp_path / "existing.step"
     existing.write_bytes(b"keep me")
-    missing_parent = tmp_path / "missing" / "part.step"
+    symlink_target = tmp_path / "foreign.step"
+    symlink_target.write_bytes(b"foreign")
+    symlink = tmp_path / "linked.step"
+    symlink.symlink_to(symlink_target)
 
     results = await run_server(
         document,
         [
-            ("export", export_request(existing, request_id="exists")),
-            (
-                "export",
-                export_request(tmp_path / "stale.step", request_id="stale", revision=6),
-            ),
-            (
-                "export",
-                export_request(
-                    tmp_path / "unknown.step",
-                    request_id="unknown",
-                    part_ids=["missing/part"],
-                ),
-            ),
-            ("export", export_request(missing_parent, request_id="missing-parent")),
+            ("export", export_request(existing)),
+            ("export", export_request(symlink)),
         ],
     )
 
     assert [result["error"]["code"] for result in results] == [
         "EXPORT_PATH_EXISTS",
-        "STALE_REVISION",
-        "UNKNOWN_ID",
-        "EXPORT_WRITE_FAILED",
+        "EXPORT_PATH_EXISTS",
     ]
     assert existing.read_bytes() == b"keep me"
-    assert not (tmp_path / "stale.step").exists()
-    assert not (tmp_path / "unknown.step").exists()
-    assert not missing_parent.exists()
-    assert document.read_bytes() == document_bytes
+    assert symlink.is_symlink()
+    assert symlink_target.read_bytes() == b"foreign"
 
 
 @pytest.mark.anyio
-async def test_export_rejects_unwritable_parent(tmp_path):
-    document = tmp_path / "unwritable.coalesce.json"
+async def test_export_refuses_stale_revision(tmp_path):
+    document = tmp_path / "stale.coalesce.json"
+    target = tmp_path / "stale.step"
     await run_server(document, enclosure_calls())
-    document_bytes = document.read_bytes()
-    parent = tmp_path / "locked"
-    parent.mkdir()
-    parent.chmod(0o500)
-    target = parent / "part.step"
-    try:
-        result = (
-            await run_server(
-                document,
-                [("export", export_request(target, request_id="unwritable"))],
-            )
-        )[0]
-    finally:
-        parent.chmod(0o700)
 
-    assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
+    result = (
+        await run_server(document, [("export", export_request(target, revision=6))])
+    )[0]
+
+    assert result["error"]["code"] == "STALE_REVISION"
     assert not target.exists()
-    assert document.read_bytes() == document_bytes
 
 
 @pytest.mark.anyio
-async def test_validation_mismatch_removes_temporary_and_final_files(tmp_path, monkeypatch):
-    document = tmp_path / "mismatch.coalesce.json"
+async def test_export_rejects_request_id(tmp_path):
+    document = tmp_path / "request-id.coalesce.json"
     await run_server(document, enclosure_calls())
-    document_bytes = document.read_bytes()
-    target = tmp_path / "mismatch.step"
-    service = DocumentService(document)
 
-    def mismatched(_path, **_kwargs):
-        return {
-            "partCount": 0,
-            "solidCount": 0,
-            "bbox": {"min": [0, 0, 0], "max": [0, 0, 0]},
-            "parts": [],
-            "volume": 0,
-            "area": 0,
-        }
+    result = (
+        await run_server(
+            document,
+            [("export", {**export_request(tmp_path / "part.step"), "requestId": "old"})],
+        )
+    )[0]
 
-    monkeypatch.setattr(export_module, "verify_step_fresh", mismatched)
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert "unknown field 'requestId'" in result["error"]["message"]
+
+
+@pytest.mark.anyio
+async def test_validation_failure_removes_private_directory(tmp_path, monkeypatch):
+    document = tmp_path / "validation.coalesce.json"
+    target = tmp_path / "validation.step"
+    private = tmp_path / "private-validation"
+    await run_server(document, enclosure_calls())
+
+    def make_temporary_directory():
+        private.mkdir(mode=0o700)
+        return str(private)
+
+    def fail_validation(_path):
+        raise export_module.ExportFailure(
+            "EXPORT_VALIDATION_FAILED", "injected validation failure"
+        )
+
+    monkeypatch.setattr(export_module.tempfile, "mkdtemp", make_temporary_directory)
+    monkeypatch.setattr(export_module, "verify_step_fresh", fail_validation)
     result = await call_server_tool(
-        service,
-        "export",
-        export_request(target, request_id="mismatch"),
+        DocumentService(document), "export", export_request(target)
     )
 
     assert result["error"]["code"] == "EXPORT_VALIDATION_FAILED"
+    assert not private.exists()
     assert not target.exists()
-    assert not list(tmp_path.glob(".mismatch.step.*.tmp"))
-    assert document.read_bytes() == document_bytes
-
-
-@pytest.mark.anyio
-async def test_destination_created_after_validation_is_preserved(tmp_path, monkeypatch):
-    document = tmp_path / "appeared.coalesce.json"
-    await run_server(document, enclosure_calls())
-    target = tmp_path / "appeared.step"
-    foreign = b"created by another process"
-    original_verify = export_module.verify_step_fresh
-
-    def create_destination_after_validation(path, **kwargs):
-        evidence = original_verify(path, **kwargs)
-        target.write_bytes(foreign)
-        return evidence
-
-    monkeypatch.setattr(export_module, "verify_step_fresh", create_destination_after_validation)
-    result = await call_server_tool(
-        DocumentService(document),
-        "export",
-        export_request(target, request_id="appeared"),
-    )
-
-    assert result["error"]["code"] == "EXPORT_PATH_EXISTS"
-    assert target.read_bytes() == foreign
-
-
-@pytest.mark.anyio
-async def test_replacement_before_receipt_is_preserved(tmp_path, monkeypatch):
-    document = tmp_path / "replaced.coalesce.json"
-    await run_server(document, enclosure_calls())
-    target = tmp_path / "replaced.step"
-    foreign = b"replacement from another process"
-    service = DocumentService(document)
-    original_append = service._export_journal.append
-
-    def replace_then_fail(receipt):
-        if receipt.get("kind") == "pending":
-            return original_append(receipt)
-        target.unlink()
-        target.write_bytes(foreign)
-        raise OSError("injected receipt failure after replacement")
-
-    monkeypatch.setattr(service._export_journal, "append", replace_then_fail)
-    result = await call_server_tool(
-        service,
-        "export",
-        export_request(target, request_id="replaced"),
-    )
-
-    assert result["error"]["code"] == "EXPORT_RECEIPT_FAILED"
-    assert result["error"]["path"] == str(target)
-    assert len(result["error"]["expectedSha256"]) == 64
-    assert result["error"]["expectedBytes"] > 0
-    assert "same requestId" in result["error"]["hint"]
-    assert target.read_bytes() == foreign
-
-
-@pytest.mark.anyio
-async def test_interrupted_short_write_preserves_replacement(tmp_path, monkeypatch):
-    document = tmp_path / "short-write.coalesce.json"
-    await run_server(document, enclosure_calls())
-    target = tmp_path / "short-write.step"
-    foreign = b"replacement from another process"
-    original_write = os.write
-    interrupted = False
-
-    def interrupt_step_write(descriptor, data):
-        nonlocal interrupted
-        if not interrupted and bytes(data[:16]).startswith(b"ISO-10303"):
-            interrupted = True
-            written = original_write(descriptor, data[: len(data) // 2])
-            target.unlink()
-            target.write_bytes(foreign)
-            return written
-        if interrupted:
-            raise OSError("injected write failure after a short write")
-        return original_write(descriptor, data)
-
-    monkeypatch.setattr(export_module.os, "write", interrupt_step_write)
-    result = await call_server_tool(
-        DocumentService(document),
-        "export",
-        export_request(target, request_id="short-write"),
-    )
-
-    assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
-    assert result["error"]["path"] == str(target)
-    assert len(result["error"]["expectedSha256"]) == 64
-    assert result["error"]["expectedBytes"] > 0
-    assert target.read_bytes() == foreign
-
-
-@pytest.mark.anyio
-async def test_receipt_failure_leaves_final_and_retry_adopts_it(tmp_path, monkeypatch):
-    document = tmp_path / "receipt-failure.coalesce.json"
-    await run_server(document, enclosure_calls())
-    target = tmp_path / "receipt-failure.step"
-    service = DocumentService(document)
-    original_append = service._export_journal.append
-
-    def fail_append(receipt):
-        if receipt.get("kind") == "pending":
-            return original_append(receipt)
-        raise OSError("injected receipt failure")
-
-    monkeypatch.setattr(service._export_journal, "append", fail_append)
-    failed = await call_server_tool(
-        service,
-        "export",
-        export_request(target, request_id="receipt-failure"),
-    )
-    assert failed["error"]["code"] == "EXPORT_RECEIPT_FAILED"
-    assert failed["error"]["path"] == str(target)
-    assert failed["error"]["expectedBytes"] == target.stat().st_size
-    assert failed["error"]["expectedSha256"] == hashlib.sha256(
-        target.read_bytes()
-    ).hexdigest()
-
-    retried = await call_server_tool(
-        DocumentService(document),
-        "export",
-        export_request(target, request_id="receipt-failure"),
-    )
-    assert retried["ok"] is True
-    assert retried["adopted"] is True
-    assert retried["sha256"] == failed["error"]["expectedSha256"]
-    journal = document.with_name(f"{document.name}.exports.jsonl")
-    records = [json.loads(line) for line in journal.read_text().splitlines()]
-    assert len([record for record in records if "response" in record]) == 1
-    assert records[0]["sha256"] == failed["error"]["expectedSha256"]
-
-
-@pytest.mark.anyio
-async def test_retry_rejects_changed_existing_file(tmp_path, monkeypatch):
-    document = tmp_path / "changed-retry.coalesce.json"
-    await run_server(document, enclosure_calls())
-    target = tmp_path / "changed-retry.step"
-    service = DocumentService(document)
-    original_append = service._export_journal.append
-
-    def fail_append(receipt):
-        if receipt.get("kind") == "pending":
-            return original_append(receipt)
-        raise OSError("injected receipt failure")
-
-    monkeypatch.setattr(service._export_journal, "append", fail_append)
-    failed = await call_server_tool(
-        service,
-        "export",
-        export_request(target, request_id="changed-retry"),
-    )
-    assert failed["error"]["code"] == "EXPORT_RECEIPT_FAILED"
-
-    foreign = b"changed after failed export"
-    target.write_bytes(foreign)
-    monkeypatch.setattr(service._export_journal, "append", original_append)
-    retried = await call_server_tool(
-        service,
-        "export",
-        export_request(target, request_id="changed-retry"),
-    )
-
-    assert retried["error"]["code"] == "EXPORT_PATH_EXISTS"
-    assert target.read_bytes() == foreign
-    journal = document.with_name(f"{document.name}.exports.jsonl")
-    records = [json.loads(line) for line in journal.read_text().splitlines()]
-    assert all("response" not in record for record in records)
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("failure_target", ["file", "directory"])
-async def test_fsync_failure_leaves_final_for_retry(
-    tmp_path, monkeypatch, failure_target
-):
-    document = tmp_path / f"{failure_target}-fsync.coalesce.json"
-    await run_server(document, enclosure_calls())
-    target = tmp_path / f"{failure_target}-fsync.step"
-    original_fsync = export_module.os.fsync
-    failed = False
-
-    def fail_selected_fsync(descriptor):
-        nonlocal failed
-        mode = os.fstat(descriptor).st_mode
-        selected = stat.S_ISREG(mode) if failure_target == "file" else stat.S_ISDIR(mode)
-        if selected and target.exists() and not failed:
-            failed = True
-            raise OSError(f"injected {failure_target} fsync failure")
-        return original_fsync(descriptor)
-
-    monkeypatch.setattr(export_module.os, "fsync", fail_selected_fsync)
-    result = await call_server_tool(
-        DocumentService(document),
-        "export",
-        export_request(target, request_id=f"{failure_target}-fsync"),
-    )
-
-    assert result["error"]["code"] == "EXPORT_WRITE_FAILED"
-    assert result["error"]["path"] == str(target)
-    assert result["error"]["expectedBytes"] == target.stat().st_size
-    assert result["error"]["expectedSha256"] == hashlib.sha256(
-        target.read_bytes()
-    ).hexdigest()
-    assert "same requestId" in result["error"]["hint"]
-
-
-@pytest.mark.anyio
-async def test_malformed_complete_journal_line_blocks_only_export(tmp_path):
-    document = tmp_path / "corrupt-journal.coalesce.json"
-    await run_server(document, enclosure_calls())
-    journal = document.with_name(f"{document.name}.exports.jsonl")
-    valid = {
-        "requestId": "old-export",
-        "requestHash": "hash",
-        "revision": 7,
-        "response": {"ok": True},
-    }
-    journal.write_text(
-        json.dumps(valid) + "\n" + "{malformed}\n" + json.dumps(valid) + "\n"
-    )
-
-    service = DocumentService(document)
-    query = await call_server_tool(service, "query", {"select": {"kind": "measurements"}})
-    result = await call_server_tool(
-        service,
-        "export",
-        export_request(tmp_path / "blocked.step", request_id="blocked"),
-    )
-
-    assert query["ok"] is True
-    assert result["error"]["code"] == "EXPORT_JOURNAL_CORRUPT"
-    assert result["error"]["line"] == 2
-    assert not (tmp_path / "blocked.step").exists()
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    "journal_contents",
-    [
-        None,
-        "{}\n",
-        '{"requestId":"old","requestHash":"hash","revision":"7","response":{}}\n',
-        '{"requestId":"old","requestHash":"hash","revision":7,"response":{},"extra":true}\n',
-    ],
-    ids=["directory", "missing-fields", "wrong-type", "extra-field"],
-)
-async def test_invalid_journal_shape_blocks_only_export(tmp_path, journal_contents):
-    document = tmp_path / "invalid-journal.coalesce.json"
-    journal = document.with_name(f"{document.name}.exports.jsonl")
-    if journal_contents is None:
-        journal.mkdir()
-    else:
-        journal.write_text(journal_contents)
-
-    service = DocumentService(document, warmup=False)
-    query = await call_server_tool(service, "query", {"select": {"kind": "revision"}})
-    result = await call_server_tool(
-        service,
-        "export",
-        export_request(tmp_path / "blocked.step", request_id="blocked", revision=0),
-    )
-
-    assert query["ok"] is True
-    assert result["error"]["code"] == "EXPORT_JOURNAL_CORRUPT"
-    assert result["error"]["path"] == str(journal)
-    assert not (tmp_path / "blocked.step").exists()
 
 
 def test_private_validation_directory_removed_after_timeout_in_fresh_process(tmp_path):
-    temporary_directory = tmp_path / "private-validation"
+    private = tmp_path / "private-validation"
     process = multiprocessing.get_context("spawn").Process(
-        target=validation_timeout_worker,
-        args=(temporary_directory,),
+        target=validation_timeout_worker, args=(private,)
     )
     process.start()
-    process.join(timeout=30)
+    process.join(timeout=60)
 
     assert process.exitcode == 0
-    assert not temporary_directory.exists()
-
-
-def test_export_journal_serializes_processes(tmp_path):
-    document = tmp_path / "concurrent.coalesce.json"
-    context = multiprocessing.get_context("spawn")
-    processes = [
-        context.Process(target=append_export_receipts, args=(document, prefix))
-        for prefix in ("left", "right")
-    ]
-    for process in processes:
-        process.start()
-    for process in processes:
-        process.join(timeout=30)
-        assert process.exitcode == 0
-
-    journal = document.with_name(f"{document.name}.exports.jsonl")
-    lines = journal.read_bytes().splitlines()
-    assert len(lines) == 100
-    assert len({json.loads(line)["requestId"] for line in lines}) == 100
+    assert not private.exists()
 
 
 @pytest.mark.anyio
-async def test_export_contract_describes_absolute_no_overwrite_fresh_validation(tmp_path):
-    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.json")}
-    export = tools["export"]
+@pytest.mark.parametrize("failure", ["write", "file_fsync", "directory_fsync"])
+async def test_publication_failure_leaves_file_with_recovery_fields(
+    tmp_path, monkeypatch, failure
+):
+    document = tmp_path / f"{failure}.coalesce.json"
+    target = tmp_path / f"{failure}.step"
+    await run_server(document, enclosure_calls())
+    original_write = os.write
+    original_fsync = os.fsync
+    step_fd = None
 
-    assert export.inputSchema["properties"]["path"]["type"] == "string"
-    assert export.annotations.readOnlyHint is False
-    assert export.annotations.destructiveHint is False
-    assert export.annotations.idempotentHint is True
-    description = export.description.lower()
-    assert "absolute" in description
-    assert "never overwrite" in description
-    assert "fresh python process" in description
-    assert "never overwrite" in TOOLS_GUIDE.lower()
-    assert "fresh python process" in TOOLS_GUIDE.lower()
-    assert "briefly visible" in TOOLS_GUIDE.lower()
-    assert "retry" in TOOLS_GUIDE.lower()
-    assert os.path.isabs(str(tmp_path))
+    def fail_write(descriptor, data):
+        nonlocal step_fd
+        if bytes(data[:16]).startswith(b"ISO-10303"):
+            step_fd = descriptor
+            original_write(descriptor, data[: max(1, len(data) // 2)])
+            raise OSError("injected write failure")
+        return original_write(descriptor, data)
+
+    def fail_fsync(descriptor):
+        if failure == "file_fsync" and descriptor == step_fd:
+            raise OSError("injected file fsync failure")
+        if failure == "directory_fsync" and step_fd is not None and descriptor != step_fd:
+            raise OSError("injected directory fsync failure")
+        return original_fsync(descriptor)
+
+    if failure == "write":
+        monkeypatch.setattr(export_module.os, "write", fail_write)
+    else:
+        def remember_step_write(descriptor, data):
+            nonlocal step_fd
+            if bytes(data[:16]).startswith(b"ISO-10303"):
+                step_fd = descriptor
+            return original_write(descriptor, data)
+
+        monkeypatch.setattr(export_module.os, "write", remember_step_write)
+        monkeypatch.setattr(export_module.os, "fsync", fail_fsync)
+
+    result = await call_server_tool(
+        DocumentService(document), "export", export_request(target)
+    )
+
+    error = result["error"]
+    content = target.read_bytes()
+    assert error["code"] == "EXPORT_WRITE_FAILED"
+    assert error["path"] == str(target)
+    assert len(error["expectedSha256"]) == 64
+    assert error["expectedBytes"] > 0
+    assert error["message"].endswith(
+        "the file at path may be incomplete; coalesce leaves it in place; "
+        "delete it yourself or export to a new path."
+    )
+    assert content
+
+
+@pytest.mark.anyio
+async def test_non_export_tool_is_unaffected(tmp_path):
+    document = tmp_path / "query.coalesce.json"
+    await run_server(document, enclosure_calls())
+
+    result = await call_server_tool(
+        DocumentService(document), "query", {"select": {"kind": "revision"}}
+    )
+
+    assert result == {"ok": True, "revision": 7, "units": "mm"}
+
+
+@pytest.mark.anyio
+async def test_export_contract_documents_stateless_recovery(tmp_path):
+    export_tool = next(
+        tool for tool in await list_server_tools(tmp_path / "guide.coalesce.json")
+        if tool.name == "export"
+    )
+
+    assert set(export_tool.inputSchema["required"]) == {"expectedRevision", "path"}
+    assert "requestId" not in export_tool.inputSchema["properties"]
+    for phrase in (
+        "private directory",
+        "fresh Python process",
+        "briefly visible",
+        "never overwrites",
+        "path",
+        "sha256",
+        "byteCount",
+        "validation",
+        "EXPORT_PATH_EXISTS",
+        "EXPORT_WRITE_FAILED",
+        "expectedSha256",
+        "expectedBytes",
+        "delete it yourself or export to a new path",
+    ):
+        assert phrase in TOOLS_GUIDE

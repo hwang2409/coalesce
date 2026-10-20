@@ -15,15 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, read_kicad_board
-from .document_store import (
-    MAX_RECEIPTS,
-    MAX_REQUEST_HASHES,
-    Document,
-    DocumentStore,
-    ExportJournal,
-    ExportJournalError,
-)
-from .export import ExportFailure, adopt_export, export_parts
+from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
+from .export import ExportFailure, export_parts
 from .graph import (
     BoardImport,
     Circle,
@@ -1005,22 +998,8 @@ class DocumentService:
         kernel_loader: _KernelLoaderInterface | None = None,
     ):
         self.store = DocumentStore(path)
-        self._export_journal = ExportJournal(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
-        try:
-            export_records = self._export_journal.load()
-            self._export_receipts = [
-                record for record in export_records if "response" in record
-            ]
-            self._pending_exports = [
-                record for record in export_records if record.get("kind") == "pending"
-            ]
-            self._export_journal_error = None
-        except ExportJournalError as error:
-            self._export_receipts = []
-            self._pending_exports = []
-            self._export_journal_error = error
         self._regen = None
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
@@ -1354,45 +1333,6 @@ class DocumentService:
             },
         )
 
-    @staticmethod
-    def _export_hash(payload: dict[str, Any]) -> str:
-        encoded = json.dumps(
-            {"type": "Export", **_canonical(payload)},
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode()
-        return hashlib.sha256(encoded).hexdigest()
-
-    def _export_replay(self, request_id: Any, body_hash: str) -> dict[str, Any] | None:
-        receipts = [*self._document.receipts, *self._export_receipts]
-        receipt = next(
-            (item for item in receipts if item["requestId"] == request_id), None
-        )
-        if receipt is not None:
-            if receipt["requestHash"] == body_hash:
-                return receipt["response"]
-            raise RequestError(
-                "REQUEST_ID_REUSED",
-                "requestId was already used for a different request body",
-            )
-        request_hash = next(
-            (
-                item["requestHash"]
-                for item in self._document.request_hashes
-                if item["requestId"] == request_id
-            ),
-            None,
-        )
-        if request_hash is not None:
-            message = (
-                "requestId was already used for a different request body"
-                if request_hash != body_hash
-                else "requestId replay is outside the full receipt window"
-            )
-            raise RequestError("REQUEST_ID_REUSED", message)
-        return None
-
     def _check_export_revision(self, expected_revision: int) -> None:
         if expected_revision == self._document.revision:
             return
@@ -1439,106 +1379,25 @@ class DocumentService:
             )
         return selected
 
-    def _prepare_export(
-        self,
-        request_id: Any,
-        body_hash: str,
-        fields: dict[str, Any],
-        byte_count: int,
-    ) -> None:
-        pending = {
-            "kind": "pending",
-            "requestId": request_id,
-            "requestHash": body_hash,
-            "revision": self._document.revision,
-            "path": fields["path"],
-            "sha256": fields["sha256"],
-            "byteCount": byte_count,
-            "fields": fields,
-        }
-        self._export_journal.append(pending)
-        self._pending_exports.append(pending)
-
-    def _record_export(
-        self, request_id: Any, body_hash: str, fields: dict[str, Any]
-    ) -> dict[str, Any]:
-        response = {
-            "ok": True,
-            "revision": self._document.revision,
-            "requestId": request_id,
-            "units": "mm",
-            **fields,
-        }
-        receipt = {
-            "requestId": request_id,
-            "requestHash": body_hash,
-            "revision": self._document.revision,
-            "response": response,
-        }
-        self._export_journal.append(receipt)
-        self._export_receipts.append(receipt)
-        return response
-
-    def _perform_export(
-        self, payload: dict[str, Any], request_id: Any
-    ) -> dict[str, Any]:
-        if self._export_journal_error is not None:
-            error = self._export_journal_error
-            raise ExportFailure(error.code, error.message, **error.details)
-        body_hash = self._export_hash(payload)
-        replay = self._export_replay(request_id, body_hash)
-        if replay is not None:
-            return replay
-        self._check_export_revision(payload["expectedRevision"])
-        pending = next(
-            (
-                record
-                for record in reversed(self._pending_exports)
-                if record["requestId"] == request_id
-            ),
-            None,
-        )
-        if pending is not None:
-            if pending["requestHash"] != body_hash:
-                raise RequestError(
-                    "REQUEST_ID_REUSED",
-                    "requestId was already used for a different request body",
-                )
-            adopted = adopt_export(
-                Path(pending["path"]),
-                pending["sha256"],
-                pending["byteCount"],
-                lambda was_adopted: self._record_export(
-                    request_id,
-                    body_hash,
-                    {
-                        **pending["fields"],
-                        **({"adopted": True} if was_adopted else {}),
-                    },
-                ),
-            )
-            if adopted is not None:
-                return adopted
-        selected = self._select_export_parts(payload.get("partIds"))
-        return export_parts(
-            Path(payload.get("path", "")),
-            selected,
-            lambda fields, byte_count: self._prepare_export(
-                request_id, body_hash, fields, byte_count
-            ),
-            lambda fields: self._record_export(request_id, body_hash, fields),
-        )
-
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
-        request_id = payload.get("requestId")
         with self._lock:
             try:
-                return self._perform_export(payload, request_id)
+                self._check_export_revision(payload["expectedRevision"])
+                fields = export_parts(
+                    Path(payload.get("path", "")),
+                    self._select_export_parts(payload.get("partIds")),
+                )
+                return {
+                    "ok": True,
+                    "revision": self._document.revision,
+                    "units": "mm",
+                    **fields,
+                }
             except ExportFailure as error:
                 return _safe_error(
                     self._document.revision,
-                    request_id,
+                    None,
                     error.code,
                     error.message,
                     operation="export",
@@ -1547,7 +1406,7 @@ class DocumentService:
             except RequestError as error:
                 return _safe_error(
                     self._document.revision,
-                    request_id,
+                    None,
                     error.code,
                     str(error),
                     operation="export",
@@ -1558,7 +1417,7 @@ class DocumentService:
                 _LOG.exception("unexpected failure during export")
                 return _safe_error(
                     self._document.revision,
-                    request_id,
+                    None,
                     "EXPORT_WRITE_FAILED",
                     "STEP export could not be completed",
                     operation="export",
