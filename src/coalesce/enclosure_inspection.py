@@ -266,39 +266,36 @@ def _board_fit(
     return clearances, None
 
 
+def _lid_measurement(
+    result: Any, parts: list[TerminalPart], node: PcbLid, base_part: TerminalPart
+) -> dict[str, Any]:
+    part = _part_for(parts, node.id)
+    undersides = _faces(result, node.id, "underside")
+    lips = _faces(result, node.id, "lip_outer")
+    interference = _interference(base_part.shape, part.shape, [base_part.part_id, part.part_id])
+    gaps = [gap for lip in lips if (gap := _parallel_gap(lip, base_part.shape)) is not None]
+    if interference is not None:
+        gaps = [0.0]
+    lip_box = Compound(children=lips).bounding_box() if lips else None
+    return {
+        "featureId": node.id,
+        "partId": part.part_id,
+        "outerBBox": _bbox(part.shape),
+        "seatingZ": _quantity(min(face.bounding_box().min.Z for face in undersides)),
+        "fitGap": {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))} if gaps else None,
+        "interference": interference,
+        "lipDepth": _quantity(lip_box.max.Z - lip_box.min.Z) if lip_box is not None else None,
+    }
+
+
 def _lids(
     graph: Any, result: Any, parts: list[TerminalPart], base: PcbBase, base_part: TerminalPart
 ) -> list[dict[str, Any]]:
-    inspected = []
-    for node in graph.ordered():
-        if not isinstance(node, PcbLid) or node.base != base.id:
-            continue
-        part = _part_for(parts, node.id)
-        undersides = _faces(result, node.id, "underside")
-        lips = _faces(result, node.id, "lip_outer")
-        interference = _interference(
-            base_part.shape, part.shape, [base_part.part_id, part.part_id]
-        )
-        gaps = [gap for lip in lips if (gap := _parallel_gap(lip, base_part.shape)) is not None]
-        if interference is not None:
-            gaps = [0.0]
-        lip_box = Compound(children=lips).bounding_box() if lips else None
-        inspected.append(
-            {
-                "featureId": node.id,
-                "partId": part.part_id,
-                "outerBBox": _bbox(part.shape),
-                "seatingZ": _quantity(min(face.bounding_box().min.Z for face in undersides)),
-                "fitGap": (
-                    {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))} if gaps else None
-                ),
-                "interference": interference,
-                "lipDepth": (
-                    _quantity(lip_box.max.Z - lip_box.min.Z) if lip_box is not None else None
-                ),
-            }
-        )
-    return inspected
+    return [
+        _lid_measurement(result, parts, node, base_part)
+        for node in graph.ordered()
+        if isinstance(node, PcbLid) and node.base == base.id
+    ]
 
 
 def _opening_rectangle(tool: Shape, wall: str) -> dict[str, Any]:
