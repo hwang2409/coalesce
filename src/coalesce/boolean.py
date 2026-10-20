@@ -30,6 +30,8 @@ class FuseResult:
     candidates: list[Candidate]
     algorithm: BRepAlgoAPI_Fuse
     joined_material: bool
+    unjoined_entities: list[str]
+    non_manifold_entities: list[str]
 
 
 def _same(shape: Shape, candidates: list[Shape]) -> bool:
@@ -233,21 +235,94 @@ def _join_body(feature: str, target_candidates: list[Candidate]) -> BodySource:
     return body
 
 
-def _joined_material(
+def _history_result_solids(
+    algorithm: BRepAlgoAPI_Fuse,
+    source_faces: list[Candidate],
+    result_solids: list[Shape],
+) -> set[int]:
+    outputs: set[int] = set()
+    for source in source_faces:
+        history = _result_faces(
+            [
+                *algorithm.Modified(source.entity.wrapped),
+                *algorithm.Generated(source.entity.wrapped),
+            ]
+        )
+        if not history and not algorithm.IsDeleted(source.entity.wrapped):
+            history = [source.entity]
+        for index, solid in enumerate(result_solids):
+            if any(_same(face, solid.faces()) for face in history):
+                outputs.add(index)
+    return outputs
+
+
+def _solid_candidates(solid: Shape, candidates: list[Candidate]) -> list[Candidate]:
+    return [
+        source
+        for source in candidates
+        if isinstance(source.entity, Face) and _same(source.entity, solid.faces())
+    ]
+
+
+def _join_failures(
     algorithm: BRepAlgoAPI_Fuse,
     result: Shape,
     target: Shape,
     target_candidates: list[Candidate],
     tool: Shape,
-) -> bool:
-    fewer_solids = len(result.solids()) < len(target.solids()) + len(tool.solids())
-    target_changed = any(
-        algorithm.IsDeleted(source.entity.wrapped)
-        or len(algorithm.Modified(source.entity.wrapped)) > 0
-        for source in target_candidates
-        if isinstance(source.entity, Face)
-    )
-    return fewer_solids or target_changed
+    tool_candidates: list[Candidate],
+) -> tuple[list[str], list[str]]:
+    result_solids = result.solids()
+    target_outputs = [
+        _history_result_solids(
+            algorithm,
+            _solid_candidates(solid, target_candidates),
+            result_solids,
+        )
+        for solid in target.solids()
+    ]
+    target_by_output = {
+        output
+        for outputs in target_outputs
+        for output in outputs
+    }
+
+    unjoined: list[str] = []
+    non_manifold: list[str] = []
+    for solid in tool.solids():
+        sources = _solid_candidates(solid, tool_candidates)
+        entities = sorted(
+            {
+                source.key.body.entity
+                for source in sources
+                if source.key.body is not None
+            }
+        )
+        outputs = _history_result_solids(algorithm, sources, result_solids)
+        fully_joined = len(outputs) == 1 and outputs <= target_by_output
+        if fully_joined:
+            continue
+        destination = non_manifold if solid.distance_to(target) == 0 else unjoined
+        destination.extend(entities)
+
+    all_results_have_target = target_by_output == set(range(len(result_solids)))
+    target_solids_are_whole = all(len(outputs) == 1 for outputs in target_outputs)
+    if (
+        (not all_results_have_target or not target_solids_are_whole)
+        and not unjoined
+        and not non_manifold
+    ):
+        for solid in tool.solids():
+            sources = _solid_candidates(solid, tool_candidates)
+            outputs = _history_result_solids(algorithm, sources, result_solids)
+            if len(outputs) == 1 and outputs <= target_by_output:
+                unjoined.extend(
+                    source.key.body.entity
+                    for source in sources
+                    if source.key.body is not None
+                )
+
+    return sorted(set(unjoined)), sorted(set(non_manifold))
 
 
 def fuse_shape(
@@ -287,11 +362,21 @@ def fuse_shape(
                 )
             )
 
+    unjoined, non_manifold = _join_failures(
+        algorithm,
+        result,
+        target,
+        target_candidates,
+        tool,
+        tool_candidates,
+    )
     result_faces = _deduplicate(feature, result, mapped)
     edges = derive_edge_candidates(feature, result, result_faces)
     return FuseResult(
         result,
         [*result_faces, *edges],
         algorithm,
-        _joined_material(algorithm, result, target, target_candidates, tool),
+        not unjoined and not non_manifold,
+        unjoined,
+        non_manifold,
     )

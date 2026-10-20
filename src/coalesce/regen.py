@@ -139,12 +139,23 @@ def _join_extrude(
         prism.shape,
         prism.candidates,
     )
-    if not result.joined_material:
+    if result.unjoined_entities:
         raise GraphError(
             "JOIN_NO_CONTACT",
-            f"join extrude {node.id} does not contact target {node.target}",
+            f"join extrude {node.id} has profiles that do not contact target {node.target}",
             feature=node.id,
             target=node.target,
+            entities=result.unjoined_entities,
+        )
+    if result.non_manifold_entities:
+        entity = result.non_manifold_entities[0]
+        raise GraphError(
+            "JOIN_NON_MANIFOLD",
+            f"join extrude {node.id} profile {entity} only touches target {node.target} along an edge or point",
+            feature=node.id,
+            target=node.target,
+            entity=entity,
+            hint="extend the profile so faces overlap or touch",
         )
     return result
 
