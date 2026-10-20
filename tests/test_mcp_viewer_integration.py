@@ -381,7 +381,10 @@ async def test_schema_invalid_feature_shows_coalesce_wording_in_viewer(tmp_path,
         ),
         (
             {"source": {"kind": "edge"}},
-            "kind must be 'sketch_segment' (field: select.reference.source.kind)",
+            (
+                "kind must be one of 'sketch_segment', 'hole_surface'"
+                " (field: select.reference.source.kind)"
+            ),
         ),
         (
             {"body": {"kind": "body_source", "feature": "plate_extrude"}},
