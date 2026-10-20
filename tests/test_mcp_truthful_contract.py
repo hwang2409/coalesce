@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from jsonschema import validate
 from test_mcp_vertical import FEATURE, SKETCH, list_server_tools, run_server
 
 from coalesce.server import TOOLS_GUIDE
@@ -32,6 +33,33 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         assert tools[name].annotations.readOnlyHint is False
         assert tools[name].annotations.destructiveHint is True
         assert tools[name].annotations.idempotentHint is True
+
+
+@pytest.mark.anyio
+async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
+    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
+    schema = tools["feature"].inputSchema
+    quantity = {"value": 1, "unit": "mm"}
+    updates = [
+        ("pcb_base", "pcb_base", {"wallThickness": quantity}),
+        ("standoffs", "standoffs", {"minimumDiameter": quantity}),
+        ("pcb_lid_thickness", "pcb_lid", {"thickness": quantity}),
+        ("pcb_lid_fit_gap", "pcb_lid", {"fitGap": quantity}),
+        ("pcb_lid_lip", "pcb_lid", {"lip": {"depth": quantity, "width": quantity}}),
+    ]
+
+    for feature_id, kind, changes in updates:
+        validate(
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": f"schema-{feature_id}",
+                "featureId": feature_id,
+                "kind": kind,
+                "set": changes,
+            },
+            schema,
+        )
 
 
 @pytest.mark.anyio
