@@ -9,6 +9,7 @@ from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, run_server
 from test_pcb_enclosure import FIXTURES, base_request, import_request, standoffs_request
 from test_port_cutout import port_request
 
+import coalesce.service as service_module
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
@@ -44,6 +45,15 @@ def second_standoffs_request():
     request["featureId"] = "mounts2"
     request["parameters"]["target"] = {"featureId": "base2"}
     return request
+
+
+def geometry_signature(service, feature_id):
+    shape = service._regen.shapes[feature_id]
+    return (
+        shape.volume,
+        len(shape.faces()),
+        sorted(face.area for face in shape.faces()),
+    )
 
 
 @pytest.mark.anyio
@@ -126,15 +136,18 @@ async def test_delete_without_cascade_lists_all_transitive_dependents_and_commit
 
 
 @pytest.mark.anyio
-async def test_deleting_mid_chain_requires_successor_removal_and_restores_prior_volume(tmp_path):
-    service = DocumentService(tmp_path / "lineage.coalesce.json")
-    for tool, payload in [
+async def test_deleting_mid_chain_requires_successor_removal_and_restores_fresh_prefix(tmp_path):
+    prefix = [
         ("import", import_request(FIXTURES / "features.kicad_pcb")),
         ("feature", base_request()),
         ("feature", standoffs_request()),
-    ]:
+    ]
+    fresh = DocumentService(tmp_path / "fresh-prefix.coalesce.json")
+    service = DocumentService(tmp_path / "lineage.coalesce.json")
+    for tool, payload in prefix:
+        assert (await call_server_tool(fresh, tool, payload))["ok"]
         assert (await call_server_tool(service, tool, payload))["ok"]
-    earlier_volume = service.query({"select": {"kind": "measurements"}})["volume"]
+    expected_geometry = geometry_signature(fresh, "mounts")
     drilled = hole(
         request_id="generic-hole",
         revision=3,
@@ -159,8 +172,60 @@ async def test_deleting_mid_chain_requires_successor_removal_and_restores_prior_
         service, "feature", delete_feature("generic-hole", 6, "delete-hole")
     )
     assert removed_hole["ok"]
-    assert service.query({"select": {"kind": "measurements"}})["volume"] == earlier_volume
+    assert geometry_signature(service, "mounts") == expected_geometry
     assert service._regen.predecessors == {"mounts": "base"}
+
+
+@pytest.mark.anyio
+async def test_delete_regenerates_exactly_once(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "one-regen.coalesce.json")
+    assert (await call_server_tool(service, "sketch", SKETCH))["ok"]
+    assert (await call_server_tool(service, "feature", FEATURE))["ok"]
+    real_regenerate = service_module.regenerate
+    calls = 0
+
+    def counted_regenerate(graph):
+        nonlocal calls
+        calls += 1
+        return real_regenerate(graph)
+
+    monkeypatch.setattr(service_module, "regenerate", counted_regenerate)
+    deleted = await call_server_tool(
+        service, "sketch", delete_sketch("plate_profile", 2, "one-regen", cascade=True)
+    )
+
+    assert deleted["ok"]
+    assert calls == 1
+
+
+@pytest.mark.anyio
+async def test_delete_regeneration_failure_preserves_committed_state(tmp_path, monkeypatch):
+    path = tmp_path / "failed-delete.coalesce.json"
+    service = DocumentService(path)
+    assert (await call_server_tool(service, "sketch", SKETCH))["ok"]
+    assert (await call_server_tool(service, "feature", FEATURE))["ok"]
+    before_bytes = path.read_bytes()
+    before_regen = service._regen
+    real_regenerate = service_module.regenerate
+
+    def fail_after_delete(graph):
+        if "plate_extrude" not in graph.nodes:
+            raise RuntimeError("injected post-delete regeneration failure")
+        return real_regenerate(graph)
+
+    monkeypatch.setattr(service_module, "regenerate", fail_after_delete)
+    failed = await call_server_tool(
+        service, "feature", delete_feature("plate_extrude", 2, "failed-delete")
+    )
+
+    assert failed["error"]["code"] == "KERNEL_OPERATION_FAILED"
+    assert service.revision == 2
+    assert service._regen is before_regen
+    assert path.read_bytes() == before_bytes
+    assert all(
+        receipt["requestId"] != "failed-delete"
+        for receipt in json.loads(path.read_text())["receipts"]
+    )
 
 
 @pytest.mark.anyio
