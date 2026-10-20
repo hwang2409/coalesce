@@ -1,10 +1,10 @@
-"""Public MCP schemas for the slice-one tool surface."""
+"""Public schemas for the callable MCP tool surface."""
 
 from __future__ import annotations
 
 QUANTITY = {
     "type": "object",
-    "properties": {"value": {"type": "number"}, "unit": {"type": "string"}},
+    "properties": {"value": {"type": "number"}, "unit": {"const": "mm"}},
     "required": ["value", "unit"],
     "additionalProperties": False,
 }
@@ -210,7 +210,7 @@ EXTRUDE_PARAMETERS = {
 FEATURE_PROPERTIES = {
     **MUTATION_PROPERTIES,
     "featureId": {"type": "string", "minLength": 1},
-    "kind": {"enum": ["extrude", "boolean", "hole", "fillet"]},
+    "kind": {"enum": ["extrude"]},
 }
 FEATURE_CREATE_SCHEMA = {
     "type": "object",
@@ -271,10 +271,12 @@ QUERY_SCHEMA = {
                         "revision",
                         "timeline",
                         "measurements",
+                        "feature",
                         "reference",
                         "server",
                     ]
                 },
+                "id": {"type": "string", "minLength": 1},
                 "reference": REFERENCE,
             },
             "required": ["kind"],

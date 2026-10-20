@@ -32,7 +32,7 @@ from .serialization import dumps, loads
 from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
-_ALLOWED_FEATURE_KINDS = ["extrude", "boolean", "hole", "fillet"]
+_ALLOWED_FEATURE_KINDS = ["extrude"]
 
 
 class RequestError(ValueError):
@@ -192,7 +192,7 @@ def _rectangles(payload: Any) -> tuple[Rectangle, ...]:
         if not isinstance(entity, dict) or entity.get("kind") != "rectangle":
             raise RequestError(
                 "INVALID_PARAMETER",
-                "slice 1 supports only rectangle sketch entities",
+                "only rectangle sketch entities are supported",
                 allowedKinds=["rectangle"],
             )
         center = entity.get("center", [0, 0])
@@ -249,12 +249,6 @@ def _parse_feature(payload: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
         raise RequestError(
             "INVALID_PARAMETER",
             f"unknown feature kind: {kind}",
-            allowedKinds=_ALLOWED_FEATURE_KINDS,
-        )
-    if kind != "extrude":
-        raise RequestError(
-            "FEATURE_NOT_AVAILABLE",
-            f"feature kind {kind} is not yet available",
             allowedKinds=_ALLOWED_FEATURE_KINDS,
         )
     common = {
@@ -365,7 +359,7 @@ def _reference(payload: dict[str, Any]) -> Reference:
 def _apply_sketch(graph: Any, operation: SketchCreate | SketchUpdate) -> str:
     if isinstance(operation, SketchCreate):
         if operation.plane != SketchPlane("origin", "XY"):
-            raise RequestError("INVALID_PARAMETER", "slice 1 supports only the XY origin plane")
+            raise RequestError("INVALID_PARAMETER", "only the XY origin plane is supported")
         graph.add(Sketch(operation.sketchId, entities=list(operation.entities)))
     else:
         node = graph.nodes.get(operation.sketchId)
@@ -382,7 +376,7 @@ def _apply_feature(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     if isinstance(operation, ExtrudeCreate):
         parameters = operation.parameters
         if parameters.operation != "new_body" or parameters.direction != "normal":
-            raise RequestError("INVALID_PARAMETER", "slice 1 supports normal new_body extrudes")
+            raise RequestError("INVALID_PARAMETER", "only normal new_body extrudes are supported")
         sketch = graph.nodes.get(parameters.profile.sketchId)
         if not isinstance(sketch, Sketch):
             raise RequestError("UNKNOWN_ID", "extrude profile sketch does not exist")
@@ -686,7 +680,7 @@ class DocumentService:
                     self._document.revision,
                     None,
                     "UNKNOWN_ID",
-                    "only the current revision is retained in slice 1",
+                    "only the current revision is retained",
                     operation="query",
                 )
             select = payload.get("select", {})
@@ -700,6 +694,19 @@ class DocumentService:
                 return {**base, "viewerUrl": self._viewer_url}
             if kind == "measurements":
                 return {**base, **self._metrics()}
+            if kind == "feature":
+                feature_id = select.get("id")
+                nodes = json.loads(dumps(self._document.graph))["nodes"]
+                feature = next((node for node in nodes if node["id"] == feature_id), None)
+                if feature is None:
+                    return _safe_error(
+                        self._document.revision,
+                        None,
+                        "UNKNOWN_ID",
+                        f"unknown feature: {feature_id}",
+                        operation="query.feature",
+                    )
+                return {**base, "feature": feature}
             if kind == "reference":
                 try:
                     reference = _reference(select.get("reference", {}))
@@ -739,25 +746,51 @@ class DocumentService:
                 operation="query",
             )
 
-    def _metrics(self) -> dict[str, Any]:
-        shapes = [shape for _, shape in _terminal_shapes(self._regen)]
-        if not shapes:
-            dimensions = (0.0, 0.0, 0.0)
-        else:
+    @staticmethod
+    def _bbox(shapes: list[Any]) -> dict[str, Any]:
+        if shapes:
             boxes = [shape.bounding_box() for shape in shapes]
-            dimensions = (
-                max(box.max.X for box in boxes) - min(box.min.X for box in boxes),
-                max(box.max.Y for box in boxes) - min(box.min.Y for box in boxes),
-                max(box.max.Z for box in boxes) - min(box.min.Z for box in boxes),
-            )
+            minimum = tuple(min(getattr(box.min, axis) for box in boxes) for axis in "XYZ")
+            maximum = tuple(max(getattr(box.max, axis) for box in boxes) for axis in "XYZ")
+        else:
+            minimum = maximum = (0.0, 0.0, 0.0)
+        size = tuple(high - low for low, high in zip(minimum, maximum, strict=True))
+        center = tuple((low + high) / 2 for low, high in zip(minimum, maximum, strict=True))
+
+        def point(values: tuple[float, float, float]) -> dict[str, Any]:
+            return {**dict(zip(("x", "y", "z"), values, strict=True)), "unit": "mm"}
+
         return {
-            "bbox": {
+            **{
                 axis: {"value": value, "unit": "mm"}
-                for axis, value in zip(("x", "y", "z"), dimensions, strict=True)
+                for axis, value in zip(("x", "y", "z"), size, strict=True)
             },
-            "volume": {"value": sum(shape.volume for shape in shapes), "unit": "mm^3"},
-            "area": {"value": sum(shape.area for shape in shapes), "unit": "mm^2"},
-            "solidCount": sum(len(shape.solids()) for shape in shapes),
+            "min": point(minimum),
+            "max": point(maximum),
+            "center": point(center),
+        }
+
+    def _metrics(self) -> dict[str, Any]:
+        terminal = _terminal_shapes(self._regen)
+        solids = [solid for _, shape in terminal for solid in shape.solids()]
+        bodies = [
+            {
+                "featureId": feature,
+                "bodyIndex": index,
+                "bbox": self._bbox([solid]),
+                "volume": {"value": solid.volume, "unit": "mm^3"},
+                "area": {"value": solid.area, "unit": "mm^2"},
+                "solidCount": 1,
+            }
+            for feature, shape in terminal
+            for index, solid in enumerate(shape.solids())
+        ]
+        return {
+            "bbox": self._bbox(solids),
+            "volume": {"value": sum(solid.volume for solid in solids), "unit": "mm^3"},
+            "area": {"value": sum(solid.area for solid in solids), "unit": "mm^2"},
+            "solidCount": len(solids),
+            "bodies": bodies,
         }
 
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -767,7 +800,7 @@ class DocumentService:
                     self._document.revision,
                     None,
                     "INVALID_PARAMETER",
-                    "slice 1 supports only check action evaluate",
+                    "only check action evaluate is supported",
                     operation="check",
                 )
             if payload.get("revision", self._document.revision) != self._document.revision:
@@ -787,7 +820,7 @@ class DocumentService:
                             "id": requirement.get("id"),
                             "kind": requirement.get("kind"),
                             "status": "ERROR",
-                            "evidence": "check kind is not available in slice 1",
+                            "evidence": "check kind is not available",
                         }
                     )
                     continue
