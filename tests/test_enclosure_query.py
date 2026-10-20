@@ -421,7 +421,7 @@ def test_enclosure_query_measures_wall_fillet_from_final_faces(tmp_path, fillete
     assert _value(result["base"]["minimumWallThickness"]) == pytest.approx(exact, abs=1e-6)
 
 
-def test_enclosure_query_returns_unknown_thickness_for_circular_outline(tmp_path):
+def test_enclosure_query_returns_summary_for_circular_outline(tmp_path):
     service = DocumentService(tmp_path / "circle.coalesce.json")
     assert service.import_board(import_request(FIXTURES / "circle.kicad_pcb"))["ok"]
     assert service.feature(base_request())["ok"]
@@ -429,8 +429,34 @@ def test_enclosure_query_returns_unknown_thickness_for_circular_outline(tmp_path
     result = service.query({"select": {"kind": "enclosure", "base": "base"}})
 
     assert result["ok"] is True
-    assert result["base"]["minimumWallThickness"]["status"] == "unknown"
-    assert result["base"]["floorThickness"]["status"] == "unknown"
+    assert _value(result["base"]["minimumWallThickness"]) == pytest.approx(2)
+    assert _value(result["base"]["floorThickness"]) == pytest.approx(2)
+    assert result["cavity"]["boardClearance"]["left"]["status"] == "unknown"
+    assert result["cavity"]["innerSize"]["x"]["status"] == "unknown"
+
+
+def test_enclosure_query_returns_unknown_when_thickness_cannot_be_measured(
+    tmp_path, monkeypatch
+):
+    service, _, _ = _base_service(tmp_path)
+
+    def fail_distance(*_args):
+        raise RuntimeError("distance unavailable")
+
+    monkeypatch.setattr(
+        "coalesce.enclosure_inspection.BRepExtrema_DistShapeShape", fail_distance
+    )
+    result = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    assert result["ok"] is True
+    assert result["base"]["minimumWallThickness"] == {
+        "status": "unknown",
+        "reason": "distance unavailable",
+    }
+    assert result["base"]["floorThickness"] == {
+        "status": "unknown",
+        "reason": "distance unavailable",
+    }
 
 
 def test_enclosure_query_measures_wall_pocket_from_terminal_solid(tmp_path):

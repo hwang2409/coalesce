@@ -5,6 +5,8 @@ from typing import Any
 
 from build123d import Align, Box, Compound, Cylinder, Face, Location, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+from OCP.Standard import Standard_Failure
 
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
 from .parts import TerminalPart, terminal_parts
@@ -74,38 +76,87 @@ def _planar_coordinate(face: Face, axis: str) -> float | None:
     return low if high - low <= _TOLERANCE else None
 
 
-def _thickness_from_face(face: Face, shape: Shape, axis: str, outward: int) -> float:
-    coordinate = _planar_coordinate(face, axis)
-    if coordinate is None:
-        raise ValueError("thickness identity face is not axis-aligned")
-    tangent_axes = "YZ" if axis == "X" else "XZ" if axis == "Y" else "XY"
-    distances = []
-    for candidate in shape.faces():
-        candidate_coordinate = _planar_coordinate(candidate, axis)
-        if candidate_coordinate is None or not _overlaps(face, candidate, tangent_axes):
-            continue
-        distance = (candidate_coordinate - coordinate) * outward
-        if distance > _TOLERANCE:
-            distances.append(distance)
-    if not distances:
-        raise ValueError("terminal solid has no opposite thickness face")
-    return min(distances)
+def _same_face(face: Face, candidates: list[Face]) -> bool:
+    return any(face.is_same(candidate) for candidate in candidates)
 
 
-def _as_built_thicknesses(result: Any, base: PcbBase, shape: Shape) -> tuple[float, float]:
-    box = shape.bounding_box()
-    center_x = (box.min.X + box.max.X) / 2
-    center_y = (box.min.Y + box.max.Y) / 2
-    walls = []
-    for face in _faces(result, base.id, "inner_wall"):
-        x = _planar_coordinate(face, "X")
-        y = _planar_coordinate(face, "Y")
-        if x is not None:
-            walls.append(_thickness_from_face(face, shape, "X", -1 if x < center_x else 1))
-        elif y is not None:
-            walls.append(_thickness_from_face(face, shape, "Y", -1 if y < center_y else 1))
-    floors = [_thickness_from_face(face, shape, "Z", -1) for face in _faces(result, base.id, "floor")]
-    return min(walls), min(floors)
+def _adjacent(first: Face, second: Face) -> bool:
+    return any(edge.is_same(other) for edge in first.edges() for other in second.edges())
+
+
+def _face_components(faces: list[Face]) -> list[list[Face]]:
+    remaining = list(faces)
+    components = []
+    while remaining:
+        component = [remaining.pop()]
+        for face in component:
+            connected = [candidate for candidate in remaining if _adjacent(face, candidate)]
+            component.extend(connected)
+            remaining = [candidate for candidate in remaining if candidate not in connected]
+        components.append(component)
+    return components
+
+
+def _classify_boundary_faces(result: Any, base: PcbBase, shape: Shape) -> dict[str, list[Face]]:
+    roles = {
+        "inner_wall": "wall_inside",
+        "outer_wall": "wall_outside",
+        "floor": "floor_inside",
+        "floor_bottom": "floor_outside",
+    }
+    groups = {group: _faces(result, base.id, role) for role, group in roles.items()}
+    groups["unclassified"] = []
+    seeds = [face for faces in groups.values() for face in faces]
+    neutral = _faces(result, base.id, "rim")
+    unclassified = [face for face in shape.faces() if not _same_face(face, [*seeds, *neutral])]
+    for component in _face_components(unclassified):
+        touched = {
+            group
+            for group in roles.values()
+            if any(
+                _adjacent(face, seed)
+                for face in component
+                for seed in groups[group]
+            )
+        }
+        sides = {group.rsplit("_", 1)[1] for group in touched}
+        if len(sides) == 1:
+            for group in touched:
+                groups[group].extend(component)
+        elif not touched and not any(
+            _adjacent(face, rim) for face in component for rim in neutral
+        ):
+            groups["unclassified"].extend(component)
+    return groups
+
+
+def _minimum_distance(first: list[Face], second: list[Face]) -> float:
+    if not first or not second:
+        raise ValueError("final boundary face set is empty")
+    extrema = BRepExtrema_DistShapeShape(
+        Compound(children=first).wrapped,
+        Compound(children=second).wrapped,
+    )
+    extrema.Perform()
+    if not extrema.IsDone():
+        raise ValueError("OCCT distance measurement did not complete")
+    return extrema.Value()
+
+
+def _thickness(groups: dict[str, list[Face]], kind: str) -> dict[str, Any]:
+    try:
+        if groups["unclassified"]:
+            raise ValueError("final boundary faces could not be classified")
+        return _quantity(_minimum_distance(groups[f"{kind}_inside"], groups[f"{kind}_outside"]))
+    except (RuntimeError, Standard_Failure, ValueError) as error:
+        return {"status": "unknown", "reason": str(error) or type(error).__name__}
+
+
+def _as_built_thicknesses(
+    result: Any, base: PcbBase, shape: Shape
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    groups = _classify_boundary_faces(result, base, shape)
+    return _thickness(groups, "wall"), _thickness(groups, "floor")
 
 
 def _part_for(parts: list[TerminalPart], source_feature: str) -> TerminalPart:
@@ -248,15 +299,24 @@ def _directional_clearance(
     return max(0.0, min(distances))
 
 
+def _optional_clearance(
+    board_shape: Shape, base_shape: Shape, axis: str, coordinate: float, outward: int
+) -> float | None:
+    try:
+        return _directional_clearance(board_shape, base_shape, axis, coordinate, outward)
+    except ValueError:
+        return None
+
+
 def _board_fit(
     board_id: str, board_shape: Shape, base_part: TerminalPart
-) -> tuple[dict[str, float], dict[str, float], Any]:
+) -> tuple[dict[str, float | None], dict[str, float | None], Any]:
     box = board_shape.bounding_box()
     clearances = {
-        "left": _directional_clearance(board_shape, base_part.shape, "X", box.min.X, -1),
-        "right": _directional_clearance(board_shape, base_part.shape, "X", box.max.X, 1),
-        "front": _directional_clearance(board_shape, base_part.shape, "Y", box.min.Y, -1),
-        "back": _directional_clearance(board_shape, base_part.shape, "Y", box.max.Y, 1),
+        "left": _optional_clearance(board_shape, base_part.shape, "X", box.min.X, -1),
+        "right": _optional_clearance(board_shape, base_part.shape, "X", box.max.X, 1),
+        "front": _optional_clearance(board_shape, base_part.shape, "Y", box.min.Y, -1),
+        "back": _optional_clearance(board_shape, base_part.shape, "Y", box.max.Y, 1),
     }
     interference = _interference(
         board_shape, base_part.shape, [board_id, base_part.part_id]
@@ -267,6 +327,18 @@ def _board_fit(
         else clearances
     )
     return clearances, reported, interference
+
+
+def _clearance_quantity(value: float | None) -> dict[str, Any]:
+    if value is None:
+        return {"status": "unknown", "reason": "no directional wall face could be measured"}
+    return _quantity(value)
+
+
+def _inner_size(board_size: float, first: float | None, second: float | None) -> dict[str, Any]:
+    if first is None or second is None:
+        return {"status": "unknown", "reason": "board clearances could not be measured"}
+    return _quantity(board_size + first + second)
 
 
 def _lid_measurement(
@@ -549,24 +621,25 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
             "partId": base_part.part_id,
             "outerBBox": _bbox(base_part.shape),
             "outerSize": _size(base_part.shape),
-            "minimumWallThickness": _quantity(wall_thickness),
-            "floorThickness": _quantity(floor_thickness),
+            "minimumWallThickness": wall_thickness,
+            "floorThickness": floor_thickness,
         },
         "cavity": {
             "innerSize": {
-                "x": _quantity(
-                    board_box.max.X - board_box.min.X
-                    + wall_clearance["left"]
-                    + wall_clearance["right"]
+                "x": _inner_size(
+                    board_box.max.X - board_box.min.X,
+                    wall_clearance["left"],
+                    wall_clearance["right"],
                 ),
-                "y": _quantity(
-                    board_box.max.Y - board_box.min.Y
-                    + wall_clearance["front"]
-                    + wall_clearance["back"]
+                "y": _inner_size(
+                    board_box.max.Y - board_box.min.Y,
+                    wall_clearance["front"],
+                    wall_clearance["back"],
                 ),
             },
             "boardClearance": {
-                direction: _quantity(distance) for direction, distance in board_clearance.items()
+                direction: _clearance_quantity(distance)
+                for direction, distance in board_clearance.items()
             },
             "boardInterference": board_interference,
         },
