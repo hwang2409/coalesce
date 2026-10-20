@@ -23,6 +23,16 @@ page.on('console', (message) => message.type() === 'error' && errors.push(messag
 page.on('requestfailed', (request) => errors.push(`${request.method()} ${new URL(request.url()).pathname} ${request.failure()?.errorText}`));
 
 const shown = async (selector) => ((await page.locator(selector).isVisible()) ? page.locator(selector).innerText() : null);
+const waitForText = async (text) => {
+  const started = Date.now();
+  try {
+    await page.getByText(text, { exact: true }).first().waitFor({ timeout: 30000 });
+  } catch (error) {
+    const link = await page.locator('#link-text').textContent().catch(() => null);
+    const status = await shown('#status').catch(() => null);
+    throw new Error(`${error.message}; elapsed=${Date.now() - started}ms link=${JSON.stringify(link)} status=${JSON.stringify(status)}`);
+  }
+};
 const settled = () => page.waitForFunction(() => window.coalesceViewer.drawn.settled, null, { timeout: 15000 });
 
 // what a sighted or screen-reader user gets from the page right now
@@ -91,6 +101,10 @@ async function act(action) {
   if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
   if ('blur' in action) await page.evaluate(() => document.activeElement?.blur());
+  if ('stallSession' in action) {
+    const sessionUrl = new URL('/api/session', url).href;
+    await page.route(sessionUrl, () => new Promise(() => {}));
+  }
   if ('goto' in action) {
     await page.goto(action.goto);
     await page.waitForFunction((n) => window.coalesceViewer?.revision === n, action.revision, { timeout: 15000 });
@@ -114,7 +128,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   const { name, wait = {}, do: actions = [], flat: region } = JSON.parse(line);
   if (wait.revision) await page.waitForFunction((n) => window.coalesceViewer?.revision === n, wait.revision, { timeout: 15000 });
   if (wait.failure) await page.waitForFunction((code) => window.coalesceViewer.failure?.error.code === code, wait.failure, { timeout: 15000 });
-  if (wait.text) await page.getByText(wait.text, { exact: true }).first().waitFor({ timeout: 30000 });
+  if (wait.text) await waitForText(wait.text);
   if (wait.ready) await page.getByText('Waiting for the first revision').waitFor({ timeout: 15000 });
   const results = [];
   for (const action of actions) results.push(await act(action));

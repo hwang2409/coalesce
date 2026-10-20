@@ -654,7 +654,8 @@ async function lost() {
   lostAt ??= Date.now();
   setLink('lost', 'Reconnecting');
   if (!current) notice('Disconnected from coalesce', 'Reconnecting to coalesce.');
-  const access = await session();
+  const remaining = Math.max(1, OUTAGE_LIMIT_MS - (Date.now() - lostAt));
+  const access = await session({ signal: AbortSignal.timeout(remaining) });
   if (access === null && Date.now() - lostAt < OUTAGE_LIMIT_MS) {
     setTimeout(lost, 2000);
   } else if (access) {

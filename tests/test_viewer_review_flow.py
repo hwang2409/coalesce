@@ -300,7 +300,11 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         revision = commit("sketch", bar)
         revision = commit("feature", extrude(request_id="bar", revision=revision, feature_id="bar_extrude",
                                              sketch_id="bar_sketch", profile_ids=["bar"], distance=2000))
-        extremes = step("tiny-and-2000", wait={"revision": revision}, do=[{"click": "Iso"}])
+        extremes = step(
+            "tiny-and-2000",
+            wait={"revision": revision},
+            do=[{"click": "Iso"}, {"stallSession": True}],
+        )
         assert all(-1 <= c <= 1 for corner in extremes["scene"]["projected"] for c in corner)
         assert "0.2 × 0.2 × 0.2" in extremes["description"] and "0.5 × 0.5 × 2000" in extremes["description"]
 
