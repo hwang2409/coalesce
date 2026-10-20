@@ -60,6 +60,7 @@ class Hole(Feature):
     target: str = ""
     diameter: float = 1
     depth: float | None = None
+    position: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass
@@ -87,95 +88,55 @@ class Graph:
         self.nodes[node.id] = node
         return node
 
+    def remove(self, feature: str) -> None:
+        if feature not in self.nodes:
+            raise GraphError("unknown_id", f"unknown id: {feature}")
+        self.nodes.pop(feature)
+        self.shapes.pop(feature, None)
+        self.provenance.pop(feature, None)
+
     def validate(self) -> None:
         for node in self.nodes.values():
             refs = list(getattr(node, "depends_on", []))
-            for name in ("sketch", "target", "tool"):
-                value = getattr(node, name, None)
-                if value:
-                    refs.append(value)
+            refs += [getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)]
             for ref in refs:
                 if ref not in self.nodes:
                     raise GraphError("unknown_id", f"unknown id: {ref}", feature=node.id)
-        visiting: set[str] = set()
-        done: set[str] = set()
-
+        visiting: set[str] = set(); done: set[str] = set()
         def visit(key: str) -> None:
             if key in visiting:
                 raise GraphError("cycle", "feature graph contains a cycle", feature=key)
-            if key in done:
-                return
+            if key in done: return
             visiting.add(key)
             node = self.nodes[key]
-            for dep in getattr(node, "depends_on", []) + [
-                getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)
-            ]:
+            for dep in getattr(node, "depends_on", []) + [getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)]:
                 visit(dep)
-            visiting.remove(key)
-            done.add(key)
-
-        for key in self.nodes:
-            visit(key)
+            visiting.remove(key); done.add(key)
+        for key in self.nodes: visit(key)
 
     def ordered(self) -> list[Any]:
-        self.validate()
-        result: list[Any] = []
-        seen: set[str] = set()
-
+        self.validate(); result: list[Any] = []; seen: set[str] = set()
         def add(key: str) -> None:
-            if key in seen:
-                return
+            if key in seen: return
             node = self.nodes[key]
-            for dep in getattr(node, "depends_on", []) + [
-                getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)
-            ]:
-                add(dep)
-            seen.add(key)
-            result.append(node)
-
-        for key in self.nodes:
-            add(key)
+            for dep in getattr(node, "depends_on", []) + [getattr(node, x) for x in ("sketch", "target", "tool") if getattr(node, x, None)]: add(dep)
+            seen.add(key); result.append(node)
+        for key in self.nodes: add(key)
         return result
 
     def resolve(self, ref: Reference) -> Resolution:
-        if ref.feature not in self.nodes and ref.feature not in self.provenance:
-            return Resolution(
-                Status.EMPTY,
-                error={
-                    "ref": ref.to_dict(),
-                    "feature": ref.feature,
-                    "suggestion": "restore the referenced feature",
-                },
-            )
-        candidates = self.provenance.get(ref.feature, [])
-        if ref.source:
-            candidates = [c for c in candidates if c.key.source == ref.source]
-        candidates = [c for c in candidates if c.key.role == ref.role]
+        if ref.feature not in self.provenance:
+            return Resolution(Status.EMPTY, error={"ref": ref.to_dict(), "feature": ref.feature, "suggestion": "restore the referenced feature"})
+        candidates = [c for c in self.provenance[ref.feature] if c.key.role == ref.role and (not ref.source or c.key.source == ref.source)]
         if not candidates:
-            return Resolution(
-                Status.EMPTY,
-                error={
-                    "ref": ref.to_dict(),
-                    "feature": ref.feature,
-                    "suggestion": "check the feature id and role",
-                },
-            )
+            return Resolution(Status.EMPTY, error={"ref": ref.to_dict(), "feature": ref.feature, "suggestion": "check the feature id and role"})
         if ref.cardinality == Cardinality.ONE and len(candidates) != 1:
             status = Status.SPLIT if len(candidates) > 1 else Status.EMPTY
-            return Resolution(
-                status,
-                candidates,
-                {"ref": ref.to_dict(), "candidates": [asdict(x) for x in candidates]},
-            )
+            return Resolution(status, candidates, {"ref": ref.to_dict(), "candidates": [asdict(x) for x in candidates]})
         if ref.cardinality == Cardinality.EXACTLY and len(candidates) != ref.count:
-            return Resolution(
-                Status.AMBIGUOUS,
-                candidates,
-                {"ref": ref.to_dict(), "candidates": [asdict(x) for x in candidates]},
-            )
+            return Resolution(Status.AMBIGUOUS, candidates, {"ref": ref.to_dict(), "candidates": [asdict(x) for x in candidates]})
         return Resolution(Status.OK, candidates)
 
     def to_json(self) -> str:
         from .serialization import dumps
-
         return dumps(self)
