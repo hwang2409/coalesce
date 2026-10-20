@@ -1,11 +1,11 @@
 """Small, dependency-free reader for the mechanical part of KiCad PCB files."""
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-import math
 
 
 @dataclass
