@@ -154,16 +154,27 @@ def test_cut_preserves_unintersected_body_keys() -> None:
     graph.add(Extrude("parts", sketch="parts_sketch", height=5))
     before = regenerate(graph)
     body_b = BodySource("parts", "b")
-    ref = Reference("parts", "cap_end", body=body_b)
-    original = before.resolve(ref)
+    original = {
+        candidate.key: candidate.descriptor
+        for candidate in before.provenance["parts"]
+        if candidate.key.body == body_b
+    }
     add_extrude(graph, "tool", "cutter", 2, 2, 4, position=(-5, 0, 3))
     graph.add(Cut("cut", target="parts", tool="tool"))
 
-    updated = regenerate(graph).resolve(ref)
+    result = regenerate(graph)
+    updated = {
+        candidate.key: candidate.descriptor
+        for candidate in result.provenance["parts"]
+        if candidate.key.body == body_b
+    }
 
-    assert original.status is updated.status is Status.OK
-    assert updated.candidates[0].key == original.candidates[0].key
-    assert updated.candidates[0].descriptor == original.candidates[0].descriptor
+    assert updated.keys() == original.keys()
+    for key in original:
+        assert updated[key]["center"] == original[key]["center"]
+        assert updated[key].get("area", updated[key].get("length")) == original[key].get(
+            "area", original[key].get("length")
+        )
 
 
 def test_blind_hole_has_history_derived_floor() -> None:
