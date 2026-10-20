@@ -34,17 +34,27 @@ def base(height=10, *, position=(0, 0, 0), rotation=(0, 0, 0)):
 
 
 def snapshot(result):
-    output = []
+    candidates = []
     for candidate in result.provenance["base"]:
         descriptor = candidate.descriptor
-        output.append(
+        candidates.append(
             {
                 "key": json.loads(json.dumps(asdict(candidate.key))),
                 "center": [round(value, 6) for value in descriptor["center"]],
                 "measure": round(descriptor.get("area", descriptor.get("length", 0)), 6),
             }
         )
-    return output
+    resolution = result.resolve(Reference("base", "side(left)"))
+    return {
+        "candidates": candidates,
+        "resolution": {
+            "status": resolution.status.value,
+            "keys": [
+                json.loads(json.dumps(asdict(candidate.key)))
+                for candidate in resolution.candidates
+            ],
+        },
+    }
 
 
 def test_case_1_cap_end_height_geometry():
@@ -97,18 +107,25 @@ def test_case_23_regeneration_is_deterministic_in_and_out_of_process():
     script = """
 import json, sys
 from dataclasses import asdict
-from coalesce import regenerate
+from coalesce import Reference, regenerate
 from coalesce.serialization import loads
 result = regenerate(loads(sys.stdin.read()))
-output = []
+candidates = []
 for candidate in result.provenance['base']:
     descriptor = candidate.descriptor
-    output.append({
+    candidates.append({
         'key': asdict(candidate.key),
         'center': [round(value, 6) for value in descriptor['center']],
         'measure': round(descriptor.get('area', descriptor.get('length', 0)), 6),
     })
-print(json.dumps(output))
+resolution = result.resolve(Reference('base', 'side(left)'))
+print(json.dumps({
+    'candidates': candidates,
+    'resolution': {
+        'status': resolution.status.value,
+        'keys': [asdict(candidate.key) for candidate in resolution.candidates],
+    },
+}))
 """
     completed = subprocess.run(
         [sys.executable, "-c", script],
