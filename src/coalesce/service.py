@@ -119,6 +119,8 @@ def _operation_intent(operation: str, payload: dict[str, Any]) -> dict[str, Any]
         return intent
 
     intent.update({"featureId": payload.get("featureId"), "kind": payload.get("kind")})
+    if payload.get("kind") != "extrude" or payload.get("action") not in {"create", "update"}:
+        return intent
     if payload.get("action") == "create":
         parameters = payload.get("parameters", {})
         profile = parameters.get("profile", {})
