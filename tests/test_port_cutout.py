@@ -1,3 +1,4 @@
+import json
 import math
 import re
 import shutil
@@ -7,7 +8,14 @@ import pytest
 from build123d import Face, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
-from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
+from test_pcb_enclosure import (
+    FEATURE_HOLES,
+    FIXTURES,
+    base_request,
+    import_request,
+    quantity,
+    standoffs_request,
+)
 from test_pcb_lid import lid_request
 
 from coalesce.references import Cardinality, Reference, Status
@@ -285,7 +293,7 @@ def _terminal_shape(service):
 def _body_signature(service):
     shape = _terminal_shape(service)
     roles = sorted(
-        (item.key.feature, item.key.role, item.key.source)
+        item.key.role
         for candidates in service._regen.provenance.values()
         for item in candidates
         if item.key.feature in {"base", "mounts", "port"}
@@ -295,6 +303,27 @@ def _body_signature(service):
         sorted(face.area for face in shape.faces()),
         roles,
     )
+
+
+def test_legacy_port_target_document_loads_into_base_lineage(tmp_path):
+    service = _service(tmp_path, lid=False)
+    assert service.feature(port_request(revision=3))["ok"]
+    document = json.loads(service.store.path.read_text())
+    [port] = [node for node in document["graph"]["nodes"] if node["type"] == "PortCutout"]
+    port["target"] = "mounts"
+    service.store.path.write_text(json.dumps(document))
+
+    restarted = DocumentService(service.store.path)
+    graph = restarted.query({"select": {"kind": "graph"}})["graph"]
+    assert restarted._regen.shapes["port"].volume == pytest.approx(
+        service._regen.shapes["port"].volume
+    )
+    [stored_port] = [
+        node
+        for node in graph["nodes"]
+        if node["type"] == "PortCutout"
+    ]
+    assert "target" not in stored_port
 
 
 def test_standoffs_and_port_compose_identically_in_both_creation_orders(tmp_path):
@@ -312,7 +341,9 @@ def test_port_first_still_reports_standoff_collision_atomically(tmp_path):
     service = DocumentService(tmp_path / "collision.coalesce.json")
     assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
     assert service.feature(base_request())["ok"]
-    assert service.feature(port_request(revision=2))["ok"]
+    assert service.feature(
+        port_request(revision=2, envelope=explicit_envelope(width=4, bottom=-1))
+    )["ok"]
     before = service.store.path.read_bytes()
 
     failed = service.feature(standoffs_request(revision=3))

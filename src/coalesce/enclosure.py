@@ -26,6 +26,7 @@ class EnclosureResult:
 @dataclass(frozen=True)
 class PortCutoutResult(EnclosureResult):
     metadata: dict
+    opening_tool: Shape
 
 
 def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
@@ -329,6 +330,52 @@ def _wall_choice(
     return candidates[0]
 
 
+def _wall_span(
+    target_candidates: list[Candidate], axis: str, coordinate: float
+) -> tuple[float, float] | None:
+    tangent_axis = "Y" if axis == "X" else "X"
+    spans = []
+    for item in target_candidates:
+        if item.key.role != "inner_wall" or not isinstance(item.entity, Face):
+            continue
+        box = item.entity.bounding_box()
+        if math.isclose(getattr(box.min, axis), coordinate, abs_tol=1e-7) and math.isclose(
+            getattr(box.max, axis), coordinate, abs_tol=1e-7
+        ):
+            spans.append((getattr(box.min, tangent_axis), getattr(box.max, tangent_axis)))
+    return spans[0] if len(spans) == 1 else None
+
+
+def _opening_xy_bounds(
+    wall: str,
+    center_x: float,
+    center_y: float,
+    opening_width: float,
+    inner: Wire,
+    outer: Wire,
+    target_candidates: list[Candidate],
+) -> tuple[tuple[float, float, float, float], tuple[float, float] | None]:
+    inner_box = inner.bounding_box()
+    outer_box = outer.bounding_box()
+    tangent_center = center_y if wall in {"left", "right"} else center_x
+    tangent_min = tangent_center - opening_width / 2
+    tangent_max = tangent_center + opening_width / 2
+    margin = 1.0
+    if wall == "left":
+        bounds = (outer_box.min.X - margin, inner_box.min.X + margin, tangent_min, tangent_max)
+        span = _wall_span(target_candidates, "X", inner_box.min.X)
+    elif wall == "right":
+        bounds = (inner_box.max.X - margin, outer_box.max.X + margin, tangent_min, tangent_max)
+        span = _wall_span(target_candidates, "X", inner_box.max.X)
+    elif wall == "front":
+        bounds = (tangent_min, tangent_max, outer_box.min.Y - margin, inner_box.min.Y + margin)
+        span = _wall_span(target_candidates, "Y", inner_box.min.Y)
+    else:
+        bounds = (tangent_min, tangent_max, inner_box.max.Y - margin, outer_box.max.Y + margin)
+        span = _wall_span(target_candidates, "Y", inner_box.max.Y)
+    return bounds, span
+
+
 def _opening_tool(
     node: PortCutout,
     footprint: dict,
@@ -365,46 +412,18 @@ def _opening_tool(
             hint="raise bottomOffset or reduce clearance",
         )
 
-    inner_box = inner.bounding_box()
-    outer_box = outer.bounding_box()
-    margin = 1.0
-    if wall in {"left", "right"}:
-        tangent_min = center_y - opening_width / 2
-        tangent_max = center_y + opening_width / 2
-        wall_coordinate = inner_box.min.X if wall == "left" else inner_box.max.X
-        if wall == "left":
-            minimum_x, maximum_x = outer_box.min.X - margin, inner_box.min.X + margin
-        else:
-            minimum_x, maximum_x = inner_box.max.X - margin, outer_box.max.X + margin
-        minimum_y, maximum_y = tangent_min, tangent_max
-        wall_faces = [
-            item.entity
-            for item in target_candidates
-            if item.key.role == "inner_wall"
-            and isinstance(item.entity, Face)
-            and math.isclose(item.entity.bounding_box().min.X, wall_coordinate, abs_tol=1e-7)
-            and math.isclose(item.entity.bounding_box().max.X, wall_coordinate, abs_tol=1e-7)
-        ]
-        spans = [(face.bounding_box().min.Y, face.bounding_box().max.Y) for face in wall_faces]
-    else:
-        tangent_min = center_x - opening_width / 2
-        tangent_max = center_x + opening_width / 2
-        if wall == "front":
-            minimum_y, maximum_y = outer_box.min.Y - margin, inner_box.min.Y + margin
-        else:
-            minimum_y, maximum_y = inner_box.max.Y - margin, outer_box.max.Y + margin
-        minimum_x, maximum_x = tangent_min, tangent_max
-        wall_coordinate = inner_box.min.Y if wall == "front" else inner_box.max.Y
-        wall_faces = [
-            item.entity
-            for item in target_candidates
-            if item.key.role == "inner_wall"
-            and isinstance(item.entity, Face)
-            and math.isclose(item.entity.bounding_box().min.Y, wall_coordinate, abs_tol=1e-7)
-            and math.isclose(item.entity.bounding_box().max.Y, wall_coordinate, abs_tol=1e-7)
-        ]
-        spans = [(face.bounding_box().min.X, face.bounding_box().max.X) for face in wall_faces]
-    if len(spans) != 1:
+    (minimum_x, maximum_x, minimum_y, maximum_y), wall_span = _opening_xy_bounds(
+        wall,
+        center_x,
+        center_y,
+        opening_width,
+        inner,
+        outer,
+        target_candidates,
+    )
+    tangent_min = minimum_y if wall in {"left", "right"} else minimum_x
+    tangent_max = maximum_y if wall in {"left", "right"} else maximum_x
+    if wall_span is None:
         raise GraphError(
             "INVALID_PARAMETER",
             f"port_cutout {node.id} wall {wall} is not one planar base wall",
@@ -412,7 +431,7 @@ def _opening_tool(
             parameter="wall",
             wall=wall,
         )
-    straight_min, straight_max = spans[0]
+    straight_min, straight_max = wall_span
     if tangent_min < straight_min - 1e-7 or tangent_max > straight_max + 1e-7:
         raise GraphError(
             "INVALID_PARAMETER",
@@ -486,16 +505,6 @@ def build_port_cutout(
         -base.board_seat_height,
         target_candidates,
     )
-    for item in target_candidates:
-        if item.key.role.startswith(("standoff_", "pilot_")) and item.entity.distance_to(tool) <= 1e-7:
-            raise GraphError(
-                "INVALID_PARAMETER",
-                f"port_cutout {node.id} opening intersects a standoff",
-                feature=node.id,
-                parameter="envelope",
-                footprint=footprint["id"],
-                conflict=item.key.source,
-            )
     result = cut_shape(
         node.id,
         target_shape,
@@ -513,7 +522,7 @@ def build_port_cutout(
             wall=wall,
             footprint=footprint["id"],
         )
-    return PortCutoutResult(result.shape, result.candidates, metadata)
+    return PortCutoutResult(result.shape, result.candidates, metadata, tool)
 
 
 def selected_holes(node: Standoffs, board: BoardImport) -> list[dict]:

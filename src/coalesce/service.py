@@ -1154,6 +1154,7 @@ def _graph_error_response(
         "HOLES_INTERSECT",
         "HOLE_NO_EFFECT",
         "TARGET_ALREADY_CONSUMED",
+        "PORT_BLOCKED_BY_LID",
         "INVALID_PARAMETER",
         "MISSING",
     }
@@ -1552,28 +1553,27 @@ def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
     return operation.featureId
 
 
-def _apply_port_cutout(
-    graph: Any, operation: PortCutoutCreate | PortCutoutUpdate
-) -> str:
-    if isinstance(operation, PortCutoutUpdate):
-        node = graph.nodes.get(operation.featureId)
-        if not isinstance(node, PortCutout):
-            raise RequestError("UNKNOWN_ID", f"unknown port_cutout: {operation.featureId}")
-        changes = operation.set
-        if changes.footprint is not None:
-            node.footprint = changes.footprint
-            node.footprint_id = None
-        if changes.wall is not None:
-            node.wall = changes.wall
-        if changes.clearance is not None:
-            node.clearance = changes.clearance
-        if changes.envelope is not None:
-            node.envelope_source = changes.envelope.source
-            node.envelope_width = changes.envelope.width
-            node.envelope_height = changes.envelope.height
-            node.bottom_offset = changes.envelope.bottomOffset
-        return operation.featureId
+def _update_port_cutout(graph: Any, operation: PortCutoutUpdate) -> str:
+    node = graph.nodes.get(operation.featureId)
+    if not isinstance(node, PortCutout):
+        raise RequestError("UNKNOWN_ID", f"unknown port_cutout: {operation.featureId}")
+    changes = operation.set
+    if changes.footprint is not None:
+        node.footprint = changes.footprint
+        node.footprint_id = None
+    if changes.wall is not None:
+        node.wall = changes.wall
+    if changes.clearance is not None:
+        node.clearance = changes.clearance
+    if changes.envelope is not None:
+        node.envelope_source = changes.envelope.source
+        node.envelope_width = changes.envelope.width
+        node.envelope_height = changes.envelope.height
+        node.bottom_offset = changes.envelope.bottomOffset
+    return operation.featureId
 
+
+def _create_port_cutout(graph: Any, operation: PortCutoutCreate) -> str:
     parameters = operation.parameters
     base = graph.nodes.get(parameters.base.featureId)
     if not isinstance(base, PcbBase):
@@ -1583,23 +1583,11 @@ def _apply_port_cutout(
             feature=operation.featureId,
             parameter="base",
         )
-    target = base.id
-    while True:
-        consumers = [
-            node
-            for node in graph.nodes.values()
-            if getattr(node, "target", None) == target
-        ]
-        if not consumers:
-            break
-        target = consumers[0].id
-    _validate_body_target(graph, target, "port_cutout")
     envelope = parameters.envelope
     graph.add(
         PortCutout(
             operation.featureId,
             base=base.id,
-            target=target,
             footprint=parameters.footprint,
             wall=parameters.wall,
             clearance=parameters.clearance,
@@ -1610,6 +1598,14 @@ def _apply_port_cutout(
         )
     )
     return operation.featureId
+
+
+def _apply_port_cutout(
+    graph: Any, operation: PortCutoutCreate | PortCutoutUpdate
+) -> str:
+    if isinstance(operation, PortCutoutUpdate):
+        return _update_port_cutout(graph, operation)
+    return _create_port_cutout(graph, operation)
 
 
 def _apply_feature(graph: Any, operation: MutationOperation) -> str:

@@ -33,7 +33,7 @@ def _terminal_shapes(result: Any) -> list[tuple[str, Any]]:
         node.target
         for node in result.graph.nodes.values()
         if getattr(node, "target", None) in result.shapes
-    }
+    } | result.superseded
     return [
         (feature, shape)
         for feature, shape in result.shapes.items()

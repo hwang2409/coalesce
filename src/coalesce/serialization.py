@@ -144,6 +144,8 @@ def loads(value: str) -> Graph:
             payload = _sketch(payload)
         elif cls is Standoffs:
             payload["hole_ids"] = tuple(payload.get("hole_ids", ()))
+        elif cls is PortCutout:
+            payload.pop("target", None)
         elif cls is Hole:
             payload["position"] = tuple(payload.get("position", (0, 0)))
             payload["positions"] = tuple(
