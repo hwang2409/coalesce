@@ -48,6 +48,7 @@ from .references import (
     Position,
     Reference,
     SketchSegmentSource,
+    edge_role_catalog,
 )
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
@@ -2802,7 +2803,7 @@ class DocumentService:
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")
-        if kind in {"measurements", "feature", "reference", "enclosure"} and (
+        if kind in {"measurements", "feature", "reference", "edge_roles", "enclosure"} and (
             failure := self._geometry_failure("query")
         ):
             return failure
@@ -2832,6 +2833,8 @@ class DocumentService:
                 return self._query_enclosure(select, base)
             if kind == "reference":
                 return self._query_reference(select, base)
+            if kind == "edge_roles":
+                return self._query_edge_roles(select, base)
             return _safe_error(
                 self._document.revision,
                 None,
@@ -2897,6 +2900,20 @@ class DocumentService:
             **self._node_metadata(self._document.graph, self._regen, feature_id),
         }
 
+    def _query_edge_roles(
+        self, select: dict[str, Any], base: dict[str, Any]
+    ) -> dict[str, Any]:
+        feature = select.get("id")
+        if feature not in self._document.graph.nodes:
+            return _safe_error(
+                self._document.revision,
+                None,
+                "UNKNOWN_ID",
+                f"unknown feature: {feature}",
+                operation="query.edge_roles",
+            )
+        return {**base, "featureId": feature, "roles": edge_role_catalog(self._regen.provenance, feature)}
+
     def _query_reference(
         self, select: dict[str, Any], base: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2914,7 +2931,7 @@ class DocumentService:
                 ).hexdigest()
                 for key, candidate in zip(keys, resolution.candidates, strict=True)
             ]
-            return {
+            result = {
                 **base,
                 "status": resolution.status.value,
                 "keys": keys,
@@ -2922,6 +2939,10 @@ class DocumentService:
                 "candidates": [candidate.descriptor for candidate in resolution.candidates],
                 "error": resolution.error,
             }
+            result["resolution"] = {
+                key: result[key] for key in ("status", "keys", "fingerprints", "candidates", "error")
+            }
+            return result
         except (KeyError, TypeError, ValueError, RequestError):
             return _safe_error(
                 self._document.revision,

@@ -729,10 +729,15 @@ QUERY_SCHEMA = {
                         "enclosure",
                         "feature",
                         "reference",
+                        "edge_roles",
                         "server",
                     ]
                 },
-                "id": {"type": "string", "minLength": 1},
+                "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Feature id required for feature or edge_roles queries.",
+                },
                 "base": {
                     "type": "string",
                     "minLength": 1,

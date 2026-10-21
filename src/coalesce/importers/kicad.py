@@ -15,7 +15,7 @@ from ..kicad_angles import kicad_angle
 _NM_PER_MM = 1_000_000
 _MIN_BOARD_NM = -(1 << 31)
 _MAX_BOARD_NM = (1 << 31) - 1
-_PARSER_VERSION = "2"
+_PARSER_VERSION = "3"
 
 
 def _ki_round(value: float) -> int:
@@ -324,8 +324,10 @@ def _outline_item(item: list[Any], context: str) -> list[Segment]:
             raise ValueError(f"{kind}.pts requires at least three xy points")
         return _validated_segments(
             context,
-            [Segment("line", point, points[(index + 1) % len(points)], id=ident)
-             for index, point in enumerate(points)],
+            [Segment(
+                "line", point, points[(index + 1) % len(points)],
+                id=f"{ident}:segment:{index}" if ident else None,
+            ) for index, point in enumerate(points)],
         )
     if kind in {"gr_rect", "fp_rect"}:
         start, end = _point(item, "start"), _point(item, "end")
@@ -334,7 +336,10 @@ def _outline_item(item: list[Any], context: str) -> list[Segment]:
         points = [start, (end[0], start[1]), end, (start[0], end[1])]
         return _validated_segments(
             context,
-            [Segment("line", points[index], points[(index + 1) % 4], id=ident) for index in range(4)],
+            [Segment(
+                "line", points[index], points[(index + 1) % 4],
+                id=f"{ident}:segment:{index}" if ident else None,
+            ) for index in range(4)],
         )
     if kind in {"gr_line", "fp_line"}:
         start, end = _point(item, "start"), _point(item, "end")

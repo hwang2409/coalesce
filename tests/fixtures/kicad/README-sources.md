@@ -50,6 +50,8 @@ required notice is in `LICENSE-M5Stack.txt`.
 The other fixtures are small, hand-written files for isolated syntax and geometry
 cases. `kicad6_legacy_text.kicad_pcb` covers KiCad 6 `fp_text reference` and
 `fp_text value`. `rounded.kicad_pcb` uses valid three-point arcs.
+`mixed-corners.kicad_pcb` is derived from that synthetic fixture and combines tangent
+and sharp line/arc seams.
 
 ## generated USB-C hub regression
 

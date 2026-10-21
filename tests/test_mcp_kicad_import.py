@@ -58,7 +58,7 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
     board = imported["boardImport"]
     assert board["type"] == "BoardImport"
     assert board["sourceDigest"] == hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
-    assert board["parserVersion"] == "2"
+    assert board["parserVersion"] == "3"
     assert board["mechanics"]["thickness"] == 1.2
     assert board["mechanics"]["thicknessSource"] == "general.thickness"
     assert [item["id"] for item in board["mechanics"]["outline"]] == [
