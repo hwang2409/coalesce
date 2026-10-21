@@ -387,7 +387,7 @@ def test_valid_brep_excludes_pcb_reference_shapes(tmp_path, monkeypatch):
     monkeypatch.setattr(service_module, "BRepCheck_Analyzer", RecordingAnalyzer)
     result = service.check({"action": "evaluate"})
 
-    assert result["results"][0]["status"] == "PASS"
+    assert result["results"][0]["status"] == "UNKNOWN"
     assert result["results"][0]["evidence"] == {"solidCount": 0}
     assert checked == []
 

@@ -24,7 +24,7 @@ _TOOL_DESCRIPTIONS = {
     "sketch": "Create, update, or delete rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list. Use update to change a sketch in place. Use delete to remove it; delete fails when dependent features exist unless cascade is true.",
     "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, semantic pcb_base, semantic standoffs, a separate semantic pcb_lid, or semantic port_cutout. pcb_base derives its cavity from the selected board outline; standoffs derive axes from stable board hole ids and join the base; pcb_lid derives its rim and optional locating lip from a pcb_base without consuming it; port_cutout resolves a stable footprint id or unique reference and cuts its declared opening through one planar base wall. For port_cutout, left/right are -X/+X and front/back are -Y/+Y. auto is allowed only for one unique nearest wall. A courtyard supplies only the wall-plane width; height and bottomOffset from board top remain explicit. An explicit envelope supplies width, height, and bottomOffset. No connector height or opening size is inferred. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Enclosure geometry conflicts include `minimum` and `maximum` only when one closed-form constraint makes the full interval valid and both ends plus five evenly spaced interior values pass normal commit acceptance; otherwise they include only verified point values such as `suggested`. `alternatives` contain directly applicable, accepted `set` values for another port wall or envelope position. Connector envelope width and height are never changed by a remedy. Updates change numeric enclosure parameters, extrude distance, or cut and hole targets. Use update to preserve a feature identity and change its parameters. Use delete to remove a feature; delete fails with every transitive dependent unless cascade is true.",
     "query": "Read one feature, the graph, revision, exact mm metrics, inspect a PCB enclosure, or resolve a typed reference. Call select.kind enclosure before reporting enclosure dimensions.",
-    "check": "Run exact validity checks against the current regenerated B-rep.",
+    "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, mounting coverage, lid interference and fit, connector clearance, and clean manufacturing bodies. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
     "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path and current expectedRevision. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. A fresh Python process validates STEP bytes in a private directory before direct publication. The final file is briefly visible while written; failed writes stay in place for manual recovery.",
 }
 
@@ -105,10 +105,9 @@ assembled size, terminal parts, and orphan warnings from regenerated OCCT geomet
 Use `query` with `measurements` for bbox placement, area, volume, and terminal bodies. It
 returns manufacturing parts by default; set `select.role: reference` to measure imported PCB
 reference geometry separately. Reference parts remain visible in the viewer but are excluded
-from manufacturing totals. Use `select.kind: feature` with `id` for one node. Use `check`
-with `valid_brep` before relying on the model. It checks terminal manufacturing parts only and
-excludes BoardImport reference geometry; `PASS` with `solidCount: 0` means no manufacturing
-geometry was checked. Use `export` with the current `expectedRevision` and an explicit absolute new
+from manufacturing totals. Use `select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying on the model, or declare enclosure requirements for measured acceptance. It checks terminal manufacturing parts only and
+excludes BoardImport reference geometry. Zero manufacturing solids return `UNKNOWN` with
+`solidCount: 0` and block readiness. Use `export` with the current `expectedRevision` and an explicit absolute new
 `path`; export is stateless and does not accept `requestId`. It defaults to all terminal
 manufacturing parts; select stable `partIds` from measurements when needed. BoardImport
 reference geometry is never included. STEP export never overwrites, renames, truncates, or
@@ -150,7 +149,7 @@ PLATE_EXAMPLE = """# 60 x 40 x 6 mm plate
    6 mm, operation `new_body`, and direction `normal`.
 3. `query`: select `measurements`; expect bbox min [-30, -20, 0], max [30, 20, 6],
    center [0, 0, 3] mm, and volume 14400 mm^3.
-4. `check`: evaluate a `valid_brep` requirement.
+4. `check`: evaluate `valid_brep` or revision-bound enclosure requirements. An enclosure gate is PASS only when every declared requirement passes; UNKNOWN blocks readiness and must be reported to the user.
 """
 
 
