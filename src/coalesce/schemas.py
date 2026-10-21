@@ -693,7 +693,14 @@ IMPORT_DELETE_SCHEMA = {
 }
 IMPORT_REFRESH_SCHEMA = {
     "type": "object",
-    "properties": {"action": {"const": "refresh"}, **IMPORT_PROPERTIES},
+    "properties": {
+        "action": {"const": "refresh"},
+        **IMPORT_PROPERTIES,
+        "path": {
+            **IMPORT_CREATE_SCHEMA["properties"]["path"],
+            "description": "Optional explicit absolute path to the replacement local regular file, at most 16 MiB.",
+        },
+    },
     "required": ["action", *IMPORT_PROPERTIES],
     "additionalProperties": False,
 }
@@ -704,7 +711,7 @@ IMPORT_SCHEMA = {
         **IMPORT_PROPERTIES,
         "path": {
             **IMPORT_CREATE_SCHEMA["properties"]["path"],
-            "description": "Required for create; refresh re-reads the persisted resolved path.",
+            "description": "Required for create; optional replacement path for refresh. If omitted, refresh re-reads the persisted resolved path.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
@@ -828,6 +835,7 @@ CHECK_REQUIREMENT = {
                     "enum": [
                         "wall_thickness",
                         "floor_thickness",
+                        "board_clearance",
                         "engagement_depth",
                         "lid_engagement",
                         "port_clearance",
@@ -835,6 +843,7 @@ CHECK_REQUIREMENT = {
                     ]
                 },
                 "threshold": QUANTITY,
+                "side": {"enum": ["left", "right", "front", "back", "all"]},
             },
             "required": ["id", "kind", "threshold"],
             "additionalProperties": False,

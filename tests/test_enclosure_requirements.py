@@ -221,6 +221,30 @@ def test_port_evidence_keeps_board_identity_and_part_id(tmp_path):
     assert {"reference", "value", "libraryId", "clearance", "blocked"} <= set(result["measured"][0])
 
 
+def test_board_clearance_reports_pass_fail_and_unknown(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    checks = [
+        {"id": "pass", "kind": "board_clearance", "side": "left", "threshold": quantity(1)},
+        {"id": "fail", "kind": "board_clearance", "side": "all", "threshold": quantity(2)},
+    ]
+    results = service.check({"action": "evaluate", "base": "base", "requirements": checks})["results"]
+    assert [item["status"] for item in results] == ["PASS", "FAIL"]
+    assert results[0]["involved"][0] == "controller_board"
+    inspection = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    inspection["cavity"]["boardClearance"]["left"] = {"status": "unknown", "reason": "test"}
+    from coalesce.requirements import evaluate
+    unknown = evaluate([checks[0]], inspection, service.revision)["results"][0]
+    assert unknown["status"] == "UNKNOWN"
+
+
+def test_unknown_requirement_kind_is_structured_parameter_error(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    response = service.check({"action": "evaluate", "requirements": [{"id": "bad", "kind": "board_clearance_typo"}]})
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["kind"] == "board_clearance_typo"
+    assert "board_clearance" in response["error"]["supportedKinds"]
+
+
 def test_clean_base_passes_measured_requirements(tmp_path):
     service = _service(
         tmp_path,

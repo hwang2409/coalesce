@@ -266,6 +266,32 @@ def test_invalid_base_clearance_names_feature_and_parameter_and_is_atomic(tmp_pa
     assert document.read_bytes() == before
 
 
+def test_refresh_can_replace_source_path_and_keep_import_ids(tmp_path):
+    document = tmp_path / "refresh-path.coalesce.json"
+    service = DocumentService(document)
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    before = service._document.graph.nodes["controller_board"]
+
+    moved = service.import_board({
+        **import_request(
+            FIXTURES / "features-moved.kicad_pcb",
+            revision=1,
+            request_id="refresh-new-path",
+            action="refresh",
+        ),
+        "path": str((FIXTURES / "features-moved.kicad_pcb").resolve()),
+    })
+
+    assert moved["ok"] is True
+    after = service._document.graph.nodes["controller_board"]
+    assert service.revision == 2
+    assert after.source_path.endswith("features-moved.kicad_pcb")
+    assert {item["id"] for item in before.mechanics["holes"]} == {
+        item["id"] for item in after.mechanics["holes"]
+    }
+    assert before.source_digest != after.source_digest
+
+
 def test_refresh_that_moves_selected_hole_off_floor_fails_atomically(tmp_path):
     source = tmp_path / "board.kicad_pcb"
     shutil.copyfile(FIXTURES / "features.kicad_pcb", source)

@@ -1430,7 +1430,7 @@ def _apply_import(
     if operation.action is Action.REFRESH:
         if not isinstance(current, BoardImport):
             raise RequestError("UNKNOWN_ID", f"unknown board import: {operation.assetId}")
-        source_path = current.source_path
+        source_path = operation.path or current.source_path
     else:
         if current is not None:
             raise RequestError("DUPLICATE_ID", f"duplicate id: {operation.assetId}")
@@ -3035,6 +3035,26 @@ class DocumentService:
             requirements = payload.get(
                 "requirements", [{"id": "valid", "kind": "valid_brep"}]
             )
+            supported_requirement_kinds = {
+                "valid_brep", "wall_thickness", "floor_thickness", "board_clearance",
+                "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap",
+                "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance",
+                "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies",
+            }
+            unknown_kinds = [
+                item.get("kind") for item in requirements
+                if item.get("kind") not in supported_requirement_kinds
+            ]
+            if unknown_kinds:
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    "INVALID_PARAMETER",
+                    f"unknown requirement kind: {unknown_kinds[0]}",
+                    operation="check",
+                    kind=unknown_kinds[0],
+                    supportedKinds=sorted(supported_requirement_kinds),
+                )
             results = []
             enclosure_requirements = [
                 item for item in requirements if item.get("kind") != "valid_brep"

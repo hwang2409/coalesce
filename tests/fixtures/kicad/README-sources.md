@@ -67,3 +67,8 @@ data and do not represent upstream content.
 
 The upstream repository has no license file, so none of its file content is
 redistributed here.
+
+## moved board refresh fixture
+
+`features-moved.kicad_pcb` is copied from the `evals-hard-tier` branch fixture
+`evals/fixtures/features-moved.kicad_pcb` for refresh identity and regeneration tests.
