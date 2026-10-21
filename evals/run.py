@@ -186,6 +186,13 @@ def _zeta_metadata(transcript):
     return metadata, final
 
 
+# evals run headless: a model that stops to ask a question cannot finish the task.
+HEADLESS = (
+    " No human is available to answer questions during this run: choose reasonable values for"
+    " anything unspecified, state them in your final answer, and finish the task."
+)
+
+
 def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, **_):
     if before_state:
         build_before_state(
@@ -215,6 +222,7 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, 
         + f" Use the coalesce MCP document at {run_dir / 'model.coalesce.json'}"
         + f" and export every STEP file directly under {run_dir / 'steps'};"
         + " do not write artifacts elsewhere."
+        + HEADLESS
     )
     command = [
         "claude", "-p", instruction, "--model", model, "--mcp-config", str(config),
@@ -260,6 +268,7 @@ def zeta_harness(prompt, run_dir, *, model, zeta_project, before_state=None, **_
         + f"\nThe task fixtures are at these exact paths: {fixture_text}."
         + f" Use the coalesce MCP document at {fixed} and export every STEP file directly under"
         + f" {fixed_out}; do not write artifacts elsewhere."
+        + HEADLESS
     )
     started = time.monotonic()
     try:
