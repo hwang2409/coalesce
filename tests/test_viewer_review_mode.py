@@ -9,7 +9,7 @@ import copy
 import math
 
 import pytest
-from build123d import Align, Box, Pos
+from build123d import Align, Axis, Box, Cylinder, Pos, fillet
 from test_feature_delete import delete_feature
 from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
 from test_pcb_lid import lid_request
@@ -457,6 +457,37 @@ def test_section_at_each_end_of_the_slider_still_cuts_through_the_cavity(module,
             # a slab of the outer wall passes both checks above (it is larger than the middle cut); this one
             # rejects it: the middle of the end cut is open cavity, not cut material
             assert not shown["middle solid"] and not shown["middle cut"], (key, shown)
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800)])
+def test_section_of_a_model_with_no_enclosure_spans_its_full_extent(module, viewport):  # noqa: F811
+    """No pcb base: each end keeps one 0.1 mm step inside the outer face, a through-hole sets no wall."""
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    models = {
+        "holed plate": plate(6) - Pos(0, 0, 3) * Cylinder(5, 6),
+        "plain plate": plate(6),
+        "filleted plate": fillet(plate(6).edges().filter_by(Axis.Z), radius=5),
+    }
+    try:
+        step("empty", wait={"ready": True})
+        found = {}
+        for revision, (name, shape) in enumerate(models.items(), start=1):
+            store.publish(revision, [ScenePart("plate", shape)])
+            shot = name.replace(" ", "-")  # a step name is one word
+            step(shot, wait={"revision": revision}, do=[{"click": "Section"}, {"settle": True}])
+            for axis in "XYZ":
+                state = review(step(f"{shot}-{axis}", do=[{"click": axis}, {"review": True}]), 1)["section"]
+                found[f"{name} {axis}"] = (state["min"], state["max"])
+            step(f"{shot}-off", do=[{"click": "Assembled"}])
+        full = {"X": (-29.9, 29.9), "Y": (-19.9, 19.9), "Z": (0.1, 5.9)}
+        assert found == {f"{name} {axis}": full[axis] for name in models for axis in "XYZ"}, found
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

@@ -654,86 +654,29 @@ function explodeOffsets(parts) {
   return offsets;
 }
 
-// the slider's range along the section axis. each end stops one 0.1 mm step past the outermost wall, so
-// the plane at either end still opens the inside instead of showing a slab of that wall. the wall is found
-// with a grid of rays along the axis: a ray that enters at the model's outer face, leaves the material and
-// enters it again has crossed a wall, and the median of where those rays leave it is the wall's inner face.
-// a solid part has no such ray and keeps one step inside its outer face, so its end cut is a full cross-section.
-const RANGE_RAYS = 48; // per side of the grid
-let rangeKey = null;
-let rangeShown = null;
+// the slider's range along the section axis. each end stops one 0.1 mm step past the outer wall of an
+// enclosure (the base's wall and floor, the lid's top), so the plane at either end still opens the inside
+// instead of showing a slab of that wall. any other part keeps one step inside its outer face: a full cross-section.
+const isBase = (part) => part.features[0]?.kind === 'pcb base';
+const factMm = (part, label) => part?.facts.find((fact) => fact.label === label)?.mm ?? 0;
 function sectionRange(parts) {
-  const key = `${section.axis} ${parts.map((part) => part.mesh.id).join(' ')}`;
-  if (key !== rangeKey) [rangeKey, rangeShown] = [key, measureRange(parts, 'xyz'.indexOf(section.axis))];
-  return rangeShown;
-}
-
-function measureRange(parts, i) {
-  const box = new THREE.Box3();
-  for (const part of parts) box.union(geometries.get(part.mesh.id).surface.boundingBox);
-  const [lo, hi] = [box.min.getComponent(i), box.max.getComponent(i)];
-  const runs = materialRuns(parts, i, box);
-  const near = 0.05 * (hi - lo); // how close to the outer face a ray must enter to count as crossing a wall
-  const median = (values) => values.sort((a, b) => a - b)[values.length >> 1];
-  const walled = runs.filter((ray) => ray.length > 1);
-  const lowWall = walled.filter((ray) => ray[0][0] - lo <= near).map((ray) => ray[0][1]);
-  const highWall = walled.filter((ray) => hi - ray.at(-1)[1] <= near).map((ray) => ray.at(-1)[0]);
-  const low = Number(((lowWall.length ? median(lowWall) : lo) + 0.1).toFixed(1));
-  const high = Number(((highWall.length ? median(highWall) : hi) - 0.1).toFixed(1));
+  const i = 'xyz'.indexOf(section.axis);
+  // shortcut: one wall for every lid, from the first base; give each lid its base's wall if a model has two
+  const wall = factMm(parts.find(isBase), 'Wall');
+  const insets = (part) => {
+    if (!isBase(part) && !isLid(part)) return [0, 0];
+    if (i < 2) return [wall, wall]; // the lid covers the base's outer outline
+    return isLid(part) ? [0, factMm(part, 'Thickness')] : [factMm(part, 'Floor'), 0];
+  };
+  const ends = parts.map((part) => {
+    const box = geometries.get(part.mesh.id).surface.boundingBox;
+    const [low, high] = insets(part);
+    return [box.min.getComponent(i) + low, box.max.getComponent(i) - high];
+  });
+  const low = Number((Math.min(...ends.map((end) => end[0])) + 0.1).toFixed(1));
+  const high = Number((Math.max(...ends.map((end) => end[1])) - 0.1).toFixed(1));
   const middle = Number(((low + high) / 2).toFixed(1));
   return low <= high ? [low, high] : [middle, middle]; // a part thinner than its walls and two steps
-}
-
-// for each ray of a grid across the box, parallel to axis i: the [enter, leave] runs through material along
-// it, nearest first, with touching parts merged into one run. a ray that grazes an edge is left out.
-function materialRuns(parts, i, box) {
-  const [u, v] = [0, 1, 2].filter((j) => j !== i);
-  const n = RANGE_RAYS;
-  const [u0, v0] = [box.min.getComponent(u), box.min.getComponent(v)];
-  const [du, dv] = [(box.max.getComponent(u) - u0) / n, (box.max.getComponent(v) - v0) / n];
-  if (!(du > 0 && dv > 0)) return [];
-  const shift = 0.5137; // rays near cell middles, off round values, so few run along a mesh edge
-  // the rays whose coordinate lies within a triangle's span on one grid side
-  const cells = (q0, dq, ...corners) => [
-    Math.max(0, Math.ceil((Math.min(...corners) - q0) / dq - shift)),
-    Math.min(n - 1, Math.floor((Math.max(...corners) - q0) / dq - shift)),
-  ];
-  const rays = Array.from({ length: n * n }, () => []);
-  for (const part of parts) {
-    const { surface } = geometries.get(part.mesh.id);
-    const p = surface.attributes.position.array;
-    const index = surface.index.array;
-    const hits = Array.from({ length: n * n }, () => []);
-    for (let t = 0; t < index.length; t += 3) {
-      const [a, b, c] = [3 * index[t], 3 * index[t + 1], 3 * index[t + 2]];
-      const [bu, bv, cu, cv] = [p[b + u] - p[a + u], p[b + v] - p[a + v], p[c + u] - p[a + u], p[c + v] - p[a + v]];
-      const det = bu * cv - cu * bv;
-      if (Math.abs(det) < 1e-12) continue; // a triangle along the axis: the rays pass it
-      const [ku0, ku1] = cells(u0, du, p[a + u], p[b + u], p[c + u]);
-      const [kv0, kv1] = cells(v0, dv, p[a + v], p[b + v], p[c + v]);
-      for (let ku = ku0; ku <= ku1; ku += 1) {
-        const pu = u0 + (ku + shift) * du - p[a + u];
-        for (let kv = kv0; kv <= kv1; kv += 1) {
-          const pv = v0 + (kv + shift) * dv - p[a + v];
-          const s = (pu * cv - cu * pv) / det;
-          const r = (bu * pv - pu * bv) / det;
-          if (s >= 0 && r >= 0 && s + r <= 1) hits[ku * n + kv].push(p[a + i] + s * (p[b + i] - p[a + i]) + r * (p[c + i] - p[a + i]));
-        }
-      }
-    }
-    hits.forEach((along, k) => {
-      along.sort((x, y) => x - y);
-      const unique = along.filter((x, j) => j === 0 || x - along[j - 1] > 1e-6); // a shared triangle edge
-      if (unique.length % 2) rays[k] = null; // the ray grazed an edge: enter and leave do not pair up
-      for (let j = 0; rays[k] && j < unique.length; j += 2) rays[k].push([unique[j], unique[j + 1]]);
-    });
-  }
-  return rays.filter(Boolean).map((ray) => ray.sort((x, y) => x[0] - y[0]).reduce((merged, run) => {
-    const last = merged.at(-1);
-    if (last && run[0] <= last[1] + 1e-4) last[1] = Math.max(last[1], run[1]);
-    else merged.push([...run]);
-    return merged;
-  }, []));
 }
 
 // every part is cut, the board too, so nothing uncut hides what the cut opens up. each cut part counts,

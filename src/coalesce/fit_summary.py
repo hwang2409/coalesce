@@ -185,16 +185,21 @@ def fit_summary(result: Any, revision: int) -> list[dict[str, Any]]:
     return summaries
 
 
-def _fact(label: str, value: str) -> dict[str, str]:
+def _fact(label: str, value: str) -> dict[str, Any]:
     return {"label": label, "value": value}
 
 
-def _base_facts(result: Any, base: PcbBase) -> list[dict[str, str]]:
+def _length(label: str, mm: float) -> dict[str, Any]:
+    """A length fact; ``mm`` keeps the number for the viewer, which stops section ends past the walls."""
+    return {**_fact(label, f"{_mm(mm)} mm"), "mm": mm}
+
+
+def _base_facts(result: Any, base: PcbBase) -> list[dict[str, Any]]:
     from .enclosure import selected_holes
 
     facts = [
-        _fact("Wall", f"{_mm(base.wall_thickness)} mm"),
-        _fact("Floor", f"{_mm(base.floor_thickness)} mm"),
+        _length("Wall", base.wall_thickness),
+        _length("Floor", base.floor_thickness),
         _fact("Board clearance", f"{_mm(base.clearance)} mm"),
     ]
     for node in result.graph.ordered():
@@ -210,7 +215,7 @@ def _base_facts(result: Any, base: PcbBase) -> list[dict[str, str]]:
     return facts
 
 
-def part_facts(result: Any, source_feature: str) -> tuple[dict[str, str], ...]:
+def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
     """What the committed features say about the part whose body ``source_feature`` made."""
     node = result.graph.nodes[source_feature]
     if isinstance(node, BoardImport):
@@ -220,7 +225,7 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, str], ...]:
     if isinstance(node, PcbBase):
         return tuple(_base_facts(result, node))
     if isinstance(node, PcbLid):
-        facts = [_fact("Thickness", f"{_mm(node.thickness)} mm"), _fact("Fit gap", f"{_mm(node.fit_gap)} mm")]
+        facts = [_length("Thickness", node.thickness), _fact("Fit gap", f"{_mm(node.fit_gap)} mm")]
         if node.lip_depth:
             width = f", {_mm(node.lip_width)} mm wide" if node.lip_width else ""
             facts.append(_fact("Lip", f"{_mm(node.lip_depth)} mm deep{width}"))
