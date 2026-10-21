@@ -45,6 +45,7 @@ from .references import (
     Reference,
     Resolution,
     Status,
+    edge_role_catalog,
     reference_matches_key,
     resolve,
 )
@@ -278,6 +279,7 @@ def _resolve_edge_treatment_edges(
             feature=node.id,
         )
     selected: list[Candidate] = []
+    resolutions: list[dict] = []
     for reference in node.edges:
         resolution = resolve(
             reference,
@@ -285,6 +287,14 @@ def _resolve_edge_treatment_edges(
             ordered_features=ordered_features,
             before_feature=node.id,
         )
+        resolution_details = resolution.error or {
+            "feature": reference.feature,
+            "reference": reference.to_dict(),
+            "status": resolution.status.value,
+            "candidates": [],
+            "availableRoles": edge_role_catalog(provenance, reference.feature),
+        }
+        resolutions.append(resolution_details)
         if resolution.error is not None:
             raise GraphError(
                 "REFERENCE_FAILED",
@@ -300,6 +310,7 @@ def _resolve_edge_treatment_edges(
             f"{kind} {node.id} edge references selected no edges",
             feature=node.id,
             selectedEdges=[],
+            resolution=resolutions[0] if len(resolutions) == 1 else resolutions,
         )
     if any(not isinstance(item.entity, Edge) for item in selected):
         raise GraphError(

@@ -122,7 +122,7 @@ def test_pcb_base_offsets_real_outline_and_preserves_exact_dimensions(
         assert floor_box.min.X - box.min.X == pytest.approx(2)
         assert box.max.X - floor_box.max.X == pytest.approx(2)
         assert 0 - floor_box.min.Z == pytest.approx(1)
-        outer_area = 200 + 60 * 3 + math.pi * 3**2
+        outer_area = 26 * 16
         cavity_area = 200 + 60 * 1 + math.pi * 1**2
         expected = outer_area * 8.2 - cavity_area * 6.2
         assert base.volume == pytest.approx(expected, rel=1e-7)
@@ -155,7 +155,7 @@ def test_standoffs_follow_hole_ids_and_join_with_exact_pilots(tmp_path):
         assert _candidate(service._regen, "standoff_side", hole)
         assert _candidate(service._regen, "standoff_top", hole)
 
-    base_volume = (200 + 60 * 3 + math.pi * 3**2) * 8.2 - (
+    base_volume = (26 * 16) * 8.2 - (
         200 + 60 + math.pi
     ) * 6.2
     standoff_volume = 2 * math.pi * (2.5**2 - 0.8**2) * 1

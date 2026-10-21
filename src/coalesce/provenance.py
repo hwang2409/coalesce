@@ -67,19 +67,38 @@ def derive_edge_candidates(
     faces: list[Candidate],
 ) -> list[Candidate]:
     result: list[Candidate] = []
+    vertical_roles = {
+        "outer_wall": "outer_vertical",
+        "inner_wall": "inner_vertical",
+        "edge": "lid_vertical",
+        "lip_outer": "lip_outer_vertical",
+        "lip_inner": "lip_inner_vertical",
+    }
     for edge in shape.edges():
         keys = _adjacent_keys(edge, faces)
         if len(keys) == 2:
             edge_feature = (
                 keys[0].feature if keys[0].feature == keys[1].feature else feature
             )
+            source = tuple(keys)
+            body = _same_body(keys)
             result.append(
                 candidate(
                     edge_feature,
                     _between_role([key.role for key in keys]),
-                    tuple(keys),
+                    source,
                     edge,
-                    body=_same_body(keys),
+                    body=body,
                 )
             )
+            if keys[0].role == keys[1].role and keys[0].role in vertical_roles:
+                result.append(
+                    candidate(
+                        edge_feature,
+                        vertical_roles[keys[0].role],
+                        source,
+                        edge,
+                        body=body,
+                    )
+                )
     return result

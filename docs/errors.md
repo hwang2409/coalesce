@@ -31,6 +31,8 @@ every failed tool call returns the last unchanged document `revision` and this s
 
 raw kernel diagnostics never appear in `message`. when available, they appear as `kernelMessage` in the structured error details. agents must not parse or show that field as recovery advice.
 
+failed and empty edge-reference resolutions include `availableRoles`. each entry gives the selectable role, exact edge count, orientation, length, and an example exact-cardinality reference. this is the same catalog returned by the `edge_roles` query.
+
 ## families
 
 | family | meaning | first recovery step |
@@ -66,8 +68,8 @@ raw kernel diagnostics never appear in `message`. when available, they appear as
 | `MIXED_BODY_ANCESTRY` | dependency | a result face does not have one source body | change the operation so each result has one body ancestry |
 | `JOIN_TARGET_REQUIRED` | dependency | a join extrude has no target | provide one terminal target feature |
 | `JOIN_TARGET_BODY` | dependency | join output cannot be assigned to the target body | change the profile or target so the join has one target body |
-| `REFERENCE_FAILED` | reference | an edge reference resolves with a non-OK status | inspect `resolution.status` and query a corrected typed reference |
-| `EMPTY_EDGE_SELECTION` | reference | a fillet or chamfer has no resolved edges | provide at least one edge reference that resolves |
+| `REFERENCE_FAILED` | reference | an edge reference resolves with a non-OK status | inspect `resolution.status` and choose from `resolution.availableRoles` |
+| `EMPTY_EDGE_SELECTION` | reference | a fillet or chamfer has no resolved edges | choose a role from `resolution.availableRoles` |
 | `INVALID_EDGE_REFERENCE` | reference | a treatment reference resolves to a non-edge | select an edge provenance role |
 | `HISTORY_MISSING` | reference | occt did not provide required provenance history | change the operation; do not guess a replacement face |
 | `BOOLEAN_FAILED` | geometry | an exact cut, fuse, or enclosure boolean did not complete | change the inputs or use a verified remedy when present |

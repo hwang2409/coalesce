@@ -205,7 +205,68 @@ def _candidate_error(candidate: Candidate) -> dict[str, Any]:
     }
 
 
-def _error(ref: Reference, status: Status, candidates: list[Candidate]) -> dict[str, Any]:
+def _edge_orientation(entity: Any) -> str:
+    from build123d import GeomType
+
+    if entity.geom_type is not GeomType.LINE:
+        return "curved"
+    tangent = entity.tangent_at(0.5)
+    z = abs(float(tangent.Z))
+    if isclose(z, 1.0, abs_tol=1e-6):
+        return "vertical"
+    if isclose(z, 0.0, abs_tol=1e-6):
+        return "horizontal"
+    return "angled"
+
+
+def edge_role_catalog(
+    provenance: dict[str, list[Candidate]], feature: str
+) -> list[dict[str, Any]]:
+    from build123d import Edge
+
+    by_role: dict[str, list[Candidate]] = {}
+    for candidates in provenance.values():
+        for candidate in candidates:
+            if candidate.key.feature == feature and isinstance(candidate.entity, Edge):
+                by_role.setdefault(candidate.key.role, []).append(candidate)
+    result = []
+    for role, candidates in sorted(by_role.items()):
+        unique = []
+        for candidate in candidates:
+            if not any(candidate.entity.is_same(item.entity) for item in unique):
+                unique.append(candidate)
+        orientations = {_edge_orientation(candidate.entity) for candidate in unique}
+        orientation = next(iter(orientations)) if len(orientations) == 1 else "mixed"
+        lengths = [float(candidate.entity.length) for candidate in unique]
+        minimum, maximum = min(lengths), max(lengths)
+        length = (
+            {"value": minimum, "unit": "mm"}
+            if isclose(minimum, maximum, rel_tol=1e-9, abs_tol=1e-9)
+            else {"minimum": minimum, "maximum": maximum, "unit": "mm"}
+        )
+        count = len(unique)
+        result.append({
+            "role": role,
+            "edgeCount": count,
+            "orientation": orientation,
+            "length": length,
+            "description": f"{count} {orientation} edge{'s' if count != 1 else ''}",
+            "exampleReference": {
+                "feature": feature,
+                "role": role,
+                "cardinality": "exactly",
+                "count": count,
+            },
+        })
+    return result
+
+
+def _error(
+    ref: Reference,
+    status: Status,
+    candidates: list[Candidate],
+    provenance: dict[str, list[Candidate]],
+) -> dict[str, Any]:
     suggestions = {
         Status.EMPTY: "check the feature id, role, source, and filters",
         Status.SPLIT: "use one_or_more or add a provenance-set filter",
@@ -219,6 +280,7 @@ def _error(ref: Reference, status: Status, candidates: list[Candidate]) -> dict[
         "status": status.value,
         "candidates": [_candidate_error(candidate) for candidate in candidates],
         "suggestion": suggestions[status],
+        "availableRoles": edge_role_catalog(provenance, ref.feature),
     }
 
 
@@ -332,7 +394,9 @@ def resolve(
         and before_feature in ordered_features
         and ordered_features.index(ref.feature) >= ordered_features.index(before_feature)
     ):
-        return Resolution(Status.ORDER, error=_error(ref, Status.ORDER, []))
+        return Resolution(
+            Status.ORDER, error=_error(ref, Status.ORDER, [], provenance)
+        )
 
     filtered = _select(ref, provenance)
     candidates = filtered.candidates
@@ -340,5 +404,9 @@ def resolve(
     violates = _violates_cardinality(ref, len(candidates))
     if status is Status.OK and violates:
         status = Status.AMBIGUOUS
-    error = _error(ref, status, candidates) if violates or filtered.tied else None
+    error = (
+        _error(ref, status, candidates, provenance)
+        if violates or filtered.tied
+        else None
+    )
     return Resolution(status, candidates, error)
