@@ -8,6 +8,8 @@ from coalesce.export import _first_mismatch
     [
         (1.0, 1.0 + 1e-12, None),
         (1.0, 2.0, "x"),
+        (1, 1.0, None),
+        (True, 1.0 + 1e-12, None),
         ({"a": 1}, {"a": 1}, None),
         ({"a": 1}, {}, "x.a"),
         ({"a": 1}, {"a": 1, "b": 2}, "x.b"),
