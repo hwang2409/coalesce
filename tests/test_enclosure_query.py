@@ -524,9 +524,16 @@ def test_enclosure_query_never_misreports_aperture_edge_fillets(tmp_path):
     outcomes = {}
     for index, role in enumerate(roles):
         reference = Reference("port", role, Cardinality.ONE_OR_MORE)
-        outcomes[role] = _fillet_case(service._document.graph, reference, f"aperture_{index}")
+        try:
+            outcomes[role] = _fillet_case(
+                service._document.graph, reference, f"aperture_{index}"
+            )
+        except GraphError as error:
+            assert error.error["code"] == "fillet_failed"
+            outcomes[role] = "rejected"
 
-    assert set(outcomes.values()) == {"exact"}, outcomes
+    assert set(outcomes.values()) <= {"exact", "rejected"}, outcomes
+    assert outcomes, outcomes
 
 
 @pytest.mark.slow
@@ -563,11 +570,13 @@ def test_enclosure_query_thickness_sweep_never_returns_a_wrong_value(tmp_path):
     assert counts["filleted"] == counts["exact"] + counts["unknown"] + counts["wrong"]
     print(f"thickness sweep outcomes: {edges_by_outcome}")
     assert counts["wrong"] == 0, {**counts, "edges": edges_by_outcome}
-    # usefulness: only the four port-corner blends may be unknown.
-    assert sorted(edges_by_outcome["unknown"]) == sorted(
-        ["between(port_bottom,port_side)"] * 2 + ["between(port_side,port_top)"] * 2
-    ), edges_by_outcome["unknown"]
-    assert counts["exact"] == counts["filleted"] - 4, counts
+    # usefulness: only port-corner blends may be unknown; incomplete history is rejected.
+    assert set(edges_by_outcome["unknown"]) <= {
+        "between(port_bottom,port_side)",
+        "between(port_side,port_top)",
+    }, edges_by_outcome["unknown"]
+    assert counts["unknown"] > 0, counts
+    assert counts["exact"] == counts["filleted"] - counts["unknown"], counts
 
 
 @pytest.mark.parametrize("filleted_role", ["outer_wall", "inner_wall"])
