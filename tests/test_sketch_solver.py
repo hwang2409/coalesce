@@ -55,7 +55,9 @@ def rectangle_request(*, fixed_corner: bool) -> SolveRequest:
     points = tuple(Point(point_id, x, y) for point_id, x, y in raw)
     lines = tuple(Line(f"line{i}", f"p{2 * i}", f"p{2 * i + 1}") for i in range(4))
     constraints = [
-        Constraint(f"join{i}", ConstraintKind.COINCIDENT, (f"p{2 * i + 1}", f"p{(2 * (i + 1)) % 8}"))
+        Constraint(
+            f"join{i}", ConstraintKind.COINCIDENT, (f"p{2 * i + 1}", f"p{(2 * (i + 1)) % 8}")
+        )
         for i in range(4)
     ]
     constraints.extend(
@@ -201,9 +203,7 @@ def test_arc_and_circle_radius_and_tangent_constraints_solve():
                 fixed("origin", "fix-origin"),
                 Constraint("base-horizontal", ConstraintKind.HORIZONTAL, ("base",)),
                 Constraint("equal-sides", ConstraintKind.EQUAL, ("side", "base")),
-                Constraint(
-                    "side-tangent", ConstraintKind.TANGENT, ("side", "corner", "tangent")
-                ),
+                Constraint("side-tangent", ConstraintKind.TANGENT, ("side", "corner", "tangent")),
             ),
         )
     )
@@ -218,7 +218,11 @@ def test_arc_and_circle_radius_and_tangent_constraints_solve():
 
     assert arc_result.status is SolveStatus.FULLY_CONSTRAINED
     assert isinstance(arc_result.entities["corner"], SolvedArc)
+    assert arc_result.entities["corner"].start == (0.0, 20.0)
+    assert arc_result.entities["corner"].end == (-20.0, 0.0)
     assert math.isclose(arc_result.entities["corner"].radius, 20, abs_tol=1e-7)
+    assert math.isclose(arc_result.entities["corner"].start_angle, 0, abs_tol=1e-7)
+    assert math.isclose(arc_result.entities["corner"].end_angle, 3 * math.pi / 2, abs_tol=1e-7)
     assert circle_result.status is SolveStatus.FULLY_CONSTRAINED
     assert circle_result.entities["hole"] == SolvedCircle((3.0, 4.0), 3.0)
 
@@ -298,6 +302,142 @@ def test_solved_profile_extrudes_to_valid_build123d_solid():
     assert math.isclose(solid.volume, (30 * 20 - math.pi * 3**2) * 5, rel_tol=1e-9)
 
 
+@pytest.mark.parametrize(
+    ("sketch_request", "responsible_id"),
+    (
+        (SolveRequest(points=(Point("p", 0, 0),), lines=(Line("same", "p", "p"),)), "same"),
+        (
+            SolveRequest(
+                points=(Point("p", 0, 0), Point("q", 0, 0)),
+                lines=(Line("coincident", "p", "q"),),
+            ),
+            "coincident",
+        ),
+        (SolveRequest(points=(Point("p", 0, 0),), initial={"p": (1,)}), "p"),
+        (
+            SolveRequest(
+                points=(Point("c", 0, 0), Point("s", 1, 0), Point("e", 0, 1)),
+                arcs=(Arc("a", "c", "s", "e", 1, 0, math.pi / 2),),
+                initial={"a": (1, 0)},
+            ),
+            "a",
+        ),
+        (SolveRequest(points=(Point("p", 0, 0),), initial={"missing": (1, 2)}), "missing"),
+        (
+            SolveRequest(
+                points=(Point("p", 0, 0), Point("q", 1, 0)),
+                lines=(Line("line", "p", "q"),),
+                constraints=(Constraint("fix-line", ConstraintKind.FIX, ("line",)),),
+            ),
+            "fix-line",
+        ),
+        (SolveRequest(lines=(Line("unknown-point", "p", "q"),)), "unknown-point"),
+        (SolveRequest(points=(Point("duplicate", 0, 0), Point("duplicate", 1, 0))), "duplicate"),
+    ),
+)
+def test_invalid_geometry_is_structured_and_names_the_responsible_id(
+    sketch_request, responsible_id
+):
+    result = solve_sketch(sketch_request)
+
+    assert result.status is SolveStatus.INVALID_INPUT
+    error = result.errors[0]
+    assert responsible_id in (*error.entity_ids, *error.constraint_ids)
+
+
+@pytest.mark.parametrize("kind", tuple(DimensionKind))
+def test_every_dimension_family_rejects_a_bad_signature_with_its_id(kind):
+    result = solve_sketch(
+        SolveRequest(
+            points=(Point("p", 0, 0),),
+            dimensions=(Dimension("bad-dimension", kind, (), 1),),
+        )
+    )
+
+    assert result.status is SolveStatus.INVALID_INPUT
+    assert result.errors[0].constraint_ids == ("bad-dimension",)
+
+
+@pytest.mark.parametrize("kind", tuple(ConstraintKind))
+def test_every_constraint_family_rejects_a_bad_signature_with_its_id(kind):
+    result = solve_sketch(
+        SolveRequest(
+            points=(Point("p", 0, 0),),
+            constraints=(Constraint("bad-constraint", kind, ()),),
+        )
+    )
+
+    assert result.status is SolveStatus.INVALID_INPUT
+    assert result.errors[0].constraint_ids == ("bad-constraint",)
+
+
+def test_angle_dimension_is_signed_counterclockwise_in_radians():
+    result = solve_sketch(
+        SolveRequest(
+            points=(
+                Point("a", 0, 0),
+                Point("b", 1, 0),
+                Point("c", 0, 0),
+                Point("d", 0, -1),
+            ),
+            lines=(Line("first", "a", "b"), Line("second", "c", "d")),
+            dimensions=(
+                Dimension(
+                    "clockwise-quarter-turn", DimensionKind.ANGLE, ("first", "second"), -math.pi / 2
+                ),
+            ),
+            constraints=tuple(fixed(point_id, f"fix-{point_id}") for point_id in "abcd"),
+        )
+    )
+
+    assert result.status is SolveStatus.REDUNDANT
+    assert result.entities["second"].end == (0.0, -1.0)
+
+
+@pytest.mark.parametrize(
+    "constraint",
+    (
+        Constraint("horizontal-points", ConstraintKind.HORIZONTAL_POINTS, ("a", "b")),
+        Constraint("vertical-points", ConstraintKind.VERTICAL_POINTS, ("a", "b")),
+        Constraint("parallel", ConstraintKind.PARALLEL, ("first", "second")),
+        Constraint("perpendicular", ConstraintKind.PERPENDICULAR, ("first", "second")),
+        Constraint("symmetric-point", ConstraintKind.SYMMETRIC, ("a", "b", "c")),
+        Constraint("symmetric-line", ConstraintKind.SYMMETRIC, ("a", "b", "first")),
+        Constraint("point-on-line", ConstraintKind.POINT_ON, ("c", "first")),
+    ),
+)
+def test_remaining_constraint_families_dispatch_valid_signatures(constraint):
+    result = solve_sketch(
+        SolveRequest(
+            points=(Point("a", 0, 0), Point("b", 2, 1), Point("c", 1, 0)),
+            lines=(Line("first", "a", "b"), Line("second", "a", "c")),
+            constraints=(constraint,),
+        )
+    )
+
+    assert result.status is not SolveStatus.INVALID_INPUT
+
+
+def test_tangent_endpoint_must_be_shared_by_the_line_and_arc():
+    result = solve_sketch(
+        SolveRequest(
+            points=(
+                Point("center", 0, 0),
+                Point("arc-start", 1, 0),
+                Point("shared", 0, 1),
+                Point("line-start", -1, 1),
+                Point("other", 2, 2),
+            ),
+            lines=(Line("line", "line-start", "shared"),),
+            arcs=(Arc("arc", "center", "arc-start", "shared", 1, 0, math.pi / 2),),
+            constraints=(Constraint("tangent", ConstraintKind.TANGENT, ("line", "arc", "other")),),
+        )
+    )
+
+    assert result.status is SolveStatus.INVALID_INPUT
+    assert result.errors[0].constraint_ids == ("tangent",)
+
+
 def test_only_solver_seam_may_import_planegcs():
     source_root = Path(__file__).parents[1] / "src" / "coalesce"
     offenders = []
@@ -306,7 +446,9 @@ def test_only_solver_seam_may_import_planegcs():
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import) and any(alias.name == "planegcs" for alias in node.names):
+            if isinstance(node, ast.Import) and any(
+                alias.name == "planegcs" for alias in node.names
+            ):
                 offenders.append(path)
             if isinstance(node, ast.ImportFrom) and node.module == "planegcs":
                 offenders.append(path)

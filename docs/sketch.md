@@ -30,6 +30,38 @@ Call `solve_sketch()` with coalesce-owned points, lines, arcs, circles, dimensio
 
 A successful numeric solve is not enough to accept geometry. Callers that edit a sketch must provide branch landmarks from the last accepted result. The seam fails closed if a landmark changes sign or becomes too close to zero.
 
+### geometry conventions
+
+Line and angle direction follows each line's ordered `start` → `end` points. An `Arc` names its center, start point, and end point in that order. Arc angles use radians. The arc starts at `start_angle` and sweeps counterclockwise to `end_angle`; its sweep must be more than zero and less than `2π`. A positive angle dimension rotates counterclockwise from its first directed line to its second; a negative value rotates clockwise.
+
+`initial` can override a point with `(x, y)`, an arc with `(radius, start_angle, end_angle)`, or a circle with `(radius,)`. Each tuple must have exactly that arity and contain only finite numbers. Lines do not take an `initial` tuple. A line's two effective initial endpoint coordinates must be distinct.
+
+### ordered operands
+
+The following table is the coalesce-owned contract. `length` uses the caller's sketch unit. Distances are unsigned. Operand order is significant unless both roles have the same name. The `OPERAND_SIGNATURES` table in `sketch_solver.py` is the machine-readable form used by validation and the PlaneGCS adapter.
+
+| kind | ordered operands | value |
+| --- | --- | --- |
+| `distance` | `(point, point)` first point to second point; `(point, line)` perpendicular point-to-line distance | length |
+| `radius` | `(arc)` or `(circle)` | positive length |
+| `diameter` | `(arc)` or `(circle)` | positive length |
+| `angle` | `(line, line)` first directed line to second directed line | signed radians; positive is counterclockwise |
+| `coincident` | `(point, point)` | none |
+| `horizontal` | `(line)` | none |
+| `vertical` | `(line)` | none |
+| `horizontal_points` | `(point, point)` | none |
+| `vertical_points` | `(point, point)` | none |
+| `parallel` | `(line, line)` | none |
+| `perpendicular` | `(line, line)` | none |
+| `tangent` | `(line, arc)`, `(line, circle)`, `(arc, arc)`, `(circle, arc)`, or `(circle, circle)` | none |
+| `tangent` with an endpoint | `(line, arc, point)`; the point must be an endpoint shared by that line and arc | none |
+| `equal` | `(line, line)`, `(arc, arc)`, `(circle, circle)`, `(circle, arc)`, or `(arc, circle)` | none |
+| `symmetric` | `(point, point, point)` around a center point; `(point, point, line)` around a center line | none |
+| `point_on` | `(point, line)`, `(point, arc)`, or `(point, circle)` | none |
+| `fix` | `(point)` at its effective initial `(x, y)` | none |
+
+Invalid ids, references, initial tuples, geometry, or operand signatures return `INVALID_INPUT`. The error names the responsible entity or constraint id before the PlaneGCS adapter builds solver objects.
+
 ## replace the solver
 
 PlaneGCS is a separate optional dependency. To use a different compatible solver, replace only the private implementation in `src/coalesce/sketch_solver.py` while keeping its coalesce-owned request and result types stable. No other coalesce module imports PlaneGCS.
