@@ -220,6 +220,22 @@ async function act(action) {
       return changed / (data.length / 4);
     }, { capture: action.capture, diff: action.diff });
   }
+  // the canvas color where each world point [x, y, z] lands through the viewer's own camera
+  if ('pixels' in action) {
+    return page.evaluate((points) => {
+      const source = document.getElementById('view');
+      const copy = document.createElement('canvas');
+      copy.width = source.width;
+      copy.height = source.height;
+      const context = copy.getContext('2d');
+      context.drawImage(source, 0, 0);
+      return window.coalesceViewer.project(points).map(([x, y]) => {
+        const px = Math.floor(((x + 1) / 2) * copy.width);
+        const py = Math.floor(((1 - y) / 2) * copy.height);
+        return { pixel: [px, py], rgb: [...context.getImageData(px, py, 1, 1).data.slice(0, 3)] };
+      });
+    }, action.pixels);
+  }
   if ('fill' in action) await page.getByLabel(action.fill.label, { exact: true }).fill(String(action.fill.value));
   if ('key' in action) await page.keyboard.press(action.key);
   if ('settle' in action) await settled();
