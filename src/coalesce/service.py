@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
+from .errors import ERROR_REGISTRY
 from .export import ExportFailure, export_parts
 from .fit_summary import fit_summary, part_facts
 from .graph import (
@@ -1328,9 +1329,11 @@ def _safe_error(
     message: str,
     *,
     operation: str,
-    retryable: bool = False,
     **details: Any,
 ) -> dict[str, Any]:
+    definition = ERROR_REGISTRY.get(code)
+    if definition is None:
+        raise ValueError(f"unregistered public error code: {code}")
     details = dict(details)
     if "feature" in details and "featureId" not in details:
         details["featureId"] = details.pop("feature")
@@ -1344,7 +1347,7 @@ def _safe_error(
         "error": {
             "code": code,
             "message": message,
-            "retryable": retryable,
+            "retryable": definition.retryable,
             "operation": operation,
             **details,
         },
@@ -2355,8 +2358,6 @@ class DocumentService:
         payload: dict[str, Any],
         code: str,
         message: str,
-        *,
-        retryable: bool = False,
         **details: Any,
     ) -> dict[str, Any]:
         """Build the public error shape and add model context only when it is known."""
@@ -2366,7 +2367,6 @@ class DocumentService:
             code,
             message,
             operation=operation,
-            retryable=retryable,
             **details,
         )
         return self._with_error_context(payload, failure)
@@ -2375,15 +2375,18 @@ class DocumentService:
         self, payload: dict[str, Any], failure: dict[str, Any]
     ) -> dict[str, Any]:
         error = failure["error"]
-        feature_id = error.get("featureId") or payload.get("featureId")
-        if isinstance(feature_id, str):
-            error["featureId"] = feature_id
+        mutation_ids = {
+            field: value
+            for field in ("featureId", "sketchId", "assetId")
+            if isinstance(value := error.get(field) or payload.get(field), str)
+        }
+        error.update(mutation_ids)
 
         target = payload.get("parameters", {}).get("target", {})
         related = {
             value
             for value in (
-                feature_id,
+                *mutation_ids.values(),
                 error.get("target"),
                 error.get("consumer"),
                 target.get("featureId") if isinstance(target, dict) else None,
@@ -2522,7 +2525,6 @@ class DocumentService:
                     payload,
                     error.code,
                     str(error),
-                    retryable=error.code == "REVISION_CONFLICT",
                     **error.details,
                 )
                 self.publish_failure(payload, failure)
@@ -2547,14 +2549,13 @@ class DocumentService:
                 graph_details = dict(graph_failure["error"])
                 code = graph_details.pop("code")
                 message = graph_details.pop("message")
-                retryable = graph_details.pop("retryable")
+                graph_details.pop("retryable")
                 graph_details.pop("operation")
                 failure = self.error_response(
                     operation,
                     payload,
                     code,
                     message,
-                    retryable=retryable,
                     **graph_details,
                 )
                 self.publish_failure(payload, failure)
@@ -2831,7 +2832,6 @@ class DocumentService:
                     payload,
                     error.code,
                     str(error),
-                    retryable=error.code == "STALE_REVISION",
                     **error.details,
                 )
             except Exception:  # noqa: BLE001 - filesystem failures are translated at this seam.
@@ -3047,7 +3047,6 @@ class DocumentService:
                     "REVISION_CONFLICT",
                     "requested revision is not current",
                     operation="check",
-                    retryable=True,
                 )
             if "requirements" in payload and not payload["requirements"]:
                 return _safe_error(

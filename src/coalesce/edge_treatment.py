@@ -90,18 +90,17 @@ def edge_treatment_shape(
     edge_keys = [asdict(edge.key) for edge in edges]
     parameter = "radius" if kind == "blend" else "distance"
     public_kind = "fillet" if kind == "blend" else "chamfer"
+    invalid_code, failed_code = {
+        "fillet": ("INVALID_FILLET_RADIUS", "FILLET_FAILED"),
+        "chamfer": ("INVALID_CHAMFER_DISTANCE", "CHAMFER_FAILED"),
+    }[public_kind]
     if size <= 0:
-        details = {"feature": feature, parameter: size, "edges": edge_keys}
-        if public_kind == "fillet":
-            raise GraphError(
-                "INVALID_FILLET_RADIUS",
-                f"fillet {feature} radius must be positive",
-                **details,
-            )
         raise GraphError(
-            "INVALID_CHAMFER_DISTANCE",
-            f"chamfer {feature} distance must be positive",
-            **details,
+            invalid_code,
+            f"{public_kind} {feature} {parameter} must be positive",
+            feature=feature,
+            **{parameter: size},
+            edges=edge_keys,
         )
 
     algorithm: _EdgeAlgorithm
@@ -141,12 +140,8 @@ def edge_treatment_shape(
             ),
             "kernelMessage": str(error),
         }
-        if public_kind == "fillet":
-            raise GraphError(
-                "FILLET_FAILED", f"fillet feature {feature} failed", **details
-            ) from error
         raise GraphError(
-            "CHAMFER_FAILED", f"chamfer feature {feature} failed", **details
+            failed_code, f"{public_kind} feature {feature} failed", **details
         ) from error
 
     inherited, generated, consumed = _collect_history(
@@ -162,9 +157,7 @@ def edge_treatment_shape(
             "hint": "change the selected edges or reduce the treatment size",
         }
         message = f"{public_kind} feature {feature} did not return complete edge history"
-        if public_kind == "fillet":
-            raise GraphError("FILLET_FAILED", message, **details)
-        raise GraphError("CHAMFER_FAILED", message, **details)
+        raise GraphError(failed_code, message, **details)
     result_faces = _deduplicate(feature, result, [*inherited, *generated])
     result_edges = derive_edge_candidates(feature, result, result_faces)
     return EdgeTreatmentResult(

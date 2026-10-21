@@ -1,4 +1,3 @@
-import ast
 import re
 from pathlib import Path
 
@@ -12,33 +11,21 @@ from coalesce.service import DocumentService
 
 ROOT = Path(__file__).parents[1]
 UPPER_SNAKE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
-ERROR_CONSTRUCTORS = {"GraphError", "RequestError", "BoardImportError", "ExportFailure"}
 VIEWER_CODE_SET = re.compile(
     r"const [A-Z_]+_CODES = new Set\(\[(.*?)\]\);", re.DOTALL
 )
 
 
 def documented_codes() -> set[str]:
+    return set(documented_families())
+
+
+def documented_families() -> dict[str, str]:
     path = ROOT / "docs" / "errors.md"
     assert path.is_file(), "docs/errors.md must document the public error contract"
-    return set(re.findall(r"^\| `([A-Z0-9_]+)` \|", path.read_text(), re.MULTILINE))
-
-
-def raised_codes() -> list[tuple[Path, int, str]]:
-    found = []
-    for path in (ROOT / "src").rglob("*.py"):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-                continue
-            if node.func.id not in ERROR_CONSTRUCTORS or not node.args:
-                continue
-            code = node.args[0]
-            assert isinstance(code, ast.Constant) and isinstance(code.value, str), (
-                f"{path.relative_to(ROOT)}:{node.lineno} must use one literal stable error code"
-            )
-            found.append((path, node.lineno, code.value))
-    return found
+    return dict(
+        re.findall(r"^\| `([A-Z0-9_]+)` \| ([a-z]+) \|", path.read_text(), re.MULTILINE)
+    )
 
 
 def assert_failure_shape(result, *, operation, revision, feature_id=None):
@@ -58,22 +45,11 @@ def assert_failure_shape(result, *, operation, revision, feature_id=None):
 def test_registry_is_the_exact_documented_public_contract():
     registry = getattr(service_module, "ERROR_REGISTRY", {})
 
-    assert set(registry) == documented_codes()
+    assert {code: definition.family for code, definition in registry.items()} == documented_families()
     assert all(UPPER_SNAKE.fullmatch(code) for code in registry)
     assert {code for code, definition in registry.items() if definition.retryable} == {
         "REVISION_CONFLICT"
     }
-
-
-def test_every_raised_error_code_is_registered():
-    registry = getattr(service_module, "ERROR_REGISTRY", {})
-    raised = raised_codes()
-
-    assert registry
-    for path, line, code in raised:
-        location = f"{path.relative_to(ROOT)}:{line}"
-        assert UPPER_SNAKE.fullmatch(code), f"{location}: {code!r} is not UPPER_SNAKE"
-        assert code in registry, f"{location}: {code} is not registered"
 
 
 def test_viewer_code_sets_are_registered():

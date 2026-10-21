@@ -99,6 +99,7 @@ raw kernel diagnostics never appear in `message`. when available, they appear as
 | `MISSING` | import | required board or footprint mechanics are absent | provide the named mechanics or select a different subject |
 | `AMBIGUOUS` | import | a board/footprint subject has more than one valid match | use a stable id that resolves once |
 | `PORT_BLOCKED_BY_LID` | enclosure | a port opening conflicts with the lid or lip | apply a verified `alternative` or change the lid/opening |
+| `INSPECTION_FAILED` | enclosure | enclosure inspection cannot evaluate the requested requirements | inspect the unchanged model and correct its enclosure geometry |
 | `EXPORT_PATH_EXISTS` | export | the target path already exists | choose a new path; coalesce never overwrites |
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
