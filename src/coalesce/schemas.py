@@ -774,20 +774,11 @@ QUERY_FEATURE_SCHEMA = {
         },
     },
 }
-EXPORT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "expectedRevision": {"type": "integer", "minimum": 0},
-        "path": {"type": "string", "minLength": 1},
-        "partIds": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-            "minItems": 1,
-            "uniqueItems": True,
-        },
-    },
-    "required": ["expectedRevision", "path"],
-    "additionalProperties": False,
+EXPORT_PART_IDS = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+    "minItems": 1,
+    "uniqueItems": True,
 }
 
 CHECK_ID = {"type": "string", "minLength": 1}
@@ -872,6 +863,47 @@ CHECK_REQUIREMENT = {
         },
     ]
 }
+EXPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"enum": ["preflight", "publish"]},
+        "mode": {"enum": ["compound", "separate"]},
+        "expectedRevision": {"type": "integer", "minimum": 0},
+        "path": {"type": "string", "minLength": 1},
+        "partIds": EXPORT_PART_IDS,
+        "base": {"type": "string", "minLength": 1},
+        "requirements": {
+            "type": "array",
+            "items": CHECK_REQUIREMENT,
+            "minItems": 1,
+        },
+    },
+    "required": ["expectedRevision"],
+    "additionalProperties": False,
+    "oneOf": [
+        {
+            "properties": {"action": {"const": "preflight"}},
+            "required": ["action"],
+            "not": {"anyOf": [{"required": ["path"]}, {"required": ["mode"]}]},
+        },
+        {
+            "properties": {
+                "action": {"const": "publish"},
+                "mode": {"const": "separate"},
+            },
+            "required": ["mode", "path"],
+        },
+        {
+            "properties": {
+                "action": {"const": "publish"},
+                "mode": {"const": "compound"},
+            },
+            "required": ["path"],
+            "not": {"anyOf": [{"required": ["base"]}, {"required": ["requirements"]}]},
+        },
+    ],
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {

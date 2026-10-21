@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .errors import ERROR_REGISTRY
-from .export import ExportFailure, _validate_part_for_step, export_parts
+from .export import (
+    ExportFailure,
+    _validate_part_for_step,
+    export_parts,
+    export_parts_separately,
+    preflight_parts,
+)
 from .fit_summary import fit_summary, part_facts
 from .graph import (
     BoardImport,
@@ -2817,6 +2823,42 @@ class DocumentService:
             )
         return selected
 
+    def _handoff_requirements(self, payload: dict[str, Any]) -> dict[str, Any]:
+        checked = self.check(
+            {
+                "action": "evaluate",
+                "revision": self._document.revision,
+                **({"base": payload["base"]} if "base" in payload else {}),
+                **(
+                    {"requirements": payload["requirements"]}
+                    if "requirements" in payload
+                    else {}
+                ),
+            }
+        )
+        if not checked.get("ok"):
+            error = checked["error"]
+            raise RequestError(
+                error["code"],
+                error["message"],
+                **{
+                    key: value
+                    for key, value in error.items()
+                    if key not in {"code", "message", "operation", "retryable", "revision"}
+                },
+            )
+        return {"gate": checked["gate"], "results": checked["results"]}
+
+    def _handoff_sources(self) -> list[dict[str, str]]:
+        return sorted(
+            [
+                {"assetId": node.id, "sha256": node.source_digest}
+                for node in self._document.graph.nodes.values()
+                if isinstance(node, BoardImport)
+            ],
+            key=lambda item: item["assetId"],
+        )
+
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
         with self._lock:
@@ -2824,6 +2866,48 @@ class DocumentService:
             try:
                 self._check_export_revision(payload["expectedRevision"])
                 selected = self._select_export_parts(payload.get("partIds"))
+                action = payload.get("action", "publish")
+                mode = payload.get("mode", "compound")
+                if action == "preflight":
+                    parts = preflight_parts(selected)
+                    requirements = self._handoff_requirements(payload)
+                    unknowns = [
+                        item for item in requirements["results"] if item["status"] == "UNKNOWN"
+                    ]
+                    return {
+                        "ok": True,
+                        "revision": self._document.revision,
+                        "units": "mm",
+                        "ready": requirements["gate"] == "PASS",
+                        "partIds": [part.part_id for part in selected],
+                        "parts": parts,
+                        "requirements": requirements,
+                        "unknowns": unknowns,
+                    }
+                if mode == "separate":
+                    requirements = self._handoff_requirements(payload)
+                    unknowns = [
+                        item for item in requirements["results"] if item["status"] == "UNKNOWN"
+                    ]
+                    manifest = {
+                        "revision": self._document.revision,
+                        "units": "mm",
+                        "sources": self._handoff_sources(),
+                        "requirements": requirements,
+                        "unknowns": unknowns,
+                    }
+                    fields = export_parts_separately(
+                        Path(payload.get("path", "")), selected, manifest
+                    )
+                    return {
+                        "ok": True,
+                        "revision": self._document.revision,
+                        "units": "mm",
+                        "ready": requirements["gate"] == "PASS",
+                        "requirements": requirements,
+                        "unknowns": unknowns,
+                        **fields,
+                    }
                 fields = export_parts(Path(payload.get("path", "")), selected)
                 return {
                     "ok": True,

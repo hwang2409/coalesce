@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -214,7 +217,7 @@ def _validate(expected: dict[str, Any], actual: dict[str, Any]) -> None:
 
 
 def _validated_step_bytes(
-    shapes: list[Any], expected: dict[str, Any]
+    shapes: list[Any], expected: dict[str, Any], *, normalize: bool = False
 ) -> tuple[bytes, str, dict[str, Any]]:
     from build123d import Compound, export_step
 
@@ -222,6 +225,8 @@ def _validated_step_bytes(
     temporary_path = temporary_directory / "export.step"
     try:
         export_step(Compound(children=shapes, label="coalesce_export"), temporary_path)
+        if normalize:
+            temporary_path.write_bytes(_normalized_step_bytes(temporary_path.read_bytes()))
         actual = verify_step_fresh(temporary_path)
         _validate(expected, actual)
         content = temporary_path.read_bytes()
@@ -352,16 +357,206 @@ def _export_fields(
     }
 
 
-def _validated_part_bytes(parts: list[Any]) -> tuple[bytes, str, dict[str, Any]]:
+def _validated_part_bytes(
+    parts: list[Any], *, normalize: bool = False
+) -> tuple[bytes, str, dict[str, Any]]:
     from build123d import Solid
 
     shapes = [Solid(part.shape.wrapped, label=part.label) for part in parts]
     expected = _metrics(shapes, [part.label for part in parts])
-    return _validated_step_bytes(shapes, expected)
+    return _validated_step_bytes(shapes, expected, normalize=normalize)
 
 
 def _validate_part_for_step(part: Any) -> None:
     _validated_part_bytes([part])
+
+
+def _part_file_names(parts: list[Any]) -> list[str]:
+    names: list[str] = []
+    for part in parts:
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", part.label).strip("-.") or "part"
+        name = f"{stem}.step"
+        if name in names:
+            suffix = hashlib.sha256(part.part_id.encode()).hexdigest()[:8]
+            name = f"{stem}-{suffix}.step"
+        names.append(name)
+    return names
+
+
+def _normalized_step_bytes(content: bytes) -> bytes:
+    # OCCT emits wall-clock and process-counter metadata that would destabilize file hashes.
+    text = content.decode("utf-8")
+    text = re.sub(
+        r"(?<=FILE_NAME\('coalesce_export',)'[^']*'",
+        "'1970-01-01T00:00:00'",
+        text,
+        count=1,
+    )
+    occurrence = 0
+
+    def normalize_occurrence(match: re.Match[str]) -> str:
+        nonlocal occurrence
+        occurrence += 1
+        return f"{match.group(1)}'{occurrence}'{match.group(2)}"
+
+    text = re.sub(
+        r"(NEXT_ASSEMBLY_USAGE_OCCURRENCE\()'[^']*'([^;]*;)",
+        normalize_occurrence,
+        text,
+    )
+    return text.encode("utf-8")
+
+
+def _prepared_parts(parts: list[Any]) -> list[dict[str, Any]]:
+    prepared = []
+    for part, file_name in zip(parts, _part_file_names(parts), strict=True):
+        content, digest, actual = _validated_part_bytes([part], normalize=True)
+        actual_label = actual["parts"][0].get("label", "")
+        if actual_label != part.label:
+            raise ExportFailure(
+                "EXPORT_VALIDATION_FAILED",
+                "fresh-process STEP label does not match the source part",
+                partId=part.part_id,
+                expectedLabel=part.label,
+                actualLabel=actual_label,
+            )
+        prepared.append(
+            {
+                "partId": part.part_id,
+                "label": part.label,
+                "file": file_name,
+                "sha256": digest,
+                "status": "passed",
+                "validation": {
+                    "status": "passed",
+                    "freshProcess": True,
+                    "label": actual_label,
+                    "reimport": actual,
+                },
+                "_content": content,
+            }
+        )
+    return prepared
+
+
+def preflight_parts(parts: list[Any]) -> list[dict[str, Any]]:
+    """Validate each selected part independently without publishing any bytes."""
+    return [
+        {key: value for key, value in item.items() if not key.startswith("_")}
+        for item in _prepared_parts(parts)
+    ]
+
+
+def _write_private_file(path: Path, content: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _new_directory_path(path: Path) -> Path:
+    resolved, directory_fd = _open_directory(path)
+    os.close(directory_fd)
+    if resolved.exists():
+        raise ExportFailure(
+            "EXPORT_PATH_EXISTS",
+            "export path already exists; separate-file export never overwrites",
+            path=str(resolved),
+            hint="choose a new path",
+        )
+    return resolved
+
+
+def _rename_new_directory(source: Path, destination: Path) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if renamex := getattr(libc, "renamex_np", None):
+        result = renamex(source_bytes, destination_bytes, 0x00000004)  # RENAME_EXCL
+    elif renameat2 := getattr(libc, "renameat2", None):
+        result = renameat2(-100, source_bytes, -100, destination_bytes, 1)  # RENAME_NOREPLACE
+    elif os.name == "nt":
+        os.rename(source, destination)
+        return
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive directory rename is unavailable")
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(error_number, os.strerror(error_number), destination)
+    raise OSError(error_number, os.strerror(error_number), destination)
+
+
+def export_parts_separately(
+    path: Path, parts: list[Any], manifest_fields: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate each part, then publish one complete sibling-built directory."""
+    prepared = _prepared_parts(parts)
+    public_parts = [
+        {key: value for key, value in item.items() if not key.startswith("_")}
+        for item in prepared
+    ]
+    manifest = {**manifest_fields, "parts": public_parts}
+    manifest_bytes = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode()
+    destination = _new_directory_path(path)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
+    )
+    published = False
+    try:
+        for item in prepared:
+            _write_private_file(temporary / item["file"], item["_content"])
+        _write_private_file(temporary / "manifest.json", manifest_bytes)
+        temporary_fd = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(temporary_fd)
+        finally:
+            os.close(temporary_fd)
+        if destination.exists():
+            raise ExportFailure(
+                "EXPORT_PATH_EXISTS",
+                "export path already exists; separate-file export never overwrites",
+                path=str(destination),
+                hint="choose a new path",
+            )
+        try:
+            _rename_new_directory(temporary, destination)
+        except FileExistsError as error:
+            raise ExportFailure(
+                "EXPORT_PATH_EXISTS",
+                "export path already exists; separate-file export never overwrites",
+                path=str(destination),
+                hint="choose a new path",
+            ) from error
+        published = True
+        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except ExportFailure:
+        raise
+    except OSError as error:
+        if published and destination.is_dir():
+            shutil.rmtree(destination)
+        raise ExportFailure(
+            "EXPORT_WRITE_FAILED",
+            "separate-file export could not be published",
+            path=str(destination),
+            hint="check the target parent and retry with a new path",
+        ) from error
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return {
+        "path": str(destination),
+        "partIds": [part.part_id for part in parts],
+        "parts": public_parts,
+        "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
+    }
 
 
 def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:

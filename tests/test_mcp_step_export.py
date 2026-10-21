@@ -523,7 +523,15 @@ async def test_export_contract_documents_stateless_recovery(tmp_path):
         if tool.name == "export"
     )
 
-    assert set(export_tool.inputSchema["required"]) == {"expectedRevision", "path"}
+    assert set(export_tool.inputSchema["required"]) == {"expectedRevision"}
+    assert export_tool.inputSchema["properties"]["action"]["enum"] == [
+        "preflight",
+        "publish",
+    ]
+    assert export_tool.inputSchema["properties"]["mode"]["enum"] == [
+        "compound",
+        "separate",
+    ]
     assert "requestId" not in export_tool.inputSchema["properties"]
     for phrase in (
         "private directory",
