@@ -49,6 +49,8 @@ def playwright_module() -> str | None:
         )
         if ok.returncode == 0:
             return candidate
+    if os.environ.get("CI", "").lower() == "true":
+        pytest.fail("CI requires a launchable Playwright Chromium")
     return None
 
 
