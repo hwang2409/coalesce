@@ -1,6 +1,8 @@
 import pytest
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
-from test_mcp_vertical import run_server
+from test_mcp_vertical import call_server_tool, run_server
+
+from coalesce.service import DocumentService
 
 
 def treatment(action, revision, request_id, feature_id, kind=None, *, size=None):
@@ -145,24 +147,67 @@ async def test_public_chamfer_reference_survives_base_dimension_update(tmp_path)
 
 
 @pytest.mark.anyio
-async def test_chamfered_part_step_export_reloads_as_one_valid_solid(tmp_path):
-    path = tmp_path / "chamfer-export.coalesce.json"
-    target = tmp_path / "chamfer.step"
+@pytest.mark.parametrize(("kind", "size"), [("fillet", 0.5), ("chamfer", 1)])
+async def test_treated_part_commits_and_step_export_reloads_as_one_valid_solid(
+    tmp_path, kind, size
+):
+    path = tmp_path / f"{kind}-export.coalesce.json"
+    target = tmp_path / f"{kind}.step"
     results = await run_server(
         path,
         [
             *box_calls(),
-            ("feature", treatment("create", 2, "create-chamfer", "bevel", "chamfer", size=1)),
+            (
+                "feature",
+                treatment("create", 2, f"create-{kind}", "finish", kind, size=size),
+            ),
             ("export", {"expectedRevision": 3, "path": str(target)}),
         ],
     )
 
+    assert results[2]["ok"] is True
     exported = results[3]
     assert exported["ok"] is True
     assert exported["partIds"] == ["box/outline"]
     assert exported["validation"]["geometry"] == {"status": "passed", "freshProcess": True}
     assert exported["validation"]["reimport"]["partCount"] == 1
     assert exported["validation"]["reimport"]["solidCount"] == 1
+
+
+@pytest.mark.anyio
+async def test_treatment_update_that_fails_manufacturing_validation_is_atomic(
+    tmp_path, monkeypatch
+):
+    import coalesce.export as export_module
+
+    path = tmp_path / "invalid-update.coalesce.json"
+    created = await run_server(
+        path,
+        [
+            *box_calls(),
+            ("feature", treatment("create", 2, "create-fillet", "finish", "fillet", size=0.5)),
+        ],
+    )
+    assert created[-1]["ok"] is True
+    document_bytes = path.read_bytes()
+
+    monkeypatch.setattr(export_module, "verify_step_fresh", lambda _path: {"partCount": 0})
+    service = DocumentService(path)
+    rejected = await call_server_tool(
+        service,
+        "feature",
+        treatment("update", 3, "invalid-fillet", "finish", "fillet", size=0.75),
+    )
+    measured = await call_server_tool(service, "query", {"select": {"kind": "measurements"}})
+
+    assert rejected["ok"] is False
+    assert rejected["revision"] == 3
+    assert rejected["error"]["code"] == "MANUFACTURING_VALIDATION_FAILED"
+    assert rejected["error"]["featureId"] == "finish"
+    assert rejected["error"]["partId"] == "box/outline"
+    assert rejected["error"]["mismatchedMetric"] == "partCount"
+    assert measured["revision"] == 3
+    assert path.read_bytes() == document_bytes
 
 
 @pytest.mark.anyio

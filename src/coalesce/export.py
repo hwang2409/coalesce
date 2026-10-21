@@ -143,23 +143,47 @@ def verify_step_fresh(path: Path) -> dict[str, Any]:
         ) from error
 
 
-def _same(expected: Any, actual: Any) -> bool:
+def _child(path: str, key: str) -> str:
+    return f"{path}.{key}" if path else key
+
+
+def _numbers_mismatch(expected: float, actual: float, path: str) -> str | None:
+    matches = math.isclose(
+        float(expected),
+        float(actual),
+        rel_tol=RELATIVE_TOLERANCE,
+        abs_tol=ABSOLUTE_TOLERANCE,
+    )
+    return None if matches else path
+
+
+def _mapping_mismatch(expected: dict, actual: dict, path: str) -> str | None:
+    for key, value in expected.items():
+        if key not in actual:
+            return _child(path, key)
+        if mismatch := _first_mismatch(value, actual[key], _child(path, key)):
+            return mismatch
+    extra = next((key for key in actual if key not in expected), None)
+    return None if extra is None else _child(path, extra)
+
+
+def _sequence_mismatch(expected: list, actual: list, path: str) -> str | None:
+    if len(expected) != len(actual):
+        return f"{path}.length"
+    for index, (left, right) in enumerate(zip(expected, actual, strict=True)):
+        if mismatch := _first_mismatch(left, right, f"{path}[{index}]"):
+            return mismatch
+    return None
+
+
+def _first_mismatch(expected: Any, actual: Any, path: str = "") -> str | None:
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        return math.isclose(
-            float(expected),
-            float(actual),
-            rel_tol=RELATIVE_TOLERANCE,
-            abs_tol=ABSOLUTE_TOLERANCE,
-        )
+        return _numbers_mismatch(expected, actual, path)
     if isinstance(expected, dict) and isinstance(actual, dict):
-        return expected.keys() == actual.keys() and all(
-            _same(expected[key], actual[key]) for key in expected
-        )
+        return _mapping_mismatch(expected, actual, path)
     if isinstance(expected, list) and isinstance(actual, list):
-        return len(expected) == len(actual) and all(
-            _same(left, right) for left, right in zip(expected, actual, strict=True)
-        )
-    return expected == actual
+        return _sequence_mismatch(expected, actual, path)
+    return None if expected == actual else path
 
 
 def _geometry(evidence: dict[str, Any]) -> dict[str, Any]:
@@ -174,14 +198,15 @@ def _geometry(evidence: dict[str, Any]) -> dict[str, Any]:
 
 def _validate(expected: dict[str, Any], actual: dict[str, Any]) -> None:
     try:
-        matches = _same(_geometry(expected), _geometry(actual))
+        mismatch = _first_mismatch(_geometry(expected), _geometry(actual))
     except (KeyError, TypeError, ValueError):
-        matches = False
-    if not matches:
+        mismatch = "partCount"
+    if mismatch is not None:
         raise ExportFailure(
             "EXPORT_VALIDATION_FAILED",
             "fresh-process STEP geometry does not match the source parts",
             hint="inspect the model and retry export to a different new path",
+            mismatchedMetric=mismatch,
             tolerance={"relative": RELATIVE_TOLERANCE, "absolute": ABSOLUTE_TOLERANCE},
             expected=expected,
             actual=actual,
@@ -327,13 +352,21 @@ def _export_fields(
     }
 
 
-def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
-    """Validate STEP bytes, then publish them once without replacement."""
+def _validated_part_bytes(parts: list[Any]) -> tuple[bytes, str, dict[str, Any]]:
     from build123d import Solid
 
     shapes = [Solid(part.shape.wrapped, label=part.label) for part in parts]
     expected = _metrics(shapes, [part.label for part in parts])
-    content, digest, actual = _validated_step_bytes(shapes, expected)
+    return _validated_step_bytes(shapes, expected)
+
+
+def _validate_part_for_step(part: Any) -> None:
+    _validated_part_bytes([part])
+
+
+def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
+    """Validate STEP bytes, then publish them once without replacement."""
+    content, digest, actual = _validated_part_bytes(parts)
     path = _publish_bytes(path, content, digest)
     fields = _export_fields(path, parts, digest, actual)
     return {**fields, "byteCount": len(content)}

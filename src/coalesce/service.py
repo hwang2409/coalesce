@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .errors import ERROR_REGISTRY
-from .export import ExportFailure, export_parts
+from .export import ExportFailure, _validate_part_for_step, export_parts
 from .fit_summary import fit_summary, part_facts
 from .graph import (
     BoardImport,
@@ -2338,6 +2338,29 @@ class DocumentService:
         assert self._regen is not None
         return self._regen
 
+    @staticmethod
+    def _validate_treatment_parts(
+        operation: MutationOperation, result: RegenResult, changed_id: str
+    ) -> None:
+        if not isinstance(operation, (FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate)):
+            return
+        parts = [
+            part
+            for part in terminal_parts(result)
+            if changed_id in {item["id"] for item in _lineage(result, part.terminal_feature)}
+        ]
+        for part in parts:
+            try:
+                _validate_part_for_step(part)
+            except ExportFailure as error:
+                raise RequestError(
+                    "MANUFACTURING_VALIDATION_FAILED",
+                    f"{operation.kind} {changed_id} cannot produce matching STEP geometry for {part.part_id}",
+                    featureId=changed_id,
+                    partId=part.part_id,
+                    mismatchedMetric=error.details.get("mismatchedMetric", "reimport"),
+                ) from error
+
     def error_response(
         self,
         operation: str,
@@ -2465,6 +2488,7 @@ class DocumentService:
                 changed_id, changed_ids, deletion = _applied_result(applied)
                 result = regenerate(graph)
                 self._assert_effect(parsed, result)
+                self._validate_treatment_parts(parsed, result, changed_id)
                 deletion_fields, change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision
                 response = {

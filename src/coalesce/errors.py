@@ -49,6 +49,7 @@ ERROR_REGISTRY = {
     "INVALID_CHAMFER_DISTANCE": ErrorDefinition("geometry"),
     "FILLET_FAILED": ErrorDefinition("geometry"),
     "CHAMFER_FAILED": ErrorDefinition("geometry"),
+    "MANUFACTURING_VALIDATION_FAILED": ErrorDefinition("manufacturing"),
     "IMPORT_PATH_NOT_ABSOLUTE": ErrorDefinition("import"),
     "IMPORT_PATH_NOT_FILE": ErrorDefinition("import"),
     "IMPORT_SOURCE_UNREADABLE": ErrorDefinition("import"),

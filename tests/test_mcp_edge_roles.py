@@ -91,6 +91,48 @@ async def test_outer_vertical_role_is_discoverable_and_fillet_survives_board_ref
 
 
 @pytest.mark.anyio
+async def test_polygonized_arc_fillet_rejects_without_changing_last_good_revision(tmp_path):
+    fixture = FIXTURES / "polygon32.kicad_pcb"
+    document = tmp_path / "polygon32.coalesce.json"
+    previous_step = tmp_path / "previous.step"
+
+    created = await run_server(
+        document,
+        [
+            ("import", import_request(fixture)),
+            ("feature", base_request()),
+        ],
+    )
+    assert created[-1]["revision"] == 2
+    document_bytes = document.read_bytes()
+
+    rejected, graph, exported = await run_server(
+        document,
+        [
+            ("feature", _fillet(count=32, radius=0.2)),
+            ("query", {"select": {"kind": "graph"}}),
+            ("export", {"expectedRevision": 2, "path": str(previous_step)}),
+        ],
+    )
+
+    assert rejected["ok"] is False
+    assert rejected["revision"] == 2
+    assert rejected["error"]["code"] == "MANUFACTURING_VALIDATION_FAILED"
+    assert rejected["error"]["featureId"] == "base_round"
+    assert rejected["error"]["partId"].startswith("base/")
+    assert rejected["error"]["mismatchedMetric"]
+    assert "path" not in rejected["error"].get("hint", "").lower()
+    assert graph["revision"] == 2
+    assert document.read_bytes() == document_bytes
+    assert exported["ok"] is True
+    assert previous_step.is_file()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "polygon32.coalesce.json",
+        "previous.step",
+    ]
+
+
+@pytest.mark.anyio
 async def test_mixed_outline_roles_exclude_tangent_seams_and_fillet_exports(tmp_path):
     fixture = FIXTURES / "mixed-corners.kicad_pcb"
     document = tmp_path / "mixed.coalesce.json"
@@ -220,6 +262,45 @@ async def test_empty_edge_reference_lists_roles_even_with_any_cardinality(tmp_pa
     assert error["code"] == "EMPTY_EDGE_SELECTION"
     assert error["resolution"]["status"] == "EMPTY"
     assert "outer_vertical" in {item["role"] for item in error["resolution"]["availableRoles"]}
+
+
+@pytest.mark.anyio
+async def test_lid_chamfer_commits_and_exports(tmp_path):
+    document = tmp_path / "lid-chamfer.coalesce.json"
+    step = tmp_path / "lid-chamfer.step"
+    chamfer = {
+        "action": "create",
+        "expectedRevision": 3,
+        "requestId": "bevel-lid",
+        "featureId": "lid_bevel",
+        "kind": "chamfer",
+        "parameters": {
+            "target": {"featureId": "lid"},
+            "edges": [
+                {
+                    "feature": "lid",
+                    "role": "lid_vertical",
+                    "cardinality": "exactly",
+                    "count": 4,
+                }
+            ],
+            "distance": {"value": 0.5, "unit": "mm"},
+        },
+    }
+
+    results = await run_server(
+        document,
+        [
+            ("import", import_request(FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", lid_request(revision=2, include_lip=False)),
+            ("feature", chamfer),
+            ("export", {"expectedRevision": 4, "path": str(step)}),
+        ],
+    )
+
+    assert results[3]["ok"] is True
+    assert results[4]["ok"] is True
 
 
 @pytest.mark.anyio
