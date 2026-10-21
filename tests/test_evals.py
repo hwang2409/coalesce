@@ -846,3 +846,55 @@ def test_runner_fake_harness(tmp_path, validated):
     assert rows[0]["overall"] is False
     assert (out / "scorecard.md").exists()
     assert len((out / "results.jsonl").read_text().splitlines()) == 1
+
+
+def _git_repo(path):
+    import subprocess
+
+    path.mkdir()
+    git = ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (path / ".gitignore").write_text(".venv/\n")
+    (path / "a.txt").write_text("a")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    head = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    return git, head.stdout.strip()
+
+
+def _zeta_config(project, directory):
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(json.dumps({
+        "servers": {"coalesce": {"command": "uv", "args": ["run", "--directory", str(directory), "coalesce"]}}
+    }))
+
+
+def test_preflight_reads_real_git_head_and_rejects_dirty_tree(tmp_path):
+    from evals.run import _preflight, claude_harness
+
+    repo = tmp_path / "repo"
+    _, head = _git_repo(repo)
+    (repo / ".venv").mkdir()
+    (repo / ".venv" / "ignored").write_text("ignored files do not count")
+    assert _preflight(claude_harness, repo)["coalesce_revision"] == head
+    (repo / "b.txt").write_text("uncommitted")
+    with pytest.raises(RuntimeError, match=r"is dirty \(b.txt\)"):
+        _preflight(claude_harness, repo)
+
+
+def test_preflight_compares_real_zeta_server_revision(tmp_path):
+    import subprocess
+
+    from evals.run import _preflight, zeta_harness
+
+    repo = tmp_path / "repo"
+    git, head = _git_repo(repo)
+    server = tmp_path / "server"
+    subprocess.run(["git", "clone", "-q", str(repo), str(server)], check=True)
+    project = tmp_path / "project"
+    _zeta_config(project, server)
+    assert _preflight(zeta_harness, repo, project)["coalesce_revision"] == head
+    (repo / "a.txt").write_text("changed")
+    subprocess.run([*git, "commit", "-qam", "next"], check=True)
+    with pytest.raises(RuntimeError, match="does not match revision under test"):
+        _preflight(zeta_harness, repo, project)
