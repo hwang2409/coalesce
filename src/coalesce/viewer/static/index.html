@@ -27,10 +27,15 @@
   <!-- measured on the as-built solids of this revision; a row focuses the part it is about -->
   <section class="inspection" id="inspection" aria-labelledby="inspection-title" hidden>
     <h2 id="inspection-title">Fit check <span class="unit" id="inspection-count"></span></h2>
+    <p class="fit-note" id="inspection-note" hidden>Measured only values have no threshold and do not pass the fit gate.</p>
     <ul id="inspection-rows"></ul>
     <details class="fit-evidence">
       <summary>Measured evidence</summary>
-      <pre id="inspection-evidence"></pre>
+      <ul id="inspection-evidence"></ul>
+      <details class="fit-raw">
+        <summary>Raw data with ids</summary>
+        <pre id="inspection-raw"></pre>
+      </details>
     </details>
   </section>
 
@@ -38,6 +43,8 @@
     <h2 id="parts-title">Parts <span class="unit">size in mm</span></h2>
     <ul id="parts"><li class="parts-empty">No parts yet</li></ul>
   </section>
+  <!-- the panel scrolls; this says so where its visible part ends, so a row cut there is not the last word -->
+  <p class="more" id="more" aria-hidden="true" hidden></p>
 </aside>
 
 <main class="stage" id="stage">
@@ -91,10 +98,12 @@
             <button type="button" data-axis="y" aria-pressed="true">Y</button>
             <button type="button" data-axis="z" aria-pressed="false">Z</button>
           </div>
-          <input type="range" id="section-range" aria-label="Section position" step="0.1">
-          <label class="section-value"><input type="number" id="section-value" aria-label="Section position in mm" step="0.1"><span aria-hidden="true">mm</span></label>
+          <input type="range" id="section-range" aria-label="Section position" aria-describedby="section-help" step="0.1">
+          <label class="section-value"><input type="number" id="section-value" aria-label="Section position in mm" aria-describedby="section-help" step="0.1"><span aria-hidden="true">mm</span></label>
+          <span class="visually-hidden" id="section-help">Escape returns to the Assembled view.</span>
         </div>
         <p class="review-hint" id="review-hint" role="status" hidden></p>
+        <p class="visually-hidden" id="review-announce" role="status"></p>
       </div>
     </div>
 

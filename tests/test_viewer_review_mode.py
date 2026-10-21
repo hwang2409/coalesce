@@ -6,6 +6,7 @@ Set VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 """
 
 import copy
+import math
 
 import pytest
 from build123d import Align, Box, Pos
@@ -168,13 +169,15 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
             focused = step(f"{name}-focused", do=[{"click": "Section"}, {"settle": True}, {"focus": control},
                                                   {"review": True}])
             assert review(focused, 3)["hint"] == "Esc returns to Assembled"
+            # a screen reader hears it with the control, not only from the visible hint
+            assert review(focused, 3)["described"] == "Escape returns to the Assembled view."
             escaped = step(f"{name}-escape", do=[{"key": "Escape"}, {"settle": True}, {"review": True},
                                                  {"diff": "assembled"}])
             state = review(escaped, 2)
             assert pressed(state) == ["Assembled"] and state["section"] is None and state["hint"] is None
             assert escaped["scene"]["cut"] == [False] * 3
             assert review(escaped, 3) == 0
-            assert escaped["description"].startswith("Section view closed, back to Assembled. "), escaped
+            assert state["announced"] == "Section view ended; Assembled view restored."
             assert escaped["focused"] == "Assembled"
 
         # a new revision keeps the chosen mode while it still applies
@@ -336,6 +339,78 @@ def test_section_draws_the_cut_material_on_the_plane(module, viewport, tmp_path)
         assert off == {"board": [], "floor": []}, off
         assert shown["scene"]["cut"] == [True, True]
         step("section-iso-r3", do=[{"click": "Iso"}, {"settle": True}])
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+# each section axis, and the camera that looks straight at its cut face from the removed side
+AXIS_VIEWS = {"X": "Right", "Y": "Front", "Z": "Top"}
+
+
+def plane_grid(axis, value, bbox):
+    """Points 1 mm apart on the section plane, across the model's box."""
+    i = "XYZ".index(axis)
+    u, v = (j for j in range(3) if j != i)
+    for a in range(math.floor(bbox["min"][u]), math.ceil(bbox["max"][u]) + 1):
+        for b in range(math.floor(bbox["min"][v]), math.ceil(bbox["max"][v]) + 1):
+            point = [0.0, 0.0, 0.0]
+            point[i], point[u], point[v] = value, a, b
+            yield tuple(point), u, v
+
+
+def deep_inside(shape, point, u, v, margin=0.3):
+    """Inside the solid, and so are the points ``margin`` away in the plane: clear of outline edges."""
+    def moved(axis, step):
+        p = list(point)
+        p[axis] += step
+        return tuple(p)
+
+    return all(shape.is_inside(p) for p in [point, *(moved(a, s) for a in (u, v) for s in (margin, -margin))])
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800)])
+def test_section_at_each_end_of_the_slider_draws_a_solid_cut_face(module, viewport, tmp_path):  # noqa: F811
+    """At the slider ends the plane stays inside the material: one flat cut colour, no stipple of a coplanar face."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        for tool, arguments in [
+            ("import", import_request(FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", standoffs_request()),
+        ]:
+            result = call(service, tool, arguments)
+            assert result.get("ok"), result
+        scene = wait_for(store, result["revision"])
+        base_cut = cut_color(next(part["color"] for part in scene["parts"] if part["label"] == "base"))
+        base, board = service._regen.shapes["mounts"], service._regen.shapes["controller_board"]
+        step("review", wait={"revision": result["revision"]}, do=[{"click": "Section"}, {"settle": True}])
+        off, inset = {}, {}
+        for axis, view in AXIS_VIEWS.items():
+            for end, typed in (("max", 999), ("min", -999)):
+                shown = step(f"section-{axis}-{end}", do=[
+                    {"click": axis}, {"fill": {"label": "Section position in mm", "value": typed}},
+                    {"click": view}, {"settle": True}, {"review": True}])
+                state = review(shown, 4)["section"]
+                value = state[end]
+                assert state["value"] == value
+                # one 0.1 mm step inside the model's extent, never on its outer face
+                extent = scene["bbox"][end]["XYZ".index(axis)]
+                inset[f"{axis} {end}"] = round(abs(value - extent), 2)
+                points = [p for p, u, v in plane_grid(axis, value, scene["bbox"])
+                          if deep_inside(base, p, u, v) and not board.is_inside(p)]
+                assert len(points) > 20, (axis, end, len(points))
+                sampled = step(f"section-{axis}-{end}-pixels", do=[{"pixels": points}])["actions"][0]
+                off[f"{axis} {end}"] = [(p, s["rgb"]) for p, s in zip(points, sampled, strict=True)
+                                        if distance(s["rgb"], base_cut) > 3]
+        assert all(not bad for bad in off.values()), {key: (len(bad), bad[:5]) for key, bad in off.items() if bad}
+        assert all(0.05 <= step_in <= 0.15 for step_in in inset.values()), inset
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

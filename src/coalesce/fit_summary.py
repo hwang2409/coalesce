@@ -46,12 +46,20 @@ def _measured(row_id: str, label: str, measured: dict[str, Any], value: str, par
     return _row(row_id, label, "MEASURED", value, part_id, measured, NO_REQUIREMENT)
 
 
-def _holes(board: BoardImport) -> dict[str, tuple[str | None, str]]:
-    """Mounting hole id -> (board reference or None, "x, y" position in mm)."""
+def _holes(board: BoardImport) -> dict[str, tuple[str | None, str, str]]:
+    """Mounting hole id -> (board reference or None, footprint name, "x, y" position in mm).
+
+    The footprint name stands in for a missing reference: "M2 mounting hole" for MountingHole:M2.
+    """
     from .enclosure_inspection import mounting_holes
 
+    library = {footprint["id"]: footprint["libraryId"] for footprint in board.mechanics.get("footprints", [])}
     return {
-        hole["id"]: (hole["reference"], ", ".join(_mm(c) for c in hole["position"]))
+        hole["id"]: (
+            hole["reference"],
+            f"{library[hole['footprintId']].removeprefix('MountingHole:')} mounting hole",
+            ", ".join(_mm(c) for c in hole["position"]),
+        )
         for hole in mounting_holes(board)
     }
 
@@ -95,8 +103,8 @@ def _standoff_row(inspection: dict[str, Any], board: BoardImport, revision: int)
                     measured, result["reason"])
     holes = _holes(board)
     missing = [
-        reference or f"unnamed hole at ({position}) mm"
-        for reference, position in (holes[hole_id] for hole_id in measured["uncoveredHoleIds"])
+        reference or f"{name} at ({position}) mm"
+        for reference, name, position in (holes[hole_id] for hole_id in measured["uncoveredHoleIds"])
     ]
     covered = len(measured["coveredHoleIds"])
     reason = f"no standoff at {', '.join(missing)}" if missing else None
@@ -206,7 +214,7 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, str], ...]:
     """What the committed features say about the part whose body ``source_feature`` made."""
     node = result.graph.nodes[source_feature]
     if isinstance(node, BoardImport):
-        holes = [f"{reference or 'unnamed'} at ({position})" for reference, position in _holes(node).values()]
+        holes = [f"{reference or name} at ({position})" for reference, name, position in _holes(node).values()]
         # the row's role line already says "Reference, not exported" on every width
         return (_fact("Mounting holes", f"{len(holes)}: {', '.join(holes)} mm" if holes else "none"),)
     if isinstance(node, PcbBase):

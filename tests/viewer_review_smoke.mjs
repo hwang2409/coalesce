@@ -190,6 +190,10 @@ async function act(action) {
           reason: b.title,
         })),
         hint: box(document.getElementById('review-hint')) && document.getElementById('review-hint').textContent,
+        announced: document.getElementById('review-announce')?.textContent ?? null,
+        // what a screen reader reads after the range's name
+        described: (range.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+          .map((id) => document.getElementById(id).textContent).join(' '),
         section: box(document.getElementById('section-controls')) && {
           axis: document.querySelector('[data-axis][aria-pressed="true"]')?.textContent,
           value: Number(document.getElementById('section-value').value),
@@ -242,7 +246,8 @@ async function act(action) {
     }, action.pixels);
   }
   if ('fitRow' in action) await press(page.locator('.fit-row').nth(action.fitRow));
-  if ('evidence' in action) await press(page.locator('.fit-evidence summary'));
+  if ('evidence' in action) await press(page.locator('.fit-evidence > summary'));
+  if ('rawEvidence' in action) await press(page.locator('.fit-raw summary'));
   // the fit check panel: its rows, the focused part's facts, and any text cut off or past the panel edge
   if ('fit' in action) {
     return page.evaluate(() => {
@@ -256,7 +261,24 @@ async function act(action) {
         rows: [...document.querySelectorAll('.fit-row')].map((row) => ({
           status: row.querySelector('.fit-status').textContent,
           text: row.innerText.replace(/\s+/g, ' ').trim(),
+          pressed: row.getAttribute('aria-pressed'),
+          // the badge ends before the label starts
+          gap: row.querySelector('.fit-label').getBoundingClientRect().left - row.querySelector('.fit-status').getBoundingClientRect().right,
         })),
+        // the heading's title on one line
+        titleLines: (() => {
+          const range = document.createRange();
+          range.selectNodeContents(document.getElementById('inspection-title').firstChild);
+          return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+        })(),
+        count: document.getElementById('inspection-count').textContent,
+        note: document.getElementById('inspection-note')?.checkVisibility() ? document.getElementById('inspection-note').textContent : null,
+        parts: (() => {
+          const title = document.getElementById('parts-title').getBoundingClientRect();
+          const panelBox = document.querySelector('.panel').getBoundingClientRect();
+          return { top: title.top, panelBottom: panelBox.bottom };
+        })(),
+        more: document.getElementById('more')?.checkVisibility() ? document.getElementById('more').textContent : null,
         focusedPart: part?.querySelector('.part-name').textContent ?? null,
         openPart: open?.querySelector('.part-name').textContent ?? null,
         facts: open ? [...open.querySelectorAll('.fact')].filter(shown).map((fact) => [...fact.children].map((c) => c.textContent)) : [],
@@ -265,7 +287,9 @@ async function act(action) {
           return clipped || el.getBoundingClientRect().right > edge + 0.5;
         }).map((el) => `${el.tagName.toLowerCase()}.${el.className}: ${el.textContent.slice(0, 40)}`),
         evidenceOpen: Boolean(document.querySelector('.fit-evidence')?.open),
-        evidence: document.querySelector('.fit-evidence pre')?.textContent ?? '',
+        evidence: [...document.querySelectorAll('#inspection-evidence li')].filter(shown).map((li) => li.textContent),
+        rawOpen: Boolean(document.querySelector('.fit-raw')?.open),
+        raw: document.querySelector('.fit-evidence pre')?.checkVisibility() ? document.querySelector('.fit-evidence pre').textContent : null,
       };
     });
   }

@@ -155,7 +155,8 @@ button {
 /* one measurement: the status, then what was measured, its value and why it is not a pass */
 .fit-row {
   display: grid;
-  grid-template-columns: 64px 1fr;
+  /* wide enough for UNKNOWN on one line; MEASURED ONLY takes two */
+  grid-template-columns: 76px 1fr;
   column-gap: 8px;
   width: 100%;
   min-height: 44px;
@@ -169,6 +170,10 @@ button {
 }
 
 button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
+
+/* the row whose part the canvas shows */
+button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-shadow: inset 3px 0 0 var(--focus); }
+.fit-showing { grid-column: 2; margin-top: 2px; color: var(--focus); font-size: 12px; font-weight: 500; }
 
 @media (hover: hover) {
   button.fit-row:hover { background: rgba(29, 35, 41, 0.05); }
@@ -189,6 +194,10 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 .fit-row[data-status="PASS"] .fit-status { color: var(--live); background: #edf6f0; }
 .fit-row[data-status="FAIL"] .fit-status { color: var(--fail); background: var(--fail-wash); }
 .fit-row[data-status="UNKNOWN"] .fit-status { color: var(--wait); background: #fbf3e4; }
+.fit-row[data-status="MEASURED"] .fit-status { box-shadow: inset 0 0 0 1px var(--rule); }
+
+.fit-note { padding: 0 8px 4px; color: var(--mute); font-size: 12px; text-wrap: pretty; }
+.fit-note[hidden] { display: none; }
 
 .fit-label { grid-column: 2; font-weight: 500; overflow-wrap: anywhere; }
 .fit-value, .fit-reason { grid-column: 2; color: var(--mute); font-size: 12px; overflow-wrap: anywhere; }
@@ -198,6 +207,12 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 
 .fit-evidence { margin: 4px 8px 0; color: var(--mute); font-size: 12px; }
 .fit-evidence summary { min-height: 32px; padding: 6px 0; cursor: pointer; }
+
+.fit-evidence ul { display: grid; gap: 2px; padding: 0 0 4px; color: var(--ink); overflow-wrap: anywhere; }
+.fit-evidence .fit-base { padding: 4px 0 0; }
+
+/* the raw record, for a developer: ids and the payload behind each row */
+.fit-raw summary { min-height: 28px; padding: 4px 0; color: var(--mute); font-size: 11px; }
 
 .fit-evidence pre {
   max-height: 240px;
@@ -215,12 +230,42 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 :is(.parts, .inspection) h2 {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
+  white-space: nowrap; /* the title never wraps; the count beside it may */
   padding: 0 8px 8px;
   font-size: 12px;
   font-weight: 600;
 }
 
-.unit { color: var(--mute); font-weight: 400; }
+.unit { color: var(--mute); font-weight: 400; white-space: normal; text-align: right; }
+
+/* sticks to the panel's bottom edge as a solid bar over the row cut there, with a short fade above it;
+   it takes no room of its own */
+.more {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  height: 32px;
+  margin-top: -32px;
+  padding: 7px 16px 0;
+  background: var(--panel);
+  box-shadow: 0 -1px 0 var(--rule);
+  color: var(--mute);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.more::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 1px);
+  height: 20px;
+  background: linear-gradient(to bottom, rgba(246, 247, 248, 0), var(--panel));
+}
+
+.more[hidden] { display: none; }
 
 .parts ul { list-style: none; padding: 0; }
 
