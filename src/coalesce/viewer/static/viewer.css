@@ -152,12 +152,16 @@ button {
 
 .inspection ul { list-style: none; padding: 0; }
 
+/* every row shares one badge column, never narrower than the widest badge word in the page's font:
+   UNKNOWN stays on one line, MEASURED ONLY wraps to two, and every label starts at the same x */
+#inspection-rows { display: grid; grid-template-columns: fit-content(76px) 1fr; column-gap: 8px; }
+#inspection-rows > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+
 /* one measurement: the status, then what was measured, its value and why it is not a pass */
 .fit-row {
   display: grid;
-  /* wide enough for UNKNOWN on one line; MEASURED ONLY takes two */
-  grid-template-columns: 76px 1fr;
-  column-gap: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   width: 100%;
   min-height: 44px;
   padding: 8px;
@@ -204,6 +208,7 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
 .fit-row[data-status="FAIL"] .fit-reason { color: var(--fail); }
 
 .fit-base { padding: 8px 8px 0; color: var(--mute); font-size: 12px; }
+#inspection-rows > .fit-base { display: block; }
 
 .fit-evidence { margin: 4px 8px 0; color: var(--mute); font-size: 12px; }
 .fit-evidence summary { min-height: 32px; padding: 6px 0; cursor: pointer; }

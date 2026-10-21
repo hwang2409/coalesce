@@ -198,6 +198,7 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         # the heading's title keeps one line, and no badge runs into its label
         assert fit["titleLines"] == 1
         assert min(row["gap"] for row in fit["rows"]) >= 4, fit["rows"]
+        assert len({row["labelLeft"] for row in fit["rows"]}) == 1, fit["rows"]  # one label column
         assert fit["overflow"] == [], fit["overflow"]
         assert fit["evidenceOpen"] is False
         if viewport[0] < 720:

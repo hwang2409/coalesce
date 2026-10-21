@@ -264,6 +264,7 @@ async function act(action) {
           pressed: row.getAttribute('aria-pressed'),
           // the badge ends before the label starts
           gap: row.querySelector('.fit-label').getBoundingClientRect().left - row.querySelector('.fit-status').getBoundingClientRect().right,
+          labelLeft: row.querySelector('.fit-label').getBoundingClientRect().left,
         })),
         // the heading's title on one line
         titleLines: (() => {
