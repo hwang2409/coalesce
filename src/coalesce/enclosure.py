@@ -547,18 +547,6 @@ def _opening_bounds(
             hint="raise bottomOffset or reduce clearance",
             **limit_details,
         )
-    if rim_heights and top > min(rim_heights) + 1e-7:
-        raise GraphError(
-            "INVALID_PARAMETER",
-            f"port_cutout {node.id} clearance reaches above the base rim",
-            feature=node.id,
-            parameter="clearance",
-            measuredTop=top,
-            rimTop=min(rim_heights),
-            unit="mm",
-            hint="lower bottomOffset or reduce clearance",
-            **limit_details,
-        )
     if tangent_min < straight_min - 1e-7 or tangent_max > straight_max + 1e-7:
         raise GraphError(
             "INVALID_PARAMETER",
