@@ -266,35 +266,40 @@ def _same_solid(first, second):
     )
 
 
-def _document_parts(context):
-    expected = context.document_parts
-    matches = {}
-    unmapped = []
-    ambiguous = []
+def _step_solid_candidates(context, expected):
+    output = []
     for path, shape in zip(context.step_paths, context.step_shapes, strict=True):
         for index, solid in enumerate(shape.solids()):
-            solid_id = f"{path}#{index}"
-            candidates = [
-                part_id
-                for part_id, reference in expected.items()
-                if _same_solid(_solid_metrics(solid), reference)
-            ]
-            if len(candidates) == 1:
-                matches[solid_id] = candidates[0]
-            elif candidates:
-                ambiguous.append({"solid": solid_id, "partIds": candidates})
-            else:
-                unmapped.append(solid_id)
+            metrics = _solid_metrics(solid)
+            output.append((
+                f"{path}#{index}",
+                [
+                    part_id
+                    for part_id, reference in expected.items()
+                    if _same_solid(metrics, reference)
+                ],
+            ))
+    return output
+
+
+def _document_parts(context):
+    expected = context.document_parts
+    candidates = _step_solid_candidates(context, expected)
+    matches = {solid: parts[0] for solid, parts in candidates if len(parts) == 1}
+    unmapped = [solid for solid, parts in candidates if not parts]
+    ambiguous = [
+        {"solid": solid, "partIds": parts} for solid, parts in candidates if len(parts) > 1
+    ]
     counts = {
         part_id: sum(matched == part_id for matched in matches.values())
         for part_id in expected
     }
     unmatched = [part_id for part_id, count in counts.items() if count == 0]
     duplicates = [part_id for part_id, count in counts.items() if count > 1]
-    passed = not unmapped and not ambiguous and not unmatched and not duplicates
+    failures = unmapped or ambiguous or unmatched or duplicates
     return {
         "kind": "document_parts",
-        "status": "pass" if passed else "fail",
+        "status": "fail" if failures else "pass",
         "matches": matches,
         "unmappedSteps": unmapped,
         "ambiguousSteps": ambiguous,
