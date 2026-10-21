@@ -783,6 +783,8 @@ function showFailure() {
   $('failure-repair').textContent = repair(failure.error);
   $('failure-code').textContent = failure.error.code;
   $('failure-message').textContent = failure.error.message;
+  $('failure-kernel').hidden = !failure.error.kernelMessage;
+  $('failure-kernel').textContent = failure.error.kernelMessage ? `Kernel: ${failure.error.kernelMessage}` : '';
 }
 
 // loads run one at a time, then catch up to the newest announced revision,

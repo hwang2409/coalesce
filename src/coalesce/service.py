@@ -1239,6 +1239,11 @@ def _graph_error_response(
     )
 
 
+def _viewer_error(error: dict[str, Any]) -> dict[str, str]:
+    """The fields the viewer shows; kernelMessage goes only under "Error details"."""
+    return {key: error[key] for key in ("code", "message", "hint", "kernelMessage") if key in error}
+
+
 def _reference(payload: dict[str, Any]) -> Reference:
     source = payload.get("source")
     if isinstance(source, dict) and source.get("kind") == "sketch_segment":
@@ -1902,11 +1907,9 @@ def _named(word: str, node_id: str) -> str:
     return word if set(node_id.split("_")) <= set(word.split()) else f"{word} {node_id}"
 
 
-def _added(node: Any, result: RegenResult) -> str:
-    if isinstance(node, BoardImport):
-        return f"imported board {Path(node.source_path).name}"
+def _enclosure_added(node: Any, result: RegenResult) -> str | None:
+    """What an enclosure feature made, in the numbers an engineer checks; None for other kinds."""
     summary = f"added {_named(_kind(node), node.id)}"
-    # enclosure features: what was made, in the numbers an engineer checks
     if isinstance(node, PcbBase):
         return (
             f"{summary} for {node.board}: {_mm(node.wall_thickness)} mm walls, "
@@ -1925,6 +1928,15 @@ def _added(node: Any, result: RegenResult) -> str:
         width, height = (_mm(port["opening"][side]["value"]) for side in ("width", "height"))
         connector = port.get("reference") or port["footprintId"]
         return f"{summary} for {connector}: {width} \u00d7 {height} mm on {port['wall']} wall"
+    return None
+
+
+def _added(node: Any, result: RegenResult) -> str:
+    if isinstance(node, BoardImport):
+        return f"imported board {Path(node.source_path).name}"
+    if enclosure := _enclosure_added(node, result):
+        return enclosure
+    summary = f"added {_named(_kind(node), node.id)}"
     target = getattr(node, "target", None)
     if target:
         summary += f" on {target}"
@@ -2103,7 +2115,7 @@ class DocumentService:
         ]
         self._publisher.publish_failure(
             feature_ids,
-            {key: details[key] for key in ("code", "message", "hint") if key in details},
+            _viewer_error(details),
         )
 
     def _ensure_geometry(self) -> None:
@@ -2169,7 +2181,7 @@ class DocumentService:
         error = result["error"]
         self._publisher.publish_failure(
             [feature_id] if isinstance(feature_id, str) else [],
-            {k: error[k] for k in ("code", "message", "hint") if k in error},
+            _viewer_error(error),
         )
 
     def _mutate(

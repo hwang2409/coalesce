@@ -789,8 +789,12 @@ async def test_oversized_fillet_says_reduce_the_radius_in_mcp_and_viewer(tmp_pat
     assert result["error"]["hint"] == "reduce the fillet radius and retry, or find the largest radius that works"
     assert result["error"]["feature"] == "round" and result["error"]["radius"] == 4
     assert failure["error"]["hint"] == result["error"]["hint"]
-    for text in (json.dumps(result), json.dumps(failure)):
-        assert "max_fillet" not in text and "BRep" not in text and "build123d" not in text
+    # visible guidance is in coalesce terms; the kernel's own words stay in the structured details
+    for error in (result["error"], failure["error"]):
+        visible = json.dumps({key: error[key] for key in ("code", "message", "hint")})
+        assert "max_fillet" not in visible and "BRep" not in visible and "build123d" not in visible
+        assert "ChFiDS_StartsolFailure" in error["kernelMessage"]
+    assert failure["error"]["kernelMessage"] == result["error"]["kernelMessage"]
 
 
 def test_scene_parts_are_named_by_the_body_that_owns_each_solid(tmp_path):

@@ -268,14 +268,20 @@ def test_viewer_frames_fails_and_ends_honestly(module, viewport):
         assert first["coverage"] > 0.02 and first["dark"] > 0.0003, first
         assert on_screen(first) and scale_matches_grid(first), first
         assert first["description"].startswith("Revision 2, iso view, fitted to the model. plate_extrude")
-        store.publish_failure(["plate_extrude"], {"code": "UNIT_MISMATCH", "message": "expected mm; received inch"})
+        store.publish_failure(
+            ["plate_extrude"],
+            {"code": "UNIT_MISMATCH", "message": "expected mm; received inch", "kernelMessage": "BRep_API: command not done"},
+        )
 
         failed = step("failure")
         # the last good model stays drawn, at about the same size
         assert failed["coverage"] > first["coverage"] * 0.8 and failed["dark"] > 0.0003, failed
         assert failed["repair"].startswith("A value has the wrong unit (expected mm; received inch)")
         assert failed["codeVisible"] is False  # the stable code waits under "Error details"
-        assert step("failure-details")["codeVisible"] is True
+        assert failed["kernelVisible"] is False and "BRep" not in failed["repair"]
+        details = step("failure-details")
+        assert details["codeVisible"] is True and details["kernelVisible"] is True
+        assert details["kernel"] == "Kernel: BRep_API: command not done"
         store.publish(3, [ScenePart("plate_extrude", plate(10)), ScenePart(LONG, bar(2000))])
 
         large = step("large")
