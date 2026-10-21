@@ -320,7 +320,7 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         # restart: a new viewer server has a new key; the old tab ends and offers one action
         server.close()
         restarted = ViewerServer(store)
-        ended = step("ended", outage=True, wait={"text": "Viewer ended"})
+        ended = step("ended", outage=True, wait={"status": "is the last one this page saw"})
         assert "coalesce viewer: http://127.0.0.1:<port>/#token=<key>" in ended["status"]
         copied = step("ended-copied", outage=True, do=[{"click": "Copy request for your agent", "until": "Copied. Paste it to your agent"}])
         assert copied["clipboard"].startswith("The coalesce viewer I had open has ended.")
@@ -366,14 +366,15 @@ def test_status_never_moves_or_resizes_the_model(module, viewport):
         failed = step("status-failed", wait={"failure": "KERNEL_OPERATION_FAILED"})
         assert "max_fillet" not in failed["status"] and "reduce the fillet radius" in failed["status"]
         server.close()
-        lost = step("status-reconnecting", outage=True, wait={"text": "Reconnecting"}, do=[{"settle": True}])
+        # wait for the status itself: the link label says "Reconnecting" a moment before the status merges
+        lost = step("status-reconnecting", outage=True, wait={"status": "may be out of date"}, do=[{"settle": True}])
         # one calm status, not two stacked messages
         assert lost["repair"] is None
         assert lost["status"] == (
             "Revision 1 may be out of date. Reconnecting to coalesce. The last edit, edge_fillet, failed."
         )
         restarted = ViewerServer(store, port=server.port)  # a new key on the same port: the page ends
-        ended = step("status-ended", outage=True, wait={"text": "Viewer ended"}, do=[{"settle": True}])
+        ended = step("status-ended", outage=True, wait={"status": "is the last one this page saw"}, do=[{"settle": True}])
         assert "The last edit, edge_fillet, failed." in ended["status"] and ended["repair"] is None
         for state in (failed, lost, ended):
             assert state["view"] == good["view"], state["status"]
