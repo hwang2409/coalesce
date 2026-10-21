@@ -76,9 +76,12 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, **_):
         }
     }, indent=2))
     (run_dir / "steps").mkdir(exist_ok=True)
+    fixture_paths = sorted((run_dir / "fixtures").glob("*"))
+    fixture_text = ", ".join(str(path) for path in fixture_paths) or "none"
     instruction = (
         prompt
-        + f"\nUse the coalesce MCP document at {run_dir / 'model.coalesce.json'}"
+        + f"\nThe task fixtures are at these exact paths: {fixture_text}."
+        + f" Use the coalesce MCP document at {run_dir / 'model.coalesce.json'}"
         + f" and export every STEP file directly under {run_dir / 'steps'};"
         + " do not write artifacts elsewhere."
     )

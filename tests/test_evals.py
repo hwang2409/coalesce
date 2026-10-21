@@ -215,7 +215,12 @@ def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
         return type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})()
 
     monkeypatch.setattr(evals.run.subprocess, "run", fake_run)
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    fixture = fixtures / "features.kicad_pcb"
+    fixture.write_text("fixture")
     claude_harness("prompt", tmp_path, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+    assert str(fixture) in seen["command"][2]
     assert seen["command"][seen["command"].index("--tools") + 1] == ""
     assert seen["command"][seen["command"].index("--setting-sources") + 1] == ""
     assert "--strict-mcp-config" in seen["command"]
