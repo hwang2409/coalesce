@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
-from .enclosure_inspection import inspect_enclosure
 from .export import ExportFailure, export_parts
 from .graph import (
     BoardImport,
@@ -2693,6 +2692,8 @@ class DocumentService:
             enclosure_requirements = [item for item in requirements if item.get("kind") != "valid_brep"]
             if enclosure_requirements:
                 try:
+                    from .enclosure_inspection import inspect_enclosure
+
                     base_id = payload.get("base", "base")
                     inspection = inspect_enclosure(self._document.graph, self._regen, base_id)
                     evaluated = evaluate_requirements(enclosure_requirements, inspection, self._document.revision)
