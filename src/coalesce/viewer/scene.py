@@ -43,6 +43,11 @@ _MIN_DISTANCE = 0.03
 _CANDIDATE_LIGHTNESS = (0.70, 0.62, 0.78)
 _CANDIDATES = 360
 _SPLIT_STEP = 0.07
+_SPLIT_LIGHTNESS = (0.45, 0.95)
+# (hue turn in radians, added chroma) for each family of shades, the body's own hue and chroma first
+_SPLIT_VARIANTS = ((0, 0), (math.radians(45), 0.02), (math.radians(-45), 0.02), (0, 0.05))
+# shortcut: split shades keep apart from the first 12 body colors only; check more once models have more bodies.
+_SPLIT_GUARD = 12
 
 
 @dataclass(frozen=True)
@@ -162,23 +167,47 @@ def _manufactured_colors(count: int) -> tuple[str, ...]:
     Greedy in order, so the first n colors never change as count grows.
     """
     colors = list(PALETTE[:count])
-    taken = [_oklab(c) for c in (REFERENCE_COLOR, *colors)]
-    candidates = [(c, _oklab(c)) for c in map(_candidate, range(_CANDIDATES))]
-    while len(colors) < count:
+    return (*colors, *_pick(map(_candidate, range(_CANDIDATES)), [REFERENCE_COLOR, *colors], count - len(colors)))
+
+
+def _pick(candidates: Iterable[str], taken: Sequence[str], count: int) -> list[str]:
+    """``count`` candidates in order, each the first at least ``_MIN_DISTANCE`` from ``taken`` and earlier picks."""
+    candidates = [(c, _oklab(c)) for c in candidates]
+    taken = [_oklab(c) for c in taken]
+    picked = []
+    while len(picked) < count:
         gaps = [min(math.dist(lab, t) for t in taken) for _, lab in candidates]
         # the first candidate far enough; once the space is full, the farthest one
         pick = next((i for i, gap in enumerate(gaps) if gap >= _MIN_DISTANCE), gaps.index(max(gaps)))
         color, lab = candidates[pick]
-        colors.append(color)
+        picked.append(color)
         taken.append(lab)
-    return tuple(colors)
+    return picked
 
 
-def _shade(color: str, rank: int) -> str:
-    """Piece ``rank`` of a split body: the body's color, lighter or darker in steps, hue kept."""
-    step = (rank + 1) // 2 * (_SPLIT_STEP if rank % 2 else -_SPLIT_STEP)
+@functools.cache
+def _shades(color: str, count: int) -> tuple[str, ...]:
+    """The pieces of a split body: its color, then shades apart from the first body colors and each other.
+
+    Lighter or darker in steps inside the sRGB gamut; once lightness runs out, the same steps with the hue
+    turned. Greedy, so a piece's shade never changes as the count grows.
+    """
     lightness, a, b = _oklab(color)
-    return _hex((lightness + step, a, b))
+    chroma, hue = math.hypot(a, b), math.atan2(b, a)
+    candidates = []
+    for turn, more in _SPLIT_VARIANTS:
+        if turn and 90 < math.degrees(hue + turn) % 360 < 220:  # never turn toward green or teal, the board's hues
+            continue
+        ab = (chroma + more) * math.cos(hue + turn), (chroma + more) * math.sin(hue + turn)
+        for step in range(1, 8):
+            for sign in (1, -1):
+                lab = (lightness + sign * step * _SPLIT_STEP, *ab)
+                shade = _hex(lab)
+                # out of gamut clips toward white or black, where many shades would end up the same
+                if _SPLIT_LIGHTNESS[0] <= lab[0] <= _SPLIT_LIGHTNESS[1] and math.dist(_oklab(shade), lab) < 0.005:
+                    candidates.append(shade)
+    guard = [REFERENCE_COLOR, *_manufactured_colors(_SPLIT_GUARD), color]
+    return (color, *_pick(candidates, guard, count - 1))
 
 
 def _part_colors(parts: Sequence[ScenePart]) -> list[str]:
@@ -198,8 +227,8 @@ def _part_colors(parts: Sequence[ScenePart]) -> list[str]:
             colors.append(part.color or REFERENCE_COLOR)
             continue
         body = part.source_body or part.name
-        pieces, color = sorted(bodies[body]), base[body]
-        colors.append(color if len(pieces) == 1 else _shade(color, pieces.index(part.name)))
+        pieces = sorted(bodies[body])
+        colors.append(_shades(base[body], len(pieces))[pieces.index(part.name)])
     return colors
 
 
