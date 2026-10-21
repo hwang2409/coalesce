@@ -18,8 +18,10 @@ def _step_metrics(paths):
             cylinders = []
             for face in shape.faces():
                 if face.geom_type is GeomType.CYLINDER:
-                    center = face.center()
-                    cylinders.append([center.X, center.Y, face.radius])
+                    # A cylindrical face's center is on its surface, not its axis.
+                    face_box = face.bounding_box()
+                    cylinders.append([(face_box.min.X + face_box.max.X) / 2,
+                                      (face_box.min.Y + face_box.max.Y) / 2, face.radius])
             data.append({"path": str(path), "valid": bool(solids), "solid_count": len(solids),
                          "bbox": [box.max.X-box.min.X, box.max.Y-box.min.Y, box.max.Z-box.min.Z],
                          "volume": shape.volume, "cylinders": cylinders})
@@ -30,7 +32,7 @@ def _step_metrics(paths):
 
 def check_task(task: dict, document: Path, steps: Path) -> list[dict]:
     output = []
-    step_paths = sorted(steps.glob("*.step")) if steps.exists() else []
+    step_paths = sorted(steps.rglob("*.step")) if steps.exists() else []
     metrics = None
     for check in task["checks"]:
         kind = check["kind"]
