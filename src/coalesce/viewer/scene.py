@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import colorsys
 import copy
+import functools
 import hashlib
 import itertools
+import math
 import re
 import sys
 import threading
@@ -30,6 +31,18 @@ _LMS_TO_LAB = (
     (1.9779984951, -2.4285922050, 0.4505937099),
     (0.0259040371, 0.7827717662, -0.8086757660),
 )
+_LAB_TO_LMS = ((1, 0.3963377774, 0.2158037573), (1, -0.1055613458, -0.0638541728), (1, -0.0894841775, -1.2914855480))
+_LMS_TO_RGB = (
+    (4.0767416621, -3.3077115913, 0.2309699292),
+    (-1.2684380046, 2.6097574011, -0.3413193965),
+    (-0.0041960863, -0.7034186147, 1.7076147010),
+)
+# generated colors keep at least this OKLab distance (about three just-noticeable differences) from every
+# earlier color and the reference; the fixed palette's closest pair is 0.031.
+_MIN_DISTANCE = 0.03
+_CANDIDATE_LIGHTNESS = (0.70, 0.62, 0.78)
+_CANDIDATES = 360
+_SPLIT_STEP = 0.07
 
 
 @dataclass(frozen=True)
@@ -128,24 +141,66 @@ def _oklab(color: str) -> tuple[float, float, float]:
     return tuple(sum(k * c for k, c in zip(row, lms, strict=True)) for row in _LMS_TO_LAB)
 
 
-def _manufactured_color(index: int) -> str:
-    if index < len(PALETTE):
-        return PALETTE[index]
-    # past the palette: muted hues a golden-ratio step apart in 170..420 degrees, so never green
-    hue = (170 + (index * 0.6180339887) % 1 * 250) % 360 / 360
-    return "#" + "".join(f"{round(c * 255):02x}" for c in colorsys.hls_to_rgb(hue, 0.62, 0.2))
+def _hex(lab: Sequence[float]) -> str:
+    lms = [sum(k * c for k, c in zip(row, lab, strict=True)) ** 3 for row in _LAB_TO_LMS]
+    rgb = (sum(k * c for k, c in zip(row, lms, strict=True)) for row in _LMS_TO_RGB)
+    rgb = (min(max(c, 0), 1) for c in rgb)
+    rgb = (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055 for c in rgb)
+    return "#" + "".join(f"{round(c * 255):02x}" for c in rgb)
+
+
+def _candidate(index: int) -> str:
+    """Muted OKLab hues a golden-ratio step apart in 220..450 degrees (never green or teal), three lightnesses."""
+    hue = math.radians(220 + (index * 0.6180339887) % 1 * 230)
+    return _hex((_CANDIDATE_LIGHTNESS[index % 3], 0.05 * math.cos(hue), 0.05 * math.sin(hue)))
+
+
+@functools.cache
+def _manufactured_colors(count: int) -> tuple[str, ...]:
+    """The palette, then each next color the first candidate at least ``_MIN_DISTANCE`` from every earlier one.
+
+    Greedy in order, so the first n colors never change as count grows.
+    """
+    colors = list(PALETTE[:count])
+    taken = [_oklab(c) for c in (REFERENCE_COLOR, *colors)]
+    candidates = [(c, _oklab(c)) for c in map(_candidate, range(_CANDIDATES))]
+    while len(colors) < count:
+        gaps = [min(math.dist(lab, t) for t in taken) for _, lab in candidates]
+        # the first candidate far enough; once the space is full, the farthest one
+        pick = next((i for i, gap in enumerate(gaps) if gap >= _MIN_DISTANCE), gaps.index(max(gaps)))
+        color, lab = candidates[pick]
+        colors.append(color)
+        taken.append(lab)
+    return tuple(colors)
+
+
+def _shade(color: str, rank: int) -> str:
+    """Piece ``rank`` of a split body: the body's color, lighter or darker in steps, hue kept."""
+    step = (rank + 1) // 2 * (_SPLIT_STEP if rank % 2 else -_SPLIT_STEP)
+    lightness, a, b = _oklab(color)
+    return _hex((lightness + step, a, b))
 
 
 def _part_colors(parts: Sequence[ScenePart]) -> list[str]:
-    """Given color, reference green, or the next manufactured color.
+    """Given color, reference green, or the color of the part's source body.
 
-    Callers list parts in body creation order, so a part keeps its color while later features change.
+    A body's color comes from its place in body creation order (callers list parts that way), so later
+    features and splits of other bodies never move it. Pieces of a split body are shades of its color.
     """
-    made = itertools.count()
-    return [
-        part.color or (REFERENCE_COLOR if part.role == "reference" else _manufactured_color(next(made)))
-        for part in parts
-    ]
+    bodies: dict[object, list[str]] = {}
+    for part in parts:
+        if part.color is None and part.role != "reference":
+            bodies.setdefault(part.source_body or part.name, []).append(part.name)
+    base = dict(zip(bodies, _manufactured_colors(len(bodies)), strict=True))
+    colors = []
+    for part in parts:
+        if part.color or part.role == "reference":
+            colors.append(part.color or REFERENCE_COLOR)
+            continue
+        body = part.source_body or part.name
+        pieces, color = sorted(bodies[body]), base[body]
+        colors.append(color if len(pieces) == 1 else _shade(color, pieces.index(part.name)))
+    return colors
 
 
 def _build_scene(
