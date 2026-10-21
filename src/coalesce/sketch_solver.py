@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from math import isfinite, tau
+from numbers import Real
 from typing import Any, Literal
 
 
@@ -32,77 +33,129 @@ class ConstraintKind(StrEnum):
 EntityType = Literal["point", "line", "arc", "circle"]
 
 
+OperandTransform = Callable[[tuple[Any, ...], Any, Any], tuple[Any, ...]]
+
+
+def _identity_operands(operands: tuple[Any, ...], _item: Any, _request: Any) -> tuple[Any, ...]:
+    return operands
+
+
+def _append_zero_angle(operands: tuple[Any, ...], _item: Any, _request: Any) -> tuple[Any, ...]:
+    return (*operands, 0.0)
+
+
+def _reverse_operands(operands: tuple[Any, ...], _item: Any, _request: Any) -> tuple[Any, ...]:
+    return tuple(reversed(operands))
+
+
+def _fixed_point_operands(operands: tuple[Any, ...], item: Any, request: Any) -> tuple[Any, ...]:
+    point = next(point for point in request.points if point.id == item.entities[0])
+    initial = request.initial.get(point.id, (point.x, point.y))
+    return (*operands, *initial)
+
+
 @dataclass(frozen=True)
 class OperandSignature:
-    """Ordered operand types and roles, plus the dimension value unit if present."""
+    """Ordered operand contract and its PlaneGCS adapter operation."""
 
     operands: tuple[EntityType, ...]
     roles: tuple[str, ...]
+    operation: str
     value_unit: str | None = None
+    transform: OperandTransform = _identity_operands
 
 
 OPERAND_SIGNATURES: Mapping[DimensionKind | ConstraintKind, tuple[OperandSignature, ...]] = {
     DimensionKind.DISTANCE: (
-        OperandSignature(("point", "point"), ("first point", "second point"), "length"),
-        OperandSignature(("point", "line"), ("point", "line"), "length"),
+        OperandSignature(
+            ("point", "point"), ("first point", "second point"), "set_p2p_distance", "length"
+        ),
+        OperandSignature(("point", "line"), ("point", "line"), "set_p2l_distance", "length"),
     ),
     DimensionKind.RADIUS: (
-        OperandSignature(("arc",), ("circular curve",), "length"),
-        OperandSignature(("circle",), ("circular curve",), "length"),
+        OperandSignature(("arc",), ("circular curve",), "set_arc_radius", "length"),
+        OperandSignature(("circle",), ("circular curve",), "set_circle_radius", "length"),
     ),
     DimensionKind.DIAMETER: (
-        OperandSignature(("arc",), ("circular curve",), "length"),
-        OperandSignature(("circle",), ("circular curve",), "length"),
+        OperandSignature(("arc",), ("circular curve",), "set_arc_diameter", "length"),
+        OperandSignature(("circle",), ("circular curve",), "set_circle_diameter", "length"),
     ),
     DimensionKind.ANGLE: (
         OperandSignature(
-            ("line", "line"), ("first directed line", "second directed line"), "radians"
+            ("line", "line"),
+            ("first directed line", "second directed line"),
+            "set_l2l_angle",
+            "radians",
         ),
     ),
     ConstraintKind.COINCIDENT: (
-        OperandSignature(("point", "point"), ("first point", "second point")),
+        OperandSignature(("point", "point"), ("first point", "second point"), "coincident"),
     ),
-    ConstraintKind.HORIZONTAL: (OperandSignature(("line",), ("line",)),),
-    ConstraintKind.VERTICAL: (OperandSignature(("line",), ("line",)),),
+    ConstraintKind.HORIZONTAL: (OperandSignature(("line",), ("line",), "horizontal"),),
+    ConstraintKind.VERTICAL: (OperandSignature(("line",), ("line",), "vertical"),),
     ConstraintKind.HORIZONTAL_POINTS: (
-        OperandSignature(("point", "point"), ("first point", "second point")),
+        OperandSignature(("point", "point"), ("first point", "second point"), "horizontal_points"),
     ),
     ConstraintKind.VERTICAL_POINTS: (
-        OperandSignature(("point", "point"), ("first point", "second point")),
+        OperandSignature(("point", "point"), ("first point", "second point"), "vertical_points"),
     ),
-    ConstraintKind.PARALLEL: (OperandSignature(("line", "line"), ("first line", "second line")),),
+    ConstraintKind.PARALLEL: (
+        OperandSignature(("line", "line"), ("first line", "second line"), "parallel"),
+    ),
     ConstraintKind.PERPENDICULAR: (
-        OperandSignature(("line", "line"), ("first line", "second line")),
+        OperandSignature(("line", "line"), ("first line", "second line"), "perpendicular"),
     ),
     ConstraintKind.TANGENT: (
-        OperandSignature(("line", "arc"), ("line", "arc")),
-        OperandSignature(("line", "circle"), ("line", "circle")),
-        OperandSignature(("arc", "arc"), ("first arc", "second arc")),
-        OperandSignature(("circle", "arc"), ("circle", "arc")),
-        OperandSignature(("circle", "circle"), ("first circle", "second circle")),
-        OperandSignature(("line", "arc", "point"), ("line", "arc", "shared tangent endpoint")),
+        OperandSignature(("line", "arc"), ("line", "arc"), "tangent_line_arc"),
+        OperandSignature(("line", "circle"), ("line", "circle"), "tangent_line_circle"),
+        OperandSignature(("arc", "arc"), ("first arc", "second arc"), "tangent_arc_arc"),
+        OperandSignature(("circle", "arc"), ("circle", "arc"), "tangent_circle_arc"),
+        OperandSignature(
+            ("circle", "circle"),
+            ("first circle", "second circle"),
+            "tangent_circle_circle",
+        ),
+        OperandSignature(
+            ("line", "arc", "point"),
+            ("line", "arc", "shared tangent endpoint"),
+            "set_angle_via_point",
+            transform=_append_zero_angle,
+        ),
     ),
     ConstraintKind.EQUAL: (
-        OperandSignature(("line", "line"), ("first line", "second line")),
-        OperandSignature(("arc", "arc"), ("first arc", "second arc")),
-        OperandSignature(("circle", "circle"), ("first circle", "second circle")),
-        OperandSignature(("circle", "arc"), ("circle", "arc")),
-        OperandSignature(("arc", "circle"), ("arc", "circle")),
+        OperandSignature(("line", "line"), ("first line", "second line"), "equal_length"),
+        OperandSignature(("arc", "arc"), ("first arc", "second arc"), "equal_radius_aa"),
+        OperandSignature(
+            ("circle", "circle"), ("first circle", "second circle"), "equal_radius_cc"
+        ),
+        OperandSignature(("circle", "arc"), ("circle", "arc"), "equal_radius_ca"),
+        OperandSignature(
+            ("arc", "circle"),
+            ("arc", "circle"),
+            "equal_radius_ca",
+            transform=_reverse_operands,
+        ),
     ),
     ConstraintKind.SYMMETRIC: (
         OperandSignature(
-            ("point", "point", "point"), ("first point", "second point", "center point")
+            ("point", "point", "point"),
+            ("first point", "second point", "center point"),
+            "symmetric_point",
         ),
         OperandSignature(
-            ("point", "point", "line"), ("first point", "second point", "center line")
+            ("point", "point", "line"),
+            ("first point", "second point", "center line"),
+            "symmetric_line",
         ),
     ),
     ConstraintKind.POINT_ON: (
-        OperandSignature(("point", "line"), ("point", "line")),
-        OperandSignature(("point", "arc"), ("point", "arc")),
-        OperandSignature(("point", "circle"), ("point", "circle")),
+        OperandSignature(("point", "line"), ("point", "line"), "point_on_line"),
+        OperandSignature(("point", "arc"), ("point", "arc"), "point_on_arc"),
+        OperandSignature(("point", "circle"), ("point", "circle"), "point_on_circle"),
     ),
-    ConstraintKind.FIX: (OperandSignature(("point",), ("point",)),),
+    ConstraintKind.FIX: (
+        OperandSignature(("point",), ("point",), "fix_point", transform=_fixed_point_operands),
+    ),
 }
 
 
@@ -256,7 +309,10 @@ class SolveResult:
 
 def solve_sketch(request: SolveRequest) -> SolveResult:
     """Solve one sketch without exposing PlaneGCS handles or mutating the request."""
-    validation_error = _validate(request)
+    try:
+        validation_error = _validate(request)
+    except (TypeError, ValueError) as exc:
+        validation_error = SketchSolveError("INVALID_INPUT", str(exc), recoverable=True)
     if validation_error:
         return _error_result(SolveStatus.INVALID_INPUT, validation_error)
 
@@ -287,9 +343,7 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
                 point_handles[line.start], point_handles[line.end]
             )
         for arc in sorted(request.arcs, key=lambda item: item.id):
-            initial = request.initial.get(
-                arc.id, (arc.radius, arc.start_angle, arc.end_angle)
-            )
+            initial = request.initial.get(arc.id, (arc.radius, arc.start_angle, arc.end_angle))
             arc_handles[arc.id] = sketch.add_arc_cse(
                 point_handles[arc.center],
                 point_handles[arc.start],
@@ -373,6 +427,10 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
 
 
 def _validate(request: SolveRequest) -> SketchSolveError | None:
+    error = _validate_structure(request)
+    if error:
+        return error
+
     error = _validate_ids(request)
     if error:
         return error
@@ -416,6 +474,128 @@ def _validate(request: SolveRequest) -> SketchSolveError | None:
     if error:
         return error
     return _validate_landmarks(request)
+
+
+def _validate_structure(request: SolveRequest) -> SketchSolveError | None:
+    if not isinstance(request, SolveRequest):
+        return SketchSolveError("INVALID_REQUEST", "request must be a SolveRequest")
+    for validator in (
+        _validate_containers,
+        _validate_references,
+        _validate_operand_fields,
+        _validate_numeric_fields,
+    ):
+        error = validator(request)
+        if error:
+            return error
+    return None
+
+
+def _validate_containers(request: SolveRequest) -> SketchSolveError | None:
+    collections = (
+        ("points", request.points, Point),
+        ("lines", request.lines, Line),
+        ("arcs", request.arcs, Arc),
+        ("circles", request.circles, Circle),
+        ("dimensions", request.dimensions, Dimension),
+        ("constraints", request.constraints, Constraint),
+        ("landmarks", request.landmarks, BranchLandmark),
+    )
+    for name, items, expected_type in collections:
+        if not _is_sequence(items) or not all(isinstance(item, expected_type) for item in items):
+            return SketchSolveError(
+                "INVALID_CONTAINER", f"{name} must be a sequence of {expected_type.__name__} values"
+            )
+    if not isinstance(request.initial, Mapping):
+        return SketchSolveError("INVALID_INITIAL", "initial must be a mapping")
+    return None
+
+
+def _validate_references(request: SolveRequest) -> SketchSolveError | None:
+    entities = (*request.points, *request.lines, *request.arcs, *request.circles)
+    identified = (*entities, *request.dimensions, *request.constraints, *request.landmarks)
+    if any(not isinstance(item.id, str) or not item.id for item in identified):
+        return SketchSolveError("INVALID_ID", "all sketch ids must be non-empty strings")
+
+    referenced = (
+        *((line.id, (line.start, line.end)) for line in request.lines),
+        *((arc.id, (arc.center, arc.start, arc.end)) for arc in request.arcs),
+        *((circle.id, (circle.center,)) for circle in request.circles),
+        *(
+            (landmark.id, (landmark.base_start, landmark.base_end, landmark.point))
+            for landmark in request.landmarks
+        ),
+    )
+    for entity_id, references in referenced:
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            return _entity_error(
+                "INVALID_REFERENCE", entity_id, "references must be non-empty strings"
+            )
+    return None
+
+
+def _validate_operand_fields(request: SolveRequest) -> SketchSolveError | None:
+    for item in (*request.dimensions, *request.constraints):
+        expected_kind = DimensionKind if isinstance(item, Dimension) else ConstraintKind
+        if not isinstance(item.kind, expected_kind):
+            return SketchSolveError(
+                "INVALID_KIND",
+                f"constraint {item.id!r} has an invalid kind",
+                constraint_ids=(item.id,),
+            )
+        if not _is_sequence(item.entities) or not all(
+            isinstance(entity_id, str) and entity_id for entity_id in item.entities
+        ):
+            return SketchSolveError(
+                "INVALID_OPERANDS",
+                f"constraint {item.id!r} operands must be a sequence of non-empty strings",
+                constraint_ids=(item.id,),
+            )
+
+    for landmark in request.landmarks:
+        if not _is_sequence(landmark.constraint_ids) or not all(
+            isinstance(constraint_id, str) and constraint_id
+            for constraint_id in landmark.constraint_ids
+        ):
+            return _entity_error(
+                "INVALID_LANDMARK", landmark.id, "constraint ids must be non-empty strings"
+            )
+    return None
+
+
+def _validate_numeric_fields(request: SolveRequest) -> SketchSolveError | None:
+    entity_values = (
+        *((point.id, (point.x, point.y)) for point in request.points),
+        *((arc.id, (arc.radius, arc.start_angle, arc.end_angle)) for arc in request.arcs),
+        *((circle.id, (circle.radius,)) for circle in request.circles),
+    )
+    for entity_id, values in entity_values:
+        if not _finite(values):
+            return _entity_error(
+                "NON_FINITE_VALUE", entity_id, "numbers must be finite real numbers"
+            )
+    for dimension in request.dimensions:
+        if not _finite((dimension.value,)):
+            return SketchSolveError(
+                "NON_FINITE_VALUE",
+                f"dimension {dimension.id!r} must have a finite real value",
+                constraint_ids=(dimension.id,),
+            )
+
+    for entity_id, values in request.initial.items():
+        if not isinstance(entity_id, str) or not entity_id:
+            return SketchSolveError("INVALID_INITIAL", "initial ids must be non-empty strings")
+        if not _is_sequence(values) or not _finite(values):
+            return SketchSolveError(
+                "INVALID_INITIAL",
+                f"initial value {entity_id!r} must be a sequence of finite real numbers",
+                entity_ids=(entity_id,),
+            )
+    return None
+
+
+def _is_sequence(value: object) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes)
 
 
 def _validate_ids(request: SolveRequest) -> SketchSolveError | None:
@@ -471,40 +651,71 @@ def _validate_initial_values(
 
 def _validate_geometry(request: SolveRequest) -> SketchSolveError | None:
     points = {point.id: point for point in request.points}
-    for point in request.points:
-        if not _finite((point.x, point.y)):
-            return _entity_error("NON_FINITE_VALUE", point.id, "point coordinates must be finite")
-
-    for line in request.lines:
-        if line.start not in points or line.end not in points:
-            return _entity_error("UNKNOWN_POINT", line.id, "line references an unknown point")
-        start = request.initial.get(line.start, (points[line.start].x, points[line.start].y))
-        end = request.initial.get(line.end, (points[line.end].x, points[line.end].y))
-        if line.start == line.end or start == end:
-            return _entity_error("DEGENERATE_LINE", line.id, "line endpoints must be distinct")
-
-    for arc in request.arcs:
-        if not {arc.center, arc.start, arc.end} <= points.keys():
-            return _entity_error("UNKNOWN_POINT", arc.id, "arc references an unknown point")
-        initial = request.initial.get(arc.id, (arc.radius, arc.start_angle, arc.end_angle))
-        if not _valid_arc_values(initial):
-            return _entity_error(
-                "INVALID_ARC",
-                arc.id,
-                "arc radius must be positive and its CCW sweep must be between 0 and 2π",
-            )
-
-    for circle in request.circles:
-        if circle.center not in points:
-            return _entity_error("UNKNOWN_POINT", circle.id, "circle references an unknown point")
-        radius = request.initial.get(circle.id, (circle.radius,))[0]
-        if not _finite((radius,)) or radius <= 0:
-            return _entity_error("INVALID_RADIUS", circle.id, "circle radius must be positive")
+    validators = (
+        (_validate_point, request.points),
+        (_validate_line, request.lines),
+        (_validate_arc, request.arcs),
+        (_validate_circle, request.circles),
+    )
+    for validator, entities in validators:
+        for entity in entities:
+            error = validator(entity, points, request.initial)
+            if error:
+                return error
     return None
 
 
-def _finite(values: tuple[float, ...]) -> bool:
-    return all(isinstance(value, int | float) and isfinite(value) for value in values)
+def _validate_point(
+    point: Point, _points: Mapping[str, Point], _initial: Mapping[str, Sequence[Real]]
+) -> SketchSolveError | None:
+    if not _finite((point.x, point.y)):
+        return _entity_error("NON_FINITE_VALUE", point.id, "point coordinates must be finite")
+    return None
+
+
+def _validate_line(
+    line: Line, points: Mapping[str, Point], initial: Mapping[str, Sequence[Real]]
+) -> SketchSolveError | None:
+    if line.start not in points or line.end not in points:
+        return _entity_error("UNKNOWN_POINT", line.id, "line references an unknown point")
+    start = initial.get(line.start, (points[line.start].x, points[line.start].y))
+    end = initial.get(line.end, (points[line.end].x, points[line.end].y))
+    if line.start == line.end or start == end:
+        return _entity_error("DEGENERATE_LINE", line.id, "line endpoints must be distinct")
+    return None
+
+
+def _validate_arc(
+    arc: Arc, points: Mapping[str, Point], initial: Mapping[str, Sequence[Real]]
+) -> SketchSolveError | None:
+    if not {arc.center, arc.start, arc.end} <= points.keys():
+        return _entity_error("UNKNOWN_POINT", arc.id, "arc references an unknown point")
+    values = initial.get(arc.id, (arc.radius, arc.start_angle, arc.end_angle))
+    if not _valid_arc_values(values):
+        return _entity_error(
+            "INVALID_ARC",
+            arc.id,
+            "arc radius must be positive and its CCW sweep must be between 0 and 2π",
+        )
+    return None
+
+
+def _validate_circle(
+    circle: Circle, points: Mapping[str, Point], initial: Mapping[str, Sequence[Real]]
+) -> SketchSolveError | None:
+    if circle.center not in points:
+        return _entity_error("UNKNOWN_POINT", circle.id, "circle references an unknown point")
+    radius = initial.get(circle.id, (circle.radius,))[0]
+    if radius <= 0:
+        return _entity_error("INVALID_RADIUS", circle.id, "circle radius must be positive")
+    return None
+
+
+def _finite(values: Sequence[object]) -> bool:
+    return all(
+        isinstance(value, Real) and not isinstance(value, bool) and isfinite(value)
+        for value in values
+    )
 
 
 def _valid_arc_values(values: tuple[float, ...]) -> bool:
@@ -579,45 +790,12 @@ def _validate_landmarks(request: SolveRequest) -> SketchSolveError | None:
     return None
 
 
-_DIMENSION_OPERATIONS = {
-    (DimensionKind.DISTANCE, ("point", "point")): "set_p2p_distance",
-    (DimensionKind.DISTANCE, ("point", "line")): "set_p2l_distance",
-    (DimensionKind.RADIUS, ("arc",)): "set_arc_radius",
-    (DimensionKind.RADIUS, ("circle",)): "set_circle_radius",
-    (DimensionKind.DIAMETER, ("arc",)): "set_arc_diameter",
-    (DimensionKind.DIAMETER, ("circle",)): "set_circle_diameter",
-    (DimensionKind.ANGLE, ("line", "line")): "set_l2l_angle",
-}
-
-_CONSTRAINT_OPERATIONS = {
-    (ConstraintKind.COINCIDENT, ("point", "point")): "coincident",
-    (ConstraintKind.HORIZONTAL, ("line",)): "horizontal",
-    (ConstraintKind.VERTICAL, ("line",)): "vertical",
-    (ConstraintKind.HORIZONTAL_POINTS, ("point", "point")): "horizontal_points",
-    (ConstraintKind.VERTICAL_POINTS, ("point", "point")): "vertical_points",
-    (ConstraintKind.PARALLEL, ("line", "line")): "parallel",
-    (ConstraintKind.PERPENDICULAR, ("line", "line")): "perpendicular",
-    (ConstraintKind.TANGENT, ("line", "arc")): "tangent_line_arc",
-    (ConstraintKind.TANGENT, ("line", "circle")): "tangent_line_circle",
-    (ConstraintKind.TANGENT, ("arc", "arc")): "tangent_arc_arc",
-    (ConstraintKind.TANGENT, ("circle", "arc")): "tangent_circle_arc",
-    (ConstraintKind.TANGENT, ("circle", "circle")): "tangent_circle_circle",
-    (ConstraintKind.EQUAL, ("line", "line")): "equal_length",
-    (ConstraintKind.EQUAL, ("arc", "arc")): "equal_radius_aa",
-    (ConstraintKind.EQUAL, ("circle", "circle")): "equal_radius_cc",
-    (ConstraintKind.EQUAL, ("circle", "arc")): "equal_radius_ca",
-    (ConstraintKind.SYMMETRIC, ("point", "point", "point")): "symmetric_point",
-    (ConstraintKind.SYMMETRIC, ("point", "point", "line")): "symmetric_line",
-    (ConstraintKind.POINT_ON, ("point", "line")): "point_on_line",
-    (ConstraintKind.POINT_ON, ("point", "arc")): "point_on_arc",
-    (ConstraintKind.POINT_ON, ("point", "circle")): "point_on_circle",
-}
-
-
 def _add_dimension(sketch: Any, dimension: Dimension, handles: tuple[dict[str, Any], ...]) -> Any:
     signature, operands = _dispatch_operands(dimension, handles)
-    method = _DIMENSION_OPERATIONS[(dimension.kind, signature.operands)]
-    return getattr(sketch, method)(*operands, dimension.value, driving=dimension.driving)
+    operands = signature.transform(operands, dimension, None)
+    return getattr(sketch, signature.operation)(
+        *operands, dimension.value, driving=dimension.driving
+    )
 
 
 def _add_constraint(
@@ -627,16 +805,8 @@ def _add_constraint(
     request: SolveRequest,
 ) -> Any:
     signature, operands = _dispatch_operands(constraint, handles)
-    if constraint.kind is ConstraintKind.FIX:
-        point = next(point for point in request.points if point.id == constraint.entities[0])
-        initial = request.initial.get(point.id, (point.x, point.y))
-        return sketch.fix_point(*operands, *initial, driving=constraint.driving)
-    if signature.operands == ("line", "arc", "point"):
-        return sketch.set_angle_via_point(*operands, 0.0, driving=constraint.driving)
-    if (constraint.kind, signature.operands) == (ConstraintKind.EQUAL, ("arc", "circle")):
-        operands = (operands[1], operands[0])
-    method = _CONSTRAINT_OPERATIONS[(constraint.kind, signature.operands)]
-    return getattr(sketch, method)(*operands, driving=constraint.driving)
+    operands = signature.transform(operands, constraint, request)
+    return getattr(sketch, signature.operation)(*operands, driving=constraint.driving)
 
 
 def _dispatch_operands(
@@ -731,9 +901,7 @@ def _evaluate_landmarks(
         point = entities[landmark.point]
         assert isinstance(a, SolvedPoint) and isinstance(b, SolvedPoint)
         assert isinstance(point, SolvedPoint)
-        values[landmark.id] = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (
-            point.x - a.x
-        )
+        values[landmark.id] = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)
     return values
 
 

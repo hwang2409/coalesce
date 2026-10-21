@@ -4,8 +4,11 @@ import ast
 import builtins
 import math
 import os
+import random
+import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -19,6 +22,7 @@ else:
     pytest.importorskip("planegcs")
 
 from coalesce.sketch_solver import (
+    OPERAND_SIGNATURES,
     Arc,
     BranchLandmark,
     Circle,
@@ -32,6 +36,7 @@ from coalesce.sketch_solver import (
     SolvedCircle,
     SolvedPoint,
     SolveRequest,
+    SolveResult,
     SolveStatus,
     solve_sketch,
 )
@@ -55,7 +60,9 @@ def rectangle_request(*, fixed_corner: bool) -> SolveRequest:
     points = tuple(Point(point_id, x, y) for point_id, x, y in raw)
     lines = tuple(Line(f"line{i}", f"p{2 * i}", f"p{2 * i + 1}") for i in range(4))
     constraints = [
-        Constraint(f"join{i}", ConstraintKind.COINCIDENT, (f"p{2 * i + 1}", f"p{(2 * (i + 1)) % 8}"))
+        Constraint(
+            f"join{i}", ConstraintKind.COINCIDENT, (f"p{2 * i + 1}", f"p{(2 * (i + 1)) % 8}")
+        )
         for i in range(4)
     ]
     constraints.extend(
@@ -201,9 +208,7 @@ def test_arc_and_circle_radius_and_tangent_constraints_solve():
                 fixed("origin", "fix-origin"),
                 Constraint("base-horizontal", ConstraintKind.HORIZONTAL, ("base",)),
                 Constraint("equal-sides", ConstraintKind.EQUAL, ("side", "base")),
-                Constraint(
-                    "side-tangent", ConstraintKind.TANGENT, ("side", "corner", "tangent")
-                ),
+                Constraint("side-tangent", ConstraintKind.TANGENT, ("side", "corner", "tangent")),
             ),
         )
     )
@@ -314,6 +319,19 @@ def test_solved_profile_extrudes_to_valid_build123d_solid():
             "coincident",
         ),
         (SolveRequest(points=(Point("p", 0, 0),), initial={"p": (1,)}), "p"),
+        (SolveRequest(points=(Point("p", 0, 0),), initial={"p": None}), "p"),
+        (
+            SolveRequest(constraints=(Constraint("bad-entities", ConstraintKind.FIX, None),)),
+            "bad-entities",
+        ),
+        (SolveRequest(lines=(Line("bad-reference", [], "p"),)), "bad-reference"),
+        (
+            SolveRequest(
+                points=(Point("p", 0, 0),),
+                arcs=(Arc("bad-angle", "p", "p", "p", 1, "zero", 1),),
+            ),
+            "bad-angle",
+        ),
         (
             SolveRequest(
                 points=(Point("c", 0, 0), Point("s", 1, 0), Point("e", 0, 1)),
@@ -438,6 +456,89 @@ def test_tangent_endpoint_must_be_shared_by_the_line_and_arc():
     assert result.errors[0].constraint_ids == ("tangent",)
 
 
+def test_invalid_input_fuzz_never_raises_raw_exceptions():
+    rng = random.Random(0xC0A1E5CE)
+    bad_ids = (None, True, 1, float("nan"), [], {})
+    bad_numbers = (None, True, "1", float("nan"), float("inf"), [], {})
+    bad_sequences = (None, True, 1, {})
+    requests = []
+    for _ in range(300):
+        case = rng.randrange(12)
+        if case == 0:
+            request = SolveRequest(points=None)
+        elif case == 1:
+            request = SolveRequest(points=(Point(rng.choice(bad_ids), 0, 0),))
+        elif case == 2:
+            request = SolveRequest(points=(Point("p", rng.choice(bad_numbers), 0),))
+        elif case == 3:
+            request = SolveRequest(lines=(Line("line", rng.choice(bad_ids), "p"),))
+        elif case == 4:
+            request = SolveRequest(
+                points=(Point("p", 0, 0),),
+                arcs=(Arc("arc", "p", "p", "p", 1, rng.choice(bad_numbers), 1),),
+            )
+        elif case == 5:
+            request = SolveRequest(circles=(Circle("circle", rng.choice(bad_ids), 1),))
+        elif case == 6:
+            request = SolveRequest(
+                points=(Point("p", 0, 0),),
+                dimensions=(
+                    Dimension("dimension", DimensionKind.DISTANCE, rng.choice(bad_sequences), 1),
+                ),
+            )
+        elif case == 7:
+            request = SolveRequest(
+                constraints=(
+                    Constraint("constraint", ConstraintKind.FIX, rng.choice(bad_sequences)),
+                )
+            )
+        elif case == 8:
+            request = SolveRequest(
+                points=(Point("p", 0, 0),),
+                initial={"p": rng.choice(bad_sequences)},
+            )
+        elif case == 9:
+            request = SolveRequest(initial=rng.choice((None, True, 1, [])))
+        elif case == 10:
+            request = SolveRequest(
+                landmarks=(BranchLandmark("landmark", rng.choice(bad_ids), "b", "p", 1),)
+            )
+        else:
+            request = SolveRequest(
+                points=(Point("p", 0, 0),),
+                constraints=(Constraint("constraint", rng.choice(bad_sequences), ("p",)),),
+            )
+        requests.append(request)
+
+    results = [solve_sketch(request) for request in requests]
+
+    assert all(isinstance(result, SolveResult) for result in results)
+    assert all(result.status is SolveStatus.INVALID_INPUT for result in results)
+    assert all(result.errors and result.errors[0].code for result in results)
+
+
+def test_documented_operand_table_matches_machine_readable_signatures():
+    docs = (Path(__file__).parents[1] / "docs" / "sketch.md").read_text()
+    documented: defaultdict[str, set[tuple[str, ...]]] = defaultdict(set)
+    for line in docs.splitlines():
+        if not line.startswith("| `") or "ordered operands" in line:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        kind_match = re.fullmatch(r"`([^`]+)`(?: with an endpoint)?", cells[0])
+        if kind_match is None:
+            continue
+        for operands in re.findall(r"\(([^()]*)\)", cells[1]):
+            parsed = tuple(operand.strip() for operand in operands.split(","))
+            if set(parsed) <= {"point", "line", "arc", "circle"}:
+                documented[kind_match.group(1)].add(parsed)
+
+    implemented = {
+        kind.value: {signature.operands for signature in signatures}
+        for kind, signatures in OPERAND_SIGNATURES.items()
+    }
+    assert dict(documented) == implemented
+
+
 def test_only_solver_seam_may_import_planegcs():
     source_root = Path(__file__).parents[1] / "src" / "coalesce"
     offenders = []
@@ -446,7 +547,9 @@ def test_only_solver_seam_may_import_planegcs():
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import) and any(alias.name == "planegcs" for alias in node.names):
+            if isinstance(node, ast.Import) and any(
+                alias.name == "planegcs" for alias in node.names
+            ):
                 offenders.append(path)
             if isinstance(node, ast.ImportFrom) and node.module == "planegcs":
                 offenders.append(path)
