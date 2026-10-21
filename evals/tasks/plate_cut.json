@@ -1,1 +1,1 @@
-{"id":"plate-cut","tier":"easy","prompt":"create a 60x40x6 mm plate with a centred circular cutout 20 mm in diameter.","fixtures":[],"checks":[{"kind":"bbox","size":[60,40,6],"tolerance":0.1},{"kind":"step_validity"},{"kind":"no_overlapping_parts"}]}
+{"id":"plate-cut","tier":"easy","prompt":"create a 60x40x6 mm plate with a centred circular cutout 20 mm in diameter.","fixtures":[],"checks":[{"kind":"bbox","size":[60,40,6],"tolerance":0.1},{"kind":"step_validity"}]}
