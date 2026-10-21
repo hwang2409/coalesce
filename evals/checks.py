@@ -20,7 +20,13 @@ class ArtifactContext:
     def __init__(self, document: Path, steps: Path, before_state: Path | None = None):
         self.document = document
         self.before_state = before_state
-        self.step_paths = sorted(steps.glob("*.step")) if steps.is_dir() else []
+        artifacts = sorted(steps.iterdir()) if steps.is_dir() else []
+        self.step_paths = [
+            path
+            for path in artifacts
+            if path.is_file() and path.suffix.lower() in {".step", ".stp"}
+        ]
+        self.unexpected_artifacts = [path.name for path in artifacts if path not in self.step_paths]
         self._step_metrics = None
         self._step_shapes = None
         self._service = None
@@ -166,14 +172,11 @@ def _intersection_volume(first, second):
     return sum(solid.volume for shape in shapes for solid in shape.solids())
 
 
-def _is_through_hole(cylinder, shape, z_min, z_max, diameter_range):
+def _is_through_hole(cylinder, shape, z_min, z_max):
     from build123d import Align, Cylinder, Pos
 
     axis = cylinder["axis"]
-    diameter = cylinder["radius"] * 2
     if abs(abs(axis["direction"][2]) - 1) > 1e-6:
-        return False
-    if not diameter_range[0] <= diameter <= diameter_range[1]:
         return False
     x, y = axis["position"][:2]
     probe = Pos(x, y, z_min) * Cylinder(
@@ -184,15 +187,18 @@ def _is_through_hole(cylinder, shape, z_min, z_max, diameter_range):
     return _intersection_volume(shape, probe) <= 1e-7
 
 
-def _metric_hole_points(metric, shape, diameter_range):
+def _metric_holes(metric, shape):
     if "bbox" not in metric:
         return []
     z_min, z_max = metric["bbox"]["min"][2], metric["bbox"]["max"][2]
     cylinders = [cylinder for part in metric["parts"] for cylinder in part["cylinders"]]
     return [
-        tuple(cylinder["axis"]["position"][:2])
+        {
+            "position": list(cylinder["axis"]["position"][:2]),
+            "diameter": cylinder["radius"] * 2,
+        }
         for cylinder in cylinders
-        if _is_through_hole(cylinder, shape, z_min, z_max, diameter_range)
+        if _is_through_hole(cylinder, shape, z_min, z_max)
     ]
 
 
@@ -203,17 +209,18 @@ def _hole_positions(check, context):
             "fail",
             reason=f"hole evidence requires exactly one STEP file, found {len(context.step_paths)}",
         )
-    points = _metric_hole_points(
-        context.step_metrics[0], context.step_shapes[0], check["diameter"]
-    )
-    unmatched = list(points)
+    holes = _metric_holes(context.step_metrics[0], context.step_shapes[0])
+    unmatched = list(holes)
     unmatched_expected = []
     tolerance = check.get("tolerance", 0.1)
     for expected_x, expected_y in check["positions"]:
         candidates = [
             (index, math.hypot(x - expected_x, y - expected_y))
-            for index, (x, y) in enumerate(unmatched)
-            if abs(x - expected_x) <= tolerance and abs(y - expected_y) <= tolerance
+            for index, hole in enumerate(unmatched)
+            for x, y in [hole["position"]]
+            if check["diameter"][0] <= hole["diameter"] <= check["diameter"][1]
+            and abs(x - expected_x) <= tolerance
+            and abs(y - expected_y) <= tolerance
         ]
         if not candidates:
             unmatched_expected.append([expected_x, expected_y])
@@ -223,8 +230,8 @@ def _hole_positions(check, context):
     return _result(
         check,
         "pass" if not unmatched and not unmatched_expected else "fail",
-        actual=[list(point) for point in points],
-        unmatchedDetected=[list(point) for point in unmatched],
+        actual=holes,
+        unmatchedDetected=unmatched,
         unmatchedExpected=unmatched_expected,
     )
 
@@ -255,6 +262,7 @@ def _single_solid_metrics(path):
 
 
 def _same_solid(first, second):
+    # shortcut: properties can match a different solid; use topology or shape distance when needed.
     return all(
         math.isclose(left, right, rel_tol=1e-7, abs_tol=1e-6)
         for field in ("volume", "bbox", "centerOfMass")
@@ -447,6 +455,12 @@ def check_task(
 ) -> list[dict]:
     context = ArtifactContext(document, steps, before_state)
     output = []
+    if context.unexpected_artifacts:
+        output.append({
+            "kind": "artifacts",
+            "status": "fail",
+            "unexpected": context.unexpected_artifacts,
+        })
     if "parts" in task:
         output.append(_parts_result(task["parts"], context))
     if task.get("documentParts"):

@@ -169,8 +169,65 @@ def test_plate_with_fifth_qualifying_hole_fails(tmp_path):
     )
     holes = next(result for result in results if result["kind"] == "hole_positions")
     assert holes["status"] == "fail"
-    assert holes["unmatchedDetected"] == [[30.0, 20.0]]
+    assert holes["unmatchedDetected"] == [
+        {"position": [30.0, 20.0], "diameter": pytest.approx(3.4)}
+    ]
     assert holes["unmatchedExpected"] == []
+
+
+def test_plate_with_fifth_out_of_range_hole_fails(tmp_path):
+    from build123d import Align, Cylinder, Pos, export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    plate = _plate_with_holes()
+    plate -= Pos(30, 20, 0) * Cylinder(
+        1.5, 6, align=(Align.CENTER, Align.CENTER, Align.MIN)
+    )
+    export_step(plate, steps / "plate.step")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    holes = next(result for result in results if result["kind"] == "hole_positions")
+    assert holes["status"] == "fail"
+    assert holes["unmatchedDetected"] == [
+        {"position": [30.0, 20.0], "diameter": pytest.approx(3.0)}
+    ]
+    assert holes["unmatchedExpected"] == []
+
+
+@pytest.mark.parametrize("suffix", [".stp", ".STEP"])
+def test_extra_step_suffix_fails(tmp_path, suffix):
+    from build123d import Box, export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(_plate_with_holes(), steps / "plate.step")
+    export_step(Box(1, 1, 1), steps / f"unexpected{suffix}")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    parts = next(result for result in results if result["kind"] == "parts")
+    assert parts["status"] == "fail"
+    assert parts["reason"] == "expected exactly 1 STEP file(s), found 2"
+
+
+def test_non_step_file_in_steps_fails(tmp_path):
+    from build123d import export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(_plate_with_holes(), steps / "plate.step")
+    (steps / "notes.txt").write_text("not geometry")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    inventory = next(result for result in results if result["kind"] == "artifacts")
+    assert inventory == {
+        "kind": "artifacts",
+        "status": "fail",
+        "unexpected": ["notes.txt"],
+    }
 
 
 def test_blocked_expected_port_fails(tmp_path, monkeypatch):
