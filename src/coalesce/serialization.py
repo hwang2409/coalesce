@@ -4,6 +4,7 @@ from typing import Any
 
 from .graph import (
     BoardImport,
+    Chamfer,
     Circle,
     Cut,
     Extrude,
@@ -45,6 +46,7 @@ _TYPES = {
         Cut,
         Hole,
         Fillet,
+        Chamfer,
     )
 }
 _FILTERS = {cls.__name__: cls for cls in (Normal, Position, MaxAlong)}
@@ -117,7 +119,7 @@ def _node_payload(node: Any) -> dict[str, Any]:
             payload.pop("position")
         else:
             payload.pop("positions")
-    elif isinstance(node, Fillet):
+    elif isinstance(node, (Fillet, Chamfer)):
         payload["edges"] = [reference.to_dict() for reference in node.edges]
     return {"type": node.__class__.__name__, **payload}
 
@@ -158,7 +160,7 @@ def loads(value: str) -> Graph:
                 HolePosition(item["name"], tuple(item["point"]))
                 for item in payload.get("positions", [])
             )
-        elif cls is Fillet:
+        elif cls in (Fillet, Chamfer):
             payload["edges"] = [_reference(item) for item in payload.get("edges", [])]
         graph.add(cls(**payload))
     return graph

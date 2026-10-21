@@ -158,6 +158,13 @@ class Fillet(Feature):
     radius: float = 1
 
 
+@dataclass
+class Chamfer(Feature):
+    target: str = ""
+    edges: list[Reference] = field(default_factory=list)
+    distance: float = 1
+
+
 class GraphError(ValueError):
     def __init__(self, code: str, message: str, **details: Any):
         self.error = {"code": code, "message": message, **details}
@@ -288,7 +295,7 @@ class Graph:
 
     @staticmethod
     def _body_target(node: Any) -> str | None:
-        if isinstance(node, (Cut, Hole, Fillet)):
+        if isinstance(node, (Cut, Hole, Fillet, Chamfer)):
             return node.target
         if isinstance(node, Extrude) and node.operation == "join":
             return node.target

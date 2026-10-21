@@ -311,6 +311,22 @@ HOLE_POSITION = {
     "required": ["point"],
     "additionalProperties": False,
 }
+EDGE_TREATMENT_PROPERTIES = {
+    "target": FEATURE_TARGET,
+    "edges": {"type": "array", "items": REFERENCE, "minItems": 1},
+}
+FILLET_PARAMETERS = {
+    "type": "object",
+    "properties": {**EDGE_TREATMENT_PROPERTIES, "radius": POSITIVE_QUANTITY},
+    "required": ["target", "edges", "radius"],
+    "additionalProperties": False,
+}
+CHAMFER_PARAMETERS = {
+    "type": "object",
+    "properties": {**EDGE_TREATMENT_PROPERTIES, "distance": POSITIVE_QUANTITY},
+    "required": ["target", "edges", "distance"],
+    "additionalProperties": False,
+}
 HOLE_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -441,6 +457,8 @@ FEATURE_PARAMETERS = {
         EXTRUDE_PARAMETERS,
         CUT_PARAMETERS,
         HOLE_PARAMETERS,
+        FILLET_PARAMETERS,
+        CHAMFER_PARAMETERS,
         PCB_BASE_PARAMETERS,
         STANDOFFS_PARAMETERS,
         PCB_LID_PARAMETERS,
@@ -455,6 +473,8 @@ FEATURE_PROPERTIES = {
             "extrude",
             "cut",
             "hole",
+            "fillet",
+            "chamfer",
             "pcb_base",
             "standoffs",
             "pcb_lid",
@@ -474,7 +494,19 @@ FEATURE_CREATE_SCHEMA = {
 }
 EXTRUDE_UPDATE_SET = {
     "type": "object",
-    "properties": {"distance": QUANTITY},
+    "properties": {"distance": POSITIVE_QUANTITY},
+    "required": ["distance"],
+    "additionalProperties": False,
+}
+FILLET_UPDATE_SET = {
+    "type": "object",
+    "properties": {"radius": POSITIVE_QUANTITY},
+    "required": ["radius"],
+    "additionalProperties": False,
+}
+CHAMFER_UPDATE_SET = {
+    "type": "object",
+    "properties": {"distance": POSITIVE_QUANTITY},
     "required": ["distance"],
     "additionalProperties": False,
 }
@@ -554,6 +586,7 @@ FEATURE_UPDATE_SCHEMA = {
             "oneOf": [
                 EXTRUDE_UPDATE_SET,
                 TARGET_UPDATE_SET,
+                FILLET_UPDATE_SET,
                 PCB_BASE_UPDATE_SET,
                 STANDOFFS_UPDATE_SET,
                 PCB_LID_UPDATE_SET,
@@ -579,6 +612,8 @@ FEATURE_ACTION_SCHEMAS = {
             "extrude": EXTRUDE_PARAMETERS,
             "cut": CUT_PARAMETERS,
             "hole": HOLE_PARAMETERS,
+            "fillet": FILLET_PARAMETERS,
+            "chamfer": CHAMFER_PARAMETERS,
             "pcb_base": PCB_BASE_PARAMETERS,
             "standoffs": STANDOFFS_PARAMETERS,
             "pcb_lid": PCB_LID_PARAMETERS,
@@ -590,6 +625,8 @@ for kind, changes in {
     "extrude": EXTRUDE_UPDATE_SET,
     "cut": TARGET_UPDATE_SET,
     "hole": TARGET_UPDATE_SET,
+    "fillet": FILLET_UPDATE_SET,
+    "chamfer": CHAMFER_UPDATE_SET,
     "pcb_base": PCB_BASE_UPDATE_SET,
     "standoffs": STANDOFFS_UPDATE_SET,
     "pcb_lid": PCB_LID_UPDATE_SET,
@@ -617,7 +654,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, and enclosure dimensions.",
+            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, fillet radius, chamfer distance, and enclosure dimensions.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
