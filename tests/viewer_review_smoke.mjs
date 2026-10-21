@@ -121,6 +121,11 @@ async function act(action) {
     await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new DOMException('denied', 'NotAllowedError')); });
   }
   if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
+  // a control marked aria-disabled still takes a click or tap; playwright waits for it to look enabled unless forced
+  if ('force' in action) {
+    const button = page.getByRole('button', { name: action.force, exact: true });
+    await (touch ? button.tap({ force: true }) : button.click({ force: true }));
+  }
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
   // the revision number's box and look with and without the transient update signal
   if ('fresh' in action) {

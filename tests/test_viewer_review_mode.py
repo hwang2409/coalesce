@@ -13,12 +13,13 @@ from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity,
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 from test_viewer_browser import plate
-from test_viewer_review_flow import call, module, open_driver  # noqa: F401  (module is a fixture)
+from test_viewer_review_flow import call, module, open_driver, wait_for  # noqa: F401  (module is a fixture)
 
 from coalesce.service import DocumentService
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 MODES = ["Assembled", "Lid off", "Exploded", "Section"]
+STANDOFF_Y = 3  # the board's two mounting holes (and their standoffs) sit on this line
 
 
 def enclosure(service):
@@ -73,15 +74,15 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
     try:
         step("empty", wait={"ready": True})
         revision = enclosure(service)
-        scene = copy.deepcopy(store.scene(revision))
+        scene = copy.deepcopy(wait_for(store, revision))
         document = path.read_bytes()
         labels = [part["label"] for part in scene["parts"]]
         assert labels == ["pcb reference", "base", "lid"]
         board, base, lid = (labels.index(name) for name in ("pcb reference", "base", "lid"))
 
         assembled = step("review-assembled", wait={"revision": revision},
-                         do=[{"review": True}, {"settle": True}, {"capture": "assembled"}])
-        state = review(assembled)
+                         do=[{"settle": True}, {"review": True}, {"capture": "assembled"}])
+        state = review(assembled, 1)
         assert [mode["name"] for mode in state["modes"]] == MODES
         assert pressed(state) == ["Assembled"]
         assert [mode["disabled"] for mode in state["modes"]] == [False] * 4
@@ -108,7 +109,7 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         drawn = exploded["scene"]
         assert drawn["visible"] == [True] * 3
         z = drawn["zRanges"]
-        gap = 0.25 * (scene["bbox"]["max"][2] - scene["bbox"]["min"][2])
+        gap = 0.4 * (scene["bbox"]["max"][2] - scene["bbox"]["min"][2])
         # parts move along Z only, the base stays, and each layer clears the one below by one fixed gap
         assert all(x == 0 and y == 0 for x, y, _ in drawn["positions"]), drawn["positions"]
         assert drawn["positions"][base][2] == 0
@@ -122,8 +123,7 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         assert pressed(state) == ["Section"]
         drawn = section["scene"]
         assert drawn["positions"] == [[0, 0, 0]] * 3 and drawn["visible"] == [True] * 3
-        # manufactured parts are cut; the board reference stays whole
-        assert drawn["cut"] == [i != board for i in range(3)]
+        assert drawn["cut"] == [True] * 3  # the board too: an uncut board would hide the standoffs
         assert state["section"]["axis"] == "Y"
         assert state["section"]["value"] == pytest.approx(
             (state["section"]["min"] + state["section"]["max"]) / 2, abs=0.05)
@@ -131,9 +131,9 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         assert_clear_layout(state)
 
         moved = step("review-section-moved", do=[
-            {"fill": {"label": "Section position in mm", "value": state["section"]["min"] + 2}}, {"settle": True},
+            {"fill": {"label": "Section position in mm", "value": STANDOFF_Y}}, {"settle": True},
             {"review": True}, {"diff": "section"}])
-        assert review(moved, 2)["section"]["value"] == pytest.approx(state["section"]["min"] + 2)
+        assert review(moved, 2)["section"]["value"] == STANDOFF_Y
         assert review(moved, 3) > 0.005  # a new cut position draws a new cut
         axis = step("review-section-x", do=[{"click": "X"}, {"settle": True}, {"review": True},
                                              {"diff": "section"}])
@@ -189,7 +189,7 @@ def test_modes_that_do_not_apply_are_disabled_with_a_reason(module, viewport):  
             "No lid in this model", "No lid or board to separate"]
         assert state["hint"] is None
         # choosing one says why, and keeps the assembled view
-        tried = step("plate-lid-off", do=[{"click": "Lid off"}, {"review": True}])
+        tried = step("plate-lid-off", do=[{"force": "Lid off"}, {"review": True}])
         state = review(tried, 1)
         assert state["hint"] == "Lid off: no lid in this model"
         assert pressed(state) == ["Assembled"]

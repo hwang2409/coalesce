@@ -159,8 +159,10 @@ function describeView() {
   const parts = current?.parts ?? [];
   const framing = activeView ? `${activeView} view, fitted to the model` : 'camera moved by hand';
   const change = current?.change ? ` Latest change: ${current.change.summary}.` : '';
+  const at = mode === 'section' ? ` at ${section.axis.toUpperCase()} = ${formatMm(Number(section.position.toFixed(1)))} mm` : '';
+  const shown = MODE_TEXT[mode] ? ` Shown ${MODE_TEXT[mode]}${at}; the model is unchanged.` : '';
   $('view-description').textContent = parts.length
-    ? `Revision ${current.revision}, ${framing}.${change} `
+    ? `Revision ${current.revision}, ${framing}.${change}${shown} `
       + partTitles(parts).map((title, i) => [`${title}, ${formatSize(parts[i])} mm`, partDetail(parts[i])].filter(Boolean).join(', ')).join('; ') + '.'
     : 'No parts to show.';
 }
@@ -243,7 +245,7 @@ $('fit').addEventListener('click', () => applyView(activeView));
 // off before the first scene and once the link expired: nothing current to aim at
 function enableCamera(on) {
   controls.enabled = on;
-  for (const button of document.querySelectorAll('.views button')) button.disabled = !on;
+  for (const control of document.querySelectorAll('.views button, .review button, .review input')) control.disabled = !on;
 }
 enableCamera(false);
 
@@ -391,14 +393,17 @@ function renderPartList(parts) {
     toggle.setAttribute('aria-pressed', String(object.visible));
     toggle.setAttribute('aria-label', `Show ${titles[index]}`);
     toggle.title = `Show or hide ${titles[index]}`;
+    toggle.dataset.title = titles[index];
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = part.color;
     toggle.append(swatch);
+    // the user's choice; the shown state also follows the review mode
     toggle.addEventListener('click', () => {
-      object.visible = !object.visible;
-      hiddenByUser.set(part.name, object.visible);
-      toggle.setAttribute('aria-pressed', String(object.visible));
+      const shown = !(hiddenByUser.get(part.name) ?? part.visible);
+      hiddenByUser.set(part.name, shown);
+      toggle.setAttribute('aria-pressed', String(shown));
+      applyMode();
       requestRender();
     });
     const button = document.createElement('button');
@@ -443,6 +448,182 @@ function renderPartList(parts) {
     list.append(item);
   });
 }
+
+// ---- review modes: lid off, exploded and one section plane. they only move, hide or cut what this
+// page draws; the scene data and the document never change, and Assembled puts every part back.
+
+renderer.localClippingEnabled = true;
+let mode = 'assembled';
+const section = { axis: 'y', position: null }; // null: the middle of the model
+const sectionPlane = new THREE.Plane();
+// keep the half away from the iso camera, so the cut faces the human (also from Front, Right and Top)
+const SECTION_NORMALS = { x: [-1, 0, 0], y: [0, 1, 0], z: [0, 0, -1] };
+const MODE_NAMES = { assembled: 'Assembled', 'lid-off': 'Lid off', exploded: 'Exploded', section: 'Section' };
+const MODE_TEXT = { 'lid-off': 'lid off', exploded: 'exploded along Z', section: 'section view' };
+
+const isLid = (part) => part.features[0]?.kind === 'pcb lid';
+// exploded layers, bottom to top: the box and other made parts, the board reference, the lid
+const layer = (part) => (isLid(part) ? 2 : part.role === 'reference' ? 1 : 0);
+
+function unavailable(name, parts) {
+  if (name !== 'assembled' && !parts.length) return 'No parts to show';
+  if (name === 'lid-off' && !parts.some(isLid)) return 'No lid in this model';
+  if (name === 'exploded' && new Set(parts.map(layer)).size < 2) return 'No lid or board to separate';
+  return null;
+}
+
+// a part's assembled z range, from its cached geometry (computed by depthRanks)
+const zRange = (part) => {
+  const { min, max } = geometries.get(part.mesh.id).surface.boundingBox;
+  return [min.z, max.z];
+};
+
+// each layer is lifted so it clears the layer below by one fixed gap: 0.4 of the model's height (at least 1 mm)
+function explodeOffsets(parts) {
+  const gap = Math.max(0.4 * (current.bbox.max[2] - current.bbox.min[2]), 1);
+  const offsets = new Map();
+  let top = null;
+  for (const level of [0, 1, 2]) {
+    const members = parts.filter((part) => layer(part) === level);
+    if (!members.length) continue;
+    const ranges = members.map(zRange);
+    const low = Math.min(...ranges.map((r) => r[0]));
+    const lift = top === null ? 0 : Math.max(0, top + gap - low);
+    for (const part of members) offsets.set(part.name, lift);
+    top = Math.max(...ranges.map((r) => r[1])) + lift;
+  }
+  return offsets;
+}
+
+// the parts' assembled extent along the section axis: the slider's range
+function sectionRange(parts) {
+  const i = 'xyz'.indexOf(section.axis);
+  const boxes = parts.map((part) => geometries.get(part.mesh.id).surface.boundingBox);
+  const low = Math.min(...boxes.map((box) => box.min.getComponent(i)));
+  const high = Math.max(...boxes.map((box) => box.max.getComponent(i)));
+  return [Number(low.toFixed(1)), Number(high.toFixed(1))];
+}
+
+// every part is cut, the board too, so nothing uncut hides what the cut opens up. a cut part gets a
+// flat, light back-face copy: seen through the cut, it reads as the cut face of solid material
+function setCut(group, part, on) {
+  const [surface, lines, cap] = group.children;
+  if (Boolean(cap) === on) return;
+  for (const object of [surface, lines]) {
+    // a fresh material: disposing the old one also frees the shader it compiled for this cut state
+    const material = object.material.clone();
+    material.clippingPlanes = on ? [sectionPlane] : null;
+    object.material.dispose();
+    object.material = material;
+  }
+  if (on) {
+    group.add(new THREE.Mesh(surface.geometry, new THREE.MeshBasicMaterial({
+      color: new THREE.Color(part.color).lerp(new THREE.Color(0xffffff), 0.45),
+      side: THREE.BackSide,
+      clippingPlanes: [sectionPlane],
+    })));
+  } else {
+    cap.material.dispose(); // the geometry belongs to the mesh cache
+    group.remove(cap);
+  }
+}
+
+// places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
+function applyMode() {
+  const parts = current?.parts ?? [];
+  if (unavailable(mode, parts)) mode = 'assembled';
+  const offsets = mode === 'exploded' ? explodeOffsets(parts) : null;
+  if (mode === 'section') {
+    const [low, high] = sectionRange(parts);
+    section.position = Math.min(Math.max(section.position ?? (low + high) / 2, low), high);
+    const normal = new THREE.Vector3(...SECTION_NORMALS[section.axis]);
+    sectionPlane.set(normal, -section.position * normal.getComponent('xyz'.indexOf(section.axis)));
+    Object.assign($('section-range'), { min: low, max: high });
+    $('section-range').value = section.position;
+    Object.assign($('section-value'), { min: low, max: high });
+    // never rewrite a number while it is being typed; it is checked when the human commits it
+    if (document.activeElement !== $('section-value')) $('section-value').value = Number(section.position.toFixed(1));
+  }
+  const toggles = document.querySelectorAll('#parts .visibility');
+  parts.forEach((part, index) => {
+    const group = model.getObjectByName(part.name);
+    group.position.set(0, 0, offsets?.get(part.name) ?? 0);
+    const lifted = mode === 'lid-off' && isLid(part);
+    group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
+    setCut(group, part, mode === 'section');
+    // the lid's own show/hide waits until the view puts the lid back
+    toggles[index].disabled = lifted;
+    toggles[index].title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggles[index].dataset.title}`;
+  });
+  for (const button of document.querySelectorAll('[data-mode]')) {
+    const reason = unavailable(button.dataset.mode, parts);
+    button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+    if (reason) {
+      button.setAttribute('aria-disabled', 'true');
+      button.title = reason;
+    } else {
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('title');
+    }
+  }
+  for (const button of document.querySelectorAll('[data-axis]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.axis === section.axis));
+  }
+  $('section-controls').hidden = mode !== 'section';
+}
+
+function hint(text) {
+  $('review-hint').hidden = !text;
+  $('review-hint').textContent = text ?? '';
+}
+
+function setMode(name) {
+  const reason = unavailable(name, current?.parts ?? []);
+  if (reason) {
+    hint(`${MODE_NAMES[name]}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`);
+    return;
+  }
+  hint(null);
+  mode = name;
+  refresh();
+}
+
+// redraws after a mode or section change; a camera the human has not moved refits to what is shown
+function refresh() {
+  applyMode();
+  if (current?.parts.length && !userMoved) applyView(activeView);
+  describeView();
+  requestRender();
+}
+
+for (const button of document.querySelectorAll('[data-mode]')) {
+  button.addEventListener('click', () => setMode(button.dataset.mode));
+  // a mode that does not apply says why when it gets focus, and stops saying it when focus leaves
+  button.addEventListener('focus', () => {
+    const reason = unavailable(button.dataset.mode, current?.parts ?? []);
+    if (reason) setMode(button.dataset.mode);
+  });
+  button.addEventListener('blur', () => hint(null));
+}
+for (const button of document.querySelectorAll('[data-axis]')) {
+  button.addEventListener('click', () => {
+    section.axis = button.dataset.axis;
+    section.position = null;
+    refresh();
+  });
+}
+for (const input of [$('section-range'), $('section-value')]) {
+  input.addEventListener('input', () => {
+    if (input.value === '' || Number.isNaN(Number(input.value))) return; // a number being typed
+    section.position = Number(input.value);
+    applyMode();
+    describeView();
+    requestRender();
+  });
+}
+$('section-value').addEventListener('change', () => {
+  $('section-value').value = Number(section.position.toFixed(1)); // shows the clamped position
+});
 
 // ---- state shown to the human
 
@@ -602,6 +783,7 @@ async function loadOne(revision) {
     data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
     current = data;
     renderPartList(data.parts);
+    applyMode(); // the chosen review mode stays while it applies to the new revision
     showRevision(data);
     const empty = !data.parts.length;
     notice(empty ? `Revision ${data.revision} has no solid parts yet` : null,
@@ -725,6 +907,13 @@ if (window.coalesceDebug === true) {
       visible: model.children.map((group) => group.visible),
       meshes: current?.parts.map((part) => part.mesh.id) ?? [],
       geometries: model.children.map((group) => group.children[0].geometry.uuid),
+      mode,
+      positions: model.children.map((group) => group.position.toArray()),
+      cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
+      zRanges: model.children.map((group) => {
+        const { min, max } = new THREE.Box3().setFromObject(group);
+        return [min.z, max.z];
+      }),
       camera: controls.enabled,
       view: [...camera.quaternion.toArray(), camera.zoom], // orientation and zoom, which an orbit sets
       // the visible parts' box corners in normalized device coordinates (-1..1 is on screen)
