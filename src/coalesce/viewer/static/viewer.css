@@ -46,16 +46,24 @@ button {
 
 /* panel */
 
-/* the whole panel scrolls: the fit check and the part list share its height */
+/* the panel's content scrolls above the "scroll for more" bar: the fit check and the part list share its height */
 .panel {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--panel);
   box-shadow: 1px 0 0 var(--rule), 4px 0 16px rgba(29, 35, 41, 0.04);
+}
+
+.panel-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .masthead {
@@ -243,31 +251,16 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
 }
 
 .unit { color: var(--mute); font-weight: 400; white-space: normal; text-align: right; }
+#inspection-count span { white-space: nowrap; } /* a count wraps as a whole, never away from its status */
 
-/* sticks to the panel's bottom edge as a solid bar over the row cut there, with a short fade above it;
-   it takes no room of its own */
+/* a bar of its own below the scrolled content, so it covers no row */
 .more {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
+  flex: none;
   height: 32px;
-  margin-top: -32px;
   padding: 7px 16px 0;
-  background: var(--panel);
   box-shadow: 0 -1px 0 var(--rule);
   color: var(--mute);
   font-size: 12px;
-  pointer-events: none;
-}
-
-.more::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 1px);
-  height: 20px;
-  background: linear-gradient(to bottom, rgba(246, 247, 248, 0), var(--panel));
 }
 
 .more[hidden] { display: none; }

@@ -400,7 +400,6 @@ def test_section_at_each_end_of_the_slider_draws_a_solid_cut_face(module, viewpo
                 state = review(shown, 4)["section"]
                 value = state[end]
                 assert state["value"] == value
-                # one 0.1 mm step inside the model's extent, never on its outer face
                 extent = scene["bbox"][end]["XYZ".index(axis)]
                 inset[f"{axis} {end}"] = round(abs(value - extent), 2)
                 points = [p for p, u, v in plane_grid(axis, value, scene["bbox"])
@@ -410,7 +409,54 @@ def test_section_at_each_end_of_the_slider_draws_a_solid_cut_face(module, viewpo
                 off[f"{axis} {end}"] = [(p, s["rgb"]) for p, s in zip(points, sampled, strict=True)
                                         if distance(s["rgb"], base_cut) > 3]
         assert all(not bad for bad in off.values()), {key: (len(bad), bad[:5]) for key, bad in off.items() if bad}
-        assert all(0.05 <= step_in <= 0.15 for step_in in inset.values()), inset
+        # one 0.1 mm step past the 2 mm walls and floor; the open top keeps one step inside the wall tops
+        assert inset == {"X max": 2.1, "X min": 2.1, "Y max": 2.1, "Y min": 2.1, "Z max": 0.1, "Z min": 2.1}, inset
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800)])
+def test_section_at_each_end_of_the_slider_still_cuts_through_the_cavity(module, viewport, tmp_path):  # noqa: F811
+    """Every slider position is useful: at each end the plane is past the outer wall, so it opens the cavity."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        revision = enclosure(service)
+        scene = wait_for(store, revision)
+        cuts = [cut_color(part["color"]) for part in scene["parts"]]
+        bbox = scene["bbox"]
+        step("review", wait={"revision": revision}, do=[{"click": "Section"}, {"settle": True}])
+        found = {}
+        for axis, view in AXIS_VIEWS.items():
+            for end, typed in (("mid", None), ("max", 999), ("min", -999)):
+                fill = [] if typed is None else [{"fill": {"label": "Section position in mm", "value": typed}}]
+                shown = step(f"section-{axis}-{end}", do=[{"click": axis}, *fill, {"click": view}, {"settle": True},
+                                                         {"review": True}, {"caps": cuts}])
+                value = review(shown, len(fill) + 3)["section"]["value"]
+                caps = review(shown, len(fill) + 4)
+                # the middle of the model across the plane: open cavity in this enclosure (the kernel agrees)
+                middle = [(bbox["min"][i] + bbox["max"][i]) / 2 for i in range(3)]
+                middle["XYZ".index(axis)] = value
+                solid = any(shape.is_inside(tuple(middle)) for shape in service._regen.shapes.values())
+                pixel = step(f"section-{axis}-{end}-middle", do=[{"pixels": [middle]}])["actions"][0][0]["rgb"]
+                found[f"{axis} {end}"] = {"value": value, "area": sum(caps["areas"]), "regions": sum(caps["regions"]),
+                                          "middle solid": solid, "middle cut": min(distance(pixel, cut) for cut in cuts) <= 3}
+        print(viewport, found)
+        for key in (f"{axis} {end}" for axis in AXIS_VIEWS for end in ("min", "max")):
+            shown, mid = found[key], found[f"{key[0]} mid"]["area"]
+            # the end cut loses only the board and standoffs the middle cut crosses (0.88 of it or more here);
+            # a sliver at a rounded edge or a wall's rim would be far less than half
+            assert shown["area"] >= 0.5 * mid, (key, shown, mid)
+            assert shown["regions"] > 1, (key, shown)
+            # a slab of the outer wall passes both checks above (it is larger than the middle cut); this one
+            # rejects it: the middle of the end cut is open cavity, not cut material
+            assert not shown["middle solid"] and not shown["middle cut"], (key, shown)
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
@@ -430,7 +476,9 @@ def test_section_of_overlapping_parts_shows_the_nearer_surface(module, viewport)
         store.publish(1, [ScenePart("a", cube), ScenePart("b", Pos(10, 10, 0) * cube)])
         colors = [part["color"] for part in wait_for(store, 1)["parts"]]
         step("overlap", wait={"revision": 1}, do=[{"settle": True}])
-        section_front(step, "overlap-section-front-r3", 5)
+        shown = section_front(step, "overlap-section-front-r3", 5)
+        # solids with no wall to cross: the range keeps one step inside the outer faces, full cross-sections
+        assert (review(shown, 4)["section"]["min"], review(shown, 4)["section"]["max"]) == (0.1, 29.9)
         # on the Y = 5 plane: A's material at x 0..20, none of B's (B starts at y = 10)
         points = {"A only": (5, 5, 10), "A, B behind it": (15, 5, 10), "B behind the plane": (25, 5, 10)}
         measured = step("overlap-pixels", do=[{"pixels": list(points.values())}])["actions"][0]

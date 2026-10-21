@@ -197,12 +197,15 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert fit["note"] == "Measured only values have no threshold and do not pass the fit gate."
         # the heading's title keeps one line, and no badge runs into its label
         assert fit["titleLines"] == 1
+        assert fit["countLines"] == [1, 1, 1, 1], fit["count"]  # a count never wraps away from its status
+        # the "scroll for more" bar sits below the scrolled rows, not over the last one
+        assert fit["moreTop"] is None or fit["scrollBottom"] <= fit["moreTop"] + 0.5, fit
         assert min(row["gap"] for row in fit["rows"]) >= 4, fit["rows"]
         assert len({row["labelLeft"] for row in fit["rows"]}) == 1, fit["rows"]  # one label column
         assert fit["overflow"] == [], fit["overflow"]
         assert fit["evidenceOpen"] is False
         if viewport[0] < 720:
-            # the panel ends in a cue over the row it cuts, so more checks are not a surprise
+            # the panel ends in a cue below the row it cuts, so more checks are not a surprise
             assert fit["more"] == "Scroll for more checks and parts"
 
         view = shown["scene"]["view"]

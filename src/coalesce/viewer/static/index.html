@@ -10,40 +10,42 @@
 </head>
 <body>
 <aside class="panel" aria-label="Model">
-  <header class="masthead">
-    <span class="wordmark">coalesce</span>
-    <span class="link" id="link" data-state="connecting">
-      <span class="dot" aria-hidden="true"></span><span id="link-text">Connecting</span>
-    </span>
-  </header>
+  <div class="panel-scroll" id="panel-scroll">
+    <header class="masthead">
+      <span class="wordmark">coalesce</span>
+      <span class="link" id="link" data-state="connecting">
+        <span class="dot" aria-hidden="true"></span><span id="link-text">Connecting</span>
+      </span>
+    </header>
 
-  <section class="revision" aria-live="polite">
-    <p class="revision-line"><span class="revision-name">Revision</span>
-      <span class="revision-number" id="revision" data-testid="revision" data-empty>none</span></p>
-    <p class="revision-change" id="change" hidden></p>
-    <p class="revision-meta" id="revision-meta">No committed geometry yet</p>
-  </section>
+    <section class="revision" aria-live="polite">
+      <p class="revision-line"><span class="revision-name">Revision</span>
+        <span class="revision-number" id="revision" data-testid="revision" data-empty>none</span></p>
+      <p class="revision-change" id="change" hidden></p>
+      <p class="revision-meta" id="revision-meta">No committed geometry yet</p>
+    </section>
 
-  <!-- measured on the as-built solids of this revision; a row focuses the part it is about -->
-  <section class="inspection" id="inspection" aria-labelledby="inspection-title" hidden>
-    <h2 id="inspection-title">Fit check <span class="unit" id="inspection-count"></span></h2>
-    <p class="fit-note" id="inspection-note" hidden>Measured only values have no threshold and do not pass the fit gate.</p>
-    <ul id="inspection-rows"></ul>
-    <details class="fit-evidence">
-      <summary>Measured evidence</summary>
-      <ul id="inspection-evidence"></ul>
-      <details class="fit-raw">
-        <summary>Raw data with ids</summary>
-        <pre id="inspection-raw"></pre>
+    <!-- measured on the as-built solids of this revision; a row focuses the part it is about -->
+    <section class="inspection" id="inspection" aria-labelledby="inspection-title" hidden>
+      <h2 id="inspection-title">Fit check <span class="unit" id="inspection-count"></span></h2>
+      <p class="fit-note" id="inspection-note" hidden>Measured only values have no threshold and do not pass the fit gate.</p>
+      <ul id="inspection-rows"></ul>
+      <details class="fit-evidence">
+        <summary>Measured evidence</summary>
+        <ul id="inspection-evidence"></ul>
+        <details class="fit-raw">
+          <summary>Raw data with ids</summary>
+          <pre id="inspection-raw"></pre>
+        </details>
       </details>
-    </details>
-  </section>
+    </section>
 
-  <section class="parts" aria-labelledby="parts-title">
-    <h2 id="parts-title">Parts <span class="unit">size in mm</span></h2>
-    <ul id="parts"><li class="parts-empty">No parts yet</li></ul>
-  </section>
-  <!-- the panel scrolls; this says so where its visible part ends, so a row cut there is not the last word -->
+    <section class="parts" aria-labelledby="parts-title">
+      <h2 id="parts-title">Parts <span class="unit">size in mm</span></h2>
+      <ul id="parts"><li class="parts-empty">No parts yet</li></ul>
+    </section>
+  </div>
+  <!-- the panel scrolls; this says so below its visible part, so a row cut there is not the last word -->
   <p class="more" id="more" aria-hidden="true" hidden></p>
 </aside>
 
