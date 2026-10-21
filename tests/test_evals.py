@@ -565,6 +565,29 @@ def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
     assert seen["command"][seen["command"].index("--allowedTools") + 1] == "mcp__coalesce__*"
 
 
+@pytest.mark.parametrize("harness", ["claude", "zeta"])
+def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, harness):
+    import evals.run
+    from evals.run import HEADLESS, claude_harness, zeta_harness
+
+    seen = {}
+
+    def fake_run(command, **_kwargs):
+        seen["command"] = command
+        return type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})()
+
+    monkeypatch.setattr(evals.run.subprocess, "run", fake_run)
+    run_dir = tmp_path / "run"
+    (run_dir / "fixtures").mkdir(parents=True)
+    if harness == "claude":
+        claude_harness("prompt", run_dir, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+    else:
+        project = tmp_path / "project"
+        project.mkdir()
+        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project)
+    assert seen["command"][2].count(HEADLESS) == 1
+
+
 def test_checks_pass_fail_unknown(tmp_path):
     from build123d import Box, export_step
 
