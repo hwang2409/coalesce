@@ -565,6 +565,22 @@ def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
     assert seen["command"][seen["command"].index("--allowedTools") + 1] == "mcp__coalesce__*"
 
 
+def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import claude_harness
+
+    seen = {}
+
+    def fake_run(command, **_kwargs):
+        seen["command"] = command
+        return type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})()
+
+    monkeypatch.setattr(evals.run.subprocess, "run", fake_run)
+    (tmp_path / "fixtures").mkdir()
+    claude_harness("prompt", tmp_path, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+    assert "No human is available" in seen["command"][2]
+
+
 def test_checks_pass_fail_unknown(tmp_path):
     from build123d import Box, export_step
 
