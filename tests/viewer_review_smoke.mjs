@@ -51,6 +51,8 @@ async function snapshot() {
     repair: await shown('#failure-repair'),
     code: await page.locator('#failure-code').textContent(),
     scene: await page.evaluate(() => window.coalesceViewer.drawn),
+    focused: await label(),
+    view: await page.locator('#view').evaluate((canvas) => canvas.getBoundingClientRect().toJSON()),
     expanded: await page.locator('#parts .part').evaluateAll((rows) => rows.map((row) => row.getAttribute('aria-expanded'))),
     // each part row's boxes in page pixels, to check the swatch and hint line up with the row
     rows: await page.locator('#parts li').evaluateAll((items) => items.map((item) => {
@@ -237,6 +239,7 @@ async function act(action) {
     }, action.pixels);
   }
   if ('fill' in action) await page.getByLabel(action.fill.label, { exact: true }).fill(String(action.fill.value));
+  if ('focus' in action) await page.locator(action.focus).focus();
   if ('key' in action) await page.keyboard.press(action.key);
   if ('settle' in action) await settled();
   // keyboard only: Tab until the named control has focus, then press the key

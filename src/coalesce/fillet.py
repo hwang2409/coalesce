@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from build123d import Edge, Face, Shape
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
@@ -77,7 +77,7 @@ def fillet_shape(
     edges: list[Candidate],
     radius: float,
 ) -> FilletResult:
-    edge_keys = [edge.key for edge in edges]
+    edge_keys = [asdict(edge.key) for edge in edges]  # plain data: errors reach JSON responses
     if radius <= 0:
         raise GraphError(
             "invalid_fillet_radius",
@@ -93,9 +93,13 @@ def fillet_shape(
             algorithm.Add(radius, edge.entity.wrapped)
         algorithm.Build()
         if not algorithm.IsDone():
-            raise RuntimeError("kernel operation did not complete")
+            statuses = ", ".join(
+                f"contour {contour} {algorithm.StripeStatus(contour).name}"
+                for contour in map(algorithm.FaultyContour, range(1, algorithm.NbFaultyContours() + 1))
+            )
+            raise RuntimeError(f"BRepFilletAPI_MakeFillet not done: {statuses or 'no status'}")
         result = Shape.cast(algorithm.Shape())
-    except Exception:
+    except Exception as error:
         _LOGGER.exception("fillet kernel operation failed for feature %s", feature)
         raise GraphError(
             "fillet_failed",
@@ -103,7 +107,10 @@ def fillet_shape(
             feature=feature,
             radius=radius,
             edges=edge_keys,
-        ) from None
+            hint="reduce the fillet radius and retry, or find the largest radius that works",
+            # the kernel's own words, for "Error details" only; the hint is the guidance
+            kernelMessage=str(error),
+        ) from error
 
     inherited, generated, consumed = _collect_history(
         feature, algorithm, target_candidates, result.faces()

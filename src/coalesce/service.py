@@ -1239,6 +1239,11 @@ def _graph_error_response(
     )
 
 
+def _viewer_error(error: dict[str, Any]) -> dict[str, str]:
+    """The fields the viewer shows; kernelMessage goes only under "Error details"."""
+    return {key: error[key] for key in ("code", "message", "hint", "kernelMessage") if key in error}
+
+
 def _reference(payload: dict[str, Any]) -> Reference:
     source = payload.get("source")
     if isinstance(source, dict) and source.get("kind") == "sketch_segment":
@@ -1461,12 +1466,11 @@ def _deletion_result_fields(
         for part_id in before_parts
         if part_id in after_parts and before_parts[part_id] != after_parts[part_id]
     ]
-    deleted_ids = [item["id"] for item in deletion.deleted]
-    summary = f"deleted {', '.join(deleted_ids)}"
-    if removed_parts:
-        summary += f"; removed parts {', '.join(removed_parts)}"
-    if changed_parts:
-        summary += f"; changed parts {', '.join(changed_parts)}"
+    target = next(item for item in deletion.deleted if item["id"] == deletion.target_id)
+    summary = f"deleted {_named(target['kind'].replace('_', ' '), target['id'])}"
+    dependents = [item["id"] for item in deletion.deleted if item is not target]
+    if dependents:
+        summary += f" with {'dependent' if len(dependents) == 1 else 'dependents'} {', '.join(dependents)}"
     fields = {
         "deleted": list(deletion.deleted),
         "summary": summary,
@@ -1898,12 +1902,41 @@ _EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
 }
 
 
-def _added(node: Any) -> str:
+def _named(word: str, node_id: str) -> str:
+    """"pcb lid lid" says the id twice; keep the id only when it adds a word."""
+    return word if set(node_id.split("_")) <= set(word.split()) else f"{word} {node_id}"
+
+
+def _enclosure_added(node: Any, result: RegenResult) -> str | None:
+    """What an enclosure feature made, in the numbers an engineer checks; None for other kinds."""
+    summary = f"added {_named(_kind(node), node.id)}"
+    if isinstance(node, PcbBase):
+        return (
+            f"{summary} for {node.board}: {_mm(node.wall_thickness)} mm walls, "
+            f"{_mm(node.clearance)} mm board clearance"
+        )
+    if isinstance(node, Standoffs):
+        from .enclosure import selected_holes
+
+        count = len(selected_holes(node, result.graph.nodes[node.board]))
+        return f"{summary} at {count} mounting {'hole' if count == 1 else 'holes'}"
+    if isinstance(node, PcbLid):
+        lip = f", {_mm(node.lip_depth)} mm deep lip" if node.lip_depth else ""
+        return f"{summary}: {_mm(node.thickness)} mm thick, {_mm(node.fit_gap)} mm fit gap{lip}"
+    if isinstance(node, PortCutout):
+        port = result.metadata[node.id]
+        width, height = (_mm(port["opening"][side]["value"]) for side in ("width", "height"))
+        connector = port.get("reference") or port["footprintId"]
+        return f"{summary} for {connector}: {width} \u00d7 {height} mm on {port['wall']} wall"
+    return None
+
+
+def _added(node: Any, result: RegenResult) -> str:
     if isinstance(node, BoardImport):
-        return f"imported board {node.id}"
-    kind = _kind(node)
-    # "pcb lid lid" says the id twice; keep the id only when it adds a word
-    summary = f"added {kind}" if f" {kind}".endswith(" " + node.id.replace("_", " ")) else f"added {kind} {node.id}"
+        return f"imported board {Path(node.source_path).name}"
+    if enclosure := _enclosure_added(node, result):
+        return enclosure
+    summary = f"added {_named(_kind(node), node.id)}"
     target = getattr(node, "target", None)
     if target:
         summary += f" on {target}"
@@ -1931,11 +1964,14 @@ def _edited(old: Any, node: Any) -> str:
     return f"{summary} {', '.join(edits)}" if edits else f"{summary}, no value changed"
 
 
-def _change(before: Any, after: Any, changed_id: str) -> dict[str, str]:
+def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]:
     """One line that tells the human what a commit did: added what, or which values changed."""
-    node = after.nodes[changed_id]
+    node = result.graph.nodes[changed_id]
     old = before.nodes.get(changed_id)
-    return {"featureId": changed_id, "summary": _added(node) if old is None else _edited(old, node)}
+    return {
+        "featureId": changed_id,
+        "summary": _added(node, result) if old is None else _edited(old, node),
+    }
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
@@ -1987,7 +2023,7 @@ class _ScenePublisher:
                 if method == "publish":
                     revision, result, before, changed_id, change = arguments
                     if change is None and changed_id:
-                        change = _change(before, result.graph, changed_id)
+                        change = _change(before, result, changed_id)
                     self._store.publish(revision, _scene_parts(result), change)
                 else:
                     self._store.publish_failure(*arguments)
@@ -2079,7 +2115,7 @@ class DocumentService:
         ]
         self._publisher.publish_failure(
             feature_ids,
-            {key: details[key] for key in ("code", "message", "hint") if key in details},
+            _viewer_error(details),
         )
 
     def _ensure_geometry(self) -> None:
@@ -2145,7 +2181,7 @@ class DocumentService:
         error = result["error"]
         self._publisher.publish_failure(
             [feature_id] if isinstance(feature_id, str) else [],
-            {k: error[k] for k in ("code", "message", "hint") if k in error},
+            _viewer_error(error),
         )
 
     def _mutate(

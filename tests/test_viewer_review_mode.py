@@ -157,6 +157,25 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         assert store.scene(revision) == scene
         assert path.read_bytes() == document
         assert keys["revision"] == revision
+        # the latest commit, in words, in the sidebar and in the canvas description
+        line = "Added port cutout for J1: 5 \u00d7 3 mm on left wall"
+        assert keys["change"] == line
+        assert f"Latest change: a{line[1:]}." in keys["description"]
+
+        # Escape in the section controls leaves the section view, says so, and keeps focus on the modes
+        for control in ("#section-range", "#section-value"):
+            name = control.removeprefix("#")
+            focused = step(f"{name}-focused", do=[{"click": "Section"}, {"settle": True}, {"focus": control},
+                                                  {"review": True}])
+            assert review(focused, 3)["hint"] == "Esc returns to Assembled"
+            escaped = step(f"{name}-escape", do=[{"key": "Escape"}, {"settle": True}, {"review": True},
+                                                 {"diff": "assembled"}])
+            state = review(escaped, 2)
+            assert pressed(state) == ["Assembled"] and state["section"] is None and state["hint"] is None
+            assert escaped["scene"]["cut"] == [False] * 3
+            assert review(escaped, 3) == 0
+            assert escaped["description"].startswith("Section view closed, back to Assembled. "), escaped
+            assert escaped["focused"] == "Assembled"
 
         # a new revision keeps the chosen mode while it still applies
         step("review-exploded-again", do=[{"click": "Exploded"}, {"settle": True}])
