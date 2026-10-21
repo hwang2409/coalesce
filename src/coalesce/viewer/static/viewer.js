@@ -358,15 +358,15 @@ function partTitles(parts) {
   });
 }
 
-// narrow screens show a part's detail line only while its row has focus. a part's facts open when its
-// row gets focus and stay open until another part's do, so nothing below them jumps when focus moves
-// on. say both to screen readers.
+// narrow screens show a part's detail line only while its row has focus, and its facts from when its
+// row gets focus until another part's do, so nothing below them jumps when focus moves on. wide
+// screens always show both. say so to screen readers.
 let openPart = null;
 function syncExpanded(button) {
   const facts = button.classList.contains('has-facts');
   const open = facts ? button.dataset.partId === openPart : document.activeElement === button;
   button.classList.toggle('open', facts && open);
-  if (narrow.matches || facts) button.setAttribute('aria-expanded', String(open));
+  if (narrow.matches) button.setAttribute('aria-expanded', String(open));
   else button.removeAttribute('aria-expanded');
 }
 const syncAllExpanded = () => document.querySelectorAll('.part.has-detail, .part.has-facts').forEach(syncExpanded);
@@ -431,6 +431,7 @@ function renderPartList(parts) {
     const name = document.createElement('span');
     name.className = 'part-name';
     name.textContent = titles[index];
+    name.classList.toggle('collides', titles[index] !== part.label);
     name.title = part.name;
     const title = document.createElement('span');
     title.className = 'part-title';

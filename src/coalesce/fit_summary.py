@@ -207,10 +207,8 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, str], ...]:
     node = result.graph.nodes[source_feature]
     if isinstance(node, BoardImport):
         holes = [f"{reference or 'unnamed'} at ({position})" for reference, position in _holes(node).values()]
-        return (
-            _fact("Export", "reference only, not exported"),
-            _fact("Mounting holes", f"{len(holes)}: {', '.join(holes)} mm" if holes else "none"),
-        )
+        # the row's role line already says "Reference, not exported" on every width
+        return (_fact("Mounting holes", f"{len(holes)}: {', '.join(holes)} mm" if holes else "none"),)
     if isinstance(node, PcbBase):
         return tuple(_base_facts(result, node))
     if isinstance(node, PcbLid):

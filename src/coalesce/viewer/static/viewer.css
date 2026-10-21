@@ -275,19 +275,20 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 
 .part-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 
-/* names of several words wrap at spaces beside the size; only one long word is cut with an ellipsis */
 .part-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
 }
 
-/* a focused row (keyboard or tap) shows even one long word in full, wrapped beside the size so the
-   size does not jump to a line of its own */
+/* a focused row (keyboard or tap) and a name with a distinguishing suffix show the full name,
+   wrapped beside the size so the size does not jump to a line of its own */
+.part-name.collides { white-space: normal; }
 .part:focus .part-name { white-space: normal; overflow-wrap: anywhere; }
 
-/* the facts open, and on narrow screens the detail line, when the row has focus */
+/* narrow screens only: the detail line opens when the row has focus */
 .disclosure { display: none; flex: none; color: var(--mute); }
 
 .part-size { grid-column: 2; color: var(--mute); font-size: 12px; }
@@ -295,14 +296,11 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 /* a reference part (the imported board) is shown for fit only: say so on every screen width */
 .part-role { grid-column: 1 / -1; color: var(--mute); font-size: 12px; }
 
-/* the committed numbers of a part (wall, standoffs, ports, fit gap), shown for the open part */
-.part-facts { display: none; grid-column: 1 / -1; font-size: 12px; }
-.part.open .part-facts { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; }
+/* the committed numbers of a part (wall, standoffs, ports, fit gap); narrow screens show them for the open part */
+.part-facts { display: grid; grid-column: 1 / -1; grid-template-columns: auto 1fr; column-gap: 10px; font-size: 12px; }
 .fact { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
 .fact-label { color: var(--mute); }
 .fact-value { overflow-wrap: anywhere; }
-.part.has-facts .disclosure { display: inline-block; }
-.part.open .disclosure { transform: rotate(180deg); }
 
 /* named holes and the feature chain; narrow screens show it only for the focused row */
 .part-detail {
@@ -646,10 +644,10 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .panel { max-height: 40vh; }
-  .part:not(:focus, .open) .part-detail { display: none; }
+  .part:not(:focus, .open) .part-detail, .part:not(.open) .part-facts { display: none; }
   /* a row with hidden details says so beside its name, and flips the hint when open */
-  .part.has-detail .disclosure { display: inline-block; }
-  .part:focus .disclosure { transform: rotate(180deg); }
+  .part:is(.has-detail, .has-facts) .disclosure { display: inline-block; }
+  .part:is(:focus, .open) .disclosure { transform: rotate(180deg); }
   /* a compact scale above the camera buttons; the grid square is the same length */
   .scale, .gizmo[hidden] + .scale { left: auto; right: 16px; bottom: 66px; }
   .scale-grid { display: none; }

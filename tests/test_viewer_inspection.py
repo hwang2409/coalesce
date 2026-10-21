@@ -154,7 +154,6 @@ def test_part_facts_for_board_base_and_lid(tmp_path):
 
     assert facts == {
         "pcb reference": [
-            ("Export", "reference only, not exported"),
             ("Mounting holes", "3: unnamed at (2, 3), unnamed at (18, 3), H1 at (10, 7) mm"),
         ],
         "base": [
