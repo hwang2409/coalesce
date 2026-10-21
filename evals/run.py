@@ -193,7 +193,57 @@ HEADLESS = (
 )
 
 
-def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, **_):
+def _git_state(path):
+    revision = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    if revision.returncode != 0:
+        raise RuntimeError(f"cannot read git revision for {path}: {revision.stderr.strip()}")
+    dirty = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        capture_output=True, text=True, check=False,
+    )
+    if dirty.returncode != 0:
+        raise RuntimeError(f"cannot read git status for {path}: {dirty.stderr.strip()}")
+    return revision.stdout.strip(), bool(dirty.stdout.strip())
+
+
+def _zeta_server_directory(zeta_project):
+    config_path = zeta_project / ".zeta" / "mcp.json"
+    try:
+        config = json.loads(config_path.read_text())
+        entry = config["servers"]["coalesce"]
+        args = entry["args"]
+        for flag in ("--directory", "--project"):
+            if flag in args:
+                directory = args[args.index(flag) + 1]
+                if directory:
+                    path = Path(directory).expanduser()
+                    return (zeta_project / path if not path.is_absolute() else path).resolve()
+    except (OSError, KeyError, TypeError, ValueError, IndexError) as error:
+        raise RuntimeError(f"cannot parse coalesce server config {config_path}: {error}") from error
+    raise RuntimeError(f"coalesce server config {config_path} names no --directory or --project path")
+
+
+def _require_clean(path, label):
+    revision, dirty = _git_state(path)
+    if dirty:
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            capture_output=True, text=True, check=False,
+        )
+        files = [line[3:] for line in status.stdout.splitlines()[:5]]
+        listed = ", ".join(files) or "unknown files"
+        raise RuntimeError(
+            f"{label} {path} is dirty ({listed}); commit or clean these files before running"
+        )
+    return revision
+
+
+def claude_harness(prompt, run_dir, *, model, revision, before_state=None, **_):
+    coalesce_revision = revision["coalesce_revision"]
+    coalesce_dirty = revision["coalesce_dirty"]
     if before_state:
         build_before_state(
             before_state,
@@ -207,7 +257,7 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, 
             "coalesce": {
                 "command": "uv",
                 "args": [
-                    "run", "--project", str(coalesce_path), "coalesce", "--document",
+                    "run", "--project", str(revision["coalesce_path"]), "coalesce", "--document",
                     str(run_dir / "model.coalesce.json"),
                 ],
             }
@@ -236,7 +286,13 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, 
     (run_dir / "transcript.jsonl").write_text(result.stdout)
     metadata, final = _claude_metadata(result.stdout)
     (run_dir / "transcript.txt").write_text(final + ("\n" + result.stderr if result.stderr else ""))
-    return {"wall_time": time.monotonic() - started, **metadata, "returncode": result.returncode}
+    return {
+        "wall_time": time.monotonic() - started,
+        **metadata,
+        "returncode": result.returncode,
+        "coalesce_revision": coalesce_revision,
+        "coalesce_dirty": coalesce_dirty,
+    }
 
 
 def _stage_zeta_fixtures(run_dir, zeta_project):
@@ -250,8 +306,10 @@ def _stage_zeta_fixtures(run_dir, zeta_project):
     return targets
 
 
-def zeta_harness(prompt, run_dir, *, model, zeta_project, before_state=None, **_):
+def zeta_harness(prompt, run_dir, *, model, zeta_project, revision, before_state=None, **_):
     """Run in a trusted project while owning every staged input and output path."""
+    coalesce_revision = revision["coalesce_revision"]
+    coalesce_dirty = revision["coalesce_dirty"]
     fixed = zeta_project / "probe.coalesce.json"
     fixed_out = zeta_project / "out"
     if fixed.exists() or fixed_out.exists():
@@ -286,7 +344,13 @@ def zeta_harness(prompt, run_dir, *, model, zeta_project, before_state=None, **_
     if fixed.exists():
         shutil.move(fixed, run_dir / "model.coalesce.json")
     shutil.move(fixed_out, run_dir / "steps")
-    return {"wall_time": time.monotonic() - started, **metadata, "returncode": result.returncode}
+    return {
+        "wall_time": time.monotonic() - started,
+        **metadata,
+        "returncode": result.returncode,
+        "coalesce_revision": coalesce_revision,
+        "coalesce_dirty": coalesce_dirty,
+    }
 
 
 def _copy_fixtures(task, run_dir):
@@ -357,6 +421,8 @@ def _run_task(task, model, out, harness, kwargs):
     except Exception as error:  # noqa: BLE001 - harness failures are scorecard evidence
         metadata = {"error": str(error)}
     metadata.setdefault("wall_time", time.monotonic() - started)
+    metadata.setdefault("coalesce_revision", kwargs["revision"]["coalesce_revision"])
+    metadata.setdefault("coalesce_dirty", kwargs["revision"]["coalesce_dirty"])
     row = _run_result(task, model, run_dir, metadata)
     (run_dir / "check-results.json").write_text(json.dumps(row, indent=2))
     return row
@@ -365,20 +431,40 @@ def _run_task(task, model, out, harness, kwargs):
 def _write_scorecard(out, rows):
     lines = [
         "# scorecard", "",
-        "| task | model | overall | tool calls | failed tool calls | wall time |",
-        "|---|---|---|---:|---:|---:|",
+        "| task | model | overall | coalesce revision | dirty | tool calls | failed tool calls | wall time |",
+        "|---|---|---|---|---|---:|---:|---:|",
     ]
     for row in rows:
         overall = "pass" if row["overall"] else "fail/unknown"
         lines.append(
             f"| {row['task']} | {row['model']} | {overall} |"
+            f" {row['coalesce_revision']} | {row['coalesce_dirty']} |"
             f" {row.get('tool_calls', 0)} | {row.get('failed_tool_calls', 0)} |"
             f" {row.get('wall_time', 0):.1f}s |"
         )
     (out / "scorecard.md").write_text("\n".join(lines) + "\n")
 
 
-def run_tasks(task_dir, out, selectors, models, harness, **kwargs):
+def _preflight(harness, coalesce_path, zeta_project=None):
+    coalesce_revision = _require_clean(coalesce_path, "coalesce checkout")
+    if harness is zeta_harness:
+        server_directory = _zeta_server_directory(zeta_project)
+        server_revision = _require_clean(server_directory, "coalesce server checkout")
+        if server_revision != coalesce_revision:
+            raise RuntimeError(
+                f"coalesce server revision {server_revision} does not match revision under test "
+                f"{coalesce_revision}; run git -C {server_directory} checkout --detach {coalesce_revision}"
+            )
+    return {
+        "coalesce_path": coalesce_path,
+        "coalesce_revision": coalesce_revision,
+        "coalesce_dirty": False,
+    }
+
+
+def run_tasks(task_dir, out, selectors, models, harness, *, coalesce_path, **kwargs):
+    # The only checkout validation; it runs before any output exists.
+    kwargs["revision"] = _preflight(harness, coalesce_path, kwargs.get("zeta_project"))
     out.mkdir(parents=True, exist_ok=True)
     tasks = [task for selector in selectors for task in select_tasks(task_dir, selector)]
     rows = [
@@ -397,17 +483,21 @@ def main():
     parser.add_argument("--model", action="append", required=True)
     parser.add_argument("--harness", choices=["claude", "zeta"], required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--coalesce-path", type=Path, default=Path.cwd())
+    parser.add_argument("--coalesce-path", type=Path)
     parser.add_argument("--zeta-project", type=Path)
     args = parser.parse_args()
     harness = claude_harness if args.harness == "claude" else zeta_harness
-    options = (
-        {"coalesce_path": args.coalesce_path}
-        if args.harness == "claude"
-        else {"zeta_project": args.zeta_project}
-    )
-    if args.harness == "zeta" and not args.zeta_project:
-        parser.error("--zeta-project is required for the zeta harness")
+    if args.harness == "zeta":
+        if not args.zeta_project:
+            parser.error("--zeta-project is required for the zeta harness")
+        if not args.coalesce_path:
+            parser.error("--coalesce-path is required for the zeta harness")
+    elif not args.coalesce_path:
+        args.coalesce_path = Path.cwd()
+    options = {
+        "coalesce_path": args.coalesce_path,
+        **({} if args.harness == "claude" else {"zeta_project": args.zeta_project}),
+    }
     run_tasks(Path("evals/tasks"), args.out, [args.task], args.model, harness, **options)
 
 

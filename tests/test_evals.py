@@ -7,6 +7,16 @@ from evals.checks import check_task
 from evals.run import _claude_metadata, _zeta_metadata
 from evals.tasks import load_tasks
 
+REVISION = {"coalesce_path": Path.cwd(), "coalesce_revision": "0" * 40, "coalesce_dirty": False}
+
+
+@pytest.fixture
+def validated(monkeypatch):
+    import evals.run
+
+    monkeypatch.setattr(evals.run, "_preflight", lambda *_a, **_k: REVISION)
+    return REVISION
+
 
 def _document(path):
     path.write_text(json.dumps({"revision": 0, "graph": {"nodes": []}}))
@@ -45,7 +55,50 @@ def _enclosure_check(tmp_path, monkeypatch, inspected, check):
     return results[0], service
 
 
-def test_root_only_step_does_not_count(tmp_path):
+def test_run_preflight_allows_output_inside_clean_checkout(tmp_path, monkeypatch):
+    from evals.run import run_tasks
+
+    monkeypatch.setattr("evals.run._git_state", lambda _path: ("revision-1", False))
+    task_dir = tmp_path / "tasks"
+    task_dir.mkdir()
+    (task_dir / "one.json").write_text(json.dumps({
+        "id": "one", "tier": "easy", "prompt": "x", "fixtures": [],
+        "checks": [{"kind": "document_value", "path": "revision", "equals": 0}],
+    }))
+
+    def fake(_prompt, run_dir, **_kwargs):
+        _document(run_dir / "model.coalesce.json")
+        (run_dir / "steps").mkdir()
+        return {"returncode": 0, "transcript_parsed": True}
+
+    rows = run_tasks(task_dir, tmp_path / "eval-output", ["one"], ["fake"], fake,
+                     coalesce_path=tmp_path)
+    assert rows[0]["coalesce_revision"] == "revision-1"
+
+
+def test_run_preflight_rejects_dirty_checkout_before_output(tmp_path, monkeypatch):
+    from evals.run import run_tasks
+
+    monkeypatch.setattr("evals.run._git_state", lambda _path: ("revision-1", True))
+    with pytest.raises(RuntimeError, match="coalesce checkout.*dirty"):
+        run_tasks(tmp_path / "tasks", tmp_path / "eval-output", ["one"], ["fake"], lambda **_: {},
+                  coalesce_path=tmp_path)
+    assert not (tmp_path / "eval-output").exists()
+
+
+def test_zeta_preflight_rejects_revision_mismatch_before_output(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import run_tasks, zeta_harness
+
+    project = _zeta_project(tmp_path, tmp_path / "server")
+    monkeypatch.setattr(evals.run, "_git_state", lambda path: ("under-test" if path == tmp_path else "stale", False))
+    with pytest.raises(RuntimeError, match="does not match revision under test"):
+        run_tasks(tmp_path / "tasks", tmp_path / "eval-output", ["one"], ["m"], zeta_harness,
+                  coalesce_path=tmp_path, zeta_project=project)
+    assert not (tmp_path / "eval-output").exists()
+
+
+def test_root_only_step_does_not_count(tmp_path, validated):
     from build123d import Box, export_step
 
     from evals.run import run_tasks
@@ -61,7 +114,7 @@ def test_root_only_step_does_not_count(tmp_path):
         "id": "root", "tier": "easy", "prompt": "x", "fixtures": [],
         "checks": [{"kind": "step_validity"}],
     }))
-    rows = run_tasks(task_dir, tmp_path / "out", ["root"], ["fake"], fake)
+    rows = run_tasks(task_dir, tmp_path / "out", ["root"], ["fake"], fake, coalesce_path=Path.cwd())
     assert rows[0]["checks"][0]["status"] == "fail"
     assert rows[0]["overall"] is False
 
@@ -527,19 +580,115 @@ def test_zeta_json_transcript_metadata_from_real_shape():
     assert final == "done"
 
 
-def test_zeta_fixture_staging_refuses_existing_path(tmp_path):
+def test_zeta_fixture_staging_refuses_existing_path(tmp_path, monkeypatch):
+    import evals.run
     from evals.run import zeta_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("same", False))
 
     run_dir = tmp_path / "run"
     fixtures = run_dir / "fixtures"
     fixtures.mkdir(parents=True)
     (fixtures / "features.kicad_pcb").write_text("fixture")
     project = tmp_path / "project"
-    project.mkdir()
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(json.dumps({
+        "servers": {"coalesce": {"args": ["--directory", str(Path.cwd())]}}
+    }))
     (project / "coalesce-eval-features.kicad_pcb").write_text("do not replace")
     with pytest.raises(FileExistsError, match="coalesce-eval-features.kicad_pcb"):
-        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project)
+        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project,
+                     revision=REVISION)
     assert (project / "coalesce-eval-features.kicad_pcb").read_text() == "do not replace"
+
+
+def _zeta_project(tmp_path, directory):
+    project = tmp_path / "project"
+    (project / ".zeta").mkdir(parents=True)
+    config = json.loads(Path("tests/fixtures/mcp.json").read_text())
+    config["servers"]["coalesce"]["args"][config["servers"]["coalesce"]["args"].index("--directory") + 1] = str(directory)
+    (project / ".zeta" / "mcp.json").write_text(json.dumps(config))
+    return project
+
+
+def test_zeta_relative_server_directory_resolves_from_project(tmp_path):
+    from evals.run import _zeta_server_directory
+
+    project = _zeta_project(tmp_path, Path("relative-server"))
+    assert _zeta_server_directory(project) == (project / "relative-server").resolve()
+
+
+def test_zeta_dirty_server_fails_before_staging(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import zeta_harness
+
+    calls = []
+    monkeypatch.setattr(evals.run, "_git_state", lambda path: ("same", path != Path("source")))
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        return type("Result", (), {"stdout": " M dirty-file", "stderr": "", "returncode": 0})()
+    monkeypatch.setattr(evals.run.subprocess, "run", fake_run)
+    run_dir = tmp_path / "run"
+    (run_dir / "fixtures").mkdir(parents=True)
+    project = _zeta_project(tmp_path, Path("server"))
+    with pytest.raises(RuntimeError, match="coalesce server checkout.*dirty-file.*commit or clean"):
+        evals.run._preflight(zeta_harness, Path("source"), project)
+    assert not list((tmp_path / "project").glob("coalesce-eval-*"))
+    assert calls == [["git", "-C", str(tmp_path / "project" / "server"), "status", "--porcelain"]]
+
+
+def test_zeta_mismatched_server_revision_fails_closed(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import zeta_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda path: ("under-test" if path == Path("source") else "stale", False))
+    monkeypatch.setattr(evals.run.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("zeta was called"))
+    run_dir = tmp_path / "run"
+    (run_dir / "fixtures").mkdir(parents=True)
+    project = _zeta_project(tmp_path, Path("server"))
+    with pytest.raises(RuntimeError, match="git -C .* checkout --detach under-test"):
+        evals.run._preflight(zeta_harness, Path("source"), project)
+    assert not (run_dir / "transcript.json").exists()
+
+
+def test_zeta_matching_server_revision_runs(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import zeta_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("same", False))
+    def fake_run(*_args, **_kwargs):
+        return type("Result", (), {"stdout": '{"type":"message","role":"assistant","text":"done"}', "stderr": "", "returncode": 0})()
+    monkeypatch.setattr(evals.run.subprocess, "run", fake_run)
+    run_dir = tmp_path / "run"
+    (run_dir / "fixtures").mkdir(parents=True)
+    project = _zeta_project(tmp_path, Path("server"))
+    revision = evals.run._preflight(zeta_harness, Path("source"), project)
+    result = zeta_harness("prompt", run_dir, model="m", zeta_project=project, revision=revision)
+    assert result["coalesce_revision"] == "same"
+
+
+@pytest.mark.parametrize("config", ["not json", {"servers": {"coalesce": {"args": []}}}])
+def test_zeta_invalid_server_config_fails_closed(tmp_path, monkeypatch, config):
+    import evals.run
+    from evals.run import zeta_harness
+
+    project = tmp_path / "project"
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(config if isinstance(config, str) else json.dumps(config))
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("same", False))
+    with pytest.raises(RuntimeError, match="(parse.*config|config .*names no)"):
+        evals.run._preflight(zeta_harness, Path("source"), project)
+
+
+def test_claude_dirty_checkout_fails_closed(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import claude_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("revision", True))
+    monkeypatch.setattr(evals.run.subprocess, "run", lambda *_args, **_kwargs: type("Result", (), {"stdout": " M dirty-file", "stderr": "", "returncode": 0})())
+    (tmp_path / "fixtures").mkdir()
+    with pytest.raises(RuntimeError, match="coalesce checkout.*dirty-file.*commit or clean"):
+        evals.run._preflight(claude_harness, Path("source"))
 
 
 def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
@@ -557,7 +706,7 @@ def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
     fixtures.mkdir()
     fixture = fixtures / "features.kicad_pcb"
     fixture.write_text("fixture")
-    claude_harness("prompt", tmp_path, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+    claude_harness("prompt", tmp_path, model="claude-haiku-4-5", revision=REVISION)
     assert str(fixture) in seen["command"][2]
     assert seen["command"][seen["command"].index("--tools") + 1] == ""
     assert seen["command"][seen["command"].index("--setting-sources") + 1] == ""
@@ -580,11 +729,15 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
     run_dir = tmp_path / "run"
     (run_dir / "fixtures").mkdir(parents=True)
     if harness == "claude":
-        claude_harness("prompt", run_dir, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+        claude_harness("prompt", run_dir, model="claude-haiku-4-5", revision=REVISION)
     else:
         project = tmp_path / "project"
-        project.mkdir()
-        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project)
+        (project / ".zeta").mkdir(parents=True)
+        (project / ".zeta" / "mcp.json").write_text(json.dumps({
+            "servers": {"coalesce": {"args": ["--directory", str(Path.cwd())]}}
+        }))
+        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project,
+                     revision=REVISION)
     assert seen["command"][2].count(HEADLESS) == 1
 
 
@@ -610,7 +763,7 @@ def test_task_files_load_and_validate():
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 
-def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path):
+def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path, validated):
     from build123d import export_step
 
     from evals.run import run_tasks
@@ -629,7 +782,7 @@ def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path):
     (task_dir / "plate-holes.json").write_text(
         Path("evals/tasks/plate_holes.json").read_text()
     )
-    rows = run_tasks(task_dir, tmp_path / "out", ["plate-holes"], ["fake"], failed_harness)
+    rows = run_tasks(task_dir, tmp_path / "out", ["plate-holes"], ["fake"], failed_harness, coalesce_path=Path.cwd())
     assert rows[0]["overall"] is False
     assert rows[0]["reason"] == "harness exited with return code 1"
 
@@ -650,7 +803,7 @@ def test_harness_error_or_unparsed_transcript_prevents_scoring(tmp_path, metadat
     assert row["reason"] == reason
 
 
-def test_existing_run_directory_is_rejected_before_reading(tmp_path):
+def test_existing_run_directory_is_rejected_before_reading(tmp_path, validated):
     from evals.run import run_tasks
 
     task_dir = tmp_path / "tasks"
@@ -665,11 +818,11 @@ def test_existing_run_directory_is_rejected_before_reading(tmp_path):
     prompt.write_text("existing")
 
     with pytest.raises(FileExistsError, match="run directory already exists"):
-        run_tasks(task_dir, tmp_path / "out", ["one"], ["fake"], lambda *_a, **_k: {})
+        run_tasks(task_dir, tmp_path / "out", ["one"], ["fake"], lambda *_a, **_k: {}, coalesce_path=Path.cwd())
     assert prompt.read_text() == "existing"
 
 
-def test_runner_fake_harness(tmp_path):
+def test_runner_fake_harness(tmp_path, validated):
     from evals.run import run_tasks
 
     def fake(prompt, run_dir, **kwargs):
@@ -689,7 +842,59 @@ def test_runner_fake_harness(tmp_path):
         "checks": [{"kind": "document_value", "path": "missing", "equals": 1}],
     }))
     out = tmp_path / "out"
-    rows = run_tasks(task_dir, out, ["one"], ["fake"], fake)
+    rows = run_tasks(task_dir, out, ["one"], ["fake"], fake, coalesce_path=Path.cwd())
     assert rows[0]["overall"] is False
     assert (out / "scorecard.md").exists()
     assert len((out / "results.jsonl").read_text().splitlines()) == 1
+
+
+def _git_repo(path):
+    import subprocess
+
+    path.mkdir()
+    git = ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (path / ".gitignore").write_text(".venv/\n")
+    (path / "a.txt").write_text("a")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    head = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    return git, head.stdout.strip()
+
+
+def _zeta_config(project, directory):
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(json.dumps({
+        "servers": {"coalesce": {"command": "uv", "args": ["run", "--directory", str(directory), "coalesce"]}}
+    }))
+
+
+def test_preflight_reads_real_git_head_and_rejects_dirty_tree(tmp_path):
+    from evals.run import _preflight, claude_harness
+
+    repo = tmp_path / "repo"
+    _, head = _git_repo(repo)
+    (repo / ".venv").mkdir()
+    (repo / ".venv" / "ignored").write_text("ignored files do not count")
+    assert _preflight(claude_harness, repo)["coalesce_revision"] == head
+    (repo / "b.txt").write_text("uncommitted")
+    with pytest.raises(RuntimeError, match=r"is dirty \(b.txt\)"):
+        _preflight(claude_harness, repo)
+
+
+def test_preflight_compares_real_zeta_server_revision(tmp_path):
+    import subprocess
+
+    from evals.run import _preflight, zeta_harness
+
+    repo = tmp_path / "repo"
+    git, head = _git_repo(repo)
+    server = tmp_path / "server"
+    subprocess.run(["git", "clone", "-q", str(repo), str(server)], check=True)
+    project = tmp_path / "project"
+    _zeta_config(project, server)
+    assert _preflight(zeta_harness, repo, project)["coalesce_revision"] == head
+    (repo / "a.txt").write_text("changed")
+    subprocess.run([*git, "commit", "-qam", "next"], check=True)
+    with pytest.raises(RuntimeError, match="does not match revision under test"):
+        _preflight(zeta_harness, repo, project)
