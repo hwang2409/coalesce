@@ -261,6 +261,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (wait.revision) await page.waitForFunction((n) => window.coalesceViewer?.revision === n, wait.revision, { timeout: 15000 });
   if (wait.failure) await page.waitForFunction((code) => window.coalesceViewer.failure?.error.code === code, wait.failure, { timeout: 15000 });
   if (wait.text) await waitForText(wait.text);
+  if (wait.status) await page.waitForFunction((t) => document.querySelector('#status')?.innerText.includes(t), wait.status, { timeout: 30000 });
   if (wait.ready) await page.getByText('Waiting for the first revision').waitFor({ timeout: 15000 });
   const results = [];
   for (const action of actions) results.push(await act(action));

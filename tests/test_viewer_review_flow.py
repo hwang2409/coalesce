@@ -366,7 +366,8 @@ def test_status_never_moves_or_resizes_the_model(module, viewport):
         failed = step("status-failed", wait={"failure": "KERNEL_OPERATION_FAILED"})
         assert "max_fillet" not in failed["status"] and "reduce the fillet radius" in failed["status"]
         server.close()
-        lost = step("status-reconnecting", outage=True, wait={"text": "Reconnecting"}, do=[{"settle": True}])
+        # wait for the status itself: the link label says "Reconnecting" a moment before the status merges
+        lost = step("status-reconnecting", outage=True, wait={"status": "may be out of date"}, do=[{"settle": True}])
         # one calm status, not two stacked messages
         assert lost["repair"] is None
         assert lost["status"] == (
