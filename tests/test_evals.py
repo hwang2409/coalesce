@@ -326,9 +326,9 @@ def test_board_refresh_rejects_no_refresh_after_unrelated_update(tmp_path, monke
                 "feature": {
                     "mechanics": {
                         "holes": [
-                            {"id": "m2-id", "position": [2, 3]},
-                            {"id": "m3-id", "position": [18, 3]},
-                            {"id": "npth-id", "position": [10, 7]},
+                            {"footprintId": "m2-id", "position": [2, 3]},
+                            {"footprintId": "m3-id", "position": [18, 3]},
+                            {"footprintId": "npth-id", "position": [10, 7]},
                         ],
                         "footprints": [{"reference": "J1", "position": [1, 5], "rotation": 0}],
                     }
@@ -343,6 +343,11 @@ def test_board_refresh_rejects_no_refresh_after_unrelated_update(tmp_path, monke
         _document(tmp_path / "model.coalesce.json"), tmp_path / "steps",
     )[0]
     assert result["status"] == "fail"
+    # the saved board is the unrefreshed one: old holes and old J1, read through footprintId
+    assert result["actual"] == {
+        "mountingHoles": {"m2-id": [2, 3], "m3-id": [18, 3], "npth-id": [10, 7]},
+        "connector": [[1, 5], 0],
+    }
 
 
 def test_blocked_expected_port_fails(tmp_path, monkeypatch):
