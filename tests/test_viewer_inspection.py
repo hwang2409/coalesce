@@ -3,15 +3,17 @@
 import time
 
 import pytest
+from build123d import Pos
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
 from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
+from test_viewer_browser import plate
 from test_viewer_review_flow import module, open_driver  # noqa: F401 - module is a fixture
 
 from coalesce import enclosure_inspection
 from coalesce.service import DocumentService
-from coalesce.viewer import ViewerSceneStore, ViewerServer
+from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 H1 = "hole-9ddb205ba1bc297f95347452"  # the NPTH mounting hole with reference H1
 UNNAMED = ["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"]  # REF** holes
@@ -271,6 +273,51 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert ["Standoffs", "2 × ⌀5 mm, pilot ⌀1.6 mm"] in opened["facts"]
         raw = step("fit-evidence-raw", do=[{"rawEvidence": True}, {"fit": True}])["actions"][1]
         assert raw["rawOpen"] is True and H1 in raw["raw"]
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+def gap_check(part_id):
+    row = {"id": "gap", "label": "Fit gap", "status": "FAIL", "value": "0 mm", "reason": "too tight",
+           "partId": part_id, "evidence": {}}
+    return [{"baseId": "base", "rows": [row]}]
+
+
+def test_shown_part_ends_only_by_its_own_escape_or_a_revision_that_drops_it(module, tmp_path):  # noqa: F811
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, (1280, 800))
+    lid = ScenePart("lid", Pos(0, 0, 10) * plate(2))
+    try:
+        step("empty", wait={"ready": True})
+        store.publish(1, [ScenePart("base", plate(6)), lid], fit=gap_check("lid"))
+        step("shown", wait={"revision": 1}, do=[{"fitRow": 0}, {"settle": True}])
+        # Escape in a disclosure is the disclosure's own: the part stays shown
+        kept = step("summary-escape", do=[{"focus": ".fit-evidence > summary"}, {"key": "Escape"}, {"settle": True}])
+        assert kept["scene"]["faded"] == [True, False]
+        # Escape anywhere else shows all parts again
+        cleared = step("body-escape", do=[{"blur": True}, {"key": "Escape"}, {"settle": True}])
+        assert cleared["scene"]["faded"] == [False, False]
+
+        # a new revision keeps the part but drops its fit row: all parts again, focus stays on the part, and it says so
+        step("shown-again", do=[{"fitRow": 0}, {"settle": True}])
+        store.publish(2, [ScenePart("base", plate(6)), lid])
+        dropped = step("row-dropped", wait={"revision": 2}, do=[{"settle": True}])
+        assert dropped["scene"]["faded"] == [False, False]
+        assert dropped["focused"] == "lid"
+        assert dropped["description"].startswith("All parts shown. Revision 2,")
+
+        # focus elsewhere stays where it is when a revision drops the shown part
+        store.publish(3, [ScenePart("base", plate(6)), lid], fit=gap_check("lid"))
+        step("shown-3", wait={"revision": 3}, do=[{"fitRow": 0}, {"settle": True}, {"focus": "[data-mode='section']"}])
+        store.publish(4, [ScenePart("base", plate(6))], fit=gap_check(None))
+        gone = step("part-removed", wait={"revision": 4}, do=[{"settle": True}])
+        assert gone["scene"]["faded"] == [False]
+        assert gone["focused"] == "Section"
+        assert gone["description"].startswith("All parts shown. Revision 4,")
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

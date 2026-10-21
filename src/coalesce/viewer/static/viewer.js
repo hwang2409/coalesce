@@ -515,6 +515,7 @@ function fitRow(row, key) {
     item.type = 'button';
     item.setAttribute('aria-pressed', String(shown));
     item.title = shown ? 'Show all parts again' : `Show ${title} in the view and its facts`;
+    item.dataset.partId = row.partId;
     // a second press shows every part again
     item.addEventListener('click', () => {
       if (shown) {
@@ -540,19 +541,23 @@ function showPart(next) {
   requestRender();
 }
 
-// every part again: focus goes back to the fit row that showed the part, and the canvas says so
-function showAll() {
+// every part again, and the canvas says so. focus goes back to the fit row that showed the part, else
+// to the part's row, else to the parts heading: the row it was on may be gone in a new revision
+function showAll(focus = true) {
   const { key, partId } = selected;
   showPart(null);
-  (fitRowFor(key) ?? partRow(partId))?.focus();
+  const row = fitRowFor(key);
+  if (focus) ((row?.dataset.partId === partId && row) || partRow(partId) || $('parts-title')).focus();
   $('view-description').textContent = `All parts shown. ${$('view-description').textContent}`;
 }
 
 // the canvas says which part it shows: after a press, focus and the panel move on to that part's row
-$('showing-clear').addEventListener('click', showAll);
-// Escape shows all parts again; in the section controls their own Escape ends the section view first
+$('showing-clear').addEventListener('click', () => showAll());
+// Escape shows all parts again; in the section controls their own Escape ends the section view first.
+// a field, a disclosure or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
+const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), summary, details[open], dialog';
 document.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape' || event.defaultPrevented || !selected) return;
+  if (event.key !== 'Escape' || event.defaultPrevented || !selected || event.target.closest?.(OWNS_ESCAPE)) return;
   event.preventDefault();
   showAll();
 });
@@ -573,11 +578,6 @@ function renderInspection(fit) {
     .map(([count, text]) => Object.assign(document.createElement('span'), { textContent: `${count} ${text}` }));
   $('inspection-count').replaceChildren(...counts.flatMap((count, i) => (i ? [', ', count] : [count])));
   $('inspection-note').hidden = !rows.some((row) => row.status === 'MEASURED');
-  const keys = fit.flatMap(({ baseId, rows: measured }) => measured.map((row) => [`${baseId}/${row.id}`, row]));
-  // a selection outlives a new revision while its row still points at the same part
-  if (selected && !keys.some(([key, row]) => key === selected.key && row.partId === selected.partId && partRow(row.partId))) {
-    selected = null;
-  }
   const list = $('inspection-rows');
   const evidence = $('inspection-evidence');
   list.replaceChildren();
@@ -1042,6 +1042,11 @@ async function loadOne(revision) {
     if (data.superseded) throw new Superseded();
     await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
+    // a shown part outlives a new revision while its fit row still points at it; else all parts again,
+    // and focus on its row follows to the replacement row
+    const dropped = selected && !(data.parts.some((part) => part.partId === selected.partId)
+      && data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === selected.key && row.partId === selected.partId)));
+    const held = dropped && [fitRowFor(selected.key), partRow(selected.partId)].includes(document.activeElement);
     for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
     clearGroup(model, { ownsGeometry: false });
     const ranks = depthRanks(data.parts);
@@ -1061,7 +1066,8 @@ async function loadOne(revision) {
       showRefit(true);
     } else applyView(activeView);
     syncGizmo();
-    describeView();
+    if (dropped) showAll(held);
+    else describeView();
     requestRender();
   } catch (error) {
     // superseded: the event for the newer revision is already here or on its way
