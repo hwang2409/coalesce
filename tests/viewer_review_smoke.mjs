@@ -122,6 +122,22 @@ async function act(action) {
   }
   if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
+  // the revision number's box and look with and without the transient update signal
+  if ('fresh' in action) {
+    return page.locator('#revision').evaluate(async (el) => {
+      await Promise.all(el.getAnimations().map((animation) => animation.finished)); // the last update's fade
+      const look = () => {
+        const style = getComputedStyle(el);
+        const { width, height, x, y } = el.getBoundingClientRect();
+        return { background: style.backgroundColor, padding: style.padding, margin: style.margin, color: style.color, box: [x, y, width, height] };
+      };
+      const plain = look();
+      el.classList.add('fresh');
+      const fresh = look();
+      el.classList.remove('fresh');
+      return { plain, fresh };
+    });
+  }
   if ('blur' in action) await page.evaluate(() => document.activeElement?.blur());
   if ('stallSession' in action) {
     const sessionUrl = new URL('/api/session', url).href;
