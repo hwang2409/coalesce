@@ -148,9 +148,10 @@ def _boundary_faces(regenerated, fillet_id, edge_role, kind):
         for candidate in regenerated.provenance[fillet_id]
         if candidate.key.role.startswith("blend(")
     ]
-    if inside_role in edge_role:
+    edge_roles = edge_role.removeprefix("between(").removesuffix(")").split(",")
+    if inside_role in edge_roles:
         inside.extend(blends)
-    if outside_role in edge_role:
+    if outside_role in edge_roles:
         outside.extend(blends)
     return Compound(children=inside), Compound(children=outside)
 
@@ -524,6 +525,7 @@ def test_enclosure_query_thickness_sweep_never_returns_a_wrong_value(tmp_path):
         "unknown": 0,
         "wrong": 0,
     }
+    edges_by_outcome = {"exact": [], "unknown": [], "wrong": []}
     for index, candidate in enumerate(candidates):
         try:
             outcome = _fillet_case(
@@ -536,6 +538,7 @@ def test_enclosure_query_thickness_sweep_never_returns_a_wrong_value(tmp_path):
             continue
         counts["filleted"] += 1
         counts[outcome] += 1
+        edges_by_outcome[outcome].append(candidate.key.role)
 
     print(
         "thickness sweep: "
@@ -543,7 +546,8 @@ def test_enclosure_query_thickness_sweep_never_returns_a_wrong_value(tmp_path):
     )
     assert counts["tried"] > 0
     assert counts["filleted"] == counts["exact"] + counts["unknown"] + counts["wrong"]
-    assert counts["wrong"] == 0, counts
+    print(f"thickness sweep outcomes: {edges_by_outcome}")
+    assert counts["wrong"] == 0, {**counts, "edges": edges_by_outcome}
 
 
 @pytest.mark.parametrize("filleted_role", ["outer_wall", "inner_wall"])

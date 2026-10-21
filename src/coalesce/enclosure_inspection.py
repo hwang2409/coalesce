@@ -102,15 +102,28 @@ def _touches_any(component: list[Face], candidates: list[Face]) -> bool:
 
 
 def _classify_component(
-    component: list[Face], groups: dict[str, list[Face]], measured: list[str], neutral: list[Face]
+    component: list[Face], groups: dict[str, list[Face]], measured: list[str]
 ) -> None:
     touched = {group for group in measured if _touches_any(component, groups[group])}
     sides = {group.rsplit("_", 1)[1] for group in touched}
-    if len(sides) == 1:
-        for group in touched:
-            groups[group].extend(component)
-    elif not touched and not _touches_any(component, neutral):
+    if len(sides) != 1:
         groups["unclassified"].extend(component)
+        return
+    for group in touched:
+        groups[group].extend(component)
+
+
+def _neutral_boundary_faces(result: Any, base: PcbBase) -> list[Face]:
+    neutral = _faces(result, base.id, "rim")
+    ports = [
+        node
+        for node in result.graph.ordered()
+        if isinstance(node, PortCutout) and node.base == base.id
+    ]
+    for port in ports:
+        for role in ("port_bottom", "port_side", "port_top"):
+            neutral.extend(_faces(result, port.id, role))
+    return neutral
 
 
 def _classify_boundary_faces(result: Any, base: PcbBase, shape: Shape) -> dict[str, list[Face]]:
@@ -123,10 +136,10 @@ def _classify_boundary_faces(result: Any, base: PcbBase, shape: Shape) -> dict[s
     groups = {group: _faces(result, base.id, role) for role, group in roles.items()}
     groups["unclassified"] = []
     seeds = [face for faces in groups.values() for face in faces]
-    neutral = _faces(result, base.id, "rim")
+    neutral = _neutral_boundary_faces(result, base)
     unclassified = [face for face in shape.faces() if not _same_face(face, [*seeds, *neutral])]
     for component in _face_components(unclassified):
-        _classify_component(component, groups, list(roles.values()), neutral)
+        _classify_component(component, groups, list(roles.values()))
     return groups
 
 
