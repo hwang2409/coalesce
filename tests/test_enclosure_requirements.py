@@ -245,6 +245,41 @@ def test_unknown_requirement_kind_is_structured_parameter_error(tmp_path):
     assert "board_clearance" in response["error"]["supportedKinds"]
 
 
+@pytest.mark.anyio
+async def test_stdio_unknown_requirement_kind_reports_supported_kinds(tmp_path):
+    response, = await run_server(
+        tmp_path / "unknown-kind.coalesce.json",
+        [("check", {
+            "action": "evaluate",
+            "requirements": [{"id": "bad", "kind": "board_clearance_typo"}],
+        })],
+    )
+
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["kind"] == "board_clearance_typo"
+    assert response["error"]["supportedKinds"] == sorted(response["error"]["supportedKinds"])
+    assert "board_clearance" in response["error"]["supportedKinds"]
+
+
+@pytest.mark.anyio
+async def test_stdio_rejects_side_on_wall_thickness(tmp_path):
+    response, = await run_server(
+        tmp_path / "wall-side.coalesce.json",
+        [("check", {
+            "action": "evaluate",
+            "requirements": [{
+                "id": "wall",
+                "kind": "wall_thickness",
+                "threshold": quantity(2),
+                "side": "left",
+            }],
+        })],
+    )
+
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["allowedFields"] == ["id", "kind", "threshold"]
+
+
 def test_clean_base_passes_measured_requirements(tmp_path):
     service = _service(
         tmp_path,

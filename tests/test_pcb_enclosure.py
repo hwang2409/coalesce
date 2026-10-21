@@ -1,3 +1,4 @@
+import json
 import math
 import shutil
 from pathlib import Path
@@ -266,6 +267,43 @@ def test_invalid_base_clearance_names_feature_and_parameter_and_is_atomic(tmp_pa
     assert document.read_bytes() == before
 
 
+def _remove_mounting_footprint(source: Path, library_id: str) -> None:
+    text = source.read_text()
+    start = text.index(f' (footprint "{library_id}"')
+    end = text.index(" (footprint ", start + 1)
+    source.write_text(text[:start] + text[end:])
+
+
+def _add_mounting_footprint(source: Path) -> None:
+    text = source.read_text()
+    footprint = ''' (footprint "MountingHole:M2" (layer "F.Cu") (uuid "added-id") (at 10 1.5)
+  (property "Reference" "H2") (property "Value" "M2")
+  (pad "" thru_hole circle (at 0 0) (drill 2.2) (layers "*.Cu" "*.Mask")))
+'''
+    source.write_text(text.replace(' (footprint "Connector:Front"', footprint + ' (footprint "Connector:Front"'))
+
+
+def _dynamic_enclosure(tmp_path: Path, name: str = "dynamic") -> tuple[DocumentService, Path, Path]:
+    source = tmp_path / f"{name}.kicad_pcb"
+    shutil.copyfile(FIXTURES / "features.kicad_pcb", source)
+    document = tmp_path / f"{name}.coalesce.json"
+    service = DocumentService(document)
+    assert service.import_board(import_request(source))["ok"]
+    assert service.feature(base_request())["ok"]
+    assert service.feature(
+        standoffs_request(selection={"mode": "all_mounting"})
+    )["ok"]
+    return service, source, document
+
+
+def _pilot_hole_ids(service: DocumentService) -> set[str]:
+    return {
+        item.key.source
+        for item in service._regen.provenance["mounts"]
+        if item.key.role == "pilot_wall"
+    }
+
+
 def test_refresh_can_replace_source_path_and_keep_import_ids(tmp_path):
     document = tmp_path / "refresh-path.coalesce.json"
     service = DocumentService(document)
@@ -290,6 +328,99 @@ def test_refresh_can_replace_source_path_and_keep_import_ids(tmp_path):
         item["id"] for item in after.mechanics["holes"]
     }
     assert before.source_digest != after.source_digest
+
+
+def test_refresh_removes_dynamic_mounting_hole_and_reports_selection_change(tmp_path):
+    service, source, _ = _dynamic_enclosure(tmp_path, "remove")
+    removed = ALL_MOUNTING_HOLES[0]
+    _remove_mounting_footprint(source, "MountingHole:M2")
+
+    refreshed = service.import_board(
+        import_request(source, revision=3, request_id="refresh-remove", action="refresh")
+    )
+
+    assert refreshed["ok"] is True
+    assert _pilot_hole_ids(service) == set(ALL_MOUNTING_HOLES) - {removed}
+    assert refreshed["selectionChanges"] == [{
+        "featureId": "mounts",
+        "selector": "all_mounting",
+        "holesAdded": [],
+        "holesRemoved": [removed],
+    }]
+
+
+def test_refresh_adds_dynamic_mounting_hole_and_reports_selection_change(tmp_path):
+    service, source, _ = _dynamic_enclosure(tmp_path, "add")
+    _add_mounting_footprint(source)
+
+    refreshed = service.import_board(
+        import_request(source, revision=3, request_id="refresh-add", action="refresh")
+    )
+
+    assert refreshed["ok"] is True
+    added = next(
+        hole["id"]
+        for hole in service._document.graph.nodes["controller_board"].mechanics["holes"]
+        if hole.get("reference") == "H2"
+    )
+    assert refreshed["ok"] is True
+    assert _pilot_hole_ids(service) == {*ALL_MOUNTING_HOLES, added}
+    assert refreshed["selectionChanges"] == [{
+        "featureId": "mounts",
+        "selector": "all_mounting",
+        "holesAdded": [added],
+        "holesRemoved": [],
+    }]
+
+
+def test_refresh_moved_board_with_same_ids_has_no_selection_changes(tmp_path):
+    service, _, _ = _dynamic_enclosure(tmp_path, "move")
+
+    refreshed = service.import_board({
+        **import_request(
+            FIXTURES / "features-moved.kicad_pcb",
+            revision=3,
+            request_id="refresh-move",
+            action="refresh",
+        ),
+        "path": str((FIXTURES / "features-moved.kicad_pcb").resolve()),
+    })
+
+    assert refreshed["ok"] is True
+    assert refreshed["selectionChanges"] == []
+    assert _pilot_hole_ids(service) == set(ALL_MOUNTING_HOLES)
+
+
+def test_unrelated_upstream_feature_update_has_no_selection_changes(tmp_path):
+    service, _, _ = _dynamic_enclosure(tmp_path, "unrelated")
+
+    updated = service.feature({
+        "action": "update",
+        "expectedRevision": 3,
+        "requestId": "base-update",
+        "featureId": "base",
+        "kind": "pcb_base",
+        "set": {"wallHeightAboveBoard": quantity(5)},
+    })
+
+    assert updated["ok"] is True
+    assert updated["selectionChanges"] == []
+
+
+def test_old_document_without_selection_snapshots_reports_first_refresh(tmp_path):
+    service, source, document = _dynamic_enclosure(tmp_path, "old")
+    payload = json.loads(document.read_text())
+    payload.pop("selectionHistory", None)
+    document.write_text(json.dumps(payload))
+    service = DocumentService(document)
+    removed = ALL_MOUNTING_HOLES[0]
+    _remove_mounting_footprint(source, "MountingHole:M2")
+
+    refreshed = service.import_board(
+        import_request(source, revision=3, request_id="refresh-old", action="refresh")
+    )
+
+    assert refreshed["selectionChanges"][0]["holesRemoved"] == [removed]
 
 
 def test_refresh_that_moves_selected_hole_off_floor_fails_atomically(tmp_path):
@@ -324,7 +455,8 @@ def test_refresh_moves_standoff_and_removed_hole_is_missing_and_atomic(tmp_path)
     service = DocumentService(document)
     service.import_board(import_request(source))
     service.feature(base_request())
-    service.feature(standoffs_request())
+    created = service.feature(standoffs_request())
+    assert created["selectionChanges"] == []
 
     source.write_text(source.read_text().replace('(uuid "m2-id") (at 2 3)', '(uuid "m2-id") (at 4 4)'))
     moved = service.import_board(

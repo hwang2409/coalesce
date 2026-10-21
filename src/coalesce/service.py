@@ -2457,9 +2457,7 @@ class DocumentService:
 
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
-                previous_selections = self._document.selection_history.get(
-                    str(self._document.revision), _selection_snapshot(self._document.graph)
-                )
+                previous_selections = _selection_snapshot(self._document.graph)
                 graph = loads(dumps(self._document.graph))
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
                 changed_id, changed_ids, deletion = _applied_result(applied)
@@ -2496,10 +2494,6 @@ class DocumentService:
                         *self._document.request_hashes,
                         {"requestId": request_id, "requestHash": body_hash},
                     ][-MAX_REQUEST_HASHES:],
-                    selection_history={
-                        **self._document.selection_history,
-                        str(previous + 1): _selection_snapshot(graph),
-                    },
                 )
                 durable = self.store.save(document)
                 before = self._document.graph

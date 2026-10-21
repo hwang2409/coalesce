@@ -22,7 +22,6 @@ class Document:
     revision: int = 0
     receipts: list[dict[str, Any]] = field(default_factory=list)
     request_hashes: list[dict[str, str]] = field(default_factory=list)
-    selection_history: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
 class DocumentStore:
@@ -48,13 +47,6 @@ class DocumentStore:
             revision=int(payload.get("revision", 0)),
             receipts=receipts,
             request_hashes=list(request_hashes)[-MAX_REQUEST_HASHES:],
-            selection_history={
-                str(revision): {
-                    str(feature): list(hole_ids)
-                    for feature, hole_ids in selections.items()
-                }
-                for revision, selections in payload.get("selectionHistory", {}).items()
-            },
         )
 
     def save(self, document: Document) -> bool:
@@ -66,7 +58,6 @@ class DocumentStore:
             "graph": json.loads(dumps(document.graph)),
             "receipts": document.receipts[-MAX_RECEIPTS:],
             "requestHashes": document.request_hashes[-MAX_REQUEST_HASHES:],
-            "selectionHistory": document.selection_history,
         }
         encoded = (
             json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"

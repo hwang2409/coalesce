@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-SUPPORTED_REQUIREMENT_KINDS = (
-    "valid_brep", "wall_thickness", "floor_thickness", "board_clearance",
-    "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap",
-    "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance",
-    "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies",
-)
+from .requirements import SUPPORTED_REQUIREMENT_KINDS as EVALUATED_REQUIREMENT_KINDS
+
+SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT_KINDS)))
 
 QUANTITY = {
     "type": "object",
@@ -807,6 +804,9 @@ CHECK_FIT_THRESHOLD = {
     "additionalProperties": False,
 }
 CHECK_REQUIREMENT = {
+    "type": "object",
+    "properties": {"kind": {"enum": list(SUPPORTED_REQUIREMENT_KINDS)}},
+    "required": ["kind"],
     "oneOf": [
         {
             "type": "object",

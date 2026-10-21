@@ -49,7 +49,10 @@ The import stores the resolved path, SHA-256 digest, parser version, stable mech
 availability, warnings, and errors. It regenerates the exact board substrate as reference
 geometry from line, arc, circle, cutout, and drill data. It does not access the network or
 resolve environment variables in model paths. Later source edits do not affect the document; use
-`import` refresh to read the persisted path and commit a new snapshot explicitly.
+`import` refresh to read the persisted path, or supply an optional replacement absolute path, and
+commit a new snapshot explicitly. `all_mounting` standoff selections follow the refreshed board and
+report added or removed holes in `selectionChanges`; explicit hole ids stay fixed and the refresh
+fails without writing when any selected id is missing.
 Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+Y), XZ=(+X,+Z), YZ=(+Y,+Z). Plane offset moves along its normal.
 Plane normals are XY +Z, XZ -Y, YZ +X.
 Extrusion starts at the sketch plane and extends along its normal; it is not centered.
@@ -307,6 +310,31 @@ def _prefer_unknown_field(error: ValidationError) -> ValidationError:
     return error
 
 
+def _schema_error_details(
+    name: str, arguments: dict[str, Any], error: ValidationError
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
+        details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
+    if name == "check" and error.validator == "enum":
+        requirement = next(
+            (
+                item
+                for item in arguments.get("requirements", [])
+                if item.get("kind") not in SUPPORTED_REQUIREMENT_KINDS
+            ),
+            None,
+        )
+        if requirement is not None:
+            details.update(
+                kind=requirement.get("kind"),
+                supportedKinds=list(SUPPORTED_REQUIREMENT_KINDS),
+            )
+    if error.validator == "additionalProperties":
+        details["allowedFields"] = sorted(error.schema.get("properties", {}))
+    return details
+
+
 def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "feature":
         key = (
@@ -368,24 +396,7 @@ def create_server(service: DocumentService) -> Server:
             error = _branch_error(raised)
             if name == "feature" and arguments.get("action") == "update":
                 error = _prefer_unknown_field(error)
-            details: dict[str, Any] = {}
-            if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
-                details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
-            if name == "check" and error.validator == "enum":
-                requirement = next(
-                    (
-                        item for item in arguments.get("requirements", [])
-                        if item.get("kind") not in SUPPORTED_REQUIREMENT_KINDS
-                    ),
-                    None,
-                )
-                if requirement is not None:
-                    details.update(
-                        kind=requirement.get("kind"),
-                        supportedKinds=list(SUPPORTED_REQUIREMENT_KINDS),
-                    )
-            if error.validator == "additionalProperties":
-                details["allowedFields"] = sorted(error.schema.get("properties", {}))
+            details = _schema_error_details(name, arguments, error)
             failure = service.error_response(
                 name,
                 arguments,

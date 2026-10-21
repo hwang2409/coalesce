@@ -369,6 +369,25 @@ def _clean(
     )
 
 
+REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "wall_thickness": _thickness,
+    "board_clearance": _board_clearance,
+    "floor_thickness": _thickness,
+    "mounting_holes": _mounting,
+    "standoff_coverage": _mounting,
+    "lid_interference": _lid_interference,
+    "fit_gap": _fit_gap,
+    "lid_fit_gap": _fit_gap,
+    "engagement_depth": _engagement,
+    "lid_engagement": _engagement,
+    "port_clearance": _ports,
+    "connector_clearance": _ports,
+    "clean_deliverables": _clean,
+    "clean_manufacturing_bodies": _clean,
+}
+SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(REQUIREMENT_HANDLERS))
+
+
 def reduce_gate(results: list[dict[str, Any]]) -> str:
     statuses = {item["status"] for item in results}
     if "FAIL" in statuses:
@@ -383,27 +402,18 @@ def reduce_gate(results: list[dict[str, Any]]) -> str:
 def evaluate(
     requirements: list[dict[str, Any]], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
-    handlers: dict[str, Callable[..., dict[str, Any]]] = {
-        "wall_thickness": _thickness,
-        "board_clearance": _board_clearance,
-        "floor_thickness": _thickness,
-        "mounting_holes": _mounting,
-        "standoff_coverage": _mounting,
-        "lid_interference": _lid_interference,
-        "fit_gap": _fit_gap,
-        "lid_fit_gap": _fit_gap,
-        "engagement_depth": _engagement,
-        "lid_engagement": _engagement,
-        "port_clearance": _ports,
-        "connector_clearance": _ports,
-        "clean_deliverables": _clean,
-        "clean_manufacturing_bodies": _clean,
-    }
-    supported = sorted(handlers)
-    unknown = [item.get("kind") for item in requirements if item.get("kind") not in handlers]
+    unknown = [
+        item.get("kind")
+        for item in requirements
+        if item.get("kind") not in REQUIREMENT_HANDLERS
+    ]
     if unknown:
         raise ValueError(
-            f"unknown requirement kind: {unknown[0]}; supported kinds: {', '.join(supported)}"
+            "unknown requirement kind: "
+            f"{unknown[0]}; supported kinds: {', '.join(SUPPORTED_REQUIREMENT_KINDS)}"
         )
-    results = [handlers[item["kind"]](item, inspection, revision) for item in requirements]
+    results = [
+        REQUIREMENT_HANDLERS[item["kind"]](item, inspection, revision)
+        for item in requirements
+    ]
     return {"gate": reduce_gate(results), "results": results}
