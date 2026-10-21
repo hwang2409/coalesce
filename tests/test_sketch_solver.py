@@ -55,9 +55,7 @@ def rectangle_request(*, fixed_corner: bool) -> SolveRequest:
     points = tuple(Point(point_id, x, y) for point_id, x, y in raw)
     lines = tuple(Line(f"line{i}", f"p{2 * i}", f"p{2 * i + 1}") for i in range(4))
     constraints = [
-        Constraint(
-            f"join{i}", ConstraintKind.COINCIDENT, (f"p{2 * i + 1}", f"p{(2 * (i + 1)) % 8}")
-        )
+        Constraint(f"join{i}", ConstraintKind.COINCIDENT, (f"p{2 * i + 1}", f"p{(2 * (i + 1)) % 8}"))
         for i in range(4)
     ]
     constraints.extend(
@@ -203,7 +201,9 @@ def test_arc_and_circle_radius_and_tangent_constraints_solve():
                 fixed("origin", "fix-origin"),
                 Constraint("base-horizontal", ConstraintKind.HORIZONTAL, ("base",)),
                 Constraint("equal-sides", ConstraintKind.EQUAL, ("side", "base")),
-                Constraint("side-tangent", ConstraintKind.TANGENT, ("side", "corner", "tangent")),
+                Constraint(
+                    "side-tangent", ConstraintKind.TANGENT, ("side", "corner", "tangent")
+                ),
             ),
         )
     )
@@ -446,9 +446,7 @@ def test_only_solver_seam_may_import_planegcs():
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import) and any(
-                alias.name == "planegcs" for alias in node.names
-            ):
+            if isinstance(node, ast.Import) and any(alias.name == "planegcs" for alias in node.names):
                 offenders.append(path)
             if isinstance(node, ast.ImportFrom) and node.module == "planegcs":
                 offenders.append(path)

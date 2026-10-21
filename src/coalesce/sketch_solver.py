@@ -287,7 +287,9 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
                 point_handles[line.start], point_handles[line.end]
             )
         for arc in sorted(request.arcs, key=lambda item: item.id):
-            initial = request.initial.get(arc.id, (arc.radius, arc.start_angle, arc.end_angle))
+            initial = request.initial.get(
+                arc.id, (arc.radius, arc.start_angle, arc.end_angle)
+            )
             arc_handles[arc.id] = sketch.add_arc_cse(
                 point_handles[arc.center],
                 point_handles[arc.start],
@@ -729,7 +731,9 @@ def _evaluate_landmarks(
         point = entities[landmark.point]
         assert isinstance(a, SolvedPoint) and isinstance(b, SolvedPoint)
         assert isinstance(point, SolvedPoint)
-        values[landmark.id] = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)
+        values[landmark.id] = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (
+            point.x - a.x
+        )
     return values
 
 
