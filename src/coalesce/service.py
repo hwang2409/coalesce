@@ -1278,50 +1278,6 @@ def _hash(operation: MutationOperation) -> str:
     ).hexdigest()
 
 
-_GRAPH_ERROR_CODES = {
-    "AMBIGUOUS": "AMBIGUOUS",
-    "BODY_LINEAGE_DIVERGED": "BODY_LINEAGE_DIVERGED",
-    "BOOLEAN_FAILED": "BOOLEAN_FAILED",
-    "CHAMFER_FAILED": "CHAMFER_FAILED",
-    "CYCLE": "CYCLE",
-    "DUPLICATE_ENTITY_ID": "DUPLICATE_ENTITY_ID",
-    "DUPLICATE_ID": "DUPLICATE_ID",
-    "EMPTY_EDGE_SELECTION": "EMPTY_EDGE_SELECTION",
-    "FILLET_FAILED": "FILLET_FAILED",
-    "HISTORY_MISSING": "HISTORY_MISSING",
-    "HOLES_INTERSECT": "HOLES_INTERSECT",
-    "HOLE_NO_EFFECT": "HOLE_NO_EFFECT",
-    "INVALID_BOARD": "INVALID_BOARD",
-    "INVALID_BREP": "INVALID_BREP",
-    "INVALID_CHAMFER_DISTANCE": "INVALID_CHAMFER_DISTANCE",
-    "INVALID_CIRCLE_RADIUS": "INVALID_CIRCLE_RADIUS",
-    "INVALID_CUT_DEPTH": "INVALID_CUT_DEPTH",
-    "INVALID_CUT_TOOL": "INVALID_CUT_TOOL",
-    "INVALID_DOCUMENT": "INVALID_DOCUMENT",
-    "INVALID_EDGE_REFERENCE": "INVALID_EDGE_REFERENCE",
-    "INVALID_EXTRUDE_OPERATION": "INVALID_EXTRUDE_OPERATION",
-    "INVALID_FILLET_RADIUS": "INVALID_FILLET_RADIUS",
-    "INVALID_HOLE": "INVALID_HOLE",
-    "INVALID_PARAMETER": "INVALID_PARAMETER",
-    "JOIN_NO_CONTACT": "JOIN_NO_CONTACT",
-    "JOIN_NON_MANIFOLD": "JOIN_NON_MANIFOLD",
-    "JOIN_TARGET_BODY": "JOIN_TARGET_BODY",
-    "JOIN_TARGET_REQUIRED": "JOIN_TARGET_REQUIRED",
-    "MISSING": "MISSING",
-    "MIXED_BODY_ANCESTRY": "MIXED_BODY_ANCESTRY",
-    "NON_FINITE_VALUE": "NON_FINITE_VALUE",
-    "OVERLAPPING_PROFILES": "OVERLAPPING_PROFILES",
-    "PORT_BLOCKED_BY_LID": "PORT_BLOCKED_BY_LID",
-    "REFERENCE_FAILED": "REFERENCE_FAILED",
-    "TARGET_ALREADY_CONSUMED": "TARGET_ALREADY_CONSUMED",
-    "TOUCHING_PROFILES": "TOUCHING_PROFILES",
-    "UNKNOWN_ID": "UNKNOWN_ID",
-    "UNKNOWN_PLANE": "UNKNOWN_PLANE",
-    "UNSUPPORTED_BOARD_DRILL": "UNSUPPORTED_BOARD_DRILL",
-    "UNSUPPORTED_BOARD_OUTLINE": "UNSUPPORTED_BOARD_OUTLINE",
-}
-
-
 def _safe_error(
     revision: int,
     request_id: str | None,
@@ -1361,7 +1317,8 @@ def _graph_error_response(
     error: GraphError,
 ) -> dict[str, Any]:
     internal_code = error.error["code"]
-    code = _GRAPH_ERROR_CODES.get(internal_code, "KERNEL_OPERATION_FAILED")
+    registered = internal_code in ERROR_REGISTRY
+    code = internal_code if registered else "KERNEL_OPERATION_FAILED"
     details = {
         key: value
         for key, value in error.error.items()
@@ -1373,9 +1330,7 @@ def _graph_error_response(
         revision,
         request_id,
         code,
-        str(error)
-        if internal_code in _GRAPH_ERROR_CODES
-        else "the modeling operation could not produce valid geometry",
+        str(error) if registered else "the modeling operation could not produce valid geometry",
         operation=operation,
         **details,
     )
