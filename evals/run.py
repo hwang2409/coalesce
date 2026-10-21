@@ -213,20 +213,37 @@ def _zeta_server_directory(zeta_project):
     config_path = zeta_project / ".zeta" / "mcp.json"
     try:
         config = json.loads(config_path.read_text())
-        entry = config["mcpServers"]["coalesce"]
+        entry = config["servers"]["coalesce"]
         args = entry["args"]
         for flag in ("--directory", "--project"):
             if flag in args:
                 directory = args[args.index(flag) + 1]
                 if directory:
-                    return Path(directory).expanduser().resolve()
+                    path = Path(directory).expanduser()
+                    return (zeta_project / path if not path.is_absolute() else path).resolve()
     except (OSError, KeyError, TypeError, ValueError, IndexError) as error:
         raise RuntimeError(f"cannot parse coalesce server config {config_path}: {error}") from error
     raise RuntimeError(f"coalesce server config {config_path} names no --directory or --project path")
 
 
+def _require_clean(path, label):
+    revision, dirty = _git_state(path)
+    if dirty:
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            capture_output=True, text=True, check=False,
+        )
+        files = [line[3:] for line in status.stdout.splitlines()[:5]]
+        listed = ", ".join(files) or "unknown files"
+        raise RuntimeError(
+            f"{label} {path} is dirty ({listed}); commit or clean these files before running"
+        )
+    return revision
+
+
 def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, **_):
-    coalesce_revision, coalesce_dirty = _git_state(coalesce_path)
+    coalesce_revision = _require_clean(coalesce_path, "coalesce checkout")
+    coalesce_dirty = False
     if before_state:
         build_before_state(
             before_state,
@@ -291,9 +308,10 @@ def _stage_zeta_fixtures(run_dir, zeta_project):
 
 def zeta_harness(prompt, run_dir, *, model, zeta_project, coalesce_path, before_state=None, **_):
     """Run in a trusted project while owning every staged input and output path."""
-    expected_revision, _ = _git_state(coalesce_path)
+    expected_revision = _require_clean(coalesce_path, "coalesce checkout")
     server_directory = _zeta_server_directory(zeta_project)
-    server_revision, server_dirty = _git_state(server_directory)
+    server_revision = _require_clean(server_directory, "coalesce server checkout")
+    server_dirty = False
     if server_revision != expected_revision:
         raise RuntimeError(
             f"coalesce server revision {server_revision} does not match revision under test "
@@ -451,16 +469,21 @@ def main():
     parser.add_argument("--model", action="append", required=True)
     parser.add_argument("--harness", choices=["claude", "zeta"], required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--coalesce-path", type=Path, default=Path.cwd())
+    parser.add_argument("--coalesce-path", type=Path)
     parser.add_argument("--zeta-project", type=Path)
     args = parser.parse_args()
     harness = claude_harness if args.harness == "claude" else zeta_harness
+    if args.harness == "zeta":
+        if not args.zeta_project:
+            parser.error("--zeta-project is required for the zeta harness")
+        if not args.coalesce_path:
+            parser.error("--coalesce-path is required for the zeta harness")
+    elif not args.coalesce_path:
+        args.coalesce_path = Path.cwd()
     options = {
         "coalesce_path": args.coalesce_path,
         **({} if args.harness == "claude" else {"zeta_project": args.zeta_project}),
     }
-    if args.harness == "zeta" and not args.zeta_project:
-        parser.error("--zeta-project is required for the zeta harness")
     run_tasks(Path("evals/tasks"), args.out, [args.task], args.model, harness, **options)
 
 

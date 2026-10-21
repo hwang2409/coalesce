@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "coalesce": {
+      "args": [
+        "run",
+        "--directory",
+        "/Users/henry/me/fun/coalesce/.worktrees/harness-zeta",
+        "coalesce",
+        "--document",
+        "/tmp/coalesce-zeta-probe/probe.coalesce.json"
+      ],
+      "command": "uv",
+      "enabled": true,
+      "transport": "stdio"
+    }
+  }
+}
