@@ -96,7 +96,7 @@ async def test_harness_duplicate_base_cleanup_updates_query_viewer_and_step(tmp_
     assert [
         part["terminalFeatureId"] for part in scene["parts"] if part["role"] == "manufacturing"
     ] == ["mounts2"]
-    assert "deleted base" in scene["change"]["summary"]
+    assert scene["change"]["summary"] == "deleted pcb base with dependent mounts"
 
 
 @pytest.mark.anyio

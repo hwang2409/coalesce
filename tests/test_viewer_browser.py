@@ -14,8 +14,20 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from build123d import Align, Box, Location, fillet
+from build123d import Align, Box, Location
 
+from coalesce import (
+    Cardinality,
+    Extrude,
+    Fillet,
+    Graph,
+    GraphError,
+    Rectangle,
+    Reference,
+    Sketch,
+    regenerate,
+)
+from coalesce.service import _graph_error_response
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 SMOKE = Path(__file__).with_name("viewer_smoke.mjs")
@@ -32,6 +44,19 @@ OUTAGE_ERRORS = (
 
 def plate(height: float) -> Box:
     return Box(60, 40, height, align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+
+def oversized_fillet_failure() -> dict:
+    """What coalesce itself publishes for a 20 mm fillet on a 10 mm plate (no kernel wording)."""
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 60, 40)]))
+    graph.add(Extrude("plate_extrude", sketch="plate_sketch", height=10))
+    edge = Reference("plate_extrude", "between(side(bottom),cap_end)", Cardinality.ONE)
+    graph.add(Fillet("edge_fillet", target="plate_extrude", edges=[edge], radius=20))
+    with pytest.raises(GraphError) as caught:
+        regenerate(graph)
+    error = _graph_error_response(2, "fillet", "feature", caught.value)["error"]
+    return {key: error[key] for key in ("code", "message", "hint") if key in error}  # as publish_failure
 
 
 def playwright_module() -> str | None:
@@ -106,26 +131,23 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             assert second["label"] == "2"
             assert second["top"] < first["top"]  # same camera, taller plate reaches higher
             assert (second["viewTop"], second["viewBottom"]) == (0, 800)  # no status: full height
-            try:
-                fillet(plate(10).edges(), radius=20)
-            except ValueError as error:
-                store.publish_failure(
-                    ["edge_fillet"],
-                    {"code": "INVALID_PARAMETER", "message": str(error)},
-                )
+            store.publish_failure(["edge_fillet"], oversized_fillet_failure())
             next_step()
 
             failed = step("failure")
             assert failed["label"] == "2"
-            assert "edge_fillet" in failed["failure"] and "fillet" in failed["failure"]
+            assert "edge_fillet" in failed["failure"]
+            # coalesce guidance, never the kernel's own helper names
+            assert "Ask your agent to reduce the fillet radius" in failed["failure"], failed["failure"]
+            assert "max_fillet" not in failed["failure"]
             # the last good scene stays: same revision, parts, meshes and gpu geometries, drawn
             assert failed["scene"]["revision"] == 2
             identity = ("revision", "parts", "meshes", "geometries")
             assert [failed["scene"][k] for k in identity] == [second["scene"][k] for k in identity]
             assert failed["dark"] > 0.0003
-            # the status row shrinks the canvas from the top, but the model keeps its place
-            assert failed["scene"]["frames"] > second["scene"]["frames"]
-            assert abs(failed["pageTop"] - second["pageTop"]) <= 2, (failed["pageTop"], second["pageTop"])
+            # the status lies over the canvas: the canvas and the model keep their place
+            assert (failed["viewTop"], failed["viewBottom"]) == (0, 800)
+            assert failed["pageTop"] == second["pageTop"], (failed["pageTop"], second["pageTop"])
             next_step()
 
             front = step("front")
@@ -135,13 +157,14 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
 
             lost = step("disconnected", outage=True)
             assert lost["link"] == "Reconnecting"
-            assert lost["banner"] == "Revision 2 may be out of date. Reconnecting to coalesce."
+            # one calm status: the connection is the news, the old failure one sentence of it
+            assert lost["banner"] == (
+                "Revision 2 may be out of date. Reconnecting to coalesce. The last edit, edge_fillet, failed."
+            )
+            assert lost["failure"] is None
             assert "grayscale(1)" in lost["filter"]
-            # the status row pushes the model down instead of covering it
-            assert lost["viewTop"] == lost["statusBottom"] > 0 and lost["viewBottom"] == 800, lost
-            # the old edit failure stays readable but no longer looks current
-            assert lost["failureColor"] != failed["failureColor"]
-            assert abs(lost["pageTop"] - lost["before"]) <= 2, (lost["pageTop"], lost["before"])
+            assert (lost["viewTop"], lost["viewBottom"]) == (0, 800), lost
+            assert lost["pageTop"] == lost["before"], (lost["pageTop"], lost["before"])
             # same port and key, as after a brief drop: the page must recover by itself
             restarted = ViewerServer(store, port=server.port)
             restarted._token = server._token  # test-only: a real restart would print a new key
@@ -149,7 +172,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
 
             back = step("reconnected", outage=True)
             assert (back["link"], back["banner"], back["filter"]) == ("Live", None, "none")
-            assert abs(back["pageTop"] - back["before"]) <= 2, (back["pageTop"], back["before"])
+            assert back["pageTop"] == back["before"], (back["pageTop"], back["before"])
             for revision in range(3, 53):  # back to back, so some loads lose the race
                 store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
             next_step()

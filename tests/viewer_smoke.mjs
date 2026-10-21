@@ -63,11 +63,11 @@ const stale = async () => ({
   link: await page.locator('#link-text').textContent(),
   banner: await shown('#stale'),
   filter: await page.locator('#view').evaluate((canvas) => getComputedStyle(canvas).filter),
-  failureColor: await page.locator('#failure-title').evaluate((el) => getComputedStyle(el).color),
+  failure: await shown('#failure'),
   gizmo: await gizmo(),
   ...(await layout()),
 });
-// css px: the canvas must fill the stage below the status row, never under it
+// css px: the canvas fills the stage in every state; the status lies over it
 const layout = () => page.evaluate(() => {
   const view = document.getElementById('view').getBoundingClientRect();
   const status = document.getElementById('status').getBoundingClientRect();
@@ -117,7 +117,7 @@ await settledAfter(second.scene.frames);
 await step('failure', async () => ({
   label: await revision().textContent(),
   failure: await page.locator('#failure').innerText(),
-  failureColor: await page.locator('#failure-title').evaluate((el) => getComputedStyle(el).color),
+  ...(await layout()),
   ...(await drawn()),
 }));
 const beforeFront = await currentFrames();

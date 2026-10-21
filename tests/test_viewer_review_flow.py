@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from build123d import Align, Box, GeomType, Pos
 from OCP.BRepAdaptor import BRepAdaptor_Surface
+from test_feature_delete import delete_feature
 from test_mcp_cut_hole_circle import cut, extrude, rectangle_sketch
 from test_mcp_join_holes_frames import join_extrude, patterned_hole
 from test_mcp_kicad_import import FIXTURE as KICAD_FIXTURE
@@ -25,7 +26,8 @@ from test_pcb_enclosure import FIXTURES as ENCLOSURE_FIXTURES
 from test_pcb_enclosure import base_request, standoffs_request
 from test_pcb_enclosure import import_request as enclosure_import
 from test_pcb_lid import lid_request
-from test_viewer_browser import OUTAGE_ERRORS, playwright_module
+from test_port_cutout import port_request
+from test_viewer_browser import OUTAGE_ERRORS, oversized_fillet_failure, playwright_module
 
 from coalesce.service import DocumentService
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
@@ -152,7 +154,7 @@ def test_change_names_sketch_edits_and_board_import_and_refresh(tmp_path):
         ("sketch", {"action": "update", "requestId": "tab", "sketchId": "plate_sketch",
                     "set": {"entities": two}},
          "edited sketch plate_sketch profiles: 1 \u2192 2"),
-        ("import", import_request(source), "imported board controller_board"),
+        ("import", import_request(source), "imported board board.kicad_pcb"),
         ("import", refresh("same"), "refreshed board controller_board, source unchanged"),
         ("import", refresh("changed"), "refreshed board controller_board, source changed"),
     ]
@@ -332,6 +334,50 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         assert "Could not copy. Ask your agent to call query with select server" in refused["status"]
         fresh = step("new-link", outage=True, do=[{"goto": restarted.url, "revision": revision}])
         assert fresh["link"] == "Live" and fresh["status"] is None
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+        if restarted:
+            restarted.close()
+
+
+def screen_box(state):
+    """The model's box on the page, in css px: its projected corners placed on the canvas."""
+    view = state["view"]
+    xs = [view["left"] + (x + 1) / 2 * view["width"] for x, _ in state["scene"]["projected"]]
+    ys = [view["top"] + (1 - y) / 2 * view["height"] for _, y in state["scene"]["projected"]]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_status_never_moves_or_resizes_the_model(module, viewport):
+    """Good, failed, reconnecting and ended: the canvas and the model stay where the human left them."""
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    restarted = None
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        store.publish(1, [ScenePart("plate", Box(60, 40, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)))])
+        good = step("status-good", wait={"revision": 1})
+        store.publish_failure(["edge_fillet"], oversized_fillet_failure())
+        failed = step("status-failed", wait={"failure": "KERNEL_OPERATION_FAILED"})
+        assert "max_fillet" not in failed["status"] and "reduce the fillet radius" in failed["status"]
+        server.close()
+        lost = step("status-reconnecting", outage=True, wait={"text": "Reconnecting"}, do=[{"settle": True}])
+        # one calm status, not two stacked messages
+        assert lost["repair"] is None
+        assert lost["status"] == (
+            "Revision 1 may be out of date. Reconnecting to coalesce. The last edit, edge_fillet, failed."
+        )
+        restarted = ViewerServer(store, port=server.port)  # a new key on the same port: the page ends
+        ended = step("status-ended", outage=True, wait={"text": "Viewer ended"}, do=[{"settle": True}])
+        assert "The last edit, edge_fillet, failed." in ended["status"] and ended["repair"] is None
+        for state in (failed, lost, ended):
+            assert state["view"] == good["view"], state["status"]
+            assert screen_box(state) == screen_box(good), state["status"]
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
@@ -553,22 +599,28 @@ def test_splitting_one_body_keeps_other_body_colours_and_shades_the_pieces(tmp_p
         assert math.dist(shade[1:], base[1:]) < 0.015, (pieces, before["ea/a"])
 
 
-def test_added_summary_names_the_feature_id_only_when_it_adds_information(tmp_path):
+def test_change_line_says_what_each_enclosure_feature_did(tmp_path):
+    """One concise line per enclosure step, from data the commit already has; ids only when they add words."""
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
-    top = {**lid_request(revision=4, request_id="top"), "featureId": "top_cover"}
-    for tool, arguments in [
-        ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb")),
-        ("feature", base_request()),
-        ("feature", standoffs_request()),
-        ("feature", lid_request(revision=3)),
-        ("feature", top),
-    ]:
+    top = {**lid_request(revision=5, request_id="top"), "featureId": "top_cover"}
+    steps = [
+        ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb"),
+         "imported board features.kicad_pcb"),
+        ("feature", base_request(wallHeightAboveBoard={"value": 8, "unit": "mm"}),
+         "added pcb base for controller_board: 2 mm walls, 1 mm board clearance"),
+        ("feature", standoffs_request(), "added standoffs mounts at 2 mounting holes"),
+        ("feature", lid_request(revision=3), "added pcb lid: 2 mm thick, 0.25 mm fit gap, 3 mm lip"),
+        ("feature", port_request(revision=4), "added port cutout for J1: 5 \u00d7 3 mm on left wall"),
+        ("feature", top, "added pcb lid top_cover: 2 mm thick, 0.25 mm fit gap, 3 mm lip"),
+        ("feature", delete_feature("port", 6, "delete-port"), "deleted port cutout"),
+        ("feature", delete_feature("base", 7, "delete-base", cascade=True),
+         "deleted pcb base with dependents mounts, lid, top_cover"),
+    ]
+    for revision, (tool, arguments, summary) in enumerate(steps, start=1):
         result = call(service, tool, arguments)
-        assert result.get("ok"), result
-        if arguments.get("featureId") == "lid":
-            assert wait_for(store, 4)["change"]["summary"] == "added pcb lid"
-    assert wait_for(store, 5)["change"]["summary"] == "added pcb lid top_cover"
+        assert result.get("revision") == revision, result
+        assert wait_for(store, revision)["change"]["summary"] == summary
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
