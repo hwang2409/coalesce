@@ -90,13 +90,16 @@ async def test_harness_left_port_collision_offers_safe_wall_alternative(tmp_path
     assert failed["error"]["code"] == "INVALID_PARAMETER"
     assert failed["error"]["conflict"] in FEATURE_HOLES
     alternative = failed["error"]["alternatives"][0]
-    assert alternative["set"]["wall"] in {"right", "front", "back"}
+    assert set(alternative["set"]) <= {"wall", "envelope"}
+    assert alternative["set"]
 
     repaired_request = port_request(
         revision=3,
-        request_id="safe-port-wall",
-        wall=alternative["set"]["wall"],
-        envelope=explicit_envelope(width=4, height=2, bottom=-1),
+        request_id="safe-port-placement",
+        wall=alternative["set"].get("wall", "left"),
+        envelope=alternative["set"].get(
+            "envelope", explicit_envelope(width=4, height=2, bottom=-1)
+        ),
     )
     repaired = await _call(service, "feature", repaired_request)
     assert repaired["ok"] is True

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from build123d import Align, Box, Compound, Face, Location, Shape, Wire
+from build123d import Align, Box, Compound, Face, Location, Shape, Vertex, Wire
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
@@ -29,6 +29,24 @@ class PortCutoutResult(EnclosureResult):
     opening_tool: Shape
 
 
+def _limits(
+    parameter: str,
+    current: float,
+    *,
+    minimum: float,
+    maximum: float,
+    suggested: float | None = None,
+) -> dict:
+    return {
+        "parameter": parameter,
+        "current": current,
+        "minimum": minimum,
+        "maximum": maximum,
+        "suggested": maximum if suggested is None else suggested,
+        "unit": "mm",
+    }
+
+
 def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
     wires = []
     for signed_distance in (distance, -distance):
@@ -50,7 +68,7 @@ def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -
     return outward
 
 
-def _offset_inward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
+def _inward_wire(wire: Wire, distance: float) -> Wire | None:
     original_area = Face(wire).area
     wires = []
     for signed_distance in (distance, -distance):
@@ -62,14 +80,40 @@ def _offset_inward(wire: Wire, distance: float, feature: str, parameter: str) ->
                 wires.append(candidate_wire)
         except RuntimeError:
             continue
-    inward = min(wires, key=lambda item: Face(item).area, default=None)
+    return min(wires, key=lambda item: Face(item).area, default=None)
+
+
+def _maximum_inward_offset(wire: Wire, failed_distance: float) -> float:
+    low, high = 0.0, failed_distance
+    for _ in range(40):
+        middle = (low + high) / 2
+        if _inward_wire(wire, middle) is None:
+            high = middle
+        else:
+            low = middle
+    return low
+
+
+def _offset_inward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
+    inward = _inward_wire(wire, distance)
     if inward is None:
+        maximum = _maximum_inward_offset(wire, distance)
+        details = {}
+        if maximum > 0:
+            details["limits"] = _limits(
+                parameter,
+                distance,
+                minimum=0,
+                maximum=maximum,
+                suggested=maximum / 2,
+            )
         raise GraphError(
             "INVALID_PARAMETER",
             f"pcb_lid {feature} {parameter} leaves no space inside the walls",
             feature=feature,
             parameter=parameter,
             value=distance,
+            **details,
         )
     return inward
 
@@ -182,6 +226,7 @@ def build_pcb_lid(node: PcbLid, base: PcbBase, board: BoardImport) -> EnclosureR
 
     clearance = rim_z - node.lip_depth - board.mechanics["thickness"]
     if clearance <= 1e-9:
+        maximum = base.wall_height_above_board
         raise GraphError(
             "INVALID_PARAMETER",
             f"pcb_lid {node.id} lip bottom must stay above the board top",
@@ -190,6 +235,13 @@ def build_pcb_lid(node: PcbLid, base: PcbBase, board: BoardImport) -> EnclosureR
             measuredDistance=clearance,
             unit="mm",
             conflict="board_top",
+            limits=_limits(
+                "lip.depth",
+                node.lip_depth,
+                minimum=0,
+                maximum=maximum,
+                suggested=maximum / 2,
+            ),
         )
     lip_outer = _offset_inward(inner, node.fit_gap, node.id, "fitGap")
     lip_inner = _offset_inward(lip_outer, node.lip_width, node.id, "lip.width")
@@ -414,6 +466,7 @@ def _opening_bounds(
     bottom = envelope_bottom - node.clearance
     top = envelope_bottom + node.envelope_height + node.clearance
     if bottom < floor_top and envelope_bottom >= floor_top:
+        maximum = envelope_bottom - floor_top
         raise GraphError(
             "INVALID_PARAMETER",
             f"port_cutout {node.id} clearance would cut the base floor",
@@ -423,6 +476,19 @@ def _opening_bounds(
             floorTop=floor_top,
             unit="mm",
             hint="raise bottomOffset or reduce clearance",
+            **(
+                {
+                    "limits": _limits(
+                        "clearance",
+                        node.clearance,
+                        minimum=0,
+                        maximum=maximum,
+                        suggested=maximum / 2,
+                    )
+                }
+                if maximum > 0
+                else {}
+            ),
         )
 
     bounds, wall_span = _opening_xy_bounds(
@@ -447,6 +513,17 @@ def _opening_bounds(
         )
     straight_min, straight_max = wall_span
     if tangent_min < straight_min - 1e-7 or tangent_max > straight_max + 1e-7:
+        envelope_width = opening_width - 2 * node.clearance
+        maximum = (straight_max - straight_min - envelope_width) / 2
+        details = {}
+        if maximum > 0:
+            details["limits"] = _limits(
+                "clearance",
+                node.clearance,
+                minimum=0,
+                maximum=maximum,
+                suggested=maximum / 2,
+            )
         raise GraphError(
             "INVALID_PARAMETER",
             f"port_cutout {node.id} opening reaches an adjacent or curved wall",
@@ -455,6 +532,7 @@ def _opening_bounds(
             wall=wall,
             openingSpan=[tangent_min, tangent_max],
             wallSpan=[straight_min, straight_max],
+            **details,
         )
     return _OpeningBounds(
         minimum_x,
@@ -530,13 +608,12 @@ def _opening_tool(
     return tool, candidates, metadata
 
 
-def build_port_cutout(
+def build_port_opening(
     node: PortCutout,
     base: PcbBase,
     board: BoardImport,
-    target_shape: Shape,
     target_candidates: list[Candidate],
-) -> PortCutoutResult:
+) -> tuple[Shape, list[Candidate], dict]:
     footprint = _resolve_footprint(node, board)
     footprint_bounds = (
         _courtyard_bounds(node, footprint)
@@ -545,18 +622,30 @@ def build_port_cutout(
     )
     _, inner, outer = _base_wires(base, board)
     wall = _wall_choice(node, footprint, footprint_bounds, inner)
-    board_top = board.mechanics["thickness"]
-    tool, tool_candidates, metadata = _opening_tool(
+    return _opening_tool(
         node,
         footprint,
         wall,
         footprint_bounds,
         inner,
         outer,
-        board_top,
+        board.mechanics["thickness"],
         -base.board_seat_height,
         target_candidates,
     )
+
+
+def build_port_cutout(
+    node: PortCutout,
+    base: PcbBase,
+    board: BoardImport,
+    target_shape: Shape,
+    target_candidates: list[Candidate],
+) -> PortCutoutResult:
+    tool, tool_candidates, metadata = build_port_opening(
+        node, base, board, target_candidates
+    )
+    wall = metadata["wall"]
     result = cut_shape(
         node.id,
         target_shape,
@@ -572,7 +661,7 @@ def build_port_cutout(
             feature=node.id,
             parameter="wall",
             wall=wall,
-            footprint=footprint["id"],
+            footprint=metadata["footprintId"],
         )
     return PortCutoutResult(result.shape, result.candidates, metadata, tool)
 
@@ -608,6 +697,11 @@ def _common_area(first: Face, second: Face) -> float:
     return sum(face.area for face in Shape.cast(common.Shape()).faces())
 
 
+def _maximum_boss_diameter(cavity: Face, x: float, y: float) -> float:
+    center = Vertex(x, y, 0)
+    return 2 * min(edge.distance_to(center) for edge in cavity.edges())
+
+
 def _validate_bosses(node: Standoffs, cavity: Face, holes: list[dict]) -> None:
     radius = node.boss_diameter / 2
     for hole in holes:
@@ -615,16 +709,31 @@ def _validate_bosses(node: Standoffs, cavity: Face, holes: list[dict]) -> None:
         disk = Face(Wire.make_circle(radius).moved(Location((x, y, 0))))
         if not cavity.is_inside((x, y, 0)):
             message = f"standoffs {node.id} hole {hole['id']} is off the base floor"
+            limits = None
         elif math.isclose(_common_area(cavity, disk), disk.area, rel_tol=1e-9, abs_tol=1e-8):
             continue
         else:
             message = f"standoffs {node.id} boss at hole {hole['id']} crosses a wall"
+            maximum = _maximum_boss_diameter(cavity, x, y)
+            limits = (
+                _limits(
+                    "bossDiameter",
+                    node.boss_diameter,
+                    minimum=node.pilot_diameter,
+                    maximum=maximum,
+                    suggested=(node.pilot_diameter + maximum) / 2,
+                )
+                if maximum > node.pilot_diameter
+                else None
+            )
+        details = {"limits": limits} if limits is not None else {}
         raise GraphError(
             "INVALID_PARAMETER",
             message,
             feature=node.id,
             parameter="bossDiameter",
             hole=hole["id"],
+            **details,
         )
 
 

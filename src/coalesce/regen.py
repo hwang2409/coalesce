@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from build123d import Edge, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
-from .enclosure import build_pcb_base, build_pcb_lid, build_port_cutout, build_standoffs
+from .enclosure import (
+    build_pcb_base,
+    build_pcb_lid,
+    build_port_cutout,
+    build_port_opening,
+    build_standoffs,
+)
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
 from .graph import (
@@ -241,13 +247,19 @@ class _EnclosureRegenerator:
     def _regenerate_port_cutout(self, node: PortCutout) -> None:
         base, board = self._base_context(node.base, node.id)
         terminal = self.lineage.terminal(node.base)
-        opening = build_port_cutout(
-            node,
-            base,
-            board,
-            self.shapes[terminal],
-            self.states[terminal],
-        )
+        try:
+            opening = build_port_cutout(
+                node,
+                base,
+                board,
+                self.shapes[terminal],
+                self.states[terminal],
+            )
+        except GraphError as error:
+            alternatives = self._safe_wall_alternatives(node)
+            if alternatives:
+                error.error["alternatives"] = alternatives
+            raise
         self.shapes[node.id] = opening.shape
         self.states[node.id] = opening.candidates
         self.removed_material[node.id] = True
@@ -287,9 +299,9 @@ class _EnclosureRegenerator:
         else:
             self._regenerate_standoffs(node)
 
-    def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
+    def _standoff_conflict(self, port: PortCutout, tool: Shape) -> str | None:
         terminal = self.lineage.terminal(port.base)
-        conflict = next(
+        return next(
             (
                 item.key.source
                 for item in self.states[terminal]
@@ -298,7 +310,145 @@ class _EnclosureRegenerator:
             ),
             None,
         )
+
+    def _lid_overlap(self, lid: PcbLid, tool: Shape) -> Shape | None:
+        common = BRepAlgoAPI_Common(tool.wrapped, self.shapes[lid.id].wrapped)
+        common.Build()
+        if not common.IsDone():
+            return None
+        overlap = Shape.cast(common.Shape())
+        return overlap if sum(solid.volume for solid in overlap.solids()) > 1e-9 else None
+
+    def _safe_wall_alternatives(self, port: PortCutout) -> list[dict]:
+        base, board = self._base_context(port.base, port.id)
+        terminal = self.lineage.terminal(port.base)
+        lids = [
+            node
+            for node in self.graph.nodes.values()
+            if isinstance(node, PcbLid) and node.base == port.base and node.id in self.shapes
+        ]
+        alternatives = []
+        for wall in ("left", "right", "front", "back"):
+            if wall == port.wall:
+                continue
+            candidate_port = replace(port, wall=wall)
+            try:
+                tool, _, _ = build_port_opening(
+                    candidate_port, base, board, self.states[terminal]
+                )
+            except GraphError:
+                continue
+            if self._standoff_conflict(port, tool) is not None:
+                continue
+            if any(self._lid_overlap(lid, tool) is not None for lid in lids):
+                continue
+            alternatives.append({"set": {"wall": wall}})
+        return alternatives
+
+    def _base_lids(self, port: PortCutout) -> list[PcbLid]:
+        return [
+            node
+            for node in self.graph.nodes.values()
+            if isinstance(node, PcbLid) and node.base == port.base and node.id in self.shapes
+        ]
+
+    def _standoff_tops(self, port: PortCutout) -> list[float]:
+        terminal = self.lineage.terminal(port.base)
+        return [
+            item.entity.bounding_box().max.Z
+            for item in self.states[terminal]
+            if item.key.role.startswith(("standoff_", "pilot_"))
+        ]
+
+    def _envelope_payload(self, port: PortCutout) -> dict:
+        envelope = {
+            "source": port.envelope_source,
+            "height": {"value": port.envelope_height, "unit": "mm"},
+            "bottomOffset": {"value": port.bottom_offset, "unit": "mm"},
+        }
+        if port.envelope_width is not None:
+            envelope["width"] = {"value": port.envelope_width, "unit": "mm"}
+        return envelope
+
+    def _safe_standoff_envelope_alternative(self, port: PortCutout) -> dict | None:
+        base, board = self._base_context(port.base, port.id)
+        terminal = self.lineage.terminal(port.base)
+        tops = self._standoff_tops(port)
+        if not tops:
+            return None
+        board_top = board.mechanics["thickness"]
+        minimum = max(tops) + port.clearance - board_top + 1e-6
+        maximum = base.wall_height_above_board - port.envelope_height - port.clearance
+        lids = self._base_lids(port)
+        if lids:
+            lid_top = min(self.shapes[lid.id].bounding_box().min.Z for lid in lids)
+            maximum = min(
+                maximum,
+                lid_top
+                - board_top
+                - port.envelope_height
+                - port.clearance
+                - 1e-6,
+            )
+        if minimum > maximum:
+            return None
+        candidate_port = replace(port, bottom_offset=minimum)
+        try:
+            tool, _, _ = build_port_opening(
+                candidate_port, base, board, self.states[terminal]
+            )
+        except GraphError:
+            return None
+        if self._standoff_conflict(port, tool) is not None or any(
+            self._lid_overlap(lid, tool) is not None for lid in lids
+        ):
+            return None
+        return {
+            "set": {"envelope": self._envelope_payload(candidate_port)},
+            "limits": {
+                "parameter": "envelope.bottomOffset",
+                "current": port.bottom_offset,
+                "minimum": minimum,
+                "maximum": maximum,
+                "suggested": minimum,
+                "unit": "mm",
+            },
+        }
+
+    def _safe_envelope_alternative(self, port: PortCutout) -> dict | None:
+        base, board = self._base_context(port.base, port.id)
+        terminal = self.lineage.terminal(port.base)
+        lids = self._base_lids(port)
+        lower = max(self._standoff_tops(port), default=-base.board_seat_height) + 1e-6
+        upper = min(self.shapes[lid.id].bounding_box().min.Z for lid in lids) - 1e-6
+        height = upper - lower - 2 * port.clearance
+        if height <= 0:
+            return None
+        candidate_port = replace(
+            port,
+            envelope_height=height,
+            bottom_offset=lower + port.clearance - board.mechanics["thickness"],
+        )
+        try:
+            tool, _, _ = build_port_opening(
+                candidate_port, base, board, self.states[terminal]
+            )
+        except GraphError:
+            return None
+        if self._standoff_conflict(port, tool) is not None or any(
+            self._lid_overlap(lid, tool) is not None for lid in lids
+        ):
+            return None
+        return {"set": {"envelope": self._envelope_payload(candidate_port)}}
+
+    def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
+        conflict = self._standoff_conflict(port, tool)
         if conflict is not None:
+            alternatives = self._safe_wall_alternatives(port)
+            envelope_alternative = self._safe_standoff_envelope_alternative(port)
+            if envelope_alternative is not None:
+                alternatives.append(envelope_alternative)
+            details = {"alternatives": alternatives} if alternatives else {}
             raise GraphError(
                 "INVALID_PARAMETER",
                 f"port_cutout {port.id} opening intersects a standoff",
@@ -306,9 +456,13 @@ class _EnclosureRegenerator:
                 parameter="envelope",
                 footprint=port.footprint_id,
                 conflict=conflict,
+                **details,
             )
 
     def _validate_lid_clearance(self, port: PortCutout, lid: PcbLid, tool: Shape) -> None:
+        overlap = self._lid_overlap(lid, tool)
+        if overlap is None:
+            return
         common = BRepAlgoAPI_Common(tool.wrapped, self.shapes[lid.id].wrapped)
         common.Build()
         if not common.IsDone():
@@ -319,11 +473,13 @@ class _EnclosureRegenerator:
                 port=port.id,
                 lid=lid.id,
             )
-        overlap = Shape.cast(common.Shape())
         volume = sum(solid.volume for solid in overlap.solids())
-        if volume <= 1e-9:
-            return
         bounds = overlap.bounding_box()
+        alternatives = self._safe_wall_alternatives(port)
+        envelope_alternative = self._safe_envelope_alternative(port)
+        if envelope_alternative is not None:
+            alternatives.append(envelope_alternative)
+        details = {"alternatives": alternatives} if alternatives else {}
         raise GraphError(
             "PORT_BLOCKED_BY_LID",
             f"port_cutout {port.id} opening is blocked by pcb_lid {lid.id}",
@@ -341,6 +497,7 @@ class _EnclosureRegenerator:
                 "lower bottomOffset",
                 "reduce the lid lip depth or change the lid",
             ],
+            **details,
         )
 
     def validate(self) -> None:
