@@ -554,7 +554,7 @@ function showAll(focus = true) {
 // the canvas says which part it shows: after a press, focus and the panel move on to that part's row
 $('showing-clear').addEventListener('click', () => showAll());
 // Escape shows all parts again; in the section controls their own Escape ends the section view first.
-// a field, a disclosure or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
+// a field or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
 const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || event.defaultPrevented || !selected || event.target.closest?.(OWNS_ESCAPE)) return;
