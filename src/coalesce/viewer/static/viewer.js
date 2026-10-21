@@ -517,11 +517,11 @@ function fitRow(row, key) {
     item.title = shown ? 'Show all parts again' : `Show ${title} in the view and its facts`;
     // a second press shows every part again
     item.addEventListener('click', () => {
-      showPart(shown ? null : { key, partId: row.partId });
       if (shown) {
-        fitRowFor(key)?.focus();
+        showAll();
         return;
       }
+      showPart({ key, partId: row.partId });
       part.focus({ preventScroll: true });
       part.scrollIntoView({ block: 'nearest' });
     });
@@ -540,11 +540,21 @@ function showPart(next) {
   requestRender();
 }
 
-// the canvas says which part it shows: after a press, focus and the panel move on to that part's row
-$('showing-clear').addEventListener('click', () => {
-  const { key } = selected;
+// every part again: focus goes back to the fit row that showed the part, and the canvas says so
+function showAll() {
+  const { key, partId } = selected;
   showPart(null);
-  fitRowFor(key)?.focus();
+  (fitRowFor(key) ?? partRow(partId))?.focus();
+  $('view-description').textContent = `All parts shown. ${$('view-description').textContent}`;
+}
+
+// the canvas says which part it shows: after a press, focus and the panel move on to that part's row
+$('showing-clear').addEventListener('click', showAll);
+// Escape shows all parts again; in the section controls their own Escape ends the section view first
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented || !selected) return;
+  event.preventDefault();
+  showAll();
 });
 
 // the measurements in words, with the part each was measured on; the raw record keeps the ids

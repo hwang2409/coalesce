@@ -88,12 +88,19 @@ async function activate({ name, page }, label, how) {
     cameraUnchanged: JSON.stringify(before) === JSON.stringify((await drawn()).view),
   };
   await shot(name, page, `fit-row-${how}`);
-  // a click clears with a second press on the row, Enter with the canvas label's button
-  if (how === 'click') await fitRow(page, label).click();
-  else await page.locator('#showing-clear').click();
+  // keyboard only: after a click, Tab on to the canvas label's button and press it; after Enter, Escape
+  const onClear = () => page.evaluate(() => document.activeElement.id === 'showing-clear');
+  if (how === 'click') {
+    for (let tabs = 0; tabs < 40 && !(await onClear()); tabs += 1) await page.keyboard.press('Tab');
+    state.clearReachedByTab = await onClear();
+    await page.keyboard.press('Enter');
+  } else await page.keyboard.press('Escape');
   await settled(page, 7);
+  if (how === 'enter') await shot(name, page, 'fit-row-escape');
   state.cleared = { faded: (await drawn()).faded, labelHidden: await showing.isHidden(),
-    pressed: await fitRow(page, label).getAttribute('aria-pressed') };
+    pressed: await fitRow(page, label).getAttribute('aria-pressed'),
+    rowFocused: await fitRow(page, label).evaluate((row) => row === document.activeElement),
+    announced: (await page.locator('#view-description').textContent()).startsWith('All parts shown. Revision 7,') };
   return state;
 }
 

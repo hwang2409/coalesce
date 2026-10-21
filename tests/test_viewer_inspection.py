@@ -241,6 +241,21 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert cleared["actions"][2]["rows"][0]["pressed"] == "false"
         assert cleared["scene"]["faded"] == [False] * 3
         assert cleared["scene"]["view"] == view
+        # Escape shows all parts again, puts focus back on the row it started from, and says so
+        step("fit-row-again", do=[{"fitRow": 0}, {"settle": True}])
+        escaped = step("fit-row-escape", do=[{"key": "Escape"}, {"settle": True}, {"fit": True}])
+        assert escaped["actions"][2]["rows"][0]["pressed"] == "false"
+        assert escaped["scene"]["faded"] == [False] * 3
+        assert escaped["focused"].startswith("FAILStandoffs")
+        assert escaped["description"].startswith("All parts shown. Revision 5,")
+        # a section and a shown part: Escape in the section controls ends the section first, the next shows all
+        step("fit-row-section", do=[{"fitRow": 0}, {"click": "Section"}, {"settle": True}, {"focus": "#section-range"}])
+        first = step("fit-row-section-escape", do=[{"key": "Escape"}, {"settle": True}])
+        assert first["focused"] == "Assembled"
+        assert first["scene"]["cut"] == [False] * 3 and first["scene"]["faded"].count(False) == 1
+        second = step("fit-row-section-escape-again", do=[{"key": "Escape"}, {"settle": True}])
+        assert second["scene"]["faded"] == [False] * 3
+        assert second["focused"].startswith("FAILStandoffs")
 
         evidence = step("fit-evidence", do=[{"evidence": True}, {"fit": True}])
         opened = evidence["actions"][1]

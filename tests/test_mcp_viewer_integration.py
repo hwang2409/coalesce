@@ -627,7 +627,10 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
             assert shown["cameraUnchanged"] is True
             assert shown["canvasLabel"] == f"Showing {part}, other parts faded."
             assert shown["canvasLabelInView"] is True
-            assert shown["cleared"] == {"faded": [False, False, False], "labelHidden": True, "pressed": "false"}
+            # Escape after Enter, or Tab on to "Show all parts" and Enter: all parts, focus back on the row
+            assert shown["cleared"] == {"faded": [False, False, False], "labelHidden": True, "pressed": "false",
+                                        "rowFocused": True, "announced": True}
+        assert rows[size]["click"]["clearReachedByTab"] is True
         assert rows[size]["facts"] == {
             "text": "3: M2 mounting hole at (2, 3), M3 mounting hole at (18, 3), H1 at (10, 7) mm",
             "visible": True,
