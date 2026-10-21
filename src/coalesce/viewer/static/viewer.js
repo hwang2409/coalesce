@@ -406,6 +406,12 @@ function renderPartList(parts) {
     size.className = 'part-size';
     size.textContent = formatSize(part);
     button.append(title, size);
+    if (part.role === 'reference') {
+      const role = document.createElement('span');
+      role.className = 'part-role';
+      role.textContent = 'Reference, not exported';
+      button.append(role);
+    }
     const detail = partDetail(part);
     if (detail) {
       const hint = document.createElement('span');

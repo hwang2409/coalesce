@@ -64,6 +64,9 @@ async function snapshot() {
         name: box(item.querySelector('.part-name')),
         hint: box(hint),
         hintColor: hint && getComputedStyle(hint).color,
+        swatchColor: item.querySelector('.swatch') && getComputedStyle(item.querySelector('.swatch')).backgroundColor,
+        role: box(item.querySelector('.part-role')) && item.querySelector('.part-role').textContent,
+        roleColor: item.querySelector('.part-role') && getComputedStyle(item.querySelector('.part-role')).color,
       };
     })),
     focus: await page.evaluate(() => {

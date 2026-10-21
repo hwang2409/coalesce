@@ -23,6 +23,7 @@ from coalesce.document_store import Document, DocumentStore
 from coalesce.graph import Cut, Extrude, Graph, Hole, HolePosition, Plane, Rectangle, Sketch
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
+from coalesce.viewer.scene import REFERENCE_COLOR
 
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
@@ -363,7 +364,7 @@ async def test_real_stdio_kicad_import_publishes_pcb_reference_to_viewer(tmp_pat
         [part] = _wait_for_scene(parsed, headers, 1, errlog)["parts"]
         assert part["role"] == "reference"
         assert part["label"] == "pcb reference"
-        assert part["color"] == "#6f8f72"
+        assert part["color"] == REFERENCE_COLOR
         assert part["visible"] is True
 
 

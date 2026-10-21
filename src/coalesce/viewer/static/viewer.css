@@ -226,6 +226,9 @@ button {
 
 .part-size { grid-column: 2; color: var(--mute); font-size: 12px; }
 
+/* a reference part (the imported board) is shown for fit only: say so on every screen width */
+.part-role { grid-column: 1 / -1; color: var(--mute); font-size: 12px; }
+
 /* named holes and the feature chain; narrow screens show it only for the focused row */
 .part-detail {
   grid-column: 1 / -1;

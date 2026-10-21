@@ -6,6 +6,7 @@ Set VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 
 import asyncio
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -23,10 +24,12 @@ from test_mcp_vertical import call_server_tool
 from test_pcb_enclosure import FIXTURES as ENCLOSURE_FIXTURES
 from test_pcb_enclosure import base_request, standoffs_request
 from test_pcb_enclosure import import_request as enclosure_import
+from test_pcb_lid import lid_request
 from test_viewer_browser import OUTAGE_ERRORS, playwright_module
 
 from coalesce.service import DocumentService
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
+from coalesce.viewer.scene import _oklab
 
 DRIVER = Path(__file__).with_name("viewer_review_smoke.mjs")
 NAMES = ["nw", "ne", "sw", "se"]
@@ -434,3 +437,135 @@ def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_
     finally:
         driver.kill()
         server.close()
+
+
+def far(a, b):
+    """Two colours (#rrggbb or [r, g, b]) a reader tells apart at a glance: 120+ summed channel difference."""
+    rgb = [[int(c[i:i + 2], 16) for i in (1, 3, 5)] if isinstance(c, str) else c for c in (a, b)]
+    return sum(abs(x - y) for x, y in zip(*rgb, strict=True)) >= 120
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_board_reference_reads_apart_from_the_enclosure_with_the_lid_hidden(module, viewport, tmp_path):
+    """The imported board is the reference: its own colour and a row label, so it shows inside the box."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        for tool, arguments in [
+            ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", standoffs_request()),
+            ("feature", lid_request(revision=3)),
+        ]:
+            result = call(service, tool, arguments)
+            assert result.get("ok"), result
+        shown = step("enclosure-lid", wait={"revision": 4})
+        parts = store.scene(4)["parts"]
+        lid = [p["label"] for p in parts].index("lid")
+        step("lid-hidden-iso", do=[{"toggle": lid}, {"click": "Iso"}])
+        top = step("lid-hidden-top", do=[{"click": "Top"}], flat={"fx": [0.45, 0.55], "fy": [0.45, 0.55]})
+        rim = step("lid-hidden-rim", flat={"fx": [0.005, 0.04], "fy": [0.45, 0.55]})
+
+        assert [p["role"] for p in parts] == ["reference", "manufacturing", "manufacturing"]
+        colors = [p["color"] for p in parts]
+        # board, lid and base: no two the same colour, and the board far from both manufactured parts
+        assert len(set(colors)) == 3, colors
+        assert all(far(colors[0], other) for other in colors[1:]), colors
+        for part, row in zip(parts, shown["rows"], strict=True):
+            red, green, blue = (int(part["color"][i:i + 2], 16) for i in (1, 3, 5))
+            assert row["swatchColor"] == f"rgb({red}, {green}, {blue})", row
+            assert row["role"] == ("Reference, not exported" if part["role"] == "reference" else None), row
+        assert shown["rows"][0]["roleColor"] == "rgb(93, 104, 115)"  # --mute, 5.3:1 on the panel (WCAG AA)
+        # seen from above with the lid hidden, the board inside reads apart from the base's rim
+        assert far(top["flat"]["median"], rim["flat"]["median"]), (top["flat"], rim["flat"])
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+def test_part_colours_stay_with_their_body_across_downstream_features_and_restart(tmp_path):
+    """Adding a hole to the first body moves it last in regen order; neither part may change colour."""
+    store = ViewerSceneStore()
+    path = tmp_path / "two.coalesce.json"
+    service = DocumentService(path, scene_store=store)
+    for tool, arguments in [
+        ("sketch", rectangle_sketch(request_id="sa", revision=0, sketch_id="A", entity_id="a",
+                                    width=20, height=20, center=(-20, 0))),
+        ("feature", extrude(request_id="ea", revision=1, feature_id="ea", sketch_id="A",
+                            profile_ids=["a"], distance=5)),
+        ("sketch", rectangle_sketch(request_id="sb", revision=2, sketch_id="B", entity_id="b",
+                                    width=20, height=20, center=(20, 0))),
+        ("feature", extrude(request_id="eb", revision=3, feature_id="eb", sketch_id="B",
+                            profile_ids=["b"], distance=5)),
+    ]:
+        assert call(service, tool, arguments).get("ok"), arguments
+    before = {p["partId"]: p["color"] for p in wait_for(store, 4)["parts"]}
+    assert len(set(before.values())) == 2, before
+
+    hole_a = patterned_hole(request_id="ha", revision=4, feature_id="ha", target="ea",
+                            positions=[{"name": "h", "point": [-20, 0]}])
+    assert call(service, "feature", hole_a).get("ok")
+    assert {p["partId"]: p["color"] for p in wait_for(store, 5)["parts"]} == before
+
+    reopened = ViewerSceneStore()
+    DocumentService(path, scene_store=reopened)
+    assert {p["partId"]: p["color"] for p in wait_for(reopened, 5)["parts"]} == before
+
+
+def test_splitting_one_body_keeps_other_body_colours_and_shades_the_pieces(tmp_path):
+    """A cut through the first body makes two pieces; the second body must keep its colour."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "split.coalesce.json", scene_store=store)
+    for tool, arguments in [
+        ("sketch", rectangle_sketch(request_id="sa", revision=0, sketch_id="A", entity_id="a",
+                                    width=20, height=20, center=(-20, 0))),
+        ("feature", extrude(request_id="ea", revision=1, feature_id="ea", sketch_id="A",
+                            profile_ids=["a"], distance=5)),
+        ("sketch", rectangle_sketch(request_id="sb", revision=2, sketch_id="B", entity_id="b",
+                                    width=20, height=20, center=(20, 0))),
+        ("feature", extrude(request_id="eb", revision=3, feature_id="eb", sketch_id="B",
+                            profile_ids=["b"], distance=5)),
+    ]:
+        assert call(service, tool, arguments).get("ok"), arguments
+    before = {p["partId"]: p["color"] for p in wait_for(store, 4)["parts"]}
+
+    for tool, arguments in [
+        ("sketch", rectangle_sketch(request_id="ss", revision=4, sketch_id="S", entity_id="s",
+                                    width=2, height=30, center=(-20, 0))),
+        ("feature", cut(request_id="cs", revision=5, feature_id="cs", target="ea", tool="S")),
+    ]:
+        assert call(service, tool, arguments).get("ok"), arguments
+    after = {p["partId"]: p["color"] for p in wait_for(store, 6)["parts"]}
+    pieces = [color for part, color in after.items() if part.startswith("ea/a#")]
+
+    assert after["eb/b"] == before["eb/b"]
+    assert len(pieces) == 2, after
+    base = _oklab(before["ea/a"])
+    shades = [_oklab(color) for color in pieces]
+    # distinct from each other, but the same hue and chroma as the body: only lightness moves
+    assert math.dist(*shades) >= 0.05, pieces
+    for shade in shades:
+        assert math.dist(shade[1:], base[1:]) < 0.015, (pieces, before["ea/a"])
+
+
+def test_added_summary_names_the_feature_id_only_when_it_adds_information(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    top = {**lid_request(revision=4, request_id="top"), "featureId": "top_cover"}
+    for tool, arguments in [
+        ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb")),
+        ("feature", base_request()),
+        ("feature", standoffs_request()),
+        ("feature", lid_request(revision=3)),
+        ("feature", top),
+    ]:
+        result = call(service, tool, arguments)
+        assert result.get("ok"), result
+        if arguments.get("featureId") == "lid":
+            assert wait_for(store, 4)["change"]["summary"] == "added pcb lid"
+    assert wait_for(store, 5)["change"]["summary"] == "added pcb lid top_cover"
