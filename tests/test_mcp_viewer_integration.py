@@ -16,6 +16,9 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
+from test_pcb_enclosure import base_request, import_request, standoffs_request
+from test_pcb_lid import lid_request
+from test_port_cutout import port_request
 from test_viewer_browser import playwright_module
 
 import coalesce.service as service_module
@@ -27,6 +30,7 @@ from coalesce.viewer import ViewerSceneStore
 from coalesce.viewer.scene import REFERENCE_COLOR
 
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
+ENCLOSURE_SMOKE = Path(__file__).with_name("mcp_viewer_enclosure_smoke.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
 
 
@@ -519,6 +523,123 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
     assert (screenshots / "revision-2.png").stat().st_size > 0
     assert (screenshots / "revision-3.png").stat().st_size > 0
     assert (screenshots / "failure.png").stat().st_size > 0
+
+
+def _edge_treatment(action, revision, request_id, feature_id, kind, size, edges=None, target=None):
+    word = "radius" if kind == "fillet" else "distance"
+    request = {"action": action, "expectedRevision": revision, "requestId": request_id,
+               "featureId": feature_id, "kind": kind}
+    if action == "create":
+        request["parameters"] = {"target": {"featureId": target}, "edges": edges,
+                                 word: {"value": size, "unit": "mm"}}
+    else:
+        request["set"] = {word: {"value": size, "unit": "mm"}}
+    return request
+
+
+def _enclosure_calls():
+    """The ux review 6 flow: board, base, all mounting standoffs, J1 port, lip-less lid, fillet, chamfer."""
+    outer = [{"feature": "base", "role": "outer_vertical", "cardinality": "exactly", "count": 4}]
+    top = [{"feature": "lid", "role": "between(edge,top)", "cardinality": "exactly", "count": 4}]
+    return [
+        ("import", import_request(KICAD_FIXTURE)),
+        ("feature", base_request()),
+        ("feature", standoffs_request(selection={"mode": "all_mounting"})),
+        ("feature", port_request(revision=3)),
+        ("feature", lid_request(revision=4, include_lip=False)),
+        ("feature", _edge_treatment("create", 5, "base-fillet", "base_fillet", "fillet", 1, outer, "base")),
+        ("feature", _edge_treatment("create", 6, "lid-chamfer", "lid_chamfer", "chamfer", 0.5, top, "lid")),
+    ]
+
+
+@pytest.mark.anyio
+async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
+    """Every review step is scrolled into view and activated in the browser before it is asserted."""
+    path = tmp_path / "enclosure.coalesce.json"
+    errlog = (tmp_path / "enclosure.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    screenshots = Path(os.environ.get("INTEGRATION_SCREENSHOTS", tmp_path / "screenshots"))
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        line = next(
+            line for line in errlog.read().splitlines() if line.startswith("coalesce viewer: ")
+        )
+        for tool, arguments in _enclosure_calls():
+            assert result_json(await session.call_tool(tool, arguments))["ok"] is True, arguments
+        driver = await asyncio.create_subprocess_exec(
+            "node", str(ENCLOSURE_SMOKE), browser_module, line.removeprefix("coalesce viewer: "),
+            str(screenshots), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        )
+
+        async def step(name):
+            driver.stdin.write(f"{name}\n".encode())
+            await driver.stdin.drain()
+            return json.loads(await asyncio.wait_for(driver.stdout.readline(), timeout=60))
+
+        try:
+            built = await step("built")
+            rows = await step("rows")
+            bad = _edge_treatment("update", 7, "bad-fillet", "base_fillet", "fillet", 1000)
+            assert result_json(await session.call_tool("feature", bad))["error"]["code"] == "FILLET_FAILED"
+            failed = await step("failure")
+            fixed = _edge_treatment("update", 7, "repair-fillet", "base_fillet", "fillet", 1)
+            assert result_json(await session.call_tool("feature", fixed))["revision"] == 8
+            repaired = await step("repaired")
+            driver.stdin.write_eof()
+            assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
+        finally:
+            if driver.returncode is None:
+                driver.kill()
+                await driver.wait()
+    for answer in (built, rows, failed, repaired):
+        assert answer.pop("errors") == []
+    for size in ("1280x800", "390x844"):
+        fit, evidence = built[size]["fit"], built[size]["evidence"]
+        # a lip-less lid has no fit gap: neutral, last, and outside the counts
+        assert fit["rows"][-1] == {"status": "N/A", "label": "Lid fit gap", "value": "the lid has no lip"}
+        assert fit["visible"] is True
+        assert fit["count"] == "1 unknown, 2 pass, 3 measured only"
+        # readable lines with units; ids and the payload only behind the closed raw disclosure
+        assert evidence["lines"] == [
+            "Port J1 clears connector on base: J1: 5 × 3 mm on left wall, 0.5 mm clearance, unknown",
+            "Wall thickness on base: 2 mm, measured only",
+            "Floor thickness on base: 2 mm, measured only",
+            "Board clearance on pcb reference: 1 mm min, all sides, measured only",
+            "Standoffs on base: 3 of 3 mounting holes, pass",
+            "Lid interference on lid: none, pass",
+            "Lid fit gap on lid: the lid has no lip, n/a",
+        ]
+        assert (evidence["firstLineVisible"], evidence["rawOpen"], evidence["rawVisible"]) == (True, False, False)
+        parts = rows[size]["click"]["parts"]
+        assert [name.split("/")[0] for name in parts] == ["controller_board", "base", "lid"]
+        for how, part, faded in (("click", "base", [True, False, True]), ("enter", "lid", [True, True, False])):
+            shown = rows[size][how]
+            assert shown["pressed"] == "true"
+            assert shown["faded"] == faded
+            assert shown["cameraUnchanged"] is True
+            assert shown["canvasLabel"] == f"Showing {part}, other parts faded."
+            assert shown["canvasLabelInView"] is True
+            # Escape after Enter, or Tab on to "Show all parts" and Enter: all parts, focus back on the row
+            assert shown["cleared"] == {"faded": [False, False, False], "labelHidden": True, "pressed": "false",
+                                        "rowFocused": True, "announced": True}
+        assert rows[size]["click"]["clearReachedByTab"] is True
+        assert rows[size]["facts"] == {
+            "text": "3: M2 mounting hole at (2, 3), M3 mounting hole at (18, 3), H1 at (10, 7) mm",
+            "visible": True,
+        }
+        assert failed[size] == {"code": "FILLET_FAILED"}
+        assert repaired[size] == {
+            "change": "Edited fillet base_fillet, no value changed",
+            "visible": True,
+        }
 
 
 class FailingSlowStore:
