@@ -374,6 +374,7 @@ async def test_export_refuses_stale_revision(tmp_path):
     )[0]
 
     assert result["error"]["code"] == "STALE_REVISION"
+    assert result["error"]["retryable"] is False
     assert not target.exists()
 
 

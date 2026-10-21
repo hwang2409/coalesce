@@ -79,7 +79,13 @@ def test_cli_reports_invalid_document_without_traceback(tmp_path, key, viewer):
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "coalesce viewer:" not in result.stderr
-    error = json.loads(result.stderr.strip().splitlines()[-1])["error"]
+    failure = json.loads(result.stderr.strip().splitlines()[-1])
+    assert failure["ok"] is False
+    assert failure["revision"] == 2
+    error = failure["error"]
     assert error["code"] == "INVALID_DOCUMENT"
+    assert error["operation"] == "load"
+    assert error["featureId"] == "standoffs"
+    assert error["retryable"] is False
     assert "all_mounting" in error["message"]
     assert path.read_text() == before

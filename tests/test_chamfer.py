@@ -82,7 +82,7 @@ def test_oversized_chamfer_is_structured_and_atomic():
         regenerate(graph)
 
     error = caught.value.error
-    assert error["code"] == "chamfer_failed"
+    assert error["code"] == "CHAMFER_FAILED"
     assert error["distance"] == 100
     assert len(error["edges"]) == 4
     assert error["safeRange"] == "unknown"
@@ -105,7 +105,7 @@ def test_chamfer_reports_real_occt_failure_at_four_edge_apex_atomically():
 
     error = caught.value.error
     assert len(apex_edges) == 4
-    assert error["code"] == "chamfer_failed"
+    assert error["code"] == "CHAMFER_FAILED"
     assert error["safeRange"] == "unknown"
     assert [edge["role"] for edge in error["edges"]] == [f"apex_{index}" for index in range(4)]
 
@@ -128,6 +128,6 @@ def test_chamfer_rejects_ambiguous_reference_without_selecting_a_subset():
     with pytest.raises(GraphError) as caught:
         regenerate(graph)
 
-    assert caught.value.error["code"] == "reference_failed"
+    assert caught.value.error["code"] == "REFERENCE_FAILED"
     assert caught.value.error["resolution"]["status"] == "AMBIGUOUS"
     assert len(caught.value.error["resolution"]["candidates"]) == 2

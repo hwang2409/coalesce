@@ -21,10 +21,25 @@ def test_persisted_fork_loads_then_reports_a_clear_validation_error(tmp_path):
 
     with pytest.raises(GraphError) as caught:
         loaded.graph.validate()
-    assert caught.value.error["code"] == "target_already_consumed"
+    assert caught.value.error["code"] == "TARGET_ALREADY_CONSUMED"
     assert caught.value.error["target"] == "wall"
     assert caught.value.error["consumer"] == "holes"
     assert caught.value.error["terminalFeatureId"] == "holes"
+
+
+def test_legacy_selection_history_is_ignored_and_not_rewritten(tmp_path):
+    path = tmp_path / "legacy.coalesce.json"
+    store = DocumentStore(path)
+    store.save(Document(Graph(), revision=1))
+    payload = json.loads(path.read_text())
+    payload["selectionHistory"] = {"1": {"mounts": ["hole-1"]}}
+    path.write_text(json.dumps(payload))
+
+    document = store.load()
+    store.save(document)
+
+    assert document.revision == 1
+    assert "selectionHistory" not in json.loads(path.read_text())
 
 
 def test_atomic_save_failure_keeps_previous_document(tmp_path, monkeypatch):

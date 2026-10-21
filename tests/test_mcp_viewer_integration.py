@@ -188,11 +188,12 @@ async def test_persisted_fork_is_diagnosable_and_repairable_over_real_stdio(tmp_
             "message": "target wall is already consumed by holes",
             "retryable": False,
             "operation": "query",
-            "feature": "portcut",
+            "featureId": "portcut",
             "target": "wall",
             "consumer": "holes",
             "terminalFeatureId": "holes",
             "hint": "target holes to apply this after holes",
+            "legalTargets": [{"featureId": "holes"}],
         }
         assert measurements["error"] == graph_error
         reference = result_json(
@@ -787,7 +788,7 @@ async def test_oversized_fillet_says_reduce_the_radius_in_mcp_and_viewer(tmp_pat
 
     assert result["ok"] is False and result["revision"] == 3
     assert result["error"]["hint"] == "reduce the fillet radius and retry, or find the largest radius that works"
-    assert result["error"]["feature"] == "round" and result["error"]["radius"] == 4
+    assert result["error"]["featureId"] == "round" and result["error"]["radius"] == 4
     assert failure["error"]["hint"] == result["error"]["hint"]
     # visible guidance is in coalesce terms; the kernel's own words stay in the structured details
     for error in (result["error"], failure["error"]):

@@ -58,7 +58,7 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
     board = imported["boardImport"]
     assert board["type"] == "BoardImport"
     assert board["sourceDigest"] == hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
-    assert board["parserVersion"] == "2"
+    assert board["parserVersion"] == "3"
     assert board["mechanics"]["thickness"] == 1.2
     assert board["mechanics"]["thicknessSource"] == "general.thickness"
     assert [item["id"] for item in board["mechanics"]["outline"]] == [
@@ -201,16 +201,25 @@ def test_special_import_sources_fail_promptly_and_atomically(tmp_path, source_ki
         "parentOperationSeconds": operation_seconds,
         "childOperationSeconds": child_operation_seconds,
     }
-    assert result["error"]["code"] == "IMPORT_FAILED", diagnostics
+    assert result["error"]["code"] == "IMPORT_PATH_NOT_FILE", diagnostics
     assert DocumentService(document).revision == 1, diagnostics
     assert document.read_bytes() == before, diagnostics
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "case", ["missing", "relative", "directory", "oversized", "malformed", "open", "duplicate"]
+    ("case", "code"),
+    [
+        ("missing", "IMPORT_SOURCE_UNREADABLE"),
+        ("relative", "IMPORT_PATH_NOT_ABSOLUTE"),
+        ("directory", "IMPORT_PATH_NOT_FILE"),
+        ("oversized", "IMPORT_TOO_LARGE"),
+        ("malformed", "IMPORT_INVALID_MECHANICS"),
+        ("open", "IMPORT_INVALID_MECHANICS"),
+        ("duplicate", "IMPORT_INVALID_MECHANICS"),
+    ],
 )
-async def test_invalid_import_sources_do_not_commit(tmp_path, case):
+async def test_invalid_import_sources_do_not_commit(tmp_path, case, code):
     document = tmp_path / "board.coalesce.json"
     service = DocumentService(document)
     source = tmp_path / "source.kicad_pcb"
@@ -242,7 +251,7 @@ async def test_invalid_import_sources_do_not_commit(tmp_path, case):
     result = await call_server_tool(service, "import", import_request(source))
 
     assert result["ok"] is False
-    assert result["error"]["code"] in {"INVALID_PARAMETER", "IMPORT_FAILED"}
+    assert result["error"]["code"] == code
     assert "hint" in result["error"]
     assert service.revision == 0
     assert document_bytes(document) == before
@@ -379,5 +388,5 @@ async def test_unreadable_source_does_not_commit(tmp_path):
         source.chmod(0o600)
 
     assert result["ok"] is False
-    assert result["error"]["code"] == "IMPORT_FAILED"
+    assert result["error"]["code"] == "IMPORT_SOURCE_UNREADABLE"
     assert document_bytes(document) is None

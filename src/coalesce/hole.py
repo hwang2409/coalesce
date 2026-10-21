@@ -63,7 +63,7 @@ def _build_cutter(
     generated = list(prism.Generated(edge.wrapped))
     if len(generated) != 1:
         raise GraphError(
-            "history_missing",
+            "HISTORY_MISSING",
             f"hole {node.id} position {position.name} generated {len(generated)} walls",
             feature=node.id,
             position=position.name,
@@ -96,7 +96,7 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
     pairs = _intersecting_pairs(cutters, node.diameter)
     if pairs:
         raise GraphError(
-            "holes_intersect",
+            "HOLES_INTERSECT",
             f"hole {node.id} has intersecting positions",
             feature=node.id,
             pairs=pairs,
@@ -108,7 +108,7 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
     ]
     if missing and len(missing) != len(cutters):
         raise GraphError(
-            "hole_no_effect",
+            "HOLE_NO_EFFECT",
             f"hole {node.id} has positions that remove no material",
             feature=node.id,
             target=node.target,
@@ -120,13 +120,13 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
 def _validate_parameters(node: Hole) -> None:
     if node.diameter <= 0:
         raise GraphError(
-            "invalid_hole",
+            "INVALID_HOLE",
             f"hole {node.id} diameter must be positive",
             feature=node.id,
         )
     if node.depth is not None and node.depth <= 0:
         raise GraphError(
-            "invalid_hole",
+            "INVALID_HOLE",
             f"hole {node.id} depth must be positive",
             feature=node.id,
         )

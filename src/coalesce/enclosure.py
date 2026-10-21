@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from build123d import Align, Box, Compound, Face, Location, Shape, Vertex, Wire
+from build123d import Align, Box, Compound, Face, GeomType, Location, Shape, Vertex, Wire
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.GeomAbs import GeomAbs_JoinType
 from OCP.gp import gp_Vec
 
 from .board_import import mounting_holes
@@ -28,6 +30,12 @@ class EnclosureResult:
 class PortCutoutResult(EnclosureResult):
     metadata: dict
     opening_tool: Shape
+
+
+@dataclass(frozen=True)
+class _ProfileWire:
+    wire: Wire
+    edges: list[tuple[str, Shape]]
 
 
 _REMEDY_STEP = 0.01
@@ -64,17 +72,69 @@ def _limits(
     }
 
 
-def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
-    wires = []
-    for signed_distance in (distance, -distance):
-        try:
-            offset = wire.offset_2d(signed_distance)
-            wires.append(offset if isinstance(offset, Wire) else Wire([offset]))
-        except RuntimeError:
-            continue
-    original_area = Face(wire).area
-    outward = max(wires, key=lambda item: Face(item).area, default=None)
-    if outward is None or Face(outward).area <= original_area:
+def _offset_profile(
+    profile: _ProfileWire,
+    distance: float,
+    join: GeomAbs_JoinType = GeomAbs_JoinType.GeomAbs_Arc,
+) -> _ProfileWire | None:
+    singleton_source = profile.edges[0][0] if len(profile.edges) == 1 else None
+    if singleton_source is not None:
+        source, edge = profile.edges[0]
+        edges = [edge.trim(0.0, 0.5), edge.trim(0.5, 1.0)]
+        profile = _ProfileWire(Wire(edges), [(source, item) for item in edges])
+    operation = BRepOffsetAPI_MakeOffset()
+    operation.Init(join)
+    operation.AddWire(profile.wire.wrapped)
+    operation.Perform(distance)
+    if not operation.IsDone():
+        return None
+    shape = Shape.cast(operation.Shape())
+    wires = shape.wires()
+    if len(wires) != 1:
+        return None
+    wire = wires[0]
+    generated: list[tuple[str, Shape]] = []
+    for source, edge in profile.edges:
+        generated.extend((source, Shape.cast(item)) for item in operation.Generated(edge.wrapped))
+    for vertex in profile.wire.vertices():
+        adjacent = sorted({
+            source
+            for source, edge in profile.edges
+            if any(vertex.is_same(item) for item in edge.vertices())
+        })
+        if len(adjacent) == 2:
+            source = f"between({adjacent[0]},{adjacent[1]})"
+            generated.extend((source, Shape.cast(item)) for item in operation.Generated(vertex.wrapped))
+    edges = (
+        [(singleton_source, edge) for edge in wire.edges()]
+        if singleton_source is not None
+        else [
+            (source, output)
+            for source, output in generated
+            if any(output.is_same(edge) for edge in wire.edges())
+        ]
+    )
+    if len(edges) != len(wire.edges()):
+        return None
+    return _ProfileWire(wire, edges)
+
+
+def _offset_outward(
+    profile: _ProfileWire,
+    distance: float,
+    feature: str,
+    parameter: str,
+    *,
+    join: GeomAbs_JoinType = GeomAbs_JoinType.GeomAbs_Arc,
+) -> _ProfileWire:
+    offsets = [
+        offset
+        for signed_distance in (distance, -distance)
+        if (offset := _offset_profile(profile, signed_distance, join)) is not None
+    ]
+    original_area = Face(profile.wire).area
+    outward = max(offsets, key=lambda item: Face(item.wire).area, default=None)
+    if outward is None or Face(outward.wire).area <= original_area:
         raise GraphError(
             "INVALID_PARAMETER",
             f"{feature} {parameter} cannot offset the board outline outward",
@@ -85,36 +145,34 @@ def _offset_outward(wire: Wire, distance: float, feature: str, parameter: str) -
     return outward
 
 
-def _inward_wire(wire: Wire, distance: float) -> Wire | None:
-    original_area = Face(wire).area
-    wires = []
-    for signed_distance in (distance, -distance):
-        try:
-            offset = wire.offset_2d(signed_distance)
-            candidate_wire = offset if isinstance(offset, Wire) else Wire([offset])
-            area = Face(candidate_wire).area
-            if 0 < area < original_area:
-                wires.append(candidate_wire)
-        except RuntimeError:
-            continue
-    return min(wires, key=lambda item: Face(item).area, default=None)
+def _inward_wire(profile: _ProfileWire, distance: float) -> _ProfileWire | None:
+    original_area = Face(profile.wire).area
+    offsets = [
+        offset
+        for signed_distance in (distance, -distance)
+        if (offset := _offset_profile(profile, signed_distance)) is not None
+        and 0 < Face(offset.wire).area < original_area
+    ]
+    return min(offsets, key=lambda item: Face(item.wire).area, default=None)
 
 
-def _maximum_inward_offset(wire: Wire, failed_distance: float) -> float:
+def _maximum_inward_offset(profile: _ProfileWire, failed_distance: float) -> float:
     low, high = 0.0, failed_distance
     for _ in range(40):
         middle = (low + high) / 2
-        if _inward_wire(wire, middle) is None:
+        if _inward_wire(profile, middle) is None:
             high = middle
         else:
             low = middle
     return low
 
 
-def _offset_inward(wire: Wire, distance: float, feature: str, parameter: str) -> Wire:
-    inward = _inward_wire(wire, distance)
+def _offset_inward(
+    profile: _ProfileWire, distance: float, feature: str, parameter: str
+) -> _ProfileWire:
+    inward = _inward_wire(profile, distance)
     if inward is None:
-        maximum = _maximum_inward_offset(wire, distance)
+        maximum = _maximum_inward_offset(profile, distance)
         details = {}
         if maximum > 0:
             details["limits"] = _limits(
@@ -137,7 +195,7 @@ def _offset_inward(wire: Wire, distance: float, feature: str, parameter: str) ->
 
 def _prism(
     feature: str,
-    wire: Wire,
+    profile: _ProfileWire,
     z: float,
     height: float,
     body: BodySource,
@@ -146,7 +204,8 @@ def _prism(
     top_role: str,
     side_role: str,
 ) -> EnclosureResult:
-    face = Face(wire).moved(Location((0, 0, z)))
+    location = Location((0, 0, z))
+    face = Face(profile.wire).moved(location)
     prism = BRepPrimAPI_MakePrism(face.wrapped, gp_Vec(0, 0, height))
     prism.Build()
     if not prism.IsDone():
@@ -156,7 +215,8 @@ def _prism(
         candidate(feature, bottom_role, source, Shape.cast(prism.FirstShape()), body=body),
         candidate(feature, top_role, source, Shape.cast(prism.LastShape()), body=body),
     ]
-    for edge in face.edges():
+    for source_id, source_edge in profile.edges:
+        edge = source_edge.moved(location)
         generated = [Shape.cast(item) for item in prism.Generated(edge.wrapped)]
         if len(generated) != 1:
             raise GraphError(
@@ -164,11 +224,11 @@ def _prism(
                 f"feature {feature} extrusion lost wall history",
                 feature=feature,
             )
-        faces.append(candidate(feature, side_role, source, generated[0], body=body))
+        faces.append(candidate(feature, side_role, source_id, generated[0], body=body))
     return EnclosureResult(shape, [*faces, *derive_edge_candidates(feature, shape, faces)])
 
 
-def _base_wires(node: PcbBase, board: BoardImport) -> tuple[str, Wire, Wire]:
+def _base_wires(node: PcbBase, board: BoardImport) -> tuple[str, _ProfileWire, _ProfileWire]:
     outlines = board.mechanics.get("outline", [])
     if len(outlines) != 1:
         raise GraphError(
@@ -179,9 +239,20 @@ def _base_wires(node: PcbBase, board: BoardImport) -> tuple[str, Wire, Wire]:
             board=node.board,
         )
     loop = outlines[0]
-    board_wire, _ = board_loop_wire(loop)
-    inner = _offset_outward(board_wire, node.clearance, node.id, "clearance")
-    outer = _offset_outward(inner, node.wall_thickness, node.id, "wallThickness")
+    board_wire, board_edges = board_loop_wire(loop)
+    profile = _ProfileWire(board_wire, [(source, edge) for source, edge in board_edges])
+    inner = _offset_outward(profile, node.clearance, node.id, "clearance")
+    outer = _offset_outward(
+        profile,
+        node.clearance + node.wall_thickness,
+        node.id,
+        "wallThickness",
+        join=(
+            GeomAbs_JoinType.GeomAbs_Intersection
+            if all(edge.geom_type is GeomType.LINE for _, edge in profile.edges)
+            else GeomAbs_JoinType.GeomAbs_Arc
+        ),
+    )
     return loop["id"], inner, outer
 
 
@@ -488,8 +559,8 @@ def _opening_bounds(
         center_x,
         center_y,
         opening_width,
-        inner,
-        outer,
+        inner.wire,
+        outer.wire,
         target_candidates,
     )
     minimum_x, maximum_x, minimum_y, maximum_y = bounds
@@ -646,7 +717,7 @@ def build_port_opening(
         else None
     )
     _, inner, outer = _base_wires(base, board)
-    wall = _wall_choice(node, footprint, footprint_bounds, inner)
+    wall = _wall_choice(node, footprint, footprint_bounds, inner.wire)
     return _opening_tool(
         node,
         footprint,
@@ -782,10 +853,11 @@ def _cylinders(
     for hole in holes:
         x, y = hole["position"]
         wire = Wire.make_circle(diameter / 2).moved(Location((x, y, 0)))
+        profile = _ProfileWire(wire, [(hole["id"], wire.edges()[0])])
         built.append(
             _prism(
                 node.id,
-                wire,
+                profile,
                 z,
                 height,
                 BodySource(node.id, hole["id"]),
@@ -816,7 +888,7 @@ def build_standoffs(
             board=node.board,
         )
     _, inner, _ = _base_wires(base, board)
-    _validate_bosses(node, Face(inner), holes)
+    _validate_bosses(node, Face(inner.wire), holes)
     bosses = _cylinders(
         node,
         holes,

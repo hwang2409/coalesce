@@ -122,7 +122,7 @@ def test_overlapping_non_nested_profiles_are_a_structured_error():
     with pytest.raises(GraphError) as caught:
         extrude_sketch(Extrude("part", sketch="sk", height=3), sketch)
 
-    assert caught.value.error["code"] == "overlapping_profiles"
+    assert caught.value.error["code"] == "OVERLAPPING_PROFILES"
     assert set(caught.value.error["entities"]) == {"wide", "tall"}
 
 
@@ -135,7 +135,7 @@ def test_internally_tangent_profile_is_a_structured_error():
     with pytest.raises(GraphError) as caught:
         extrude_sketch(Extrude("part", sketch="sk", height=3), sketch)
 
-    assert caught.value.error["code"] == "touching_profiles"
+    assert caught.value.error["code"] == "TOUCHING_PROFILES"
     assert set(caught.value.error["entities"]) == {"box", "hole"}
 
 
@@ -153,7 +153,7 @@ def test_touching_disjoint_profiles_are_a_structured_error(second):
     with pytest.raises(GraphError) as caught:
         extrude_sketch(Extrude("parts", sketch="sk", height=3), sketch)
 
-    assert caught.value.error["code"] == "touching_profiles"
+    assert caught.value.error["code"] == "TOUCHING_PROFILES"
     assert set(caught.value.error["entities"]) == {"first", second.id}
 
 

@@ -312,7 +312,7 @@ def test_cut_rejects_non_positive_depth_with_structured_error(depth: float) -> N
         regenerate(graph)
 
     assert caught.value.error == {
-        "code": "invalid_cut_depth",
+        "code": "INVALID_CUT_DEPTH",
         "message": "cut pocket depth must be positive",
         "feature": "pocket",
         "depth": depth,

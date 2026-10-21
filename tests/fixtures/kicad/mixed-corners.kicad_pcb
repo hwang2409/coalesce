@@ -1,0 +1,8 @@
+(kicad_pcb (version 20240108) (generator pcbnew)
+ (general (thickness 1.6))
+ (gr_line (start 0 0) (end 18 0) (layer "Edge.Cuts") (uuid "a"))
+ (gr_arc (start 18 0) (mid 19.802775638 0.964816242) (end 20 3) (layer "Edge.Cuts") (uuid "b"))
+ (gr_line (start 20 3) (end 20 7) (layer "Edge.Cuts") (uuid "c"))
+ (gr_arc (start 20 7) (mid 19.802775638 9.035183758) (end 18 10) (layer "Edge.Cuts") (uuid "d"))
+ (gr_line (start 18 10) (end 0 10) (layer "Edge.Cuts") (uuid "e"))
+ (gr_line (start 0 10) (end 0 0) (layer "Edge.Cuts") (uuid "f")))

@@ -42,7 +42,7 @@ def _through_span(sketch: Sketch, target: Shape) -> float:
 def make_cut_tool(node: Cut, sketch: Sketch, target: Shape) -> CutTool:
     if node.depth is not None and node.depth <= 0:
         raise GraphError(
-            "invalid_cut_depth",
+            "INVALID_CUT_DEPTH",
             f"cut {node.id} depth must be positive",
             feature=node.id,
             depth=node.depth,

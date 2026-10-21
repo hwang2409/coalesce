@@ -51,6 +51,7 @@ def test_cardinality_reports_split_with_structured_candidates():
             },
         ],
         "suggestion": "use one_or_more or add a provenance-set filter",
+        "availableRoles": [],
     }
     accepted_split = resolve(
         Reference("base", "cap_end", Cardinality.ONE_OR_MORE),

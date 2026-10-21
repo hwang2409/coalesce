@@ -24,4 +24,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with: {version: latest}
       - run: uv run --extra test ruff check .
-      - run: uv run --extra test pytest -q
+      - run: uv run --extra test --extra sketch pytest -q
+        env:
+          COALESCE_REQUIRE_SKETCH: "1"

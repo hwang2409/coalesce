@@ -244,20 +244,20 @@ def test_plane_offset_and_circle_round_trip_through_json() -> None:
 @pytest.mark.parametrize(
     ("sketch", "code"),
     [
-        (Sketch("sketch", plane=Plane("ZX"), entities=[Circle("circle", 2)]), "unknown_plane"),
+        (Sketch("sketch", plane=Plane("ZX"), entities=[Circle("circle", 2)]), "UNKNOWN_PLANE"),
         (
             Sketch(
                 "sketch",
                 plane=Plane("XY", offset=float("inf")),
                 entities=[Circle("circle", 2)],
             ),
-            "non_finite_value",
+            "NON_FINITE_VALUE",
         ),
-        (Sketch("sketch", entities=[Circle("circle", 0)]), "invalid_circle_radius"),
-        (Sketch("sketch", entities=[Circle("circle", float("nan"))]), "non_finite_value"),
+        (Sketch("sketch", entities=[Circle("circle", 0)]), "INVALID_CIRCLE_RADIUS"),
+        (Sketch("sketch", entities=[Circle("circle", float("nan"))]), "NON_FINITE_VALUE"),
         (
             Sketch("sketch", entities=[Circle("circle", 2, position=(float("inf"), 0))]),
-            "non_finite_value",
+            "NON_FINITE_VALUE",
         ),
     ],
 )

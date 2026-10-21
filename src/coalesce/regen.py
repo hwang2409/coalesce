@@ -45,6 +45,7 @@ from .references import (
     Reference,
     Resolution,
     Status,
+    edge_role_catalog,
     reference_matches_key,
     resolve,
 )
@@ -273,11 +274,12 @@ def _resolve_edge_treatment_edges(
     kind = type(node).__name__.lower()
     if not node.edges:
         raise GraphError(
-            f"empty_{kind}_edges",
+            "EMPTY_EDGE_SELECTION",
             f"{kind} {node.id} requires at least one edge reference",
             feature=node.id,
         )
     selected: list[Candidate] = []
+    resolutions: list[dict] = []
     for reference in node.edges:
         resolution = resolve(
             reference,
@@ -285,9 +287,17 @@ def _resolve_edge_treatment_edges(
             ordered_features=ordered_features,
             before_feature=node.id,
         )
+        resolution_details = resolution.error or {
+            "feature": reference.feature,
+            "reference": reference.to_dict(),
+            "status": resolution.status.value,
+            "candidates": [],
+            "availableRoles": edge_role_catalog(provenance, reference.feature),
+        }
+        resolutions.append(resolution_details)
         if resolution.error is not None:
             raise GraphError(
-                "reference_failed",
+                "REFERENCE_FAILED",
                 f"{kind} {node.id} edge reference did not resolve",
                 feature=node.id,
                 selectedEdges=[asdict(candidate.key) for candidate in selected],
@@ -296,14 +306,15 @@ def _resolve_edge_treatment_edges(
         selected.extend(resolution.candidates)
     if not selected:
         raise GraphError(
-            f"empty_{kind}_selection",
+            "EMPTY_EDGE_SELECTION",
             f"{kind} {node.id} edge references selected no edges",
             feature=node.id,
             selectedEdges=[],
+            resolution=resolutions[0] if len(resolutions) == 1 else resolutions,
         )
     if any(not isinstance(item.entity, Edge) for item in selected):
         raise GraphError(
-            f"invalid_{kind}_reference",
+            "INVALID_EDGE_REFERENCE",
             f"{kind} {node.id} reference must resolve to edges",
             feature=node.id,
         )
@@ -323,7 +334,7 @@ def _join_extrude(
 ) -> FuseResult:
     if node.target is None:
         raise GraphError(
-            "join_target_required",
+            "JOIN_TARGET_REQUIRED",
             f"join extrude {node.id} requires a target",
             feature=node.id,
         )
@@ -683,7 +694,7 @@ def _apply_extrude(
         return
     if node.operation != "join":
         raise GraphError(
-            "invalid_extrude_operation",
+            "INVALID_EXTRUDE_OPERATION",
             f"extrude {node.id} has unknown operation {node.operation}",
             feature=node.id,
             operation=node.operation,
@@ -708,7 +719,7 @@ def _apply_cut(
     tool_sketch = graph.nodes[node.tool]
     if not isinstance(tool_sketch, Sketch):
         raise GraphError(
-            "invalid_cut_tool",
+            "INVALID_CUT_TOOL",
             f"cut {node.id} tool must reference a sketch",
             feature=node.id,
             tool=node.tool,

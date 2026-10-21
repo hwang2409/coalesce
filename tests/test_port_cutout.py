@@ -324,7 +324,7 @@ def test_viewer_history_follows_semantic_modifier_order(tmp_path, order):
 
 
 def _expected_enclosure_volume(*, removed=0):
-    base = (200 + 60 * 3 + math.pi * 3**2) * 8.2 - (200 + 60 + math.pi) * 6.2
+    base = (26 * 16) * 8.2 - (200 + 60 + math.pi) * 6.2
     standoffs = 2 * math.pi * (2.5**2 - 0.8**2)
     port = 3 * 3 * 2
     return base + standoffs - removed - port
@@ -497,7 +497,7 @@ def test_port_first_still_reports_standoff_collision_atomically(tmp_path):
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "port"
+    assert failed["error"]["featureId"] == "port"
     assert failed["error"]["conflict"] in FEATURE_HOLES
     assert service.revision == 3
     assert service.store.path.read_bytes() == before

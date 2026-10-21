@@ -80,7 +80,7 @@ def test_lid_exactly_follows_base_and_has_exact_fit(tmp_path):
     undersides = _faces(service, "lid", "underside")
     inner_walls = _faces(service, "base", "inner_wall")
     lip_outer = _faces(service, "lid", "lip_outer")
-    assert top.area == pytest.approx(200 + 60 * 3 + math.pi * 3**2, rel=1e-7)
+    assert top.area == pytest.approx(26 * 16, rel=1e-7)
     assert all(
         min(face.distance_to(wall) for wall in inner_walls)
         == pytest.approx(0.25, abs=1e-6)
@@ -99,12 +99,17 @@ def test_lid_exactly_follows_base_and_has_exact_fit(tmp_path):
     assert {
         item.key.source
         for item in service._regen.provenance["lid"]
-        if isinstance(item.entity, Face)
+        if isinstance(item.entity, Face) and item.key.role in {"top", "underside"}
     } == {"base"}
+    assert len({
+        item.key.source
+        for item in service._regen.provenance["lid"]
+        if isinstance(item.entity, Face) and item.key.role == "edge"
+    }) == 4
     assert _faces(service, "lid", "lip_inner")
     assert _faces(service, "lid", "edge")
 
-    outer_area = 200 + 60 * 3 + math.pi * 3**2
+    outer_area = 26 * 16
     lip_outer_area = 200 + 60 * 0.75 + math.pi * 0.75**2
     lip_inner_area = (20 - 0.5) * (10 - 0.5)
     assert lid.volume == pytest.approx(
@@ -123,7 +128,7 @@ def test_lid_without_lip_is_a_valid_separate_slab(tmp_path):
 
     lid = service._regen.shapes["lid"]
     assert BRepCheck_Analyzer(lid.wrapped).IsValid()
-    assert lid.volume == pytest.approx((200 + 180 + math.pi * 9) * 2, rel=1e-7)
+    assert lid.volume == pytest.approx(26 * 16 * 2, rel=1e-7)
     assert not _faces(service, "lid", "lip_outer")
 
 
@@ -187,7 +192,7 @@ def test_invalid_lid_parameters_are_structured_and_atomic(
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "lid"
+    assert failed["error"]["featureId"] == "lid"
     assert failed["error"]["parameter"] == parameter
     if distance is not None:
         assert failed["error"]["measuredDistance"] == pytest.approx(distance)

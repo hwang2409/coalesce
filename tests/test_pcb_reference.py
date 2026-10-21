@@ -327,7 +327,7 @@ def test_invalid_refresh_is_atomic_and_keeps_last_good_reference_scene(tmp_path)
     )
 
     assert failed["ok"] is False
-    assert failed["error"]["code"] == "IMPORT_FAILED"
+    assert failed["error"]["code"] == "IMPORT_INVALID_MECHANICS"
     assert service.revision == 1
     assert store.current_revision == 1
     assert store.scene(1) == first

@@ -124,7 +124,7 @@ def test_case_15_split_edge_obeys_fillet_reference_cardinality() -> None:
     with pytest.raises(GraphError) as caught:
         regenerate(graph)
 
-    assert caught.value.error["code"] == "reference_failed"
+    assert caught.value.error["code"] == "REFERENCE_FAILED"
     assert caught.value.error["resolution"]["status"] == Status.SPLIT.value
     assert len(caught.value.error["resolution"]["candidates"]) == 2
 
@@ -215,7 +215,7 @@ def test_fillet_rejects_unresolved_or_ambiguous_edge_reference(
     with pytest.raises(GraphError) as caught:
         regenerate(graph)
 
-    assert caught.value.error["code"] == "reference_failed"
+    assert caught.value.error["code"] == "REFERENCE_FAILED"
     assert caught.value.error["resolution"]["status"] == status.value
     assert caught.value.error["resolution"]["reference"] == reference.to_dict()
 
@@ -228,7 +228,7 @@ def test_fillet_radius_too_large_is_structured_without_kernel_wording() -> None:
         regenerate(graph)
 
     error = caught.value.error
-    assert error["code"] == "fillet_failed"
+    assert error["code"] == "FILLET_FAILED"
     assert error["radius"] == 100
     assert len(error["edges"]) == 1
     assert "max_fillet" not in error["message"]

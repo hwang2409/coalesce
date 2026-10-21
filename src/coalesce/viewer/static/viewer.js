@@ -148,8 +148,9 @@ function describeView() {
   const change = current?.change ? ` Latest change: ${current.change.summary}.` : '';
   const at = mode === 'section' ? ` at ${section.axis.toUpperCase()} = ${formatMm(Number(section.position.toFixed(1)))} mm` : '';
   const shown = MODE_TEXT[mode] ? ` Shown ${MODE_TEXT[mode]}${at}; the model is unchanged.` : '';
+  const showing = selected ? ` Showing ${partTitle(selected.partId)}, other parts faded.` : '';
   $('view-description').textContent = parts.length
-    ? `Revision ${current.revision}, ${framing}.${change}${shown} `
+    ? `Revision ${current.revision}, ${framing}.${change}${shown}${showing} `
       + partTitles(parts).map((title, i) => [`${title}, ${formatSize(parts[i])} mm`, partDetail(parts[i])].filter(Boolean).join(', ')).join('; ') + '.'
     : 'No parts to show.';
 }
@@ -479,12 +480,18 @@ function renderPartList(parts) {
 
 // ---- fit check: the enclosure inspection of this revision, one row per measurement
 
-// problems first: on a phone only the first rows show without scrolling
-const STATUS_TEXT = { FAIL: 'FAIL', UNKNOWN: 'UNKNOWN', PASS: 'PASS', MEASURED: 'Measured' };
+// problems first: on a phone only the first rows show without scrolling. a measured value has no
+// threshold, so it is no gate result: its badge says "measured only", never anything like a pass
+const STATUS_TEXT = { FAIL: 'FAIL', UNKNOWN: 'UNKNOWN', PASS: 'PASS', MEASURED: 'MEASURED ONLY' };
 const severity = (row) => ['FAIL', 'UNKNOWN'].indexOf(row.status) >>> 0; // not a problem: last, in order
+const partRow = (partId) => partId && document.querySelector(`.part[data-part-id="${CSS.escape(partId)}"]`);
+const partTitle = (partId) => partRow(partId)?.querySelector('.part-name').textContent ?? null;
 
-function fitRow(row) {
-  const part = row.partId && document.querySelector(`.part[data-part-id="${CSS.escape(row.partId)}"]`);
+// the fit row whose part the canvas shows, the other parts faded; the camera stays where it is
+let selected = null; // {key, partId}
+
+function fitRow(row, key) {
+  const part = partRow(row.partId);
   const item = document.createElement(part ? 'button' : 'div');
   item.className = 'fit-row';
   item.dataset.status = row.status;
@@ -503,14 +510,41 @@ function fitRow(row) {
     item.append(cell);
   }
   if (part) {
+    const title = part.querySelector('.part-name').textContent;
+    const shown = selected?.key === key;
     item.type = 'button';
-    item.title = `Show the facts of ${part.querySelector('.part-name').textContent}`;
+    item.setAttribute('aria-pressed', String(shown));
+    item.title = shown ? 'Show all parts again' : `Show ${title} in the view and its facts`;
+    if (shown) {
+      const showing = document.createElement('span');
+      showing.className = 'fit-showing';
+      showing.textContent = `Showing ${title}, other parts faded`;
+      item.append(showing);
+    }
+    // a second press shows every part again
     item.addEventListener('click', () => {
+      selected = shown ? null : { key, partId: row.partId };
+      renderInspection(current.fit);
+      applyMode();
+      describeView();
+      requestRender();
+      if (shown) {
+        document.querySelector(`.fit-row[data-key="${CSS.escape(key)}"]`)?.focus();
+        return;
+      }
       part.focus({ preventScroll: true });
       part.scrollIntoView({ block: 'nearest' });
     });
   }
+  item.dataset.key = key;
   return item;
+}
+
+// the measurements in words, with the part each was measured on; the raw record keeps the ids
+function evidenceLine(row) {
+  const on = partTitle(row.partId);
+  const what = on ? `${row.label} on ${on}` : row.label;
+  return `${what}: ${row.value}, ${(STATUS_TEXT[row.status] ?? row.status).toLowerCase()}`;
 }
 
 function renderInspection(fit) {
@@ -519,29 +553,60 @@ function renderInspection(fit) {
   const counts = Object.entries(STATUS_TEXT)
     .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
     .filter(([count]) => count)
-    .map(([count, text]) => `${count} ${text}`);
-  $('inspection-count').textContent = counts.join(', ');
+    .map(([count, text]) => Object.assign(document.createElement('span'), { textContent: `${count} ${text}` }));
+  $('inspection-count').replaceChildren(...counts.flatMap((count, i) => (i ? [', ', count] : [count])));
+  $('inspection-note').hidden = !rows.some((row) => row.status === 'MEASURED');
+  const keys = fit.flatMap(({ baseId, rows: measured }) => measured.map((row) => [`${baseId}/${row.id}`, row]));
+  // a selection outlives a new revision while its row still points at the same part
+  if (selected && !keys.some(([key, row]) => key === selected.key && row.partId === selected.partId && partRow(row.partId))) {
+    selected = null;
+  }
   const list = $('inspection-rows');
+  const evidence = $('inspection-evidence');
   list.replaceChildren();
+  evidence.replaceChildren();
   for (const summary of fit) {
     if (fit.length > 1) {
       const heading = document.createElement('li');
       heading.className = 'fit-base';
       heading.textContent = summary.baseId;
       list.append(heading);
+      evidence.append(heading.cloneNode(true));
     }
     for (const row of summary.rows.toSorted((a, b) => severity(a) - severity(b))) {
       const item = document.createElement('li');
-      item.append(fitRow(row));
+      item.append(fitRow(row, `${summary.baseId}/${row.id}`));
       list.append(item);
+      const line = document.createElement('li');
+      line.textContent = evidenceLine(row);
+      evidence.append(line);
     }
   }
-  const evidence = fit.map(({ baseId, rows: measured }) => ({
+  const raw = fit.map(({ baseId, rows: measured }) => ({
     baseId,
     rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
   }));
-  $('inspection-evidence').textContent = JSON.stringify(evidence, null, 1);
+  $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
+  updateMore();
 }
+
+// ---- panel: a cue below the scrolled panel content while more lies below it
+
+const panel = $('panel-scroll');
+function updateMore() {
+  const bottom = panel.getBoundingClientRect().bottom;
+  const below = panel.scrollTop + panel.clientHeight < panel.scrollHeight - 4;
+  const checks = !$('inspection').hidden && $('inspection').getBoundingClientRect().bottom > bottom;
+  $('more').hidden = !below;
+  $('more').textContent = checks ? 'Scroll for more checks and parts' : 'Scroll for more parts';
+}
+panel.addEventListener('scroll', updateMore, { passive: true });
+// what a disclosure opens would otherwise start under the panel's bottom edge
+for (const details of document.querySelectorAll('.fit-evidence, .fit-raw')) {
+  details.addEventListener('toggle', () => details.open && details.scrollIntoView({ block: 'nearest' }));
+}
+const panelSize = new ResizeObserver(updateMore);
+for (const element of [panel, ...panel.querySelectorAll(':scope > section')]) panelSize.observe(element);
 
 // ---- review modes: lid off, exploded and one section plane. they only move, hide or cut what this
 // page draws; the scene data and the document never change, and Assembled puts every part back.
@@ -589,13 +654,29 @@ function explodeOffsets(parts) {
   return offsets;
 }
 
-// the parts' assembled extent along the section axis: the slider's range
+// the slider's range along the section axis. each end stops one 0.1 mm step past the outer wall of an
+// enclosure (the base's wall and floor, the lid's top), so the plane at either end still opens the inside
+// instead of showing a slab of that wall. any other part keeps one step inside its outer face: a full cross-section.
+const isBase = (part) => part.features[0]?.kind === 'pcb base';
+const factMm = (part, label) => part?.facts.find((fact) => fact.label === label)?.mm ?? 0;
 function sectionRange(parts) {
   const i = 'xyz'.indexOf(section.axis);
-  const boxes = parts.map((part) => geometries.get(part.mesh.id).surface.boundingBox);
-  const low = Math.min(...boxes.map((box) => box.min.getComponent(i)));
-  const high = Math.max(...boxes.map((box) => box.max.getComponent(i)));
-  return [Number(low.toFixed(1)), Number(high.toFixed(1))];
+  // shortcut: one wall for every lid, from the first base; give each lid its base's wall if a model has two
+  const wall = factMm(parts.find(isBase), 'Wall');
+  const insets = (part) => {
+    if (!isBase(part) && !isLid(part)) return [0, 0];
+    if (i < 2) return [wall, wall]; // the lid covers the base's outer outline
+    return isLid(part) ? [0, factMm(part, 'Thickness')] : [factMm(part, 'Floor'), 0];
+  };
+  const ends = parts.map((part) => {
+    const box = geometries.get(part.mesh.id).surface.boundingBox;
+    const [low, high] = insets(part);
+    return [box.min.getComponent(i) + low, box.max.getComponent(i) - high];
+  });
+  const low = Number((Math.min(...ends.map((end) => end[0])) + 0.1).toFixed(1));
+  const high = Number((Math.max(...ends.map((end) => end[1])) - 0.1).toFixed(1));
+  const middle = Number(((low + high) / 2).toFixed(1));
+  return low <= high ? [low, high] : [middle, middle]; // a part thinner than its walls and two steps
 }
 
 // every part is cut, the board too, so nothing uncut hides what the cut opens up. each cut part counts,
@@ -644,6 +725,16 @@ function setCut(group, part, index, on) {
   group.add(face);
 }
 
+// a faded part stays in place as a faint outline, so the selected part reads in context. its cut face, if
+// any, stays opaque: the stencil count that draws cut faces must run in draw order with the solid parts
+function fade(group, on) {
+  const [surface, lines] = group.children;
+  if (surface.material.transparent === on) return;
+  for (const [object, opacity] of [[surface, 0.12], [lines, 0.25]]) {
+    Object.assign(object.material, { transparent: on, opacity: on ? opacity : 1, depthWrite: !on, needsUpdate: true });
+  }
+}
+
 // places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
 function applyMode() {
   const parts = current?.parts ?? [];
@@ -653,7 +744,10 @@ function applyMode() {
     const [low, high] = sectionRange(parts);
     section.position = Math.min(Math.max(section.position ?? (low + high) / 2, low), high);
     const normal = new THREE.Vector3(...SECTION_NORMALS[section.axis]);
-    sectionPlane.set(normal, -section.position * normal.getComponent('xyz'.indexOf(section.axis)));
+    // drawn a hair (1e-4 of the range) past the shown position: a face lying exactly on the plane, such as
+    // a floor top at a round slider value, would otherwise be half clipped per pixel and stipple the cut face
+    const nudge = 1e-4 * Math.max(high - low, 1);
+    sectionPlane.set(normal, -(section.position + nudge) * normal.getComponent('xyz'.indexOf(section.axis)));
     Object.assign($('section-range'), { min: low, max: high });
     $('section-range').value = section.position;
     Object.assign($('section-value'), { min: low, max: high });
@@ -667,6 +761,7 @@ function applyMode() {
     const lifted = mode === 'lid-off' && isLid(part);
     group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
     setCut(group, part, index, mode === 'section');
+    fade(group, Boolean(selected) && part.partId !== selected.partId);
     if (mode === 'section') {
       // the cut face follows the plane: centred on the part's box, facing along the plane normal
       const face = group.children[4];
@@ -700,6 +795,7 @@ function hint(text) {
 }
 
 function setMode(name) {
+  $('review-announce').textContent = '';
   const reason = unavailable(name, current?.parts ?? []);
   if (reason) {
     hint(`${MODE_NAMES[name]}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`);
@@ -754,7 +850,7 @@ sectionControls.addEventListener('keydown', (event) => {
   event.preventDefault();
   setMode('assembled');
   document.querySelector('[data-mode="assembled"]').focus(); // the hidden controls drop focus
-  $('view-description').textContent = `Section view closed, back to Assembled. ${$('view-description').textContent}`;
+  $('review-announce').textContent = 'Section view ended; Assembled view restored.';
 });
 $('section-value').addEventListener('change', () => {
   $('section-value').value = Number(section.position.toFixed(1)); // shows the clamped position
@@ -850,20 +946,23 @@ function showRevision(sceneData) {
 }
 
 // what to do next, in words; the stable code and raw message stay under "Error details"
-const REFERENCE_CODES = new Set(['EMPTY', 'SPLIT', 'MERGED', 'AMBIGUOUS']);
-function repair({ code, message, hint }) {
+const VERIFIED_REPAIR_CODES = new Set([
+  'UNIT_MISMATCH', 'INVALID_PARAMETER', 'REVISION_CONFLICT', 'UNKNOWN_ID',
+  'DUPLICATE_ID', 'CYCLE', 'TARGET_ALREADY_CONSUMED',
+]);
+function repair({ code, message, hint }, feature) {
   if (hint) return `${capitalize(message)}. Ask your agent to ${hint}.`;
+  if (!VERIFIED_REPAIR_CODES.has(code)) {
+    return `${feature} failed: ${message}. The last good model is still shown.`;
+  }
   if (code === 'UNIT_MISMATCH') return `A value has the wrong unit (${message}). Ask your agent to send it in the expected unit.`;
   if (code === 'INVALID_PARAMETER') return `A value in the edit is not valid: ${message}. Ask your agent to correct it.`;
   if (code === 'REVISION_CONFLICT') return 'The edit was based on an older revision. Ask your agent to read the current revision and try again.';
   if (code === 'UNKNOWN_ID') return `The edit names something that does not exist: ${message}. Ask your agent to check the id.`;
   if (code === 'DUPLICATE_ID') return `An id in the edit is already in use: ${message}. Ask your agent to pick a new id.`;
-  if (code === 'CYCLE' || code === 'ORDER') return 'The edit makes a feature depend on itself or on a later feature. Ask your agent to reorder the features.';
-  if (REFERENCE_CODES.has(code)) return 'A stored face or edge reference no longer matches exactly one piece of geometry. Ask your agent to select it again.';
-  if (code === 'KERNEL_OPERATION_FAILED' || code === 'INVALID_BREP') {
-    return 'These values do not make valid geometry. Check that every size and distance is greater than 0 mm and that each feature meets the part it changes.';
-  }
-  return `${capitalize(message)}.`;
+  if (code === 'CYCLE') return 'The edit makes a feature depend on itself. Ask your agent to reorder the features.';
+  if (code === 'TARGET_ALREADY_CONSUMED') return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
+  return `${feature} failed: ${message}. The last good model is still shown.`;
 }
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -881,7 +980,7 @@ function showFailure() {
     return chip;
   }));
   ids.hidden = !failure.featureIds.length;
-  $('failure-repair').textContent = repair(failure.error);
+  $('failure-repair').textContent = repair(failure.error, failure.featureIds[0] || 'Edit');
   $('failure-code').textContent = failure.error.code;
   $('failure-message').textContent = failure.error.message;
   $('failure-kernel').hidden = !failure.error.kernelMessage;
@@ -1061,6 +1160,7 @@ if (window.coalesceDebug === true) {
       mode,
       positions: model.children.map((group) => group.position.toArray()),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
+      faded: model.children.map((group) => group.children[0].material.transparent),
       zRanges: model.children.map((group) => {
         const { min, max } = new THREE.Box3().setFromObject(surfaceOf(group));
         return [min.z, max.z];
