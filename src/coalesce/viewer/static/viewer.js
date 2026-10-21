@@ -897,6 +897,8 @@ if (window.coalesceDebug === true) {
       cachedMeshes: geometries.size,
     }),
   });
+  // world points [x, y, z] in normalized device coordinates, through the camera that drew the frame
+  window.coalesceViewer.project = (points) => points.map((p) => new THREE.Vector3(...p).project(camera).toArray().slice(0, 2));
   // scene identity and render state, so the test waits for a finished frame, not a timer
   Object.defineProperty(window.coalesceViewer, 'drawn', {
     get: () => ({
