@@ -65,6 +65,8 @@ class ScenePart:
     volume: float | None = None
     # the features that built this part, oldest first: [{"id", "kind", "holes"?}]
     features: tuple[dict, ...] = ()
+    # what the committed features say about this part, for the human: [{"label", "value"}]
+    facts: tuple[dict, ...] = ()
 
 
 def _bytes(kind: str, values: list) -> bytes:
@@ -233,7 +235,7 @@ def _part_colors(parts: Sequence[ScenePart]) -> list[str]:
 
 
 def _build_scene(
-    revision: int, parts: Iterable[ScenePart], tolerance: float, change: dict | None
+    revision: int, parts: Iterable[ScenePart], tolerance: float, change: dict | None, fit: list[dict]
 ) -> tuple[dict, dict[str, bytes]]:
     """Validate and tessellate parts into (scene JSON, mesh bytes by content digest)."""
     parts = list(parts)
@@ -265,6 +267,7 @@ def _build_scene(
                 "visible": part.visible,
                 "size": [exact.size.X, exact.size.Y, exact.size.Z],
                 "features": list(part.features),
+                "facts": list(part.facts),
                 "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
             }
         )
@@ -279,6 +282,7 @@ def _build_scene(
         },
         "parts": scene_parts,
         "change": change,
+        "fit": fit,
     }
     return scene, meshes
 
@@ -303,13 +307,22 @@ class ViewerSceneStore:
         self._revision: int | None = None
         self._failure: dict | None = None
 
-    def publish(self, revision: int, parts: Iterable[ScenePart], change: dict | None = None) -> None:
-        """``change`` says what the commit did, for the human: {"featureId", "summary"}."""
+    def publish(
+        self,
+        revision: int,
+        parts: Iterable[ScenePart],
+        change: dict | None = None,
+        fit: list[dict] | None = None,
+    ) -> None:
+        """``change`` says what the commit did, for the human: {"featureId", "summary"}.
+
+        ``fit`` is the enclosure fit check per pcb base: [{"baseId", "rows"}].
+        """
         with self._changed:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
         # tessellate outside the lock: readers keep serving the last scene meanwhile.
-        scene, meshes = _build_scene(revision, parts, self.TOLERANCE, change)
+        scene, meshes = _build_scene(revision, parts, self.TOLERANCE, change, fit or [])
 
         with self._changed:
             if self._revision is not None and revision <= self._revision:
