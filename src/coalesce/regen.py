@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import copy
+import math
+from dataclasses import dataclass, field, replace
 
 from build123d import Edge, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCP.BRepCheck import BRepCheck_Analyzer
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
-from .enclosure import build_pcb_base, build_pcb_lid, build_port_cutout, build_standoffs
+from .enclosure import (
+    build_pcb_base,
+    build_pcb_lid,
+    build_port_cutout,
+    build_port_opening,
+    build_standoffs,
+)
 from .extrusion import extrude_sketch
 from .fillet import fillet_shape
 from .graph import (
@@ -85,6 +94,174 @@ def _consumed_edge_suggestion(
         f"{replacement.feature}.{replacement.role}" for replacement in replacements
     )
     return f"use generated blend face {names}"
+
+
+_REMEDY_STEP = 0.01
+_PARAMETER_FIELDS = {
+    "bossDiameter": "boss_diameter",
+    "clearance": "clearance",
+    "envelope.bottomOffset": "bottom_offset",
+    "fitGap": "fit_gap",
+    "lip.depth": "lip_depth",
+    "lip.width": "lip_width",
+}
+# These intervals are monotonic: smaller bosses and shallower lips stay inside their bounds.
+_PROVABLE_RANGES = {"bossDiameter", "lip.depth"}
+
+
+def _round_minimum(value: float) -> float:
+    # Move inward by one 0.01 mm step when the computed bound is exact.
+    return round(math.ceil((value + 1e-9) / _REMEDY_STEP) * _REMEDY_STEP, 2)
+
+
+def _round_maximum(value: float) -> float:
+    return round(math.floor((value - 1e-9) / _REMEDY_STEP) * _REMEDY_STEP, 2)
+
+
+def _quantity_value(value: dict) -> float:
+    return float(value["value"])
+
+
+def _alternative_updates(node: object, values: dict) -> dict[str, object] | None:
+    updates: dict[str, object] = {}
+    if "wall" in values:
+        updates["wall"] = values["wall"]
+    envelope = values.get("envelope")
+    if envelope is None:
+        return updates
+    if not isinstance(node, PortCutout):
+        return None
+    width = _quantity_value(envelope["width"]) if "width" in envelope else None
+    height = _quantity_value(envelope["height"])
+    if width != node.envelope_width or height != node.envelope_height:
+        return None
+    updates.update(
+        envelope_source=envelope["source"],
+        envelope_width=width,
+        envelope_height=height,
+        bottom_offset=_quantity_value(envelope["bottomOffset"]),
+    )
+    return updates
+
+
+def _effective_update_key(
+    node: object, feature: str, updates: dict[str, object]
+) -> tuple[str, tuple[tuple[str, object], ...]]:
+    return feature, tuple(
+        sorted(
+            (name, value)
+            for name, value in updates.items()
+            if getattr(node, name) != value
+        )
+    )
+
+
+def _remedy_succeeds(
+    graph: Graph,
+    feature: str,
+    updates: dict[str, object],
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool],
+) -> bool:
+    """Run one unchanged remedy through the same acceptance as a real mutation."""
+    node = graph.nodes.get(feature)
+    if node is None:
+        return False
+    key = _effective_update_key(node, feature, updates)
+    if key in cache:
+        return cache[key]
+    candidate = copy.deepcopy(graph)
+    try:
+        candidate.nodes[feature] = replace(candidate.nodes[feature], **updates)
+        accept_regeneration(candidate, verify_remedies=False)
+    except (GraphError, TypeError, ValueError):
+        cache[key] = False
+    else:
+        cache[key] = True
+    return cache[key]
+
+
+def _range_values(limits: dict) -> list[float]:
+    minimum = limits["minimum"]
+    maximum = limits["maximum"]
+    return [minimum + (maximum - minimum) * step / 6 for step in range(7)]
+
+
+def _verified_limits(
+    graph: Graph,
+    feature: str,
+    limits: dict,
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool],
+    base_updates: dict[str, object] | None = None,
+) -> dict | None:
+    parameter = limits.get("parameter")
+    field = _PARAMETER_FIELDS.get(parameter)
+    if field is None:
+        return None
+    base_updates = base_updates or {}
+    verified = {
+        name: limits[name]
+        for name in ("parameter", "current", "unit")
+        if name in limits
+    }
+    suggested = limits.get("suggested")
+    if suggested is not None and _remedy_succeeds(
+        graph, feature, {**base_updates, field: suggested}, cache
+    ):
+        verified["suggested"] = suggested
+    has_range = "minimum" in limits and "maximum" in limits
+    if parameter in _PROVABLE_RANGES and has_range and all(
+        _remedy_succeeds(graph, feature, {**base_updates, field: value}, cache)
+        for value in _range_values(limits)
+    ):
+        verified["minimum"] = limits["minimum"]
+        verified["maximum"] = limits["maximum"]
+    return verified if "suggested" in verified or "minimum" in verified else None
+
+
+def _verified_alternative(
+    graph: Graph,
+    feature: str,
+    alternative: dict,
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool],
+) -> dict | None:
+    updates = _alternative_updates(
+        graph.nodes.get(feature), alternative.get("set", {})
+    )
+    if updates is None or not _remedy_succeeds(graph, feature, updates, cache):
+        return None
+    verified = dict(alternative)
+    if limits := alternative.get("limits"):
+        safe_limits = _verified_limits(graph, feature, limits, cache, updates)
+        if safe_limits is None:
+            verified.pop("limits", None)
+        else:
+            verified["limits"] = safe_limits
+    return verified
+
+
+def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
+    details = error.error
+    feature = details.get("feature")
+    if not isinstance(feature, str):
+        details.pop("limits", None)
+        details.pop("alternatives", None)
+        return
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool] = {}
+    if limits := details.get("limits"):
+        verified = _verified_limits(graph, feature, limits, cache)
+        if verified is None:
+            details.pop("limits")
+        else:
+            details["limits"] = verified
+    alternatives = [
+        verified
+        for alternative in details.get("alternatives", [])
+        if (verified := _verified_alternative(graph, feature, alternative, cache)) is not None
+    ]
+    if alternatives:
+        details["alternatives"] = alternatives
+    else:
+        details.pop("alternatives", None)
 
 
 def _resolve_fillet_edges(
@@ -241,13 +418,19 @@ class _EnclosureRegenerator:
     def _regenerate_port_cutout(self, node: PortCutout) -> None:
         base, board = self._base_context(node.base, node.id)
         terminal = self.lineage.terminal(node.base)
-        opening = build_port_cutout(
-            node,
-            base,
-            board,
-            self.shapes[terminal],
-            self.states[terminal],
-        )
+        try:
+            opening = build_port_cutout(
+                node,
+                base,
+                board,
+                self.shapes[terminal],
+                self.states[terminal],
+            )
+        except GraphError as error:
+            alternatives = self._safe_wall_alternatives(node)
+            if alternatives:
+                error.error["alternatives"] = alternatives
+            raise
         self.shapes[node.id] = opening.shape
         self.states[node.id] = opening.candidates
         self.removed_material[node.id] = True
@@ -287,9 +470,9 @@ class _EnclosureRegenerator:
         else:
             self._regenerate_standoffs(node)
 
-    def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
+    def _standoff_conflict(self, port: PortCutout, tool: Shape) -> str | None:
         terminal = self.lineage.terminal(port.base)
-        conflict = next(
+        return next(
             (
                 item.key.source
                 for item in self.states[terminal]
@@ -298,7 +481,120 @@ class _EnclosureRegenerator:
             ),
             None,
         )
+
+    def _lid_overlap(self, lid: PcbLid, tool: Shape) -> Shape | None:
+        common = BRepAlgoAPI_Common(tool.wrapped, self.shapes[lid.id].wrapped)
+        common.Build()
+        if not common.IsDone():
+            return None
+        overlap = Shape.cast(common.Shape())
+        return overlap if sum(solid.volume for solid in overlap.solids()) > 1e-9 else None
+
+    def _safe_wall_alternatives(self, port: PortCutout) -> list[dict]:
+        base, board = self._base_context(port.base, port.id)
+        terminal = self.lineage.terminal(port.base)
+        lids = [
+            node
+            for node in self.graph.nodes.values()
+            if isinstance(node, PcbLid) and node.base == port.base and node.id in self.shapes
+        ]
+        alternatives = []
+        for wall in ("left", "right", "front", "back"):
+            if wall == port.wall:
+                continue
+            candidate_port = replace(port, wall=wall)
+            try:
+                tool, _, _ = build_port_opening(
+                    candidate_port, base, board, self.states[terminal]
+                )
+            except GraphError:
+                continue
+            if self._standoff_conflict(port, tool) is not None:
+                continue
+            if any(self._lid_overlap(lid, tool) is not None for lid in lids):
+                continue
+            alternatives.append({"set": {"wall": wall}})
+        return alternatives
+
+    def _base_lids(self, port: PortCutout) -> list[PcbLid]:
+        return [
+            node
+            for node in self.graph.nodes.values()
+            if isinstance(node, PcbLid) and node.base == port.base and node.id in self.shapes
+        ]
+
+    def _standoff_tops(self, port: PortCutout) -> list[float]:
+        terminal = self.lineage.terminal(port.base)
+        return [
+            item.entity.bounding_box().max.Z
+            for item in self.states[terminal]
+            if item.key.role.startswith(("standoff_", "pilot_"))
+        ]
+
+    def _envelope_payload(self, port: PortCutout) -> dict:
+        envelope = {
+            "source": port.envelope_source,
+            "height": {"value": round(port.envelope_height, 12), "unit": "mm"},
+            "bottomOffset": {"value": round(port.bottom_offset, 12), "unit": "mm"},
+        }
+        if port.envelope_width is not None:
+            envelope["width"] = {"value": round(port.envelope_width, 12), "unit": "mm"}
+        return envelope
+
+    def _safe_standoff_envelope_alternative(self, port: PortCutout) -> dict | None:
+        base, board = self._base_context(port.base, port.id)
+        terminal = self.lineage.terminal(port.base)
+        tops = self._standoff_tops(port)
+        if not tops:
+            return None
+        board_top = board.mechanics["thickness"]
+        minimum = max(tops) + port.clearance - board_top
+        maximum = base.wall_height_above_board - port.envelope_height - port.clearance
+        lids = self._base_lids(port)
+        if lids:
+            lid_top = min(self.shapes[lid.id].bounding_box().min.Z for lid in lids)
+            maximum = min(
+                maximum,
+                lid_top
+                - board_top
+                - port.envelope_height
+                - port.clearance,
+            )
+        minimum = _round_minimum(minimum)
+        maximum = _round_maximum(maximum)
+        if minimum > maximum:
+            return None
+        candidate_port = replace(port, bottom_offset=minimum)
+        try:
+            tool, _, _ = build_port_opening(
+                candidate_port, base, board, self.states[terminal]
+            )
+        except GraphError:
+            return None
+        if self._standoff_conflict(port, tool) is not None or any(
+            self._lid_overlap(lid, tool) is not None for lid in lids
+        ):
+            return None
+        return {
+            "set": {"envelope": self._envelope_payload(candidate_port)},
+            "limits": {
+                "parameter": "envelope.bottomOffset",
+                "current": round(port.bottom_offset, 2),
+                "minimum": minimum,
+                "maximum": maximum,
+                "suggested": minimum,
+                "unit": "mm",
+            },
+        }
+
+    def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
+        conflict = self._standoff_conflict(port, tool)
         if conflict is not None:
+            alternatives = self._safe_wall_alternatives(port)
+            envelope_alternative = self._safe_standoff_envelope_alternative(port)
+            if envelope_alternative is not None:
+                alternatives.append(envelope_alternative)
+            details = {"alternatives": alternatives} if alternatives else {}
             raise GraphError(
                 "INVALID_PARAMETER",
                 f"port_cutout {port.id} opening intersects a standoff",
@@ -306,9 +602,13 @@ class _EnclosureRegenerator:
                 parameter="envelope",
                 footprint=port.footprint_id,
                 conflict=conflict,
+                **details,
             )
 
     def _validate_lid_clearance(self, port: PortCutout, lid: PcbLid, tool: Shape) -> None:
+        overlap = self._lid_overlap(lid, tool)
+        if overlap is None:
+            return
         common = BRepAlgoAPI_Common(tool.wrapped, self.shapes[lid.id].wrapped)
         common.Build()
         if not common.IsDone():
@@ -319,11 +619,10 @@ class _EnclosureRegenerator:
                 port=port.id,
                 lid=lid.id,
             )
-        overlap = Shape.cast(common.Shape())
         volume = sum(solid.volume for solid in overlap.solids())
-        if volume <= 1e-9:
-            return
         bounds = overlap.bounding_box()
+        alternatives = self._safe_wall_alternatives(port)
+        details = {"alternatives": alternatives} if alternatives else {}
         raise GraphError(
             "PORT_BLOCKED_BY_LID",
             f"port_cutout {port.id} opening is blocked by pcb_lid {lid.id}",
@@ -341,6 +640,7 @@ class _EnclosureRegenerator:
                 "lower bottomOffset",
                 "reduce the lid lip depth or change the lid",
             ],
+            **details,
         )
 
     def validate(self) -> None:
@@ -355,7 +655,116 @@ class _EnclosureRegenerator:
                     self._validate_lid_clearance(node, lid, tool)
 
 
-def regenerate(graph: Graph) -> RegenResult:
+def _apply_extrude(
+    node: Extrude,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    joined_material: dict[str, bool],
+    lineage: BodyLineage,
+) -> None:
+    if node.operation == "new_body":
+        prism = extrude_sketch(node, graph.nodes[node.sketch])
+        shapes[node.id] = prism.shape
+        states[node.id] = prism.candidates
+        provenance[node.id] = prism.candidates
+        lineage.create(node.id, prism.candidates)
+        return
+    if node.operation != "join":
+        raise GraphError(
+            "invalid_extrude_operation",
+            f"extrude {node.id} has unknown operation {node.operation}",
+            feature=node.id,
+            operation=node.operation,
+        )
+    assert node.target is not None
+    target = lineage.terminal(node.target)
+    result = _join_extrude(node, graph, shapes, states, target)
+    joined_material[node.id] = result.joined_material
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_cut(
+    node: Cut,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    removed_material: dict[str, bool],
+    lineage: BodyLineage,
+) -> None:
+    tool_sketch = graph.nodes[node.tool]
+    if not isinstance(tool_sketch, Sketch):
+        raise GraphError(
+            "invalid_cut_tool",
+            f"cut {node.id} tool must reference a sketch",
+            feature=node.id,
+            tool=node.tool,
+        )
+    target = lineage.terminal(node.target)
+    tool = make_cut_tool(node, tool_sketch, shapes[target])
+    result = cut_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        tool.shape,
+        tool.candidates,
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    removed_material[node.id] = result.removed_material
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_hole(
+    node: Hole,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    removed_material: dict[str, bool],
+    lineage: BodyLineage,
+) -> None:
+    target = lineage.terminal(node.target)
+    tool = make_hole_tool(node, shapes[target])
+    result = cut_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        tool.shape,
+        tool.candidates,
+        kind="hole",
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    removed_material[node.id] = result.removed_material
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_fillet(
+    node: Fillet,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    ordered_features: list[str],
+    consumed: dict[ElementKey, tuple[ElementKey, ...]],
+    lineage: BodyLineage,
+) -> None:
+    target = lineage.terminal(node.target)
+    result = fillet_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        _resolve_fillet_edges(node, provenance, ordered_features),
+        node.radius,
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    consumed.update(result.consumed)
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
     provenance: dict[str, list[Candidate]] = {}
@@ -389,77 +798,29 @@ def regenerate(graph: Graph) -> RegenResult:
         elif isinstance(node, (PcbBase, PcbLid, PortCutout, Standoffs)):
             enclosure.apply(node)
         elif isinstance(node, Extrude):
-            if node.operation == "new_body":
-                prism = extrude_sketch(node, graph.nodes[node.sketch])
-                shapes[node.id] = prism.shape
-                states[node.id] = prism.candidates
-                provenance[node.id] = prism.candidates
-                lineage.create(node.id, prism.candidates)
-                continue
-            if node.operation != "join":
-                raise GraphError(
-                    "invalid_extrude_operation",
-                    f"extrude {node.id} has unknown operation {node.operation}",
-                    feature=node.id,
-                    operation=node.operation,
-                )
-            assert node.target is not None
-            target = lineage.terminal(node.target)
-            result = _join_extrude(node, graph, shapes, states, target)
-            joined_material[node.id] = result.joined_material
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            lineage.replace(node.target, node.id, result.candidates)
+            _apply_extrude(
+                node,
+                graph,
+                shapes,
+                states,
+                provenance,
+                joined_material,
+                lineage,
+            )
         elif isinstance(node, Cut):
-            tool_sketch = graph.nodes[node.tool]
-            if not isinstance(tool_sketch, Sketch):
-                raise GraphError(
-                    "invalid_cut_tool",
-                    f"cut {node.id} tool must reference a sketch",
-                    feature=node.id,
-                    tool=node.tool,
-                )
-            target = lineage.terminal(node.target)
-            tool = make_cut_tool(node, tool_sketch, shapes[target])
-            result = cut_shape(
-                node.id,
-                shapes[target],
-                states[target],
-                tool.shape,
-                tool.candidates,
-            )
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            removed_material[node.id] = result.removed_material
-            lineage.replace(node.target, node.id, result.candidates)
+            _apply_cut(node, graph, shapes, states, removed_material, lineage)
         elif isinstance(node, Hole):
-            target = lineage.terminal(node.target)
-            tool = make_hole_tool(node, shapes[target])
-            result = cut_shape(
-                node.id,
-                shapes[target],
-                states[target],
-                tool.shape,
-                tool.candidates,
-                kind="hole",
-            )
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            removed_material[node.id] = result.removed_material
-            lineage.replace(node.target, node.id, result.candidates)
+            _apply_hole(node, shapes, states, removed_material, lineage)
         elif isinstance(node, Fillet):
-            target = lineage.terminal(node.target)
-            result = fillet_shape(
-                node.id,
-                shapes[target],
-                states[target],
-                _resolve_fillet_edges(node, provenance, ordered_features),
-                node.radius,
+            _apply_fillet(
+                node,
+                shapes,
+                states,
+                provenance,
+                ordered_features,
+                consumed,
+                lineage,
             )
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            consumed.update(result.consumed)
-            lineage.replace(node.target, node.id, result.candidates)
 
     enclosure.validate()
     return RegenResult(
@@ -475,3 +836,23 @@ def regenerate(graph: Graph) -> RegenResult:
         superseded=lineage.superseded,
         predecessors=lineage.predecessors,
     )
+
+
+def accept_regeneration(graph: Graph, *, verify_remedies: bool = True) -> RegenResult:
+    """Regenerate and apply every validity check required before a commit."""
+    try:
+        result = _regenerate(graph)
+        if any(
+            not BRepCheck_Analyzer(shape.wrapped).IsValid()
+            for shape in result.shapes.values()
+        ):
+            raise GraphError("INVALID_BREP", "regeneration produced invalid geometry")
+        return result
+    except GraphError as error:
+        if verify_remedies:
+            _verify_error_remedies(graph, error)
+        raise
+
+
+def regenerate(graph: Graph) -> RegenResult:
+    return accept_regeneration(graph)
