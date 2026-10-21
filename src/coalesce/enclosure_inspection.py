@@ -185,11 +185,14 @@ def _mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
         for footprint in board.mechanics.get("footprints", [])
         if footprint.get("libraryId", "").startswith("MountingHole:")
     }
-    return [
-        hole
-        for hole in board.mechanics.get("holes", [])
-        if hole.get("footprintId") in mounting_footprints
-    ]
+    footprints = {item["id"]: item for item in board.mechanics.get("footprints", [])}
+    holes = []
+    for hole in board.mechanics.get("holes", []):
+        if hole.get("footprintId") not in mounting_footprints:
+            continue
+        reference = footprints.get(hole.get("footprintId"), {}).get("reference")
+        holes.append({**hole, "reference": None if reference == "REF**" else reference})
+    return holes
 
 
 def _standoff_probe(node: Standoffs, hole: dict[str, Any], bottom: float, top: float) -> Shape:
@@ -240,6 +243,21 @@ def _measure_standoff(
     }
 
 
+def _standoff_items(
+    nodes: list[Standoffs],
+    holes_by_id: dict[str, dict[str, Any]],
+    base_shape: Shape,
+    floor_top: float,
+    board_bottom: float,
+) -> list[dict[str, Any]]:
+    return [
+        _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
+        for node in nodes
+        for source in node.hole_ids
+        if source in holes_by_id
+    ]
+
+
 def _standoffs(
     graph: Any, result: Any, base: PcbBase, board_shape: Shape, base_shape: Shape
 ) -> dict[str, Any]:
@@ -251,17 +269,14 @@ def _standoffs(
     nodes = [
         node for node in graph.ordered() if isinstance(node, Standoffs) and node.target == base.id
     ]
-    items = [
-        _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
-        for node in nodes
-        for source in node.hole_ids
-        if source in holes_by_id
-    ]
+    items = _standoff_items(nodes, holes_by_id, base_shape, floor_top, board_bottom)
     intact = {item["holeId"] for item in items if item["classification"] == "intact"}
     hole_ids = [hole["id"] for hole in holes]
     return {
         "count": len(items),
         "mountingHoleCount": len(holes),
+        "holeIds": hole_ids,
+        "references": {hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")},
         "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
         "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
         "items": items,
@@ -370,7 +385,11 @@ def _lid_measurement(
         "partId": part.part_id,
         "outerBBox": _bbox(part.shape),
         "seatingZ": _quantity(min(face.bounding_box().min.Z for face in undersides)),
-        "fitGap": {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))} if gaps else None,
+        "fitGap": (
+            {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))}
+            if gaps
+            else {"status": "unknown", "reason": "no parallel lip and base faces could be measured"}
+        ),
         "interference": interference,
         "lipDepth": _quantity(lip_box.max.Z - lip_box.min.Z) if lip_box is not None else None,
     }
@@ -526,6 +545,16 @@ def _ports(
                 "featureId": node.id,
                 "footprintId": metadata["footprintId"],
                 "reference": metadata["reference"],
+                "libraryId": next(
+                    item.get("libraryId")
+                    for item in board.mechanics.get("footprints", [])
+                    if item["id"] == node.footprint_id
+                ),
+                "value": next(
+                    item.get("value")
+                    for item in board.mechanics.get("footprints", [])
+                    if item["id"] == node.footprint_id
+                ),
                 "wall": wall,
                 "opening": _opening_rectangle(opening, wall),
                 "clearance": {
@@ -559,7 +588,6 @@ def _other_body_warnings(
     enclosure_parts: list[TerminalPart],
 ) -> list[dict[str, Any]]:
     selected_ids = {part.part_id for part in enclosure_parts}
-    sources = _same_board_sources(graph, board.id)
     return [
         {
             "code": "OTHER_MANUFACTURING_BODY",
@@ -567,7 +595,7 @@ def _other_body_warnings(
             "partId": part.part_id,
         }
         for part in parts
-        if part.part_id not in selected_ids and part.source_body.feature in sources
+        if part.part_id not in selected_ids
     ]
 
 
@@ -586,7 +614,7 @@ def _warnings(
     ports: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     warnings = _other_body_warnings(graph, board, parts, enclosure_parts)
-    if ports and board.availability.get("models") != "available":
+    if ports and board.availability.get("models") != "declared":
         warnings.append(
             {
                 "code": "CONNECTOR_HEIGHT_UNRESOLVED",
