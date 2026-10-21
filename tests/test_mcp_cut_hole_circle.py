@@ -181,6 +181,30 @@ async def test_feature_schema_uses_kind_to_validate_parameters(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_quantity_error_includes_field_path_and_expected_shape(tmp_path):
+    request = extrude(
+        request_id="missing-value",
+        revision=0,
+        feature_id="plate",
+        sketch_id="plate-sketch",
+        profile_ids=["plate"],
+        distance=2,
+    )
+    request["parameters"]["distance"] = {"unit": "mm"}
+
+    result = await call_server_tool(
+        DocumentService(tmp_path / "quantity-error.coalesce.json"),
+        "feature",
+        request,
+    )
+
+    assert result["error"]["message"] == (
+        "missing required field 'value'; expected shape: "
+        '{"value": 2, "unit": "mm"} (field: parameters.distance)'
+    )
+
+
+@pytest.mark.anyio
 async def test_cut_update_rejects_extrude_distance_with_allowed_target_field(tmp_path):
     service = DocumentService(tmp_path / "cut-update-schema.coalesce.json")
 

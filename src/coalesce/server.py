@@ -59,9 +59,10 @@ cavity is the board outline offset outward by the clearance; arcs remain arcs. T
 stays at its imported Z position. The floor top is `-boardSeatHeight`, the floor bottom is
 lower by `floorThickness`, and the wall top is the board top plus
 `wallHeightAboveBoard`. Then create `standoffs` with that base as target and the same board.
-Use `selection.mode: explicit` with stable `holeIds`, or `all_mounting` with
-`minimumDiameter`; all plated and non-plated drills whose smaller drill dimension meets the
-minimum are selected. Boss height is derived from the base seat height, so the board bottom
+Use `selection.mode: explicit` with stable `holeIds`, or `all_mounting` to select every
+hole in a `MountingHole:*` footprint, plated or non-plated. The import response marks every
+hole with `mounting: true|false` and its footprint `reference`. Boss height is derived from
+the base seat height, so the board bottom
 sits on the boss tops. `pilotDiameter` must be smaller than `bossDiameter`, and every boss
 must fit fully on the cavity floor without crossing a wall. Board refresh recomputes the
 base and standoff positions; a missing explicit hole id fails the refresh atomically.
@@ -94,7 +95,8 @@ Export excludes the board reference geometry.
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
 idempotent. Use update when the same sketch or feature should remain in the timeline with new
-parameters. Use delete to remove a sketch, feature, or imported board. Delete without cascade
+parameters. `kind` is optional on feature update; when supplied, it must match the existing
+feature. Use delete to remove a sketch, feature, or imported board. Delete without cascade
 fails with every transitive dependent in graph order; delete those first or pass `cascade: true`
 to remove the target and all dependents in one revision. Supplied update entities replace the
 full list; omitted entities stay unchanged.
@@ -189,10 +191,17 @@ def schema_error_message(error: ValidationError) -> str:
         text = f"{subject} must be " + " or ".join(_TYPE_NAMES.get(t, t) for t in types_)
     elif kind == "additionalProperties" and isinstance(instance, dict):
         unknown = sorted(set(instance) - set(error.schema.get("properties", {})))
-        text = f"unknown field{'s' if len(unknown) > 1 else ''} {_quoted(unknown)}"
+        if unknown == ["minimumDiameter"]:
+            text = "minimumDiameter was removed; all_mounting now selects every MountingHole:* footprint hole"
+        else:
+            text = f"unknown field{'s' if len(unknown) > 1 else ''} {_quoted(unknown)}"
     elif kind == "required" and isinstance(instance, dict):
         missing = next(name for name in expected if name not in instance)
         text = f"missing required field {missing!r}"
+        if missing in {"value", "unit"} and {"value", "unit"} <= set(
+            error.schema.get("properties", {})
+        ):
+            text += '; expected shape: {"value": 2, "unit": "mm"}'
     elif kind == "minimum":
         text = f"{subject} must be at least {expected}"
     elif kind == "enum":

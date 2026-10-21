@@ -65,7 +65,7 @@ async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
     )
     updates = [
         ("pcb_base", "pcb_base", {"wallThickness": quantity}),
-        ("standoffs", "standoffs", {"minimumDiameter": quantity}),
+        ("standoffs", "standoffs", {"bossDiameter": quantity}),
         ("pcb_lid_thickness", "pcb_lid", {"thickness": quantity}),
         ("pcb_lid_fit_gap", "pcb_lid", {"fitGap": quantity}),
         ("pcb_lid_lip", "pcb_lid", {"lip": {"depth": quantity, "width": quantity}}),

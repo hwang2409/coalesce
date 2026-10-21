@@ -360,18 +360,15 @@ STANDOFF_SELECTION = {
             "minItems": 1,
             "uniqueItems": True,
         },
-        "minimumDiameter": POSITIVE_QUANTITY,
     },
     "required": ["mode"],
     "oneOf": [
         {
             "properties": {"mode": {"const": "explicit"}},
             "required": ["holeIds"],
-            "not": {"required": ["minimumDiameter"]},
         },
         {
             "properties": {"mode": {"const": "all_mounting"}},
-            "required": ["minimumDiameter"],
             "not": {"required": ["holeIds"]},
         },
     ],
@@ -502,7 +499,6 @@ PCB_BASE_UPDATE_SET = {
 STANDOFFS_UPDATE_SET = {
     "type": "object",
     "properties": {
-        "minimumDiameter": POSITIVE_QUANTITY,
         "bossDiameter": POSITIVE_QUANTITY,
         "pilotDiameter": POSITIVE_QUANTITY,
     },
@@ -565,7 +561,7 @@ FEATURE_UPDATE_SCHEMA = {
             ]
         },
     },
-    "required": ["action", *FEATURE_PROPERTIES, "set"],
+    "required": ["action", *MUTATION_PROPERTIES, "featureId", "set"],
     "additionalProperties": False,
 }
 FEATURE_ACTION_SCHEMAS = {

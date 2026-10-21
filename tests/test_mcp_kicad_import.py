@@ -66,6 +66,10 @@ async def test_stdio_import_persists_stable_board_mechanics_across_restart(tmp_p
     ]
     assert board["mechanics"]["innerCutouts"] == []
     assert len({item["id"] for item in board["mechanics"]["holes"]}) == 3
+    assert {
+        (item["reference"], item["mounting"])
+        for item in board["mechanics"]["holes"]
+    } == {(None, True), ("H1", True)}
     assert {item["id"] for item in board["mechanics"]["footprints"]} == {
         "m2-id",
         "m3-id",

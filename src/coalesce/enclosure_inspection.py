@@ -8,6 +8,7 @@ from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.Standard import Standard_Failure
 
+from .board_import import mounting_holes
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
 from .parts import TerminalPart, terminal_parts
 from .pcb import board_loop_wire
@@ -179,22 +180,6 @@ def _part_for(parts: list[TerminalPart], source_feature: str) -> TerminalPart:
     return matches[0]
 
 
-def _mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
-    mounting_footprints = {
-        footprint["id"]
-        for footprint in board.mechanics.get("footprints", [])
-        if footprint.get("libraryId", "").startswith("MountingHole:")
-    }
-    footprints = {item["id"]: item for item in board.mechanics.get("footprints", [])}
-    holes = []
-    for hole in board.mechanics.get("holes", []):
-        if hole.get("footprintId") not in mounting_footprints:
-            continue
-        reference = footprints.get(hole.get("footprintId"), {}).get("reference")
-        holes.append({**hole, "reference": None if reference == "REF**" else reference})
-    return holes
-
-
 def _standoff_probe(node: Standoffs, hole: dict[str, Any], bottom: float, top: float) -> Shape:
     x, y = hole["position"]
     height = top - bottom
@@ -253,7 +238,9 @@ def _standoff_items(
     return [
         _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
         for node in nodes
-        for source in node.hole_ids
+        for source in (
+            node.hole_ids if node.selection == "explicit" else tuple(holes_by_id)
+        )
         if source in holes_by_id
     ]
 
@@ -262,7 +249,7 @@ def _standoffs(
     graph: Any, result: Any, base: PcbBase, board_shape: Shape, base_shape: Shape
 ) -> dict[str, Any]:
     board = graph.nodes[base.board]
-    holes = _mounting_holes(board)
+    holes = mounting_holes(board)
     holes_by_id = {hole["id"]: hole for hole in holes}
     board_bottom = board_shape.bounding_box().min.Z
     floor_top = min(face.bounding_box().min.Z for face in _faces(result, base.id, "floor"))
@@ -600,7 +587,7 @@ def _other_body_warnings(
 
 
 def _unclassified_hole_ids(board: BoardImport) -> list[str]:
-    mounting_ids = {hole["id"] for hole in _mounting_holes(board)}
+    mounting_ids = {hole["id"] for hole in mounting_holes(board)}
     return [
         hole["id"] for hole in board.mechanics.get("holes", []) if hole["id"] not in mounting_ids
     ]

@@ -10,6 +10,7 @@ from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
+from .board_import import mounting_holes
 from .boolean import cut_shape, fuse_shape, join_contact_failures
 from .graph import BoardImport, GraphError, PcbBase, PcbLid, PortCutout, Standoffs
 from .pcb import board_loop_wire
@@ -704,13 +705,7 @@ def selected_holes(node: Standoffs, board: BoardImport) -> list[dict]:
                 board=node.board,
             )
         return [holes[hole_id] for hole_id in node.hole_ids]
-    assert node.minimum_diameter is not None
-    return [
-        hole
-        for hole in holes.values()
-        if min(hole["drill"]["width"], hole["drill"]["height"])
-        >= node.minimum_diameter
-    ]
+    return mounting_holes(board)
 
 
 def _common_area(first: Face, second: Face) -> float:

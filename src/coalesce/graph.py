@@ -102,7 +102,6 @@ class Standoffs(Feature):
     board: str = ""
     selection: str = "explicit"
     hole_ids: tuple[str, ...] = ()
-    minimum_diameter: float | None = None
     boss_diameter: float = 5
     pilot_diameter: float = 2
 
