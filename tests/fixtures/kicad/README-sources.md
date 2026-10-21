@@ -51,7 +51,9 @@ The other fixtures are small, hand-written files for isolated syntax and geometr
 cases. `kicad6_legacy_text.kicad_pcb` covers KiCad 6 `fp_text reference` and
 `fp_text value`. `rounded.kicad_pcb` uses valid three-point arcs.
 `mixed-corners.kicad_pcb` is derived from that synthetic fixture and combines tangent
-and sharp line/arc seams.
+and sharp line/arc seams. `polygon32.kicad_pcb` is an original generated regression
+fixture: 32 straight segments approximate one 15 mm radius circle centered at
+`(20, 20)`. It reproduces a STEP round-trip mismatch after a 0.2 mm outer-wall fillet.
 
 ## generated USB-C hub regression
 

@@ -41,6 +41,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | dependency | the feature order, dependency, or body lineage is invalid | use `legalTargets` when present; otherwise query the graph |
 | reference | a typed reference or occt history contract failed | query the reference and select an unambiguous provenance set |
 | geometry | the requested exact geometry cannot be made or is invalid | change the named geometric input; use only verified remedies |
+| manufacturing | exact geometry cannot survive the required manufacturing-file round trip | inspect the named feature, part, and mismatched metric |
 | import | the board source or imported mechanics is invalid | correct the source according to the code and import again |
 | enclosure | a semantic enclosure contract failed | apply a verified limit or alternative when present |
 | export | step selection, validation, or publication failed | correct the selection/path or inspect the unchanged model |
@@ -90,6 +91,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `INVALID_CHAMFER_DISTANCE` | geometry | a chamfer distance is not positive | send a positive distance |
 | `FILLET_FAILED` | geometry | occt cannot apply the selected fillet | change the edges or reduce radius; do not infer a safe range |
 | `CHAMFER_FAILED` | geometry | occt cannot apply the selected chamfer | change the edges or reduce distance; do not infer a safe range |
+| `MANUFACTURING_VALIDATION_FAILED` | manufacturing | a fillet or chamfer result does not match after fresh-process step reimport | inspect the named feature, part, and `mismatchedMetric`; the prior revision remains current |
 | `IMPORT_PATH_NOT_ABSOLUTE` | import | a board path is relative | send an explicit absolute local path |
 | `IMPORT_PATH_NOT_FILE` | import | a board path does not name a regular file | choose a readable regular `.kicad_pcb` file |
 | `IMPORT_SOURCE_UNREADABLE` | import | the board source cannot be opened or read | correct permissions/path and import again |
