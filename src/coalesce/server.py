@@ -106,8 +106,8 @@ Use `query` with `measurements` for bbox placement, area, volume, and terminal b
 returns manufacturing parts by default; set `select.role: reference` to measure imported PCB
 reference geometry separately. Reference parts remain visible in the viewer but are excluded
 from manufacturing totals. Use `select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying on the model, or declare enclosure requirements for measured acceptance. It checks terminal manufacturing parts only and
-excludes BoardImport reference geometry; `PASS` with `solidCount: 0` means no manufacturing
-geometry was checked. Use `export` with the current `expectedRevision` and an explicit absolute new
+excludes BoardImport reference geometry. Zero manufacturing solids return `UNKNOWN` with
+`solidCount: 0` and block readiness. Use `export` with the current `expectedRevision` and an explicit absolute new
 `path`; export is stateless and does not accept `requestId`. It defaults to all terminal
 manufacturing parts; select stable `partIds` from measurements when needed. BoardImport
 reference geometry is never included. STEP export never overwrites, renames, truncates, or

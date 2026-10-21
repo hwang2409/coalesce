@@ -45,6 +45,7 @@ from .references import (
     Reference,
     SketchSegmentSource,
 )
+from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
 from .serialization import dumps, loads
 
@@ -1994,6 +1995,27 @@ class _ScenePublisher:
                 _LOG.exception("viewer publish failed")
 
 
+def _valid_brep_result(regen: Any, requirement: dict[str, Any], revision: int) -> dict[str, Any]:
+    parts = terminal_parts(regen)
+    valid = bool(parts) and all(
+        BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in parts
+    )
+    status = "PASS" if valid else "FAIL" if parts else "UNKNOWN"
+    result = {
+        "id": requirement.get("id"),
+        "kind": "valid_brep",
+        "status": status,
+        "measured": {"value": valid, "unit": "boolean"},
+        "threshold": {"value": True, "unit": "boolean"},
+        "involved": [part.part_id for part in parts],
+        "evidence": {"solidCount": len(parts)},
+        "revision": revision,
+    }
+    if not parts:
+        result["reason"] = "no manufacturing solids exist"
+    return result
+
+
 class DocumentService:
     """The only writer for one persisted, revisioned document."""
 
@@ -2695,18 +2717,35 @@ class DocumentService:
                     "requirements must contain at least one item",
                     operation="check",
                 )
-            requirements = payload.get("requirements", [{"id": "valid", "kind": "valid_brep"}])
+            requirements = payload.get(
+                "requirements", [{"id": "valid", "kind": "valid_brep"}]
+            )
             results = []
-            enclosure_requirements = [item for item in requirements if item.get("kind") != "valid_brep"]
+            enclosure_requirements = [
+                item for item in requirements if item.get("kind") != "valid_brep"
+            ]
             if enclosure_requirements:
                 try:
                     from .enclosure_inspection import inspect_enclosure
 
-                    base_id = payload.get("base", "base")
-                    inspection = inspect_enclosure(self._document.graph, self._regen, base_id)
-                    evaluated = evaluate_requirements(enclosure_requirements, inspection, self._document.revision)
-                    results.extend(evaluated["results"])
-                    gate = evaluated["gate"]
+                    inspection = inspect_enclosure(
+                        self._document.graph, self._regen, payload.get("base", "base")
+                    )
+                    results.extend(
+                        evaluate_requirements(
+                            enclosure_requirements, inspection, self._document.revision
+                        )["results"]
+                    )
+                except InvalidHoleIds as error:
+                    return _safe_error(
+                        self._document.revision,
+                        None,
+                        "INVALID_PARAMETER",
+                        str(error),
+                        operation="check",
+                        invalidHoleIds=error.invalid_hole_ids,
+                        validHoles=error.valid_holes,
+                    )
                 except (KeyError, TypeError, ValueError, RuntimeError) as error:
                     return _safe_error(
                         self._document.revision,
@@ -2715,38 +2754,15 @@ class DocumentService:
                         str(error),
                         operation="check",
                     )
-            else:
-                gate = None
-            for requirement in requirements:
-                if requirement.get("kind") != "valid_brep":
-                    continue
-                parts = terminal_parts(self._regen)
-                valid = bool(parts) and all(BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in parts)
-                status = "PASS" if valid else "FAIL" if parts else "UNKNOWN"
-                result = {
-                    "id": requirement.get("id"),
-                    "kind": "valid_brep",
-                    "status": status,
-                    "measured": {"value": valid, "unit": "boolean"},
-                    "threshold": {"value": True, "unit": "boolean"},
-                    "involved": [part.part_id for part in parts],
-                    "evidence": {"solidCount": len(parts)},
-                    "revision": self._document.revision,
-                }
-                if not parts:
-                    result["reason"] = "no manufacturing solids exist"
-                results.append(result)
-            statuses = [item["status"] for item in results]
-            if gate is None:
-                gate = "PASS" if statuses and all(status == "PASS" for status in statuses) else "FAIL" if "FAIL" in statuses else "UNKNOWN" if "UNKNOWN" in statuses else "ERROR"
-            elif "FAIL" in statuses:
-                gate = "FAIL"
-            elif "UNKNOWN" in statuses:
-                gate = "UNKNOWN"
+            results.extend(
+                _valid_brep_result(self._regen, item, self._document.revision)
+                for item in requirements
+                if item.get("kind") == "valid_brep"
+            )
             return {
                 "ok": True,
                 "revision": self._document.revision,
                 "units": "mm",
-                "gate": gate,
+                "gate": reduce_gate(results),
                 "results": results,
             }

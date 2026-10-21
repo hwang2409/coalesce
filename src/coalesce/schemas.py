@@ -741,6 +741,78 @@ EXPORT_SCHEMA = {
     "additionalProperties": False,
 }
 
+CHECK_ID = {"type": "string", "minLength": 1}
+CHECK_HOLE_IDS = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+    "minItems": 1,
+    "uniqueItems": True,
+}
+CHECK_FIT_THRESHOLD = {
+    "type": "object",
+    "properties": {"min": QUANTITY, "max": QUANTITY},
+    "required": ["min", "max"],
+    "additionalProperties": False,
+}
+CHECK_REQUIREMENT = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {
+                    "enum": [
+                        "valid_brep",
+                        "lid_interference",
+                        "clean_deliverables",
+                        "clean_manufacturing_bodies",
+                    ]
+                },
+            },
+            "required": ["id", "kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"enum": ["mounting_holes", "standoff_coverage"]},
+                "holeIds": CHECK_HOLE_IDS,
+            },
+            "required": ["id", "kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {
+                    "enum": [
+                        "wall_thickness",
+                        "floor_thickness",
+                        "engagement_depth",
+                        "lid_engagement",
+                        "port_clearance",
+                        "connector_clearance",
+                    ]
+                },
+                "threshold": QUANTITY,
+            },
+            "required": ["id", "kind", "threshold"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"enum": ["fit_gap", "lid_fit_gap"]},
+                "threshold": CHECK_FIT_THRESHOLD,
+            },
+            "required": ["id", "kind", "threshold"],
+            "additionalProperties": False,
+        },
+    ]
+}
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -749,17 +821,8 @@ CHECK_SCHEMA = {
         "base": {"type": "string", "minLength": 1},
         "requirements": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "minLength": 1},
-                    "kind": {"enum": ["valid_brep", "wall_thickness", "floor_thickness", "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap", "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance", "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies"]},
-                    "threshold": {},
-                    "holeIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": True},
-                },
-                "required": ["id", "kind"],
-                "additionalProperties": False,
-            },
+            "items": CHECK_REQUIREMENT,
+            "minItems": 1,
         },
     },
     "required": ["action"],

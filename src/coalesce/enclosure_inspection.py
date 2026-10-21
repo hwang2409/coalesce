@@ -186,11 +186,13 @@ def _mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
         if footprint.get("libraryId", "").startswith("MountingHole:")
     }
     footprints = {item["id"]: item for item in board.mechanics.get("footprints", [])}
-    return [
-        {**hole, "reference": footprints.get(hole.get("footprintId"), {}).get("reference")}
-        for hole in board.mechanics.get("holes", [])
-        if hole.get("footprintId") in mounting_footprints
-    ]
+    holes = []
+    for hole in board.mechanics.get("holes", []):
+        if hole.get("footprintId") not in mounting_footprints:
+            continue
+        reference = footprints.get(hole.get("footprintId"), {}).get("reference")
+        holes.append({**hole, "reference": None if reference == "REF**" else reference})
+    return holes
 
 
 def _standoff_probe(node: Standoffs, hole: dict[str, Any], bottom: float, top: float) -> Shape:
@@ -241,27 +243,35 @@ def _measure_standoff(
     }
 
 
-def _standoffs(
-    graph: Any, result: Any, base: PcbBase, board_shape: Shape, base_shape: Shape
-) -> dict[str, Any]:
-    board = graph.nodes[base.board]
-    holes = _mounting_holes(board)
-    required_holes = [hole for hole in holes if hole.get("plated", False)]
-    holes_by_id = {hole["id"]: hole for hole in required_holes}
-    board_bottom = board_shape.bounding_box().min.Z
-    floor_top = min(face.bounding_box().min.Z for face in _faces(result, base.id, "floor"))
-    nodes = [
-        node for node in graph.ordered() if isinstance(node, Standoffs) and node.target == base.id
-    ]
-    items = [
+def _standoff_items(
+    nodes: list[Standoffs],
+    holes_by_id: dict[str, dict[str, Any]],
+    base_shape: Shape,
+    floor_top: float,
+    board_bottom: float,
+) -> list[dict[str, Any]]:
+    return [
         _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
         for node in nodes
         for source in node.hole_ids
         if source in holes_by_id
     ]
+
+
+def _standoffs(
+    graph: Any, result: Any, base: PcbBase, board_shape: Shape, base_shape: Shape
+) -> dict[str, Any]:
+    board = graph.nodes[base.board]
+    holes = _mounting_holes(board)
+    holes_by_id = {hole["id"]: hole for hole in holes}
+    board_bottom = board_shape.bounding_box().min.Z
+    floor_top = min(face.bounding_box().min.Z for face in _faces(result, base.id, "floor"))
+    nodes = [
+        node for node in graph.ordered() if isinstance(node, Standoffs) and node.target == base.id
+    ]
+    items = _standoff_items(nodes, holes_by_id, base_shape, floor_top, board_bottom)
     intact = {item["holeId"] for item in items if item["classification"] == "intact"}
     hole_ids = [hole["id"] for hole in holes]
-    required_ids = [hole["id"] for hole in required_holes]
     return {
         "count": len(items),
         "mountingHoleCount": len(holes),
@@ -269,8 +279,6 @@ def _standoffs(
         "references": {hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")},
         "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
         "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
-        "requiredCoveredHoleIds": [hole_id for hole_id in required_ids if hole_id in intact],
-        "requiredUncoveredHoleIds": [hole_id for hole_id in required_ids if hole_id not in intact],
         "items": items,
     }
 
