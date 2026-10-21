@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 
 from build123d import Edge, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCP.BRepCheck import BRepCheck_Analyzer
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
@@ -104,6 +105,8 @@ _PARAMETER_FIELDS = {
     "lip.depth": "lip_depth",
     "lip.width": "lip_width",
 }
+# These intervals are monotonic: smaller bosses and shallower lips stay inside their bounds.
+_PROVABLE_RANGES = {"bossDiameter", "lip.depth"}
 
 
 def _round_minimum(value: float) -> float:
@@ -141,43 +144,94 @@ def _alternative_updates(node: object, values: dict) -> dict[str, object] | None
     return updates
 
 
-def _remedy_succeeds(graph: Graph, feature: str, updates: dict[str, object]) -> bool:
-    """Run one unchanged remedy through the normal in-memory regeneration path."""
-    candidate = copy.deepcopy(graph)
-    node = candidate.nodes.get(feature)
+def _effective_update_key(
+    node: object, feature: str, updates: dict[str, object]
+) -> tuple[str, tuple[tuple[str, object], ...]]:
+    return feature, tuple(
+        sorted(
+            (name, value)
+            for name, value in updates.items()
+            if getattr(node, name) != value
+        )
+    )
+
+
+def _remedy_succeeds(
+    graph: Graph,
+    feature: str,
+    updates: dict[str, object],
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool],
+) -> bool:
+    """Run one unchanged remedy through the same acceptance as a real mutation."""
+    node = graph.nodes.get(feature)
     if node is None:
         return False
+    key = _effective_update_key(node, feature, updates)
+    if key in cache:
+        return cache[key]
+    candidate = copy.deepcopy(graph)
     try:
-        candidate.nodes[feature] = replace(node, **updates)
-        _regenerate(candidate)
+        candidate.nodes[feature] = replace(candidate.nodes[feature], **updates)
+        accept_regeneration(candidate, verify_remedies=False)
     except (GraphError, TypeError, ValueError):
-        return False
-    return True
+        cache[key] = False
+    else:
+        cache[key] = True
+    return cache[key]
 
 
-def _verified_limits(graph: Graph, feature: str, limits: dict) -> dict | None:
-    field = _PARAMETER_FIELDS.get(limits.get("parameter"))
+def _range_values(limits: dict) -> list[float]:
+    minimum = limits["minimum"]
+    maximum = limits["maximum"]
+    return [minimum + (maximum - minimum) * step / 6 for step in range(7)]
+
+
+def _verified_limits(
+    graph: Graph,
+    feature: str,
+    limits: dict,
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool],
+    base_updates: dict[str, object] | None = None,
+) -> dict | None:
+    parameter = limits.get("parameter")
+    field = _PARAMETER_FIELDS.get(parameter)
     if field is None:
         return None
-    verified = dict(limits)
-    for name in ("minimum", "maximum", "suggested"):
-        value = verified.get(name)
-        if value is not None and not _remedy_succeeds(graph, feature, {field: value}):
-            verified.pop(name)
-    return verified if any(name in verified for name in ("minimum", "maximum", "suggested")) else None
+    base_updates = base_updates or {}
+    verified = {
+        name: limits[name]
+        for name in ("parameter", "current", "unit")
+        if name in limits
+    }
+    suggested = limits.get("suggested")
+    if suggested is not None and _remedy_succeeds(
+        graph, feature, {**base_updates, field: suggested}, cache
+    ):
+        verified["suggested"] = suggested
+    has_range = "minimum" in limits and "maximum" in limits
+    if parameter in _PROVABLE_RANGES and has_range and all(
+        _remedy_succeeds(graph, feature, {**base_updates, field: value}, cache)
+        for value in _range_values(limits)
+    ):
+        verified["minimum"] = limits["minimum"]
+        verified["maximum"] = limits["maximum"]
+    return verified if "suggested" in verified or "minimum" in verified else None
 
 
 def _verified_alternative(
-    graph: Graph, feature: str, alternative: dict
+    graph: Graph,
+    feature: str,
+    alternative: dict,
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool],
 ) -> dict | None:
     updates = _alternative_updates(
         graph.nodes.get(feature), alternative.get("set", {})
     )
-    if updates is None or not _remedy_succeeds(graph, feature, updates):
+    if updates is None or not _remedy_succeeds(graph, feature, updates, cache):
         return None
     verified = dict(alternative)
     if limits := alternative.get("limits"):
-        safe_limits = _verified_limits(graph, feature, limits)
+        safe_limits = _verified_limits(graph, feature, limits, cache, updates)
         if safe_limits is None:
             verified.pop("limits", None)
         else:
@@ -192,8 +246,9 @@ def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
         details.pop("limits", None)
         details.pop("alternatives", None)
         return
+    cache: dict[tuple[str, tuple[tuple[str, object], ...]], bool] = {}
     if limits := details.get("limits"):
-        verified = _verified_limits(graph, feature, limits)
+        verified = _verified_limits(graph, feature, limits, cache)
         if verified is None:
             details.pop("limits")
         else:
@@ -201,7 +256,7 @@ def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
     alternatives = [
         verified
         for alternative in details.get("alternatives", [])
-        if (verified := _verified_alternative(graph, feature, alternative)) is not None
+        if (verified := _verified_alternative(graph, feature, alternative, cache)) is not None
     ]
     if alternatives:
         details["alternatives"] = alternatives
@@ -783,9 +838,21 @@ def _regenerate(graph: Graph) -> RegenResult:
     )
 
 
-def regenerate(graph: Graph) -> RegenResult:
+def accept_regeneration(graph: Graph, *, verify_remedies: bool = True) -> RegenResult:
+    """Regenerate and apply every validity check required before a commit."""
     try:
-        return _regenerate(graph)
+        result = _regenerate(graph)
+        if any(
+            not BRepCheck_Analyzer(shape.wrapped).IsValid()
+            for shape in result.shapes.values()
+        ):
+            raise GraphError("INVALID_BREP", "regeneration produced invalid geometry")
+        return result
     except GraphError as error:
-        _verify_error_remedies(graph, error)
+        if verify_remedies:
+            _verify_error_remedies(graph, error)
         raise
+
+
+def regenerate(graph: Graph) -> RegenResult:
+    return accept_regeneration(graph)

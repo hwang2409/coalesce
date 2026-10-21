@@ -100,18 +100,18 @@ class _KernelLoader:
             raise self._result.error
 
     def _load(self) -> None:
-        global regenerate, RegenResult, BRepCheck_Analyzer, Compound
+        global regen_module, RegenResult, BRepCheck_Analyzer, Compound
         try:
             from build123d import Compound as _Compound
             from OCP.BRepCheck import BRepCheck_Analyzer as _BRepCheck_Analyzer
 
+            from . import regen as _regen_module
             from .regen import RegenResult as _RegenResult
-            from .regen import regenerate as _regenerate
 
             Compound = _Compound
             BRepCheck_Analyzer = _BRepCheck_Analyzer
             RegenResult = _RegenResult
-            regenerate = _regenerate
+            regen_module = _regen_module
             result = _KernelLoadResult()
         except Exception as error:  # noqa: BLE001 - preserve the original startup failure
             result = _KernelLoadResult(error=error)
@@ -121,6 +121,10 @@ class _KernelLoader:
 
 
 _KERNEL_LOADER = _KernelLoader()
+
+
+def regenerate(graph: Any) -> RegenResult:
+    return regen_module.accept_regeneration(graph)
 
 
 class RequestError(ValueError):
@@ -1213,6 +1217,7 @@ def _graph_error_response(
         "PORT_BLOCKED_BY_LID",
         "BODY_LINEAGE_DIVERGED",
         "INVALID_PARAMETER",
+        "INVALID_BREP",
         "MISSING",
     }
     details = {
@@ -2032,7 +2037,6 @@ class DocumentService:
                 except GraphError as error:
                     self._record_graph_error(error)
                     return
-                self._assert_valid(result)
                 self._regen = result
                 if self._publisher is not None and self._document.revision > 0:
                     self._publisher.publish(self._document.revision, result)
@@ -2068,7 +2072,6 @@ class DocumentService:
             except GraphError as error:
                 self._record_graph_error(error)
                 raise
-            self._assert_valid(result)
             self._regen = result
             if self._publisher is not None and self._document.revision > 0:
                 self._publisher.publish(self._document.revision, result)
@@ -2083,10 +2086,6 @@ class DocumentService:
     @property
     def revision(self) -> int:
         return self._document.revision
-
-    def _assert_valid(self, result: RegenResult) -> None:
-        if any(not BRepCheck_Analyzer(shape.wrapped).IsValid() for shape in result.shapes.values()):
-            raise RequestError("INVALID_BREP", "regeneration produced invalid geometry")
 
     def _assert_effect(self, operation: MutationOperation, result: RegenResult) -> None:
         if not isinstance(operation, (CutCreate, HoleCreate)):
@@ -2188,7 +2187,6 @@ class DocumentService:
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
                 changed_id, changed_ids, deletion = _applied_result(applied)
                 result = regenerate(graph)
-                self._assert_valid(result)
                 self._assert_effect(parsed, result)
                 deletion_fields, change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision

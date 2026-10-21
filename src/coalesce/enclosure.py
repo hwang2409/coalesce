@@ -721,13 +721,25 @@ def _common_area(first: Face, second: Face) -> float:
     return sum(face.area for face in Shape.cast(common.Shape()).faces())
 
 
-def _maximum_boss_diameter(cavity: Face, x: float, y: float) -> float:
+def _maximum_boss_diameter(cavity: Face, hole: dict, holes: list[dict]) -> float:
+    x, y = hole["position"]
     center = Vertex(x, y, 0)
-    return 2 * min(edge.distance_to(center) for edge in cavity.edges())
+    wall_limit = 2 * min(edge.distance_to(center) for edge in cavity.edges())
+    spacing_limit = min(
+        (
+            math.dist(hole["position"], other["position"])
+            for other in holes
+            if other["id"] != hole["id"]
+        ),
+        default=math.inf,
+    )
+    return min(wall_limit, spacing_limit)
 
 
-def _boss_limits(node: Standoffs, cavity: Face, x: float, y: float) -> dict | None:
-    maximum = _maximum_boss_diameter(cavity, x, y)
+def _boss_limits(
+    node: Standoffs, cavity: Face, hole: dict, holes: list[dict]
+) -> dict | None:
+    maximum = _maximum_boss_diameter(cavity, hole, holes)
     if maximum <= node.pilot_diameter:
         return None
     return _limits(
@@ -751,7 +763,7 @@ def _validate_bosses(node: Standoffs, cavity: Face, holes: list[dict]) -> None:
             continue
         else:
             message = f"standoffs {node.id} boss at hole {hole['id']} crosses a wall"
-            limits = _boss_limits(node, cavity, x, y)
+            limits = _boss_limits(node, cavity, hole, holes)
         details = {"limits": limits} if limits is not None else {}
         raise GraphError(
             "INVALID_PARAMETER",
