@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from build123d import Edge, Face, Shape
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
@@ -77,7 +77,7 @@ def fillet_shape(
     edges: list[Candidate],
     radius: float,
 ) -> FilletResult:
-    edge_keys = [edge.key for edge in edges]
+    edge_keys = [asdict(edge.key) for edge in edges]  # plain data: errors reach JSON responses
     if radius <= 0:
         raise GraphError(
             "invalid_fillet_radius",
@@ -103,6 +103,8 @@ def fillet_shape(
             feature=feature,
             radius=radius,
             edges=edge_keys,
+            # coalesce guidance; the kernel's own text stays in the log
+            hint="reduce the fillet radius and retry, or find the largest radius that works",
         ) from None
 
     inherited, generated, consumed = _collect_history(

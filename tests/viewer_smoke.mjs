@@ -106,14 +106,14 @@ await step('revision-1', async () => ({
 }));
 await waitRevision(2);
 await settled();
-const second = await step('revision-2', async () => ({
+await step('revision-2', async () => ({
   label: await revision().textContent(),
   ...(await layout()),
   memory: await page.evaluate(() => window.coalesceViewer.memory),
   ...(await drawn()),
 }));
 await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
-await settledAfter(second.scene.frames);
+await settled(); // the status lies over the canvas: nothing to redraw
 await step('failure', async () => ({
   label: await revision().textContent(),
   failure: await page.locator('#failure').innerText(),

@@ -312,7 +312,9 @@ def test_viewer_frames_fails_and_ends_honestly(module, viewport):
         assert "select server" in ended["status"]
         assert ended["requestsAfter"] == []  # it stopped retrying
         assert ended["buttons"] == [True] * 5
-        assert ended["coverage"] > refit["coverage"] * 0.9  # the last model stays, dimmed by css
+        # the last model stays where it was, dimmed by css; the hidden axes gizmo was part of the refit count
+        assert ended["scene"]["projected"] == refit["scene"]["projected"]
+        assert ended["coverage"] > refit["coverage"] * 0.8
         assert driver.wait(timeout=30) == 0
     finally:
         driver.kill()
