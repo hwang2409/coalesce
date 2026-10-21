@@ -1858,6 +1858,25 @@ def _hole_names(node: Hole) -> list[str | None]:
     return [position.name for position in node.positions] or [None]
 
 
+def _infer_update_kind(payload: dict[str, Any], node: Any) -> tuple[str, str | None]:
+    return _node_kind(node), payload.get("kind")
+
+
+def _resolve_export_part(
+    requested_id: str, available: list[Any], by_id: dict[str, Any], result: RegenResult
+) -> Any | None:
+    if requested_id in by_id:
+        return by_id[requested_id]
+    matches = [
+        part
+        for part in available
+        if requested_id in {
+            feature["id"] for feature in _lineage(result, part.terminal_feature)
+        }
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]:
     """The features that built a terminal part, oldest first."""
     chain = []
@@ -2436,25 +2455,17 @@ class DocumentService:
                 if not isinstance(node, Feature):
                     noun = payload.get("kind") or "feature"
                     failure = _safe_error(
-                        self.revision,
-                        payload.get("requestId"),
-                        "UNKNOWN_ID",
-                        f"unknown {noun}: {payload.get('featureId')}",
-                        operation="feature",
+                        self.revision, payload.get("requestId"), "UNKNOWN_ID",
+                        f"unknown {noun}: {payload.get('featureId')}", operation="feature",
                     )
                     self.publish_failure(payload, failure)
                     return failure
-                expected_kind = _node_kind(node)
-                actual_kind = payload.get("kind")
+                expected_kind, actual_kind = _infer_update_kind(payload, node)
                 if actual_kind is not None and actual_kind != expected_kind:
                     failure = _safe_error(
-                        self.revision,
-                        payload.get("requestId"),
-                        "INVALID_PARAMETER",
+                        self.revision, payload.get("requestId"), "INVALID_PARAMETER",
                         f"feature {node.id} is {expected_kind}, not {actual_kind}",
-                        operation="feature",
-                        expectedKind=expected_kind,
-                        actualKind=actual_kind,
+                        operation="feature", expectedKind=expected_kind, actualKind=actual_kind,
                     )
                     self.publish_failure(payload, failure)
                     return failure
@@ -2502,18 +2513,9 @@ class DocumentService:
             selected = []
             unknown = []
             for requested_id in requested:
-                matches = [
-                    part
-                    for part in available
-                    if requested_id == part.part_id
-                    or requested_id in {
-                        feature["id"] for feature in _lineage(self._regen, part.terminal_feature)
-                    }
-                ]
-                if requested_id in by_id:
-                    matches = [by_id[requested_id]]
-                if len(matches) == 1:
-                    selected.append(matches[0])
+                match = _resolve_export_part(requested_id, available, by_id, self._regen)
+                if match is not None:
+                    selected.append(match)
                 else:
                     unknown.append(requested_id)
         if unknown:

@@ -111,7 +111,9 @@ from manufacturing totals. Use `select.kind: feature` with `id` for one node. Us
 excludes BoardImport reference geometry. Zero manufacturing solids return `UNKNOWN` with
 `solidCount: 0` and block readiness. Use `export` with the current `expectedRevision` and an explicit absolute new
 `path`; export is stateless and does not accept `requestId`. It defaults to all terminal
-manufacturing parts; select stable `partIds` from measurements when needed. BoardImport
+manufacturing parts; select stable `partIds` from measurements when needed. A feature id is
+accepted only when it resolves to exactly one terminal manufacturing part; otherwise
+`UNKNOWN_ID` lists valid part ids and the feature that built each. BoardImport
 reference geometry is never included. STEP export never overwrites, renames, truncates, or
 removes a destination. It validates bytes in a private directory. A fresh Python process
 reimports them and compares part and solid counts, bounding boxes, per-part and
@@ -178,6 +180,17 @@ def _quoted(values) -> str:
     return ", ".join(repr(value) for value in values)
 
 
+def _quantity_shape_hint(error: ValidationError) -> str:
+    schema = error.schema
+    if (
+        isinstance(schema, dict)
+        and schema.get("type") == "object"
+        and set(schema.get("properties", {})) >= {"value", "unit"}
+    ):
+        return '; expected shape: {"value": 2, "unit": "mm"}'
+    return ""
+
+
 def schema_error_message(error: ValidationError) -> str:
     """Stable coalesce wording for a schema failure; never the jsonschema library text."""
     path = "".join(
@@ -210,6 +223,7 @@ def schema_error_message(error: ValidationError) -> str:
         text = f"{subject} must be {expected!r}"
     else:
         text = "invalid value"
+    text += _quantity_shape_hint(error)
     return f"{text} (field: {path})" if path else text
 
 

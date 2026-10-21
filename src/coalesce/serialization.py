@@ -9,6 +9,7 @@ from .graph import (
     Extrude,
     Fillet,
     Graph,
+    GraphError,
     Hole,
     HolePosition,
     PcbBase,
@@ -143,6 +144,13 @@ def loads(value: str) -> Graph:
         elif cls is Sketch:
             payload = _sketch(payload)
         elif cls is Standoffs:
+            if "minimum_diameter" in payload or "minimumDiameter" in payload:
+                raise GraphError(
+                    "INVALID_DOCUMENT",
+                    "minimumDiameter was removed; use selection mode all_mounting, which selects every MountingHole:* footprint hole.",
+                    feature=payload.get("id"),
+                    field="minimumDiameter",
+                )
             payload["hole_ids"] = tuple(payload.get("hole_ids", ()))
         elif cls is Hole:
             payload["position"] = tuple(payload.get("position", (0, 0)))
