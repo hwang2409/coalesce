@@ -223,7 +223,8 @@ def schema_error_message(error: ValidationError) -> str:
         text = f"{subject} must be {expected!r}"
     else:
         text = "invalid value"
-    text += _quantity_shape_hint(error)
+    if "expected shape" not in text:
+        text += _quantity_shape_hint(error)
     return f"{text} (field: {path})" if path else text
 
 
