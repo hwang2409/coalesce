@@ -569,3 +569,47 @@ def test_added_summary_names_the_feature_id_only_when_it_adds_information(tmp_pa
         if arguments.get("featureId") == "lid":
             assert wait_for(store, 4)["change"]["summary"] == "added pcb lid"
     assert wait_for(store, 5)["change"]["summary"] == "added pcb lid top_cover"
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_split_pieces_get_distinct_titles_and_the_revision_update_is_not_boxed(module, viewport, tmp_path):
+    """Two pieces of one body share label and last feature: each row still names its own piece."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "split.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        for tool, arguments in [
+            ("sketch", rectangle_sketch(request_id="sa", revision=0, sketch_id="A", entity_id="a",
+                                        width=20, height=20, center=(-20, 0))),
+            ("feature", extrude(request_id="ea", revision=1, feature_id="base", sketch_id="A",
+                                profile_ids=["a"], distance=5)),
+            ("sketch", rectangle_sketch(request_id="sb", revision=2, sketch_id="B", entity_id="b",
+                                        width=20, height=20, center=(20, 0))),
+            ("feature", extrude(request_id="eb", revision=3, feature_id="later", sketch_id="B",
+                                profile_ids=["b"], distance=5)),
+            ("sketch", rectangle_sketch(request_id="ss", revision=4, sketch_id="S", entity_id="s",
+                                        width=2, height=30, center=(-20, 0))),
+            ("feature", cut(request_id="cs", revision=5, feature_id="split", target="base", tool="S")),
+        ]:
+            assert call(service, tool, arguments).get("ok"), arguments
+        shown = step("split", wait={"revision": 6}, do=[{"fresh": True}])
+        parts = store.scene(6)["parts"]
+
+        plain, fresh = shown["actions"][0]["plain"], shown["actions"][0]["fresh"]
+        # the update signal changes only the text colour: no box, no padding, no layout shift
+        for key in ("background", "padding", "margin", "box"):
+            assert fresh[key] == plain[key], (key, plain, fresh)
+        assert plain["background"] == "rgba(0, 0, 0, 0)" and plain["padding"] == "0px", plain
+        assert fresh["color"] != plain["color"], (plain, fresh)
+        # pieces numbered in sorted part id order, the same order that picks their shades
+        pieces = sorted(p["partId"] for p in parts if p["label"] == "base")
+        expected = {pid: f"base \u00b7 split, piece {pieces.index(pid) + 1}" for pid in pieces}
+        assert shown["names"] == [expected.get(p["partId"], p["label"]) for p in parts], shown["names"]
+        assert "later" in shown["names"]  # a title that does not collide is unchanged
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()

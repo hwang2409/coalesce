@@ -109,17 +109,15 @@ button {
 
 .revision-name { color: var(--mute); font-weight: 500; }
 
+/* a new revision flashes the number in the live colour and fades back; only the text colour moves */
 .revision-number {
-  border-radius: 4px;
-  padding: 0 4px;
-  margin-left: -4px;
-  transition-property: background-color;
+  transition-property: color;
   transition-duration: 1200ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .revision-number.fresh {
-  background: rgba(47, 125, 79, 0.16);
+  color: var(--live);
   transition-duration: 0ms;
 }
 

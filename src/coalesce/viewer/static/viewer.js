@@ -343,13 +343,23 @@ function partObject(part, { surface, edges }, rank) {
   return group;
 }
 
-// a part's title: its label, plus the feature that ends it when another part has the same label
+// a part's title: its label, plus the feature that ends it when another part has the same label, plus
+// "piece n" by sorted part id (the order that picks split shades) when titles still collide
 function partTitles(parts) {
-  const counts = new Map();
-  for (const part of parts) counts.set(part.label, (counts.get(part.label) ?? 0) + 1);
-  return parts.map((part) => {
+  const group = (keys) => {
+    const groups = new Map();
+    parts.forEach((part, i) => groups.set(keys[i], [...(groups.get(keys[i]) ?? []), part.partId]));
+    return groups;
+  };
+  const labels = group(parts.map((part) => part.label));
+  const titles = parts.map((part) => {
     const last = part.features.at(-1)?.id;
-    return counts.get(part.label) > 1 && last && last !== part.label ? `${part.label} \u00b7 ${last}` : part.label;
+    return labels.get(part.label).length > 1 && last && last !== part.label ? `${part.label} \u00b7 ${last}` : part.label;
+  });
+  const same = group(titles);
+  return titles.map((title, i) => {
+    const ids = same.get(title).toSorted();
+    return ids.length > 1 ? `${title}, piece ${ids.indexOf(parts[i].partId) + 1}` : title;
   });
 }
 
