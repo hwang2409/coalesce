@@ -1,10 +1,12 @@
+import itertools
+import math
 import struct
 
 import pytest
 from build123d import Align, Box, Cylinder, Pos
 
 from coalesce.viewer import ScenePart, ViewerSceneStore
-from coalesce.viewer.scene import REFERENCE_COLOR
+from coalesce.viewer.scene import REFERENCE_COLOR, _oklab
 
 PLATE_ALIGN = (Align.CENTER, Align.CENTER, Align.MIN)
 
@@ -163,3 +165,15 @@ def test_seven_manufactured_parts_get_seven_colours_apart_from_the_reference():
     for color in colors[1:]:
         rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
         assert sum(abs(x - y) for x, y in zip(rgb, reference, strict=True)) >= 120, color
+
+
+def test_first_twelve_manufactured_colours_are_perceptually_apart_from_each_other_and_the_reference():
+    store = ViewerSceneStore()
+    parts = [ScenePart(f"p{i}/body", plate().moved(Pos(70 * i, 0, 0))) for i in range(12)]
+    store.publish(1, parts)
+
+    colors = [p["color"] for p in store.scene(1)["parts"]]
+    assert [round(c, 3) for c in _oklab("#ffffff")] == [1, 0, 0]
+    # 0.03 in OKLab is about three just-noticeable differences; the fixed palette's closest pair is 0.031
+    for a, b in itertools.combinations([*colors, REFERENCE_COLOR], 2):
+        assert math.dist(_oklab(a), _oklab(b)) >= 0.03, (a, b)

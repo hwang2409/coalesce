@@ -6,6 +6,7 @@ Set VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 
 import asyncio
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from test_viewer_browser import OUTAGE_ERRORS, playwright_module
 
 from coalesce.service import DocumentService
 from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
+from coalesce.viewer.scene import _oklab
 
 DRIVER = Path(__file__).with_name("viewer_review_smoke.mjs")
 NAMES = ["nw", "ne", "sw", "se"]
@@ -513,6 +515,42 @@ def test_part_colours_stay_with_their_body_across_downstream_features_and_restar
     reopened = ViewerSceneStore()
     DocumentService(path, scene_store=reopened)
     assert {p["partId"]: p["color"] for p in wait_for(reopened, 5)["parts"]} == before
+
+
+def test_splitting_one_body_keeps_other_body_colours_and_shades_the_pieces(tmp_path):
+    """A cut through the first body makes two pieces; the second body must keep its colour."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "split.coalesce.json", scene_store=store)
+    for tool, arguments in [
+        ("sketch", rectangle_sketch(request_id="sa", revision=0, sketch_id="A", entity_id="a",
+                                    width=20, height=20, center=(-20, 0))),
+        ("feature", extrude(request_id="ea", revision=1, feature_id="ea", sketch_id="A",
+                            profile_ids=["a"], distance=5)),
+        ("sketch", rectangle_sketch(request_id="sb", revision=2, sketch_id="B", entity_id="b",
+                                    width=20, height=20, center=(20, 0))),
+        ("feature", extrude(request_id="eb", revision=3, feature_id="eb", sketch_id="B",
+                            profile_ids=["b"], distance=5)),
+    ]:
+        assert call(service, tool, arguments).get("ok"), arguments
+    before = {p["partId"]: p["color"] for p in wait_for(store, 4)["parts"]}
+
+    for tool, arguments in [
+        ("sketch", rectangle_sketch(request_id="ss", revision=4, sketch_id="S", entity_id="s",
+                                    width=2, height=30, center=(-20, 0))),
+        ("feature", cut(request_id="cs", revision=5, feature_id="cs", target="ea", tool="S")),
+    ]:
+        assert call(service, tool, arguments).get("ok"), arguments
+    after = {p["partId"]: p["color"] for p in wait_for(store, 6)["parts"]}
+    pieces = [color for part, color in after.items() if part.startswith("ea/a#")]
+
+    assert after["eb/b"] == before["eb/b"]
+    assert len(pieces) == 2, after
+    base = _oklab(before["ea/a"])
+    shades = [_oklab(color) for color in pieces]
+    # distinct from each other, but the same hue and chroma as the body: only lightness moves
+    assert math.dist(*shades) >= 0.05, pieces
+    for shade in shades:
+        assert math.dist(shade[1:], base[1:]) < 0.015, (pieces, before["ea/a"])
 
 
 def test_added_summary_names_the_feature_id_only_when_it_adds_information(tmp_path):

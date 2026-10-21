@@ -25,6 +25,11 @@ PALETTE = ("#8c9bab", "#a9a08e", "#a08c9b", "#9aa7b8", "#b3a37c")
 # a reference part (the imported board) is solder-mask green, so it reads apart from the box it sits in
 REFERENCE_COLOR = "#2f7a46"
 _COLOR = re.compile(r"#[0-9a-f]{6}")
+_LMS_TO_LAB = (
+    (0.2104542553, 0.7936177850, -0.0040720468),
+    (1.9779984951, -2.4285922050, 0.4505937099),
+    (0.0259040371, 0.7827717662, -0.8086757660),
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +112,20 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
         "edgeVertexCount": len(edges) // 3,
     }
     return data, counts, lo, hi
+
+
+def _oklab(color: str) -> tuple[float, float, float]:
+    """#rrggbb to OKLab (L, a, b), where euclidean distance tracks seen difference."""
+    r, g, b = (
+        c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        for c in (int(color[i : i + 2], 16) / 255 for i in (1, 3, 5))
+    )
+    lms = (
+        (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3),
+        (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3),
+        (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3),
+    )
+    return tuple(sum(k * c for k, c in zip(row, lms, strict=True)) for row in _LMS_TO_LAB)
 
 
 def _manufactured_color(index: int) -> str:
