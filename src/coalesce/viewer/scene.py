@@ -18,8 +18,11 @@ if TYPE_CHECKING:
 
     from coalesce.references import BodySource
 
-# restrained engineering-review colors, assigned in part order when no color is given.
-PALETTE = ("#8c9bab", "#a9a08e", "#7e9a8a", "#a08c9b", "#9aa7b8", "#b3a37c")
+# restrained engineering-review colors for manufactured parts, assigned in their order when no color
+# is given; no greens, so a part never looks like the board.
+PALETTE = ("#8c9bab", "#a9a08e", "#a08c9b", "#9aa7b8", "#b3a37c")
+# a reference part (the imported board) is solder-mask green, so it reads apart from the box it sits in
+REFERENCE_COLOR = "#2f7a46"
 _COLOR = re.compile(r"#[0-9a-f]{6}")
 
 
@@ -119,7 +122,14 @@ def _build_scene(
         if part.color is not None and not _COLOR.fullmatch(part.color):
             raise ValueError(f"part {part.name!r} color must be #rrggbb, got {part.color!r}")
     meshes, scene_parts, lows, highs = {}, [], [], []
-    for index, part in enumerate(parts):
+    made = 0
+    for part in parts:
+        if part.color:
+            color = part.color
+        elif part.role == "reference":
+            color = REFERENCE_COLOR
+        else:
+            color, made = PALETTE[made % len(PALETTE)], made + 1
         data, counts, lo, hi = _tessellate(part, tolerance)
         digest = hashlib.sha256(data).hexdigest()[:32]
         meshes[digest] = data
@@ -134,7 +144,7 @@ def _build_scene(
                 "terminalFeatureId": part.terminal_feature,
                 "area": {"value": part.area if part.area is not None else part.shape.area, "unit": "mm^2"},
                 "volume": {"value": part.volume if part.volume is not None else part.shape.volume, "unit": "mm^3"},
-                "color": part.color or PALETTE[index % len(PALETTE)],
+                "color": color,
                 "visible": part.visible,
                 "size": [exact.size.X, exact.size.Y, exact.size.Z],
                 "features": list(part.features),

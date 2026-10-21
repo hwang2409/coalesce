@@ -1936,7 +1936,6 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
         yield ScenePart(
             part.part_id,
             part.shape,
-            color="#6f8f72" if part.role == "reference" else None,
             role=part.role,
             label=part.label,
             source_body=part.source_body,

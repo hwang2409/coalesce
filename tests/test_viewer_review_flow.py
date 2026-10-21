@@ -23,6 +23,7 @@ from test_mcp_vertical import call_server_tool
 from test_pcb_enclosure import FIXTURES as ENCLOSURE_FIXTURES
 from test_pcb_enclosure import base_request, standoffs_request
 from test_pcb_enclosure import import_request as enclosure_import
+from test_pcb_lid import lid_request
 from test_viewer_browser import OUTAGE_ERRORS, playwright_module
 
 from coalesce.service import DocumentService
@@ -429,6 +430,55 @@ def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_
         # keyboard: the swatch control shows a visible focus ring
         keys = step("swatch-focus", do=[{"tabTo": "pcb reference", "press": "Shift+Tab"}])
         assert keys["focus"] == {"className": "visibility", "outline": "solid 2px"}, keys["focus"]
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+def far(a, b):
+    """Two colours (#rrggbb or [r, g, b]) a reader tells apart at a glance: 120+ summed channel difference."""
+    rgb = [[int(c[i:i + 2], 16) for i in (1, 3, 5)] if isinstance(c, str) else c for c in (a, b)]
+    return sum(abs(x - y) for x, y in zip(*rgb, strict=True)) >= 120
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_board_reference_reads_apart_from_the_enclosure_with_the_lid_hidden(module, viewport, tmp_path):
+    """The imported board is the reference: its own colour and a row label, so it shows inside the box."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        for tool, arguments in [
+            ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", standoffs_request()),
+            ("feature", lid_request(revision=3)),
+        ]:
+            result = call(service, tool, arguments)
+            assert result.get("ok"), result
+        shown = step("enclosure-lid", wait={"revision": 4})
+        parts = store.scene(4)["parts"]
+        lid = [p["label"] for p in parts].index("lid")
+        step("lid-hidden-iso", do=[{"toggle": lid}, {"click": "Iso"}])
+        top = step("lid-hidden-top", do=[{"click": "Top"}], flat={"fx": [0.45, 0.55], "fy": [0.45, 0.55]})
+        rim = step("lid-hidden-rim", flat={"fx": [0.005, 0.04], "fy": [0.45, 0.55]})
+
+        assert [p["role"] for p in parts] == ["reference", "manufacturing", "manufacturing"]
+        colors = [p["color"] for p in parts]
+        # board, lid and base: no two the same colour, and the board far from both manufactured parts
+        assert len(set(colors)) == 3, colors
+        assert all(far(colors[0], other) for other in colors[1:]), colors
+        for part, row in zip(parts, shown["rows"], strict=True):
+            red, green, blue = (int(part["color"][i:i + 2], 16) for i in (1, 3, 5))
+            assert row["swatchColor"] == f"rgb({red}, {green}, {blue})", row
+            assert row["role"] == ("Reference, not exported" if part["role"] == "reference" else None), row
+        assert shown["rows"][0]["roleColor"] == "rgb(93, 104, 115)"  # --mute, 5.3:1 on the panel (WCAG AA)
+        # seen from above with the lid hidden, the board inside reads apart from the base's rim
+        assert far(top["flat"]["median"], rim["flat"]["median"]), (top["flat"], rim["flat"])
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
