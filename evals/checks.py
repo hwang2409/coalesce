@@ -439,11 +439,49 @@ def _edit_survival(check, context, inspected):
     return _result(check, "pass", actual=actual)
 
 
+def _requirement_gate(check, context):
+    response = context.service.check({
+        "action": "evaluate",
+        "base": check.get("base"),
+        "requirements": check["requirements"],
+    })
+    results = response.get("results") if response.get("ok") is True else None
+    passed = bool(results) and all(item.get("status") == "PASS" for item in results)
+    return _result(check, "pass" if passed else "fail", actual=results)
+
+
+def _edge_treatment(check, context):
+    graph = context.service.query({"select": {"kind": "graph"}})
+    if graph.get("ok") is not True:
+        return _result(check, "unknown", reason="graph query failed")
+    expected_kind = check["feature"]
+    expected_target = check["target"]
+    expected_amount = check["amount"]
+    expected_role = check.get("edgeRole")
+    matches = []
+    for node in graph.get("graph", {}).get("nodes", []):
+        if node.get("type", "").lower() != expected_kind:
+            continue
+        if node.get("target") != expected_target:
+            continue
+        parameter = node.get("radius" if expected_kind == "fillet" else "distance")
+        amount = _quantity(parameter)
+        roles = [edge.get("role") for edge in node.get("edges", []) if isinstance(edge, dict)]
+        if math.isclose(amount, expected_amount, rel_tol=1e-7, abs_tol=1e-6):
+            matches.append({"id": node.get("id"), "amount": amount, "edgeRoles": roles})
+    passed = bool(matches) and (expected_role is None or any(expected_role in item["edgeRoles"] for item in matches))
+    return _result(check, "pass" if passed else "fail", actual=matches)
+
+
 def _enclosure_check(check, context):
     kind = check["kind"]
     if kind == "references_resolve":
         _ = context.service
         return _result(check, "pass")
+    if kind == "edge_treatment":
+        return _edge_treatment(check, context)
+    if kind == "requirement_gate":
+        return _requirement_gate(check, context)
     inspected = context.inspection
     if kind == "wall_thickness":
         return _range_result(check, inspected.get("base", {}).get("minimumWallThickness"))

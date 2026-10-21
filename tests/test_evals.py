@@ -741,6 +741,65 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
     assert seen["command"][2].count(HEADLESS) == 1
 
 
+@pytest.mark.parametrize(
+    ("node", "expected", "status"),
+    [
+        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 3, "unit": "mm"}}, 3, "pass"),
+        ({"type": "Fillet", "id": "round", "target": "lid", "radius": {"value": 3, "unit": "mm"}}, 3, "fail"),
+        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 2, "unit": "mm"}}, 3, "fail"),
+    ],
+)
+def test_edge_treatment_check_fails_closed(tmp_path, monkeypatch, node, expected, status):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class Service:
+        revision = 1
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def _ensure_geometry(self):
+            pass
+        def query(self, query):
+            return {"ok": True, "graph": {"nodes": [node]}}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "edge_treatment", "feature": "fillet", "target": "base", "amount": expected}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == status
+
+
+@pytest.mark.parametrize("statuses, expected", [(["PASS"], "pass"), (["FAIL"], "fail"), (["UNKNOWN"], "fail")])
+def test_requirement_gate_fails_closed(tmp_path, monkeypatch, statuses, expected):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class Service:
+        revision = 1
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def _ensure_geometry(self):
+            pass
+        def check(self, _request):
+            return {"ok": True, "results": [{"id": "valid", "status": status} for status in statuses]}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "requirement_gate", "requirements": [{"id": "valid", "kind": "valid_brep"}]}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == expected
+
+
 def test_checks_pass_fail_unknown(tmp_path):
     from build123d import Box, export_step
 
@@ -759,7 +818,7 @@ def test_checks_pass_fail_unknown(tmp_path):
 
 def test_task_files_load_and_validate():
     tasks = load_tasks(Path("evals/tasks"))
-    assert len(tasks) == 5
+    assert len(tasks) == 8
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 

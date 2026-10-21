@@ -25,3 +25,7 @@ hole checks match every detected through-hole one-to-one with the expected posit
 saved document parts are matched to exported solids approximately by volume, bounding box, and centre of mass, using `rel_tol=1e-7` and `abs_tol=1e-6`. a property-equivalent different solid can spoof this comparison. move to exact topology or shape-distance comparison when a task needs stronger identity proof.
 
 scoring assumes no external process mutates the run artifacts while scoring is in progress; external mutation is not guarded.
+
+## future hard tasks
+
+The hard tier uses only operations that coalesce exposes today. possible future tasks include shell, snap fits, and threads; these are intentionally not included because the current tool set cannot perform them.
