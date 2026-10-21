@@ -14,15 +14,21 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from .schemas import ACTION_SCHEMAS, FEATURE_ACTION_SCHEMAS, QUERY_FEATURE_SCHEMA, TOOL_SCHEMAS
+from .schemas import (
+    ACTION_SCHEMAS,
+    FEATURE_ACTION_SCHEMAS,
+    QUERY_FEATURE_SCHEMA,
+    SUPPORTED_REQUIREMENT_KINDS,
+    TOOL_SCHEMAS,
+)
 from .service import DocumentService
 
 _LOG = logging.getLogger(__name__)
 
 _TOOL_DESCRIPTIONS = {
-    "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh to re-read the persisted path explicitly. Use delete to remove the board asset; it fails when dependents exist unless cascade is true.",
+    "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh with an optional replacement absolute path to re-read the board explicitly. Use delete to remove the board asset; it fails when dependents exist unless cascade is true.",
     "sketch": "Create, update, or delete rectangle and circle profiles on XY, XZ, or YZ origin planes with an optional normal offset. Supplied entities replace the full entity list. Use update to change a sketch in place. Use delete to remove it; delete fails when dependent features exist unless cascade is true.",
-    "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, constant-radius fillet, symmetric one-distance chamfer (two-distance is not supported), semantic pcb_base, semantic standoffs, a separate semantic pcb_lid, or semantic port_cutout. pcb_base derives its cavity from the selected board outline; standoffs derive axes from stable board hole ids and join the base; pcb_lid derives its rim and optional locating lip from a pcb_base without consuming it; port_cutout resolves a stable footprint id or unique reference and cuts its declared opening through one planar base wall. For port_cutout, left/right are -X/+X and front/back are -Y/+Y. auto is allowed only for one unique nearest wall. A courtyard supplies only the wall-plane width; height and bottomOffset from board top remain explicit. An explicit envelope supplies width, height, and bottomOffset. No connector height or opening size is inferred. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Enclosure geometry conflicts include `minimum` and `maximum` only when one closed-form constraint makes the full interval valid and both ends plus five evenly spaced interior values pass normal commit acceptance; otherwise they include only verified point values such as `suggested`. `alternatives` contain directly applicable, accepted `set` values for another port wall or envelope position. Connector envelope width and height are never changed by a remedy. Updates change numeric enclosure parameters, extrude distance, or cut and hole targets. Use update to preserve a feature identity and change its parameters. Use delete to remove a feature; delete fails with every transitive dependent unless cascade is true.",
+    "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, constant-radius fillet, symmetric one-distance chamfer (two-distance is not supported), semantic pcb_base, semantic standoffs, a separate semantic pcb_lid, or semantic port_cutout. pcb_base derives its cavity from the selected board outline; standoffs with `all_mounting` follow the current board while explicit hole ids stay fixed and fail closed when missing; standoffs join the base; pcb_lid derives its rim and optional locating lip from a pcb_base without consuming it; port_cutout resolves a stable footprint id or unique reference and cuts its declared opening through one planar base wall. For port_cutout, left/right are -X/+X and front/back are -Y/+Y. auto is allowed only for one unique nearest wall. A courtyard supplies only the wall-plane width; height and bottomOffset from board top remain explicit. An explicit envelope supplies width, height, and bottomOffset. No connector height or opening size is inferred. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Enclosure geometry conflicts include `minimum` and `maximum` only when one closed-form constraint makes the full interval valid and both ends plus five evenly spaced interior values pass normal commit acceptance; otherwise they include only verified point values such as `suggested`. `alternatives` contain directly applicable, accepted `set` values for another port wall or envelope position. Connector envelope width and height are never changed by a remedy. Updates change numeric enclosure parameters, extrude distance, or cut and hole targets. Use update to preserve a feature identity and change its parameters. Use delete to remove a feature; delete fails with every transitive dependent unless cascade is true.",
     "query": "Read one feature, the graph, revision, exact mm metrics, inspect a PCB enclosure, list selectable edge roles, or resolve a typed reference. Use select.kind edge_roles with id before choosing treatment edges. Call select.kind enclosure before reporting enclosure dimensions.",
     "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, board-edge clearance, mounting coverage, lid interference and fit, connector clearance, and clean manufacturing bodies. board_clearance accepts side left, right, front, back, or all and a minimum mm threshold. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
     "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path and current expectedRevision. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. A fresh Python process validates STEP bytes in a private directory before direct publication. The final file is briefly visible while written; failed writes stay in place for manual recovery.",
@@ -82,8 +88,7 @@ hole in a `MountingHole:*` footprint, plated or non-plated. The import response 
 hole with `mounting: true|false` and its footprint `reference`. Boss height is derived from
 the base seat height, so the board bottom
 sits on the boss tops. `pilotDiameter` must be smaller than `bossDiameter`, and every boss
-must fit fully on the cavity floor without crossing a wall. Board refresh recomputes the
-base and standoff positions; a missing explicit hole id fails the refresh atomically.
+must fit fully on the cavity floor without crossing a wall. Board refresh recomputes the base and standoff positions. `all_mounting` follows the current board, so new mounting holes gain standoffs and removed holes lose them. Explicit `holeIds` stay fixed and fail closed if an id disappears. A missing explicit hole id fails the refresh atomically.
 
 Create `pcb_lid` with `base` set to the `pcb_base` id, positive `thickness` and
 `fitGap` quantities, and an optional `lip` containing positive `depth` and `width`.
@@ -366,6 +371,19 @@ def create_server(service: DocumentService) -> Server:
             details: dict[str, Any] = {}
             if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
                 details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
+            if name == "check" and error.validator == "enum":
+                requirement = next(
+                    (
+                        item for item in arguments.get("requirements", [])
+                        if item.get("kind") not in SUPPORTED_REQUIREMENT_KINDS
+                    ),
+                    None,
+                )
+                if requirement is not None:
+                    details.update(
+                        kind=requirement.get("kind"),
+                        supportedKinds=list(SUPPORTED_REQUIREMENT_KINDS),
+                    )
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
             failure = service.error_response(

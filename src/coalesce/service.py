@@ -52,6 +52,7 @@ from .references import (
 )
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
+from .schemas import SUPPORTED_REQUIREMENT_KINDS
 from .serialization import dumps, loads
 
 if TYPE_CHECKING:
@@ -2096,6 +2097,33 @@ def _edited(old: Any, node: Any) -> str:
     return f"{summary} {', '.join(edits)}" if edits else f"{summary}, no value changed"
 
 
+def _selection_snapshot(graph: Any) -> dict[str, list[str]]:
+    snapshot = {}
+    for node in graph.nodes.values():
+        if isinstance(node, Standoffs) and node.selection == "all_mounting":
+            board = graph.nodes.get(node.board)
+            if isinstance(board, BoardImport):
+                snapshot[node.id] = sorted(hole["id"] for hole in mounting_holes(board))
+    return snapshot
+
+
+def _selection_changes(
+    before: dict[str, list[str]], after: dict[str, list[str]]
+) -> list[dict[str, Any]]:
+    changes = []
+    for feature_id in sorted(set(before) | set(after)):
+        added = sorted(set(after.get(feature_id, ())) - set(before.get(feature_id, ())))
+        removed = sorted(set(before.get(feature_id, ())) - set(after.get(feature_id, ())))
+        if added or removed:
+            changes.append({
+                "featureId": feature_id,
+                "selector": "all_mounting",
+                "holesAdded": added,
+                "holesRemoved": removed,
+            })
+    return changes
+
+
 def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]:
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = result.graph.nodes[changed_id]
@@ -2429,6 +2457,9 @@ class DocumentService:
 
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
+                previous_selections = self._document.selection_history.get(
+                    str(self._document.revision), _selection_snapshot(self._document.graph)
+                )
                 graph = loads(dumps(self._document.graph))
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
                 changed_id, changed_ids, deletion = _applied_result(applied)
@@ -2445,6 +2476,9 @@ class DocumentService:
                     "changedFeatureIds": changed_ids,
                     "regeneration": {"status": "OK", "valid": True},
                     "warnings": [],
+                    "selectionChanges": _selection_changes(
+                        previous_selections, _selection_snapshot(graph)
+                    ),
                     **deletion_fields,
                     **response_fields(graph, result, changed_id),
                 }
@@ -2462,6 +2496,10 @@ class DocumentService:
                         *self._document.request_hashes,
                         {"requestId": request_id, "requestHash": body_hash},
                     ][-MAX_REQUEST_HASHES:],
+                    selection_history={
+                        **self._document.selection_history,
+                        str(previous + 1): _selection_snapshot(graph),
+                    },
                 )
                 durable = self.store.save(document)
                 before = self._document.graph
@@ -3035,12 +3073,7 @@ class DocumentService:
             requirements = payload.get(
                 "requirements", [{"id": "valid", "kind": "valid_brep"}]
             )
-            supported_requirement_kinds = {
-                "valid_brep", "wall_thickness", "floor_thickness", "board_clearance",
-                "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap",
-                "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance",
-                "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies",
-            }
+            supported_requirement_kinds = set(SUPPORTED_REQUIREMENT_KINDS)
             unknown_kinds = [
                 item.get("kind") for item in requirements
                 if item.get("kind") not in supported_requirement_kinds

@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+SUPPORTED_REQUIREMENT_KINDS = (
+    "valid_brep", "wall_thickness", "floor_thickness", "board_clearance",
+    "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap",
+    "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance",
+    "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies",
+)
+
 QUANTITY = {
     "type": "object",
     "properties": {"value": {"type": "number"}, "unit": {"const": "mm"}},
@@ -833,15 +840,20 @@ CHECK_REQUIREMENT = {
                 "id": CHECK_ID,
                 "kind": {
                     "enum": [
-                        "wall_thickness",
-                        "floor_thickness",
-                        "board_clearance",
-                        "engagement_depth",
-                        "lid_engagement",
-                        "port_clearance",
-                        "connector_clearance",
+                        "wall_thickness", "floor_thickness", "engagement_depth",
+                        "lid_engagement", "port_clearance", "connector_clearance",
                     ]
                 },
+                "threshold": QUANTITY,
+            },
+            "required": ["id", "kind", "threshold"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"const": "board_clearance"},
                 "threshold": QUANTITY,
                 "side": {"enum": ["left", "right", "front", "back", "all"]},
             },
