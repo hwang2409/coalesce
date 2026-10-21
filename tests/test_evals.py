@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from evals.checks import check_task
-from evals.run import _claude_metadata
+from evals.run import _claude_metadata, _zeta_metadata
 from evals.tasks import load_tasks
 
 
@@ -33,6 +33,18 @@ def test_claude_stream_transcript_metadata():
     ]
     metadata, final = _claude_metadata("\n".join(json.dumps(line) for line in lines))
     assert metadata == {"tool_calls": 2, "failed_tool_calls": 1, "cost_usd": 0.0123}
+    assert final == "done"
+
+
+def test_zeta_json_transcript_metadata_from_real_shape():
+    transcript = """{"type":"tool_call","name":"coalesce__create"}
+{"type":"tool_result","is_error":false}
+{"type":"tool_call","name":"coalesce__export"}
+{"type":"tool_result","is_error":true}
+{"type":"usage","usage":{"output_tokens":12}}
+{"type":"message","role":"assistant","text":"done"}"""
+    metadata, final = _zeta_metadata(transcript)
+    assert metadata == {"tool_calls": 2, "failed_tool_calls": 1}
     assert final == "done"
 
 

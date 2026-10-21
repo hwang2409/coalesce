@@ -36,6 +36,33 @@ def _claude_metadata(transcript):
     return metadata, final
 
 
+def _zeta_metadata(transcript):
+    tool_calls = failed_tool_calls = 0
+    cost = None
+    final = ""
+    for line in transcript.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = event.get("type")
+        if event_type == "tool_call":
+            tool_calls += 1
+        elif event_type == "tool_result" and event.get("is_error", False):
+            failed_tool_calls += 1
+        elif event_type == "message" and event.get("role") == "assistant":
+            final = event.get("text", "")
+        if event.get("cost_usd") is not None:
+            cost = event["cost_usd"]
+        usage = event.get("usage")
+        if isinstance(usage, dict) and usage.get("cost_usd") is not None:
+            cost = usage["cost_usd"]
+    metadata = {"tool_calls": tool_calls, "failed_tool_calls": failed_tool_calls}
+    if cost is not None:
+        metadata["cost_usd"] = cost
+    return metadata, final
+
+
 def claude_harness(prompt, run_dir, *, model, coalesce_path, **_):
     config = run_dir / "mcp.json"
     config.write_text(json.dumps({"mcpServers": {"coalesce": {"command": "uv", "args": ["run", "--project", str(coalesce_path), "coalesce", "--document", str(run_dir / "model.coalesce.json")]}}}, indent=2))
@@ -52,17 +79,28 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, **_):
     return {"wall_time": time.monotonic()-started, **metadata, "returncode": result.returncode}
 
 
-def zeta_harness(prompt, run_dir, *, zeta_project, **_):
+def zeta_harness(prompt, run_dir, *, model, zeta_project, **_):
     """run against a pre-trusted project and move its fixed artifacts after completion."""
     fixed = zeta_project / "probe.coalesce.json"
-    started = time.monotonic()
-    instruction = prompt + f"\nUse the coalesce MCP document at {zeta_project / 'probe.coalesce.json'} and export every STEP file under {zeta_project / 'out'}; do not write artifacts elsewhere."
-    result = subprocess.run(["zeta", "-p", instruction], cwd=zeta_project, capture_output=True, text=True, check=False)
-    (run_dir / "transcript.txt").write_text(result.stdout + "\n" + result.stderr)
-    if fixed.exists(): shutil.move(fixed, run_dir / "model.coalesce.json")
     fixed_out = zeta_project / "out"
-    if fixed_out.exists(): shutil.move(fixed_out, run_dir / "steps")
-    return {"wall_time": time.monotonic()-started, "tool_calls": result.stdout.count("tool"), "failed_tool_calls": result.stdout.lower().count("error"), "returncode": result.returncode}
+    if fixed.exists() or fixed_out.exists():
+        raise FileExistsError("zeta project already contains probe.coalesce.json or out")
+    fixed_out.mkdir()
+    started = time.monotonic()
+    instruction = prompt + f"\nUse the coalesce MCP document at {fixed} and export every STEP file under {fixed_out}; do not write artifacts elsewhere."
+    result = subprocess.run([
+        "zeta", "-p", instruction,
+        "--tools", "coalesce__*", "--require-tools", "--no-session", "--yolo",
+        "--format", "json", "--max-turns", "80", "--model", model,
+    ], cwd=zeta_project, capture_output=True, text=True, check=False)
+    (run_dir / "transcript.json").write_text(result.stdout)
+    metadata, final = _zeta_metadata(result.stdout)
+    (run_dir / "transcript.txt").write_text(final + ("\n" + result.stderr if result.stderr else ""))
+    if fixed.exists():
+        shutil.move(fixed, run_dir / "model.coalesce.json")
+    if fixed_out.exists():
+        shutil.move(fixed_out, run_dir / "steps")
+    return {"wall_time": time.monotonic()-started, **metadata, "returncode": result.returncode}
 
 
 def run_tasks(task_dir, out, selectors, models, harness, **kwargs):
@@ -93,7 +131,13 @@ def run_tasks(task_dir, out, selectors, models, harness, **kwargs):
 
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--task", default="all"); parser.add_argument("--model", action="append", required=True); parser.add_argument("--harness", choices=["claude", "zeta"], required=True); parser.add_argument("--out", type=Path, required=True); parser.add_argument("--coalesce-path", type=Path, default=Path.cwd()); parser.add_argument("--zeta-project", type=Path)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", default="all")
+    parser.add_argument("--model", action="append", required=True)
+    parser.add_argument("--harness", choices=["claude", "zeta"], required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--coalesce-path", type=Path, default=Path.cwd())
+    parser.add_argument("--zeta-project", type=Path)
     args = parser.parse_args()
     harness = claude_harness if args.harness == "claude" else zeta_harness
     options = {"coalesce_path": args.coalesce_path} if args.harness == "claude" else {"zeta_project": args.zeta_project}
