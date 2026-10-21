@@ -484,3 +484,50 @@ def test_board_reference_reads_apart_from_the_enclosure_with_the_lid_hidden(modu
     finally:
         driver.kill()
         server.close()
+
+
+def test_part_colours_stay_with_their_body_across_downstream_features_and_restart(tmp_path):
+    """Adding a hole to the first body moves it last in regen order; neither part may change colour."""
+    store = ViewerSceneStore()
+    path = tmp_path / "two.coalesce.json"
+    service = DocumentService(path, scene_store=store)
+    for tool, arguments in [
+        ("sketch", rectangle_sketch(request_id="sa", revision=0, sketch_id="A", entity_id="a",
+                                    width=20, height=20, center=(-20, 0))),
+        ("feature", extrude(request_id="ea", revision=1, feature_id="ea", sketch_id="A",
+                            profile_ids=["a"], distance=5)),
+        ("sketch", rectangle_sketch(request_id="sb", revision=2, sketch_id="B", entity_id="b",
+                                    width=20, height=20, center=(20, 0))),
+        ("feature", extrude(request_id="eb", revision=3, feature_id="eb", sketch_id="B",
+                            profile_ids=["b"], distance=5)),
+    ]:
+        assert call(service, tool, arguments).get("ok"), arguments
+    before = {p["partId"]: p["color"] for p in wait_for(store, 4)["parts"]}
+    assert len(set(before.values())) == 2, before
+
+    hole_a = patterned_hole(request_id="ha", revision=4, feature_id="ha", target="ea",
+                            positions=[{"name": "h", "point": [-20, 0]}])
+    assert call(service, "feature", hole_a).get("ok")
+    assert {p["partId"]: p["color"] for p in wait_for(store, 5)["parts"]} == before
+
+    reopened = ViewerSceneStore()
+    DocumentService(path, scene_store=reopened)
+    assert {p["partId"]: p["color"] for p in wait_for(reopened, 5)["parts"]} == before
+
+
+def test_added_summary_names_the_feature_id_only_when_it_adds_information(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    top = {**lid_request(revision=4, request_id="top"), "featureId": "top_cover"}
+    for tool, arguments in [
+        ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb")),
+        ("feature", base_request()),
+        ("feature", standoffs_request()),
+        ("feature", lid_request(revision=3)),
+        ("feature", top),
+    ]:
+        result = call(service, tool, arguments)
+        assert result.get("ok"), result
+        if arguments.get("featureId") == "lid":
+            assert wait_for(store, 4)["change"]["summary"] == "added pcb lid"
+    assert wait_for(store, 5)["change"]["summary"] == "added pcb lid top_cover"

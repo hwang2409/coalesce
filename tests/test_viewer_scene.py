@@ -4,6 +4,7 @@ import pytest
 from build123d import Align, Box, Cylinder, Pos
 
 from coalesce.viewer import ScenePart, ViewerSceneStore
+from coalesce.viewer.scene import REFERENCE_COLOR
 
 PLATE_ALIGN = (Align.CENTER, Align.CENTER, Align.MIN)
 
@@ -148,3 +149,17 @@ def test_edge_lines_follow_the_face_mesh_and_small_holes_look_round():
         }
         # a drawn circle has at least 48 corners: round, not a polygon, at normal zoom
         assert len(on_circle) >= 48, (radius, len(on_circle))
+
+
+def test_seven_manufactured_parts_get_seven_colours_apart_from_the_reference():
+    store = ViewerSceneStore()
+    parts = [ScenePart(f"p{i}/body", plate().moved(Pos(70 * i, 0, 0))) for i in range(7)]
+    store.publish(1, [ScenePart("board/pcb", plate(1), role="reference"), *parts])
+
+    colors = [p["color"] for p in store.scene(1)["parts"]]
+    assert colors[0] == REFERENCE_COLOR
+    assert len(set(colors)) == 8, colors
+    reference = [int(REFERENCE_COLOR[i:i + 2], 16) for i in (1, 3, 5)]
+    for color in colors[1:]:
+        rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+        assert sum(abs(x - y) for x, y in zip(rgb, reference, strict=True)) >= 120, color
