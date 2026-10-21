@@ -471,6 +471,84 @@ button {
 .segmented button:disabled, .fit:disabled { color: var(--faint); cursor: not-allowed; }
 .segmented:has(:disabled), .fit:disabled { background: transparent; box-shadow: 0 0 0 1px var(--rule); }
 
+/* review modes: top right, away from the camera buttons, scale and axes at the bottom */
+.review {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* a mode that does not apply stays reachable, so it can say why */
+.segmented button[aria-disabled="true"]:enabled { color: var(--faint); cursor: not-allowed; }
+.segmented button[aria-disabled="true"]:enabled:hover { background: transparent; }
+
+.section-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 10px 3px 3px;
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
+}
+
+.section-controls[hidden], .review-hint[hidden] { display: none; }
+
+.axes { display: flex; }
+
+.axes button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-weight: 500;
+  transition-property: background-color, box-shadow;
+  transition-duration: 120ms;
+}
+
+.axes button:enabled:hover { background: rgba(29, 35, 41, 0.06); }
+
+.axes button[aria-pressed="true"] {
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--rule), 0 1px 2px rgba(29, 35, 41, 0.12);
+}
+
+#section-range { width: 140px; margin: 0; accent-color: var(--focus); }
+
+.section-value { display: flex; align-items: center; gap: 8px; color: var(--mute); font-size: 12px; }
+
+#section-value {
+  width: 64px;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--rule);
+  color: var(--ink);
+  font: inherit;
+  text-align: right;
+}
+
+.review-hint {
+  max-width: 32ch;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
+  color: var(--ink);
+  font-size: 12px;
+  text-wrap: pretty;
+}
+
+/* the lid's own show/hide waits while the Lid off view lifts it */
+.visibility:disabled { cursor: not-allowed; opacity: 0.45; }
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -490,6 +568,12 @@ button {
   /* a compact scale above the camera buttons; the grid square is the same length */
   .scale, .gizmo[hidden] + .scale { left: auto; right: 16px; bottom: 66px; }
   .scale-grid { display: none; }
+  /* the review controls span the top of the model view */
+  .review { top: 12px; left: 12px; right: 12px; align-items: stretch; }
+  #modes button { flex: 1; min-width: 0; padding: 0 6px; }
+  .section-controls { padding-right: 8px; }
+  #section-range { flex: 1; width: auto; min-width: 0; }
+  .review-hint { align-self: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {
