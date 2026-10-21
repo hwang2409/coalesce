@@ -185,7 +185,6 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 
 /* the row whose part the canvas shows */
 button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-shadow: inset 3px 0 0 var(--focus); }
-.fit-showing { grid-column: 2; margin-top: 2px; color: var(--focus); font-size: 12px; font-weight: 500; }
 
 @media (hover: hover) {
   button.fit-row:hover { background: rgba(29, 35, 41, 0.05); }
@@ -622,7 +621,7 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
   box-shadow: 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
 }
 
-.section-controls[hidden], .review-hint[hidden] { display: none; }
+.section-controls[hidden], .review-hint[hidden], .showing[hidden] { display: none; }
 
 .axes { display: flex; }
 
@@ -672,6 +671,29 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
   text-wrap: pretty;
 }
 
+/* the part a fit row shows, faded others around it; its button puts every part back */
+.showing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: inset 3px 0 0 var(--focus), 0 0 0 1px var(--rule), 0 2px 8px rgba(29, 35, 41, 0.08);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.showing button {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(29, 35, 41, 0.06);
+  font-weight: 500;
+}
+
 /* the lid's own show/hide waits while the Lid off view lifts it */
 .visibility:disabled { cursor: not-allowed; opacity: 0.45; }
 
@@ -701,7 +723,7 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
   #modes button { flex: 1; min-width: 0; padding: 0 6px; }
   .section-controls { padding-right: 8px; }
   #section-range { flex: 1; width: auto; min-width: 0; }
-  .review-hint { align-self: flex-end; }
+  .review-hint, .showing { align-self: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

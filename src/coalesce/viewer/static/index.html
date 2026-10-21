@@ -41,7 +41,7 @@
     </section>
 
     <section class="parts" aria-labelledby="parts-title">
-      <h2 id="parts-title">Parts <span class="unit">size in mm</span></h2>
+      <h2 id="parts-title" tabindex="-1">Parts <span class="unit">size in mm</span></h2>
       <ul id="parts"><li class="parts-empty">No parts yet</li></ul>
     </section>
   </div>
@@ -105,6 +105,8 @@
           <span class="visually-hidden" id="section-help">Escape returns to the Assembled view.</span>
         </div>
         <p class="review-hint" id="review-hint" role="status" hidden></p>
+        <p class="showing" id="showing" hidden><span id="showing-text"></span>
+          <button type="button" id="showing-clear">Show all parts</button></p>
         <p class="visually-hidden" id="review-announce" role="status"></p>
       </div>
     </div>

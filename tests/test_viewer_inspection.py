@@ -3,15 +3,17 @@
 import time
 
 import pytest
+from build123d import Pos
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
 from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
+from test_viewer_browser import plate
 from test_viewer_review_flow import module, open_driver  # noqa: F401 - module is a fixture
 
 from coalesce import enclosure_inspection
 from coalesce.service import DocumentService
-from coalesce.viewer import ViewerSceneStore, ViewerServer
+from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
 
 H1 = "hole-9ddb205ba1bc297f95347452"  # the NPTH mounting hole with reference H1
 UNNAMED = ["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"]  # REF** holes
@@ -26,7 +28,7 @@ def wait_for(store, revision):
     return scene
 
 
-def enclosure(tmp_path, store, *, holes=(*UNNAMED, H1), models="declared", lid=True, port=True):
+def enclosure(tmp_path, store, *, holes=(*UNNAMED, H1), models="declared", lid=True, lip=True, port=True):
     """Board, base, standoffs at ``holes``, a lid with a 0.4 mm lip, and a J1 port; returns the last revision."""
     service = DocumentService(tmp_path / "fit.coalesce.json", scene_store=store)
     assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
@@ -35,7 +37,8 @@ def enclosure(tmp_path, store, *, holes=(*UNNAMED, H1), models="declared", lid=T
     calls = [base_request(), standoffs_request(selection={"mode": "explicit", "holeIds": list(holes)})]
     if lid:
         # a shallow lip stays above the port opening
-        calls.append(lid_request(revision=3, lip={"depth": quantity(0.4), "width": quantity(1)}))
+        calls.append(lid_request(revision=3, lip={"depth": quantity(0.4), "width": quantity(1)}) if lip
+                     else lid_request(revision=3, include_lip=False))
     if port:
         calls.append(port_request(revision=len(calls) + 1))
     for call in calls:
@@ -174,6 +177,18 @@ def test_part_facts_for_board_base_and_lid(tmp_path):
     }
 
 
+def test_lid_without_a_lip_has_no_fit_gap_to_measure(tmp_path):
+    _, scene = enclosure(tmp_path, ViewerSceneStore(), lip=False)
+    gap = rows(scene)["lid_fit_gap:lid"]
+    lid = next(part for part in scene["parts"] if part["label"] == "lid")
+
+    # not applicable: neither a gate result nor an unknown measurement
+    assert (gap["status"], gap["value"], gap.get("reason"), gap["evidence"]) == (
+        "N/A", "the lid has no lip", None, None)
+    assert gap["partId"] == lid["partId"]
+    assert [(fact["label"], fact["value"]) for fact in lid["facts"]] == [("Thickness", "2 mm"), ("Lip", "none")]
+
+
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
 def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):  # noqa: F811
     store = ViewerSceneStore()
@@ -217,7 +232,6 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert state["overflow"] == [], state["overflow"]
         # the canvas shows the row's part, the others faded, from the same camera
         assert state["rows"][0]["pressed"] == "true"
-        assert state["rows"][0]["text"].endswith("Showing base, other parts faded")
         drawn = focused["scene"]
         assert dict(zip(drawn["parts"], drawn["faded"], strict=True)) == {
             name: name != next(part["name"] for part in store.scene(5)["parts"] if part["label"] == "base")
@@ -229,6 +243,21 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert cleared["actions"][2]["rows"][0]["pressed"] == "false"
         assert cleared["scene"]["faded"] == [False] * 3
         assert cleared["scene"]["view"] == view
+        # Escape shows all parts again, puts focus back on the row it started from, and says so
+        step("fit-row-again", do=[{"fitRow": 0}, {"settle": True}])
+        escaped = step("fit-row-escape", do=[{"key": "Escape"}, {"settle": True}, {"fit": True}])
+        assert escaped["actions"][2]["rows"][0]["pressed"] == "false"
+        assert escaped["scene"]["faded"] == [False] * 3
+        assert escaped["focused"].startswith("FAILStandoffs")
+        assert escaped["description"].startswith("All parts shown. Revision 5,")
+        # a section and a shown part: Escape in the section controls ends the section first, the next shows all
+        step("fit-row-section", do=[{"fitRow": 0}, {"click": "Section"}, {"settle": True}, {"focus": "#section-range"}])
+        first = step("fit-row-section-escape", do=[{"key": "Escape"}, {"settle": True}])
+        assert first["focused"] == "Assembled"
+        assert first["scene"]["cut"] == [False] * 3 and first["scene"]["faded"].count(False) == 1
+        second = step("fit-row-section-escape-again", do=[{"key": "Escape"}, {"settle": True}])
+        assert second["scene"]["faded"] == [False] * 3
+        assert second["focused"].startswith("FAILStandoffs")
 
         evidence = step("fit-evidence", do=[{"evidence": True}, {"fit": True}])
         opened = evidence["actions"][1]
@@ -244,6 +273,52 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert ["Standoffs", "2 × ⌀5 mm, pilot ⌀1.6 mm"] in opened["facts"]
         raw = step("fit-evidence-raw", do=[{"rawEvidence": True}, {"fit": True}])["actions"][1]
         assert raw["rawOpen"] is True and H1 in raw["raw"]
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+def gap_check(part_id):
+    row = {"id": "gap", "label": "Fit gap", "status": "FAIL", "value": "0 mm", "reason": "too tight",
+           "partId": part_id, "evidence": {}}
+    return [{"baseId": "base", "rows": [row]}]
+
+
+def test_shown_part_ends_only_by_its_own_escape_or_a_revision_that_drops_it(module, tmp_path):  # noqa: F811
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, (1280, 800))
+    lid = ScenePart("lid", Pos(0, 0, 10) * plate(2))
+    try:
+        step("empty", wait={"ready": True})
+        store.publish(1, [ScenePart("base", plate(6)), lid], fit=gap_check("lid"))
+        step("shown", wait={"revision": 1}, do=[{"fitRow": 0}, {"settle": True}])
+        # a native disclosure does not use Escape, so Escape on its summary shows all parts
+        summary = step("summary-escape", do=[{"focus": ".fit-evidence > summary"}, {"key": "Escape"}, {"settle": True}])
+        assert summary["scene"]["faded"] == [False, False]
+        # Escape on the page shows all parts too
+        step("shown-for-body", do=[{"fitRow": 0}, {"settle": True}])
+        cleared = step("body-escape", do=[{"blur": True}, {"key": "Escape"}, {"settle": True}])
+        assert cleared["scene"]["faded"] == [False, False]
+
+        # a new revision keeps the part but drops its fit row: all parts again, focus stays on the part, and it says so
+        step("shown-again", do=[{"fitRow": 0}, {"settle": True}])
+        store.publish(2, [ScenePart("base", plate(6)), lid])
+        dropped = step("row-dropped", wait={"revision": 2}, do=[{"settle": True}])
+        assert dropped["scene"]["faded"] == [False, False]
+        assert dropped["focused"] == "lid"
+        assert dropped["description"].startswith("All parts shown. Revision 2,")
+
+        # focus elsewhere stays where it is when a revision drops the shown part
+        store.publish(3, [ScenePart("base", plate(6)), lid], fit=gap_check("lid"))
+        step("shown-3", wait={"revision": 3}, do=[{"fitRow": 0}, {"settle": True}, {"focus": "[data-mode='section']"}])
+        store.publish(4, [ScenePart("base", plate(6))], fit=gap_check(None))
+        gone = step("part-removed", wait={"revision": 4}, do=[{"settle": True}])
+        assert gone["scene"]["faded"] == [False]
+        assert gone["focused"] == "Section"
+        assert gone["description"].startswith("All parts shown. Revision 4,")
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

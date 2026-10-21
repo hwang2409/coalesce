@@ -515,23 +515,14 @@ function fitRow(row, key) {
     item.type = 'button';
     item.setAttribute('aria-pressed', String(shown));
     item.title = shown ? 'Show all parts again' : `Show ${title} in the view and its facts`;
-    if (shown) {
-      const showing = document.createElement('span');
-      showing.className = 'fit-showing';
-      showing.textContent = `Showing ${title}, other parts faded`;
-      item.append(showing);
-    }
+    item.dataset.partId = row.partId;
     // a second press shows every part again
     item.addEventListener('click', () => {
-      selected = shown ? null : { key, partId: row.partId };
-      renderInspection(current.fit);
-      applyMode();
-      describeView();
-      requestRender();
       if (shown) {
-        document.querySelector(`.fit-row[data-key="${CSS.escape(key)}"]`)?.focus();
+        showAll();
         return;
       }
+      showPart({ key, partId: row.partId });
       part.focus({ preventScroll: true });
       part.scrollIntoView({ block: 'nearest' });
     });
@@ -539,6 +530,37 @@ function fitRow(row, key) {
   item.dataset.key = key;
   return item;
 }
+
+const fitRowFor = (key) => document.querySelector(`.fit-row[data-key="${CSS.escape(key)}"]`);
+
+function showPart(next) {
+  selected = next;
+  renderInspection(current.fit);
+  applyMode();
+  describeView();
+  requestRender();
+}
+
+// every part again, and the canvas says so. focus goes back to the fit row that showed the part, else
+// to the part's row, else to the parts heading: the row it was on may be gone in a new revision
+function showAll(focus = true) {
+  const { key, partId } = selected;
+  showPart(null);
+  const row = fitRowFor(key);
+  if (focus) ((row?.dataset.partId === partId && row) || partRow(partId) || $('parts-title')).focus();
+  $('view-description').textContent = `All parts shown. ${$('view-description').textContent}`;
+}
+
+// the canvas says which part it shows: after a press, focus and the panel move on to that part's row
+$('showing-clear').addEventListener('click', () => showAll());
+// Escape shows all parts again; in the section controls their own Escape ends the section view first.
+// a field or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
+const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented || !selected || event.target.closest?.(OWNS_ESCAPE)) return;
+  event.preventDefault();
+  showAll();
+});
 
 // the measurements in words, with the part each was measured on; the raw record keeps the ids
 function evidenceLine(row) {
@@ -556,11 +578,6 @@ function renderInspection(fit) {
     .map(([count, text]) => Object.assign(document.createElement('span'), { textContent: `${count} ${text}` }));
   $('inspection-count').replaceChildren(...counts.flatMap((count, i) => (i ? [', ', count] : [count])));
   $('inspection-note').hidden = !rows.some((row) => row.status === 'MEASURED');
-  const keys = fit.flatMap(({ baseId, rows: measured }) => measured.map((row) => [`${baseId}/${row.id}`, row]));
-  // a selection outlives a new revision while its row still points at the same part
-  if (selected && !keys.some(([key, row]) => key === selected.key && row.partId === selected.partId && partRow(row.partId))) {
-    selected = null;
-  }
   const list = $('inspection-rows');
   const evidence = $('inspection-evidence');
   list.replaceChildren();
@@ -587,6 +604,8 @@ function renderInspection(fit) {
     rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
   }));
   $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
+  $('showing').hidden = !selected;
+  $('showing-text').textContent = selected ? `Showing ${partTitle(selected.partId)}, other parts faded.` : '';
   updateMore();
 }
 
@@ -1013,6 +1032,12 @@ async function loadMeshes(parts) {
   if (failed) throw failed.reason;
 }
 
+// the shown part still exists and its fit row still points at it
+function selectionExists(data, { partId, key }) {
+  const fitRowPointsAtPart = ({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && row.partId === partId);
+  return data.parts.some((part) => part.partId === partId) && data.fit.some(fitRowPointsAtPart);
+}
+
 async function loadOne(revision) {
   if (!current) notice(`Loading revision ${revision}`);
   else $('revision-meta').textContent = `Loading revision ${revision}`;
@@ -1023,6 +1048,10 @@ async function loadOne(revision) {
     if (data.superseded) throw new Superseded();
     await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
+    // a shown part outlives a new revision while its fit row still points at it; else all parts again,
+    // and focus on its row follows to the replacement row
+    const dropped = selected && !selectionExists(data, selected);
+    const held = dropped && [fitRowFor(selected.key), partRow(selected.partId)].includes(document.activeElement);
     for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
     clearGroup(model, { ownsGeometry: false });
     const ranks = depthRanks(data.parts);
@@ -1042,7 +1071,8 @@ async function loadOne(revision) {
       showRefit(true);
     } else applyView(activeView);
     syncGizmo();
-    describeView();
+    if (dropped) showAll(held);
+    else describeView();
     requestRender();
   } catch (error) {
     // superseded: the event for the newer revision is already here or on its way
