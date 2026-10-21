@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
+from .enclosure_inspection import inspect_enclosure
 from .export import ExportFailure, export_parts
 from .graph import (
     BoardImport,
@@ -45,6 +46,7 @@ from .references import (
     Reference,
     SketchSegmentSource,
 )
+from .requirements import evaluate as evaluate_requirements
 from .serialization import dumps, loads
 
 if TYPE_CHECKING:
@@ -2688,16 +2690,26 @@ class DocumentService:
                 )
             requirements = payload.get("requirements") or [{"id": "valid", "kind": "valid_brep"}]
             results = []
+            enclosure_requirements = [item for item in requirements if item.get("kind") != "valid_brep"]
+            if enclosure_requirements:
+                try:
+                    base_id = payload.get("base", "base")
+                    inspection = inspect_enclosure(self._document.graph, self._regen, base_id)
+                    evaluated = evaluate_requirements(enclosure_requirements, inspection, self._document.revision)
+                    results.extend(evaluated["results"])
+                    gate = evaluated["gate"]
+                except (KeyError, TypeError, ValueError, RuntimeError) as error:
+                    return _safe_error(
+                        self._document.revision,
+                        None,
+                        "INSPECTION_FAILED",
+                        str(error),
+                        operation="check",
+                    )
+            else:
+                gate = None
             for requirement in requirements:
                 if requirement.get("kind") != "valid_brep":
-                    results.append(
-                        {
-                            "id": requirement.get("id"),
-                            "kind": requirement.get("kind"),
-                            "status": "ERROR",
-                            "evidence": "check kind is not available",
-                        }
-                    )
                     continue
                 valid = all(
                     BRepCheck_Analyzer(part.shape.wrapped).IsValid()
@@ -2709,12 +2721,21 @@ class DocumentService:
                         "kind": "valid_brep",
                         "status": "PASS" if valid else "FAIL",
                         "measured": {"value": valid, "unit": "boolean"},
+                        "threshold": {"value": True, "unit": "boolean"},
+                        "involved": [part.part_id for part in terminal_parts(self._regen)],
                         "evidence": {"solidCount": self._metrics()["solidCount"]},
+                        "revision": self._document.revision,
                     }
                 )
+            statuses = [item["status"] for item in results]
+            if gate is None:
+                gate = "FAIL" if "FAIL" in statuses else "PASS"
+            elif "FAIL" in statuses:
+                gate = "FAIL"
             return {
                 "ok": True,
                 "revision": self._document.revision,
                 "units": "mm",
+                "gate": gate,
                 "results": results,
             }

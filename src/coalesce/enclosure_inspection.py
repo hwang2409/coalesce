@@ -245,7 +245,8 @@ def _standoffs(
 ) -> dict[str, Any]:
     board = graph.nodes[base.board]
     holes = _mounting_holes(board)
-    holes_by_id = {hole["id"]: hole for hole in holes}
+    required_holes = [hole for hole in holes if hole.get("plated", False)]
+    holes_by_id = {hole["id"]: hole for hole in required_holes}
     board_bottom = board_shape.bounding_box().min.Z
     floor_top = min(face.bounding_box().min.Z for face in _faces(result, base.id, "floor"))
     nodes = [
@@ -258,7 +259,7 @@ def _standoffs(
         if source in holes_by_id
     ]
     intact = {item["holeId"] for item in items if item["classification"] == "intact"}
-    hole_ids = [hole["id"] for hole in holes]
+    hole_ids = [hole["id"] for hole in required_holes]
     return {
         "count": len(items),
         "mountingHoleCount": len(holes),
@@ -370,7 +371,11 @@ def _lid_measurement(
         "partId": part.part_id,
         "outerBBox": _bbox(part.shape),
         "seatingZ": _quantity(min(face.bounding_box().min.Z for face in undersides)),
-        "fitGap": {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))} if gaps else None,
+        "fitGap": (
+            {"min": _quantity(min(gaps)), "max": _quantity(max(gaps))}
+            if gaps
+            else {"status": "unknown", "reason": "no parallel lip and base faces could be measured"}
+        ),
         "interference": interference,
         "lipDepth": _quantity(lip_box.max.Z - lip_box.min.Z) if lip_box is not None else None,
     }
@@ -526,6 +531,16 @@ def _ports(
                 "featureId": node.id,
                 "footprintId": metadata["footprintId"],
                 "reference": metadata["reference"],
+                "libraryId": next(
+                    item.get("libraryId")
+                    for item in board.mechanics.get("footprints", [])
+                    if item["id"] == node.footprint_id
+                ),
+                "value": next(
+                    item.get("value")
+                    for item in board.mechanics.get("footprints", [])
+                    if item["id"] == node.footprint_id
+                ),
                 "wall": wall,
                 "opening": _opening_rectangle(opening, wall),
                 "clearance": {
@@ -559,7 +574,6 @@ def _other_body_warnings(
     enclosure_parts: list[TerminalPart],
 ) -> list[dict[str, Any]]:
     selected_ids = {part.part_id for part in enclosure_parts}
-    sources = _same_board_sources(graph, board.id)
     return [
         {
             "code": "OTHER_MANUFACTURING_BODY",
@@ -567,7 +581,7 @@ def _other_body_warnings(
             "partId": part.part_id,
         }
         for part in parts
-        if part.part_id not in selected_ids and part.source_body.feature in sources
+        if part.part_id not in selected_ids
     ]
 
 

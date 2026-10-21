@@ -746,13 +746,15 @@ CHECK_SCHEMA = {
     "properties": {
         "action": {"const": "evaluate"},
         "revision": {"type": "integer", "minimum": 0},
+        "base": {"type": "string", "minLength": 1},
         "requirements": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string"},
-                    "kind": {"const": "valid_brep"},
+                    "id": {"type": "string", "minLength": 1},
+                    "kind": {"enum": ["valid_brep", "wall_thickness", "floor_thickness", "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap", "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance", "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies"]},
+                    "threshold": {},
                 },
                 "required": ["id", "kind"],
                 "additionalProperties": False,
