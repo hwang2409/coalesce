@@ -20,7 +20,7 @@ from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 
 from coalesce.enclosure_inspection import inspect_enclosure
-from coalesce.graph import Fillet, GraphError
+from coalesce.graph import Chamfer, Fillet, GraphError
 from coalesce.pcb import board_loop_wire
 from coalesce.references import Cardinality, Position, Reference
 from coalesce.regen import regenerate
@@ -146,7 +146,7 @@ def _boundary_faces(regenerated, fillet_id, edge_role, kind):
     blends = [
         candidate.entity
         for candidate in regenerated.provenance[fillet_id]
-        if candidate.key.role.startswith("blend(")
+        if candidate.key.role.startswith(("blend(", "chamfer("))
     ]
     edge_roles = edge_role.removeprefix("between(").removesuffix(")").split(",")
     if inside_role in edge_roles:
@@ -494,6 +494,21 @@ async def test_enclosure_query_without_lid_or_ports_returns_empty_lists(tmp_path
     assert result["ports"] == []
     assert result["standoffs"]["count"] == 0
     assert result["standoffs"]["items"] == []
+
+
+def test_enclosure_query_never_misreports_outer_edge_chamfer(tmp_path):
+    service, _, _ = _base_service(tmp_path)
+    graph = loads(dumps(service._document.graph))
+    reference = Reference(
+        "base", "between(outer_wall,rim)", Cardinality.ONE_OR_MORE
+    )
+    graph.add(Chamfer("outer_bevel", target="base", edges=[reference], distance=0.25))
+
+    regenerated = regenerate(graph)
+    result = inspect_enclosure(graph, regenerated, "base")
+    truth = _independent_thicknesses(regenerated, "outer_bevel", reference.role)
+
+    assert _thickness_outcome(result, truth) in {"exact", "unknown"}
 
 
 def test_enclosure_query_never_misreports_aperture_edge_fillets(tmp_path):

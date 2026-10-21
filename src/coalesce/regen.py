@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 
 from build123d import Edge, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
@@ -12,6 +12,7 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
+from .edge_treatment import chamfer_shape, fillet_shape
 from .enclosure import (
     build_pcb_base,
     build_pcb_lid,
@@ -20,9 +21,9 @@ from .enclosure import (
     build_standoffs,
 )
 from .extrusion import extrude_sketch
-from .fillet import fillet_shape
 from .graph import (
     BoardImport,
+    Chamfer,
     Cut,
     Extrude,
     Fillet,
@@ -93,7 +94,7 @@ def _consumed_edge_suggestion(
     names = ", ".join(
         f"{replacement.feature}.{replacement.role}" for replacement in replacements
     )
-    return f"use generated blend face {names}"
+    return f"use generated edge-treatment face {names}"
 
 
 _REMEDY_STEP = 0.01
@@ -264,38 +265,47 @@ def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
         details.pop("alternatives", None)
 
 
-def _resolve_fillet_edges(
-    fillet: Fillet,
+def _resolve_edge_treatment_edges(
+    node: Fillet | Chamfer,
     provenance: dict[str, list[Candidate]],
     ordered_features: list[str],
 ) -> list[Candidate]:
-    if not fillet.edges:
+    kind = type(node).__name__.lower()
+    if not node.edges:
         raise GraphError(
-            "empty_fillet_edges",
-            f"fillet {fillet.id} requires at least one edge reference",
-            feature=fillet.id,
+            f"empty_{kind}_edges",
+            f"{kind} {node.id} requires at least one edge reference",
+            feature=node.id,
         )
     selected: list[Candidate] = []
-    for reference in fillet.edges:
+    for reference in node.edges:
         resolution = resolve(
             reference,
             provenance,
             ordered_features=ordered_features,
-            before_feature=fillet.id,
+            before_feature=node.id,
         )
         if resolution.error is not None:
             raise GraphError(
                 "reference_failed",
-                f"fillet {fillet.id} edge reference did not resolve",
-                feature=fillet.id,
+                f"{kind} {node.id} edge reference did not resolve",
+                feature=node.id,
+                selectedEdges=[asdict(candidate.key) for candidate in selected],
                 resolution=resolution.error,
             )
         selected.extend(resolution.candidates)
+    if not selected:
+        raise GraphError(
+            f"empty_{kind}_selection",
+            f"{kind} {node.id} edge references selected no edges",
+            feature=node.id,
+            selectedEdges=[],
+        )
     if any(not isinstance(item.entity, Edge) for item in selected):
         raise GraphError(
-            "invalid_fillet_reference",
-            f"fillet {fillet.id} reference must resolve to edges",
-            feature=fillet.id,
+            f"invalid_{kind}_reference",
+            f"{kind} {node.id} reference must resolve to edges",
+            feature=node.id,
         )
     unique: list[Candidate] = []
     for item in selected:
@@ -755,8 +765,31 @@ def _apply_fillet(
         node.id,
         shapes[target],
         states[target],
-        _resolve_fillet_edges(node, provenance, ordered_features),
+        _resolve_edge_treatment_edges(node, provenance, ordered_features),
         node.radius,
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    consumed.update(result.consumed)
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_chamfer(
+    node: Chamfer,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    ordered_features: list[str],
+    consumed: dict[ElementKey, tuple[ElementKey, ...]],
+    lineage: BodyLineage,
+) -> None:
+    target = lineage.terminal(node.target)
+    result = chamfer_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        _resolve_edge_treatment_edges(node, provenance, ordered_features),
+        node.distance,
     )
     shapes[node.id] = result.shape
     states[node.id] = result.candidates
@@ -813,6 +846,16 @@ def _regenerate(graph: Graph) -> RegenResult:
             _apply_hole(node, shapes, states, removed_material, lineage)
         elif isinstance(node, Fillet):
             _apply_fillet(
+                node,
+                shapes,
+                states,
+                provenance,
+                ordered_features,
+                consumed,
+                lineage,
+            )
+        elif isinstance(node, Chamfer):
+            _apply_chamfer(
                 node,
                 shapes,
                 states,

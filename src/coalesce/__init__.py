@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .graph import (
+        Chamfer,
         Circle,
         Cut,
         Extrude,
@@ -36,14 +37,14 @@ if TYPE_CHECKING:
     from .regen import RegenResult, regenerate
 
 __all__ = [
-    "BodySource", "Cardinality", "Circle", "Cut", "Extrude", "Fillet", "Graph",
+    "BodySource", "Cardinality", "Chamfer", "Circle", "Cut", "Extrude", "Fillet", "Graph",
     "GraphError", "Hole", "HoleSurfaceSource", "MaxAlong", "Normal", "Parameter",
     "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
     "Sketch", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
 ]
 
 _GRAPH_NAMES = {
-    "Circle", "Cut", "Extrude", "Fillet", "Graph", "GraphError", "Hole", "Parameter",
+    "Chamfer", "Circle", "Cut", "Extrude", "Fillet", "Graph", "GraphError", "Hole", "Parameter",
     "PcbBase", "PcbLid", "Plane", "Rectangle", "Sketch", "Standoffs",
 }
 _REFERENCE_NAMES = {
