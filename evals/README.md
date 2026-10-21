@@ -17,6 +17,8 @@ tasks are json files under `evals/tasks/`. each task requires `id`, `tier`, `pro
 
 scoring is fail closed: a run passes only when the harness succeeds, its transcript parses, and every configured check passes. missing, unknown, malformed, extra, or unrecognized evidence fails the run. the runner inventories its complete `steps/` directory, accepts only `.step` and `.stp` files case-insensitively, and rejects all other entries.
 
+hole checks match every detected through-hole one-to-one with the expected positions and diameter range. the solid must also equal its bounding box minus the matched holes in volume (`rel_tol=1e-6`, `abs_tol=1e-3`), so any other cavity, blind hole, pocket, or boss fails the check.
+
 saved document parts are matched to exported solids approximately by volume, bounding box, and centre of mass, using `rel_tol=1e-7` and `abs_tol=1e-6`. a property-equivalent different solid can spoof this comparison. move to exact topology or shape-distance comparison when a task needs stronger identity proof.
 
 scoring assumes no external process mutates the run artifacts while scoring is in progress; external mutation is not guarded.

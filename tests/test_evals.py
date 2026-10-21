@@ -196,6 +196,30 @@ def test_plate_with_fifth_out_of_range_hole_fails(tmp_path):
     assert holes["unmatchedExpected"] == []
 
 
+@pytest.mark.parametrize(
+    "extra",
+    ["blind_hole", "blind_pocket", "boss"],
+)
+def test_plate_with_any_unexpected_geometry_fails(tmp_path, extra):
+    from build123d import Align, Box, Cylinder, Pos, export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    plate = _plate_with_holes()
+    if extra == "blind_hole":
+        plate -= Pos(30, 20, 3) * Cylinder(1.5, 3, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    elif extra == "blind_pocket":
+        plate -= Pos(30, 20, 4) * Box(6, 4, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    else:
+        plate += Pos(30, 20, 6) * Box(4, 4, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    export_step(plate, steps / "plate.step")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    holes = next(result for result in results if result["kind"] == "hole_positions")
+    assert holes["status"] == "fail", holes
+
+
 @pytest.mark.parametrize("suffix", [".stp", ".STEP"])
 def test_extra_step_suffix_fails(tmp_path, suffix):
     from build123d import Box, export_step

@@ -212,6 +212,7 @@ def _hole_positions(check, context):
     holes = _metric_holes(context.step_metrics[0], context.step_shapes[0])
     unmatched = list(holes)
     unmatched_expected = []
+    matched = []
     tolerance = check.get("tolerance", 0.1)
     for expected_x, expected_y in check["positions"]:
         candidates = [
@@ -226,14 +227,26 @@ def _hole_positions(check, context):
             unmatched_expected.append([expected_x, expected_y])
             continue
         index, _distance = min(candidates, key=lambda item: item[1])
-        unmatched.pop(index)
+        matched.append(unmatched.pop(index))
+    volume, expected_volume = _plate_volumes(context.step_metrics[0], context.step_shapes[0], matched)
+    # A plate task is a box minus its holes: any other cavity, pocket, or boss changes the volume.
+    exact = math.isclose(volume, expected_volume, rel_tol=1e-6, abs_tol=1e-3)
     return _result(
         check,
-        "pass" if not unmatched and not unmatched_expected else "fail",
+        "pass" if not unmatched and not unmatched_expected and exact else "fail",
         actual=holes,
         unmatchedDetected=unmatched,
         unmatchedExpected=unmatched_expected,
+        volume=volume,
+        expectedVolume=expected_volume,
     )
+
+
+def _plate_volumes(metric, shape, matched):
+    low, high = metric["bbox"]["min"], metric["bbox"]["max"]
+    width, depth, height = (high[i] - low[i] for i in range(3))
+    holes = sum(math.pi * (hole["diameter"] / 2) ** 2 * height for hole in matched)
+    return float(shape.volume), width * depth * height - holes
 
 
 def _solid_metrics(solid):
