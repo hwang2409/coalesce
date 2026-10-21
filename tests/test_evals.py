@@ -94,6 +94,66 @@ def test_posts_at_hole_positions_fail(tmp_path):
     assert check_task({"checks": [check]}, _document(tmp_path / "model.coalesce.json"), steps)[0]["status"] == "fail"
 
 
+def _plate_with_holes(offset=(0, 0, 0)):
+    from build123d import Align, Box, Cylinder, Pos
+
+    plate = Pos(*offset) * Box(60, 40, 6, align=(Align.MIN, Align.MIN, Align.MIN))
+    for x, y in ((5, 5), (55, 5), (5, 35), (55, 35)):
+        plate -= Pos(x + offset[0], y + offset[1], offset[2]) * Cylinder(
+            1.7, 6, align=(Align.CENTER, Align.CENTER, Align.MIN)
+        )
+    return plate
+
+
+def _plate_holes_task():
+    return next(task for task in load_tasks(Path("evals/tasks")) if task["id"] == "plate-holes")
+
+
+def test_plate_and_separate_hole_tubes_fail_single_part_rule(tmp_path):
+    from build123d import Align, Box, Cylinder, Pos, export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(60, 40, 6, align=(Align.MIN, Align.MIN, Align.MIN)), steps / "plate.step")
+    for index, (x, y) in enumerate(((5, 5), (55, 5), (5, 35), (55, 35))):
+        tube = Pos(x, y, 0) * (
+            Cylinder(2.2, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+            - Cylinder(1.7, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        )
+        export_step(tube, steps / f"tube-{index}.step")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    assert results[0]["status"] == "fail"
+    assert "exactly 1 STEP file" in results[0]["reason"]
+
+
+def test_plate_offset_from_stated_frame_fails(tmp_path):
+    from build123d import export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(_plate_with_holes((-1, -1, -3)), steps / "plate.step")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    bbox = next(result for result in results if result["kind"] == "bbox")
+    assert bbox["status"] == "fail"
+
+
+def test_correct_single_plate_in_stated_frame_passes(tmp_path):
+    from build123d import export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(_plate_with_holes(), steps / "plate.step")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    assert results[0]["kind"] == "parts"
+    assert all(result["status"] == "pass" for result in results)
+
+
 def test_blocked_expected_port_fails(tmp_path, monkeypatch):
     port = {"reference": "J1", "wall": "left", "blocked": True, "clearance": {"min": {"value": .5}}}
     result, _ = _enclosure_check(tmp_path, monkeypatch, {"ports": [port]}, {"kind": "port_opening_clears_connector", "reference": "J1", "wall": "left"})
@@ -145,6 +205,87 @@ def test_reference_resolution_uses_regeneration_not_warnings(tmp_path, monkeypat
     result, service = _enclosure_check(tmp_path, monkeypatch, {"warnings": [{"code": "CONNECTOR_HEIGHT_UNRESOLVED"}]}, {"kind": "references_resolve"})
     assert result["status"] == "pass"
     assert service.calls == 1
+
+
+def _staged_pcb_change(tmp_path):
+    from evals.run import build_before_state
+
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    fixture = fixtures / "features.kicad_pcb"
+    fixture.write_bytes(Path("evals/fixtures/features.kicad_pcb").read_bytes())
+    document = tmp_path / "model.coalesce.json"
+    facts = tmp_path / "before-state.json"
+    build_before_state("pcb-change", document, fixtures, facts)
+    task = next(task for task in load_tasks(Path("evals/tasks")) if task["id"] == "pcb-change")
+    task = {
+        key: value
+        for key, value in task.items()
+        if key != "parts"
+    }
+    task["checks"] = [
+        check
+        for check in task["checks"]
+        if check["kind"] not in {"no_overlapping_parts", "step_validity"}
+    ]
+    return task, document, facts
+
+
+def _change_wall(document, feature_id="base"):
+    from coalesce.service import DocumentService
+
+    service = DocumentService(document, warmup=False)
+    result = service.feature({
+        "action": "update",
+        "expectedRevision": service.revision,
+        "requestId": "change-wall-to-3-mm",
+        "featureId": feature_id,
+        "kind": "pcb_base",
+        "set": {"wallThickness": {"value": 3, "unit": "mm"}},
+    })
+    assert result["ok"] is True
+
+
+def test_pcb_change_unchanged_before_state_fails(tmp_path):
+    task, document, facts = _staged_pcb_change(tmp_path)
+    results = check_task(task, document, tmp_path / "steps", facts)
+    wall = next(result for result in results if result["kind"] == "wall_thickness")
+    edit = next(result for result in results if result["kind"] == "edit_survival")
+    assert wall["status"] == "fail"
+    assert wall["actual"] == pytest.approx(2)
+    assert edit["status"] == "fail"
+    assert "document revision did not advance" in edit["reason"]
+
+
+def test_pcb_change_rebuilt_with_new_ids_fails(tmp_path):
+    task, document, facts = _staged_pcb_change(tmp_path)
+    replacements = {
+        "base": "replacement-base",
+        "mounts": "replacement-mounts",
+        "lid": "replacement-lid",
+        "port": "replacement-port",
+    }
+
+    def replace_ids(value):
+        if isinstance(value, dict):
+            return {key: replace_ids(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_ids(item) for item in value]
+        return replacements.get(value, value)
+
+    document.write_text(json.dumps(replace_ids(json.loads(document.read_text()))))
+    _change_wall(document, "replacement-base")
+    results = check_task(task, document, tmp_path / "steps", facts)
+    edit = next(result for result in results if result["kind"] == "edit_survival")
+    assert edit["status"] == "fail"
+    assert "base partId changed" in edit["reason"]
+
+
+def test_pcb_change_correct_in_place_edit_passes(tmp_path):
+    task, document, facts = _staged_pcb_change(tmp_path)
+    _change_wall(document)
+    results = check_task(task, document, tmp_path / "steps", facts)
+    assert all(result["status"] == "pass" for result in results), results
 
 
 def test_one_enclosure_inspection_per_run(tmp_path, monkeypatch):

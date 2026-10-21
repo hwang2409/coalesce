@@ -31,6 +31,10 @@ def load_tasks(directory: Path) -> list[dict]:
         missing = REQUIRED - task.keys()
         if missing or task["tier"] not in {"easy", "medium", "hard"}:
             raise ValueError(f"invalid task {path}: missing {sorted(missing)}")
+        if "parts" in task and (
+            not isinstance(task["parts"], int) or isinstance(task["parts"], bool) or task["parts"] < 1
+        ):
+            raise ValueError(f"invalid parts in {path}: expected a positive integer")
         _validate_checks(path, task["checks"])
         tasks.append(task)
     if len({task["id"] for task in tasks}) != len(tasks):

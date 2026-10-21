@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -14,8 +15,9 @@ def _quantity(value):
 class ArtifactContext:
     """Measure one run's saved document and exact STEP export directory once."""
 
-    def __init__(self, document: Path, steps: Path):
+    def __init__(self, document: Path, steps: Path, before_state: Path | None = None):
         self.document = document
+        self.before_state = before_state
         self.step_paths = sorted(steps.glob("*.step")) if steps.is_dir() else []
         self._step_metrics = None
         self._step_shapes = None
@@ -67,9 +69,21 @@ class ArtifactContext:
         return self._inspection
 
 
-def _bbox(metric):
-    box = metric["bbox"]
-    return [maximum - minimum for minimum, maximum in zip(box["min"], box["max"], strict=True)]
+def _parts_result(expected, context):
+    if len(context.step_metrics) != expected:
+        return {
+            "kind": "parts",
+            "status": "fail",
+            "reason": f"expected exactly {expected} STEP file(s), found {len(context.step_metrics)}",
+        }
+    counts = [metric.get("solidCount") for metric in context.step_metrics]
+    if counts != [1] * expected:
+        return {
+            "kind": "parts",
+            "status": "fail",
+            "reason": f"expected exactly one solid in each STEP file, found {counts}",
+        }
+    return {"kind": "parts", "status": "pass", "actual": expected}
 
 
 def _step_validity(check, context):
@@ -83,9 +97,23 @@ def _bbox_check(check, context):
         return _result(check, "fail", reason="steps directory is missing or empty")
     if "bbox" not in context.step_metrics[0]:
         return _result(check, "unknown", evidence=context.step_metrics[0])
-    actual = _bbox(context.step_metrics[0])
+    box = context.step_metrics[0]["bbox"]
     tolerance = check.get("tolerance", 0.1)
-    passed = all(abs(measured - expected) <= tolerance for measured, expected in zip(actual, check["size"], strict=True))
+    if "min" in check and "max" in check:
+        passed = all(
+            abs(measured - expected) <= tolerance
+            for actual, expected_values in ((box["min"], check["min"]), (box["max"], check["max"]))
+            for measured, expected in zip(actual, expected_values, strict=True)
+        )
+        return _result(check, "pass" if passed else "fail", actual=box)
+    actual = [
+        maximum - minimum
+        for minimum, maximum in zip(box["min"], box["max"], strict=True)
+    ]
+    passed = all(
+        abs(measured - expected) <= tolerance
+        for measured, expected in zip(actual, check["size"], strict=True)
+    )
     return _result(check, "pass" if passed else "fail", actual=actual)
 
 
@@ -138,18 +166,16 @@ def _metric_hole_points(metric, shape, diameter_range):
     ]
 
 
-def _through_hole_points(check, context):
-    return [
-        point
-        for metric, shape in zip(context.step_metrics, context.step_shapes, strict=True)
-        for point in _metric_hole_points(metric, shape, check["diameter"])
-    ]
-
-
 def _hole_positions(check, context):
-    if not context.step_paths:
-        return _result(check, "fail", reason="steps directory is missing or empty")
-    points = _through_hole_points(check, context)
+    if len(context.step_paths) != 1:
+        return _result(
+            check,
+            "fail",
+            reason=f"hole evidence requires exactly one STEP file, found {len(context.step_paths)}",
+        )
+    points = _metric_hole_points(
+        context.step_metrics[0], context.step_shapes[0], check["diameter"]
+    )
     tolerance = check.get("tolerance", 0.1)
     passed = all(
         any(abs(x - expected_x) <= tolerance and abs(y - expected_y) <= tolerance for x, y in points)
@@ -225,6 +251,59 @@ def _standoffs(check, inspected):
     return _result(check, "pass" if passed else "fail", actual=evidence)
 
 
+def _edit_survival(check, context, inspected):
+    if context.before_state is None or not context.before_state.is_file():
+        return _result(check, "fail", reason="runner before-state facts are missing")
+    before = json.loads(context.before_state.read_text())
+    if context.service.revision <= before["revision"]:
+        return _result(check, "fail", reason="document revision did not advance from before-state")
+    base_id = inspected.get("base", {}).get("partId")
+    if base_id != before["basePartId"]:
+        return _result(
+            check,
+            "fail",
+            reason=f"base partId changed: {before['basePartId']} -> {base_id}",
+        )
+    lids = {lid.get("featureId"): lid.get("partId") for lid in inspected.get("lids", [])}
+    if lids != before["lidPartIds"]:
+        return _result(check, "fail", reason="lid feature or partId changed", actual=lids)
+    ports = [
+        port
+        for port in inspected.get("ports", [])
+        if port.get("featureId") == before["port"]["featureId"]
+    ]
+    if len(ports) != 1:
+        return _result(check, "fail", reason="saved port feature id no longer resolves")
+    port = ports[0]
+    expected_port = before["port"]
+    if any(port.get(field) != expected_port[field] for field in ("reference", "footprintId", "wall")):
+        return _result(check, "fail", reason="saved port reference changed", actual=port)
+    if port.get("blocked") is not False:
+        return _result(check, "fail", reason="saved port no longer clears J1", actual=port)
+    part_ids = sorted(
+        part.get("partId") for part in inspected.get("terminalParts", []) if part.get("partId")
+    )
+    if part_ids != before["manufacturingPartIds"]:
+        return _result(
+            check,
+            "fail",
+            reason="manufacturing bodies were added, removed, or orphaned",
+            actual=part_ids,
+        )
+    orphaned = [
+        warning
+        for warning in inspected.get("warnings", [])
+        if warning.get("code") == "OTHER_MANUFACTURING_BODY"
+    ]
+    if orphaned:
+        return _result(check, "fail", reason="orphan manufacturing body", actual=orphaned)
+    return _result(
+        check,
+        "pass",
+        actual={"basePartId": base_id, "lidPartIds": lids, "port": port},
+    )
+
+
 def _enclosure_check(check, context):
     kind = check["kind"]
     if kind == "references_resolve":
@@ -245,12 +324,18 @@ def _enclosure_check(check, context):
         return _enclosure_parts(check, inspected)
     if kind == "standoffs_at_mounting_holes":
         return _standoffs(check, inspected)
+    if kind == "edit_survival":
+        return _edit_survival(check, context, inspected)
     return None
 
 
-def check_task(task: dict, document: Path, steps: Path) -> list[dict]:
-    context = ArtifactContext(document, steps)
+def check_task(
+    task: dict, document: Path, steps: Path, before_state: Path | None = None
+) -> list[dict]:
+    context = ArtifactContext(document, steps, before_state)
     output = []
+    if "parts" in task:
+        output.append(_parts_result(task["parts"], context))
     for check in task["checks"]:
         try:
             result = _step_check(check, context) or _enclosure_check(check, context)

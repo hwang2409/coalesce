@@ -11,6 +11,132 @@ from .checks import check_task
 from .tasks import select_tasks
 
 
+def _quantity(value):
+    return {"value": value, "unit": "mm"}
+
+
+def _require_ok(result):
+    if result.get("ok") is not True:
+        raise RuntimeError(f"before-state build failed: {result}")
+
+
+def _build_pcb_change(document, fixture_dir):
+    from coalesce.service import DocumentService
+
+    service = DocumentService(document, warmup=False)
+    _require_ok(service.import_board({
+        "action": "create",
+        "expectedRevision": 0,
+        "requestId": "eval-import-board",
+        "assetId": "board",
+        "format": "kicad_pcb",
+        "path": str((fixture_dir / "features.kicad_pcb").resolve()),
+    }))
+    _require_ok(service.feature({
+        "action": "create",
+        "expectedRevision": 1,
+        "requestId": "eval-create-base",
+        "featureId": "base",
+        "kind": "pcb_base",
+        "parameters": {
+            "board": {"featureId": "board"},
+            "wallThickness": _quantity(2),
+            "floorThickness": _quantity(2),
+            "clearance": _quantity(1),
+            "wallHeightAboveBoard": _quantity(4),
+            "boardSeatHeight": _quantity(1),
+        },
+    }))
+    board = service._document.graph.nodes["board"]
+    mounting_footprints = {
+        item["id"]
+        for item in board.mechanics["footprints"]
+        if item["libraryId"].startswith("MountingHole:")
+    }
+    mounting_holes = [
+        item["id"]
+        for item in board.mechanics["holes"]
+        if item["footprintId"] in mounting_footprints
+    ]
+    _require_ok(service.feature({
+        "action": "create",
+        "expectedRevision": 2,
+        "requestId": "eval-create-standoffs",
+        "featureId": "mounts",
+        "kind": "standoffs",
+        "parameters": {
+            "target": {"featureId": "base"},
+            "board": {"featureId": "board"},
+            "selection": {"mode": "explicit", "holeIds": mounting_holes},
+            "bossDiameter": _quantity(5),
+            "pilotDiameter": _quantity(1),
+        },
+    }))
+    _require_ok(service.feature({
+        "action": "create",
+        "expectedRevision": 3,
+        "requestId": "eval-create-lid",
+        "featureId": "lid",
+        "kind": "pcb_lid",
+        "parameters": {
+            "base": {"featureId": "base"},
+            "thickness": _quantity(2),
+            "fitGap": _quantity(0.25),
+        },
+    }))
+    _require_ok(service.feature({
+        "action": "create",
+        "expectedRevision": 4,
+        "requestId": "eval-create-port",
+        "featureId": "port",
+        "kind": "port_cutout",
+        "parameters": {
+            "base": {"featureId": "base"},
+            "footprint": "J1",
+            "wall": "left",
+            "clearance": _quantity(0.5),
+            "envelope": {
+                "source": "courtyard",
+                "height": _quantity(1),
+                "bottomOffset": _quantity(0),
+            },
+        },
+    }))
+    inspected = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    port = next(item for item in inspected["ports"] if item["featureId"] == "port")
+    wall = inspected["base"]["minimumWallThickness"]["value"]
+    if not 1.9 <= wall <= 2.1:
+        raise RuntimeError(f"before-state wall is not 2 mm: {wall}")
+    return {
+        "revision": service.revision,
+        "basePartId": inspected["base"]["partId"],
+        "lidPartIds": {item["featureId"]: item["partId"] for item in inspected["lids"]},
+        "port": {
+            field: port[field]
+            for field in ("featureId", "reference", "footprintId", "wall")
+        },
+        "wallThickness": wall,
+        "manufacturingPartIds": sorted(
+            item["partId"] for item in inspected["terminalParts"]
+        ),
+    }
+
+
+_BEFORE_STATE_BUILDERS = {"pcb-change": _build_pcb_change}
+
+
+def build_before_state(name, document, fixture_dir, facts_path):
+    if document.exists():
+        raise FileExistsError(f"runner document already exists: {document}")
+    try:
+        builder = _BEFORE_STATE_BUILDERS[name]
+    except KeyError as error:
+        raise ValueError(f"unknown before-state builder: {name}") from error
+    facts = builder(document, fixture_dir)
+    facts_path.write_text(json.dumps(facts, indent=2))
+    return facts
+
+
 def _json_events(transcript):
     for line in transcript.splitlines():
         try:
@@ -62,7 +188,14 @@ def _zeta_metadata(transcript):
     return metadata, final
 
 
-def claude_harness(prompt, run_dir, *, model, coalesce_path, **_):
+def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, **_):
+    if before_state:
+        build_before_state(
+            before_state,
+            run_dir / "model.coalesce.json",
+            run_dir / "fixtures",
+            run_dir / "before-state.json",
+        )
     config = run_dir / "mcp.json"
     config.write_text(json.dumps({
         "mcpServers": {
@@ -111,13 +244,17 @@ def _stage_zeta_fixtures(run_dir, zeta_project):
     return targets
 
 
-def zeta_harness(prompt, run_dir, *, model, zeta_project, **_):
+def zeta_harness(prompt, run_dir, *, model, zeta_project, before_state=None, **_):
     """Run in a trusted project while owning every staged input and output path."""
     fixed = zeta_project / "probe.coalesce.json"
     fixed_out = zeta_project / "out"
     if fixed.exists() or fixed_out.exists():
         raise FileExistsError("zeta project already contains probe.coalesce.json or out")
     staged = _stage_zeta_fixtures(run_dir, zeta_project)
+    if before_state:
+        build_before_state(
+            before_state, fixed, run_dir / "fixtures", run_dir / "before-state.json"
+        )
     fixed_out.mkdir()
     fixture_text = ", ".join(str(path) for path in staged) or "none"
     instruction = (
@@ -162,11 +299,22 @@ def _run_task(task, model, out, harness, kwargs):
     _copy_fixtures(task, run_dir)
     started = time.monotonic()
     try:
-        metadata = harness(task["prompt"], run_dir, model=model, **kwargs)
+        metadata = harness(
+            task["prompt"],
+            run_dir,
+            model=model,
+            before_state=task.get("beforeState"),
+            **kwargs,
+        )
     except Exception as error:  # noqa: BLE001 - harness failures are scorecard evidence
         metadata = {"error": str(error)}
     metadata.setdefault("wall_time", time.monotonic() - started)
-    results = check_task(task, run_dir / "model.coalesce.json", run_dir / "steps")
+    results = check_task(
+        task,
+        run_dir / "model.coalesce.json",
+        run_dir / "steps",
+        run_dir / "before-state.json",
+    )
     row = {
         "task": task["id"],
         "model": model,
