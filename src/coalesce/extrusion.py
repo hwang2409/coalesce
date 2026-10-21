@@ -135,17 +135,16 @@ def _profile_relation(left: _Profile, right: _Profile) -> _ProfileRelation:
 def _pair_error(sketch: Sketch, left: _Profile, right: _Profile, relation: _ProfileRelation) -> None:
     if relation not in (_ProfileRelation.TOUCHING, _ProfileRelation.OVERLAP):
         return
-    code = "touching_profiles" if relation is _ProfileRelation.TOUCHING else "overlapping_profiles"
-    message = (
-        "sketch profile boundaries touch"
-        if relation is _ProfileRelation.TOUCHING
-        else "sketch profiles overlap without nesting"
-    )
+    details = {
+        "sketch": sketch.id,
+        "entities": sorted([left.entity.id, right.entity.id]),
+    }
+    if relation is _ProfileRelation.TOUCHING:
+        raise GraphError("TOUCHING_PROFILES", "sketch profile boundaries touch", **details)
     raise GraphError(
-        code,
-        message,
-        sketch=sketch.id,
-        entities=sorted([left.entity.id, right.entity.id]),
+        "OVERLAPPING_PROFILES",
+        "sketch profiles overlap without nesting",
+        **details,
     )
 
 

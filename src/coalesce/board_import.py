@@ -13,7 +13,9 @@ MAX_KICAD_IMPORT_BYTES = 16 * 1024 * 1024
 
 
 class BoardImportError(ValueError):
-    pass
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
 
 
 def mounting_holes(board: BoardImport) -> list[dict]:
@@ -37,7 +39,9 @@ def read_kicad_board(path: str) -> tuple[Path, Board]:
     """Resolve and read one regular local file, then parse the captured bytes."""
     requested = Path(path)
     if not requested.is_absolute():
-        raise BoardImportError("KiCad import path must be absolute")
+        raise BoardImportError(
+            "IMPORT_PATH_NOT_ABSOLUTE", "KiCad import path must be absolute"
+        )
     try:
         resolved = requested.resolve(strict=True)
         flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
@@ -45,18 +49,25 @@ def read_kicad_board(path: str) -> tuple[Path, Board]:
         descriptor = os.open(resolved, flags)
         with os.fdopen(descriptor, "rb") as stream:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise BoardImportError("KiCad import path must name a regular file")
+                raise BoardImportError(
+                    "IMPORT_PATH_NOT_FILE", "KiCad import path must name a regular file"
+                )
             raw = stream.read(MAX_KICAD_IMPORT_BYTES + 1)
     except BoardImportError:
         raise
     except OSError as exc:
-        raise BoardImportError(f"KiCad source could not be read: {exc}") from None
+        raise BoardImportError(
+            "IMPORT_SOURCE_UNREADABLE", f"KiCad source could not be read: {exc}"
+        ) from None
     if len(raw) > MAX_KICAD_IMPORT_BYTES:
         raise BoardImportError(
-            f"KiCad source exceeds the {MAX_KICAD_IMPORT_BYTES}-byte limit"
+            "IMPORT_TOO_LARGE",
+            f"KiCad source exceeds the {MAX_KICAD_IMPORT_BYTES}-byte limit",
         )
     board = parse_kicad_pcb_bytes(raw)
     if board.errors:
         kinds = ", ".join(sorted({error.kind for error in board.errors}))
-        raise BoardImportError(f"KiCad source has invalid mechanics ({kinds})")
+        raise BoardImportError(
+            "IMPORT_INVALID_MECHANICS", f"KiCad source has invalid mechanics ({kinds})"
+        )
     return resolved, board

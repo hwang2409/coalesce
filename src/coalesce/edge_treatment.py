@@ -91,12 +91,17 @@ def edge_treatment_shape(
     parameter = "radius" if kind == "blend" else "distance"
     public_kind = "fillet" if kind == "blend" else "chamfer"
     if size <= 0:
+        details = {"feature": feature, parameter: size, "edges": edge_keys}
+        if public_kind == "fillet":
+            raise GraphError(
+                "INVALID_FILLET_RADIUS",
+                f"fillet {feature} radius must be positive",
+                **details,
+            )
         raise GraphError(
-            f"invalid_{public_kind}_{parameter}",
-            f"{public_kind} {feature} {parameter} must be positive",
-            feature=feature,
-            **{parameter: size},
-            edges=edge_keys,
+            "INVALID_CHAMFER_DISTANCE",
+            f"chamfer {feature} distance must be positive",
+            **details,
         )
 
     algorithm: _EdgeAlgorithm
@@ -124,19 +129,24 @@ def edge_treatment_shape(
         result = Shape.cast(algorithm.Shape())
     except Exception as error:
         _LOGGER.exception("%s kernel operation failed for feature %s", public_kind, feature)
-        raise GraphError(
-            f"{public_kind}_failed",
-            f"{public_kind} feature {feature} failed",
-            feature=feature,
-            **{parameter: size},
-            edges=edge_keys,
-            safeRange="unknown",
-            hint=(
+        details = {
+            "feature": feature,
+            parameter: size,
+            "edges": edge_keys,
+            "safeRange": "unknown",
+            "hint": (
                 "reduce the fillet radius and retry, or find the largest radius that works"
                 if public_kind == "fillet"
                 else "reduce the chamfer distance and retry"
             ),
-            kernelMessage=str(error),
+            "kernelMessage": str(error),
+        }
+        if public_kind == "fillet":
+            raise GraphError(
+                "FILLET_FAILED", f"fillet feature {feature} failed", **details
+            ) from error
+        raise GraphError(
+            "CHAMFER_FAILED", f"chamfer feature {feature} failed", **details
         ) from error
 
     inherited, generated, consumed = _collect_history(
@@ -144,15 +154,17 @@ def edge_treatment_shape(
     )
     missing_history = [asdict(edge.key) for edge in edges if not consumed.get(edge.key)]
     if missing_history:
-        raise GraphError(
-            f"{public_kind}_failed",
-            f"{public_kind} feature {feature} did not return complete edge history",
-            feature=feature,
-            **{parameter: size},
-            edges=missing_history,
-            safeRange="unknown",
-            hint="change the selected edges or reduce the treatment size",
-        )
+        details = {
+            "feature": feature,
+            parameter: size,
+            "edges": missing_history,
+            "safeRange": "unknown",
+            "hint": "change the selected edges or reduce the treatment size",
+        }
+        message = f"{public_kind} feature {feature} did not return complete edge history"
+        if public_kind == "fillet":
+            raise GraphError("FILLET_FAILED", message, **details)
+        raise GraphError("CHAMFER_FAILED", message, **details)
     result_faces = _deduplicate(feature, result, [*inherited, *generated])
     result_edges = derive_edge_candidates(feature, result, result_faces)
     return EdgeTreatmentResult(

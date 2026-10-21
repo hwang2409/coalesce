@@ -1277,6 +1277,50 @@ def _hash(operation: MutationOperation) -> str:
     ).hexdigest()
 
 
+_GRAPH_ERROR_CODES = {
+    "AMBIGUOUS": "AMBIGUOUS",
+    "BODY_LINEAGE_DIVERGED": "BODY_LINEAGE_DIVERGED",
+    "BOOLEAN_FAILED": "BOOLEAN_FAILED",
+    "CHAMFER_FAILED": "CHAMFER_FAILED",
+    "CYCLE": "CYCLE",
+    "DUPLICATE_ENTITY_ID": "DUPLICATE_ENTITY_ID",
+    "DUPLICATE_ID": "DUPLICATE_ID",
+    "EMPTY_EDGE_SELECTION": "EMPTY_EDGE_SELECTION",
+    "FILLET_FAILED": "FILLET_FAILED",
+    "HISTORY_MISSING": "HISTORY_MISSING",
+    "HOLES_INTERSECT": "HOLES_INTERSECT",
+    "HOLE_NO_EFFECT": "HOLE_NO_EFFECT",
+    "INVALID_BOARD": "INVALID_BOARD",
+    "INVALID_BREP": "INVALID_BREP",
+    "INVALID_CHAMFER_DISTANCE": "INVALID_CHAMFER_DISTANCE",
+    "INVALID_CIRCLE_RADIUS": "INVALID_CIRCLE_RADIUS",
+    "INVALID_CUT_DEPTH": "INVALID_CUT_DEPTH",
+    "INVALID_CUT_TOOL": "INVALID_CUT_TOOL",
+    "INVALID_DOCUMENT": "INVALID_DOCUMENT",
+    "INVALID_EDGE_REFERENCE": "INVALID_EDGE_REFERENCE",
+    "INVALID_EXTRUDE_OPERATION": "INVALID_EXTRUDE_OPERATION",
+    "INVALID_FILLET_RADIUS": "INVALID_FILLET_RADIUS",
+    "INVALID_HOLE": "INVALID_HOLE",
+    "INVALID_PARAMETER": "INVALID_PARAMETER",
+    "JOIN_NO_CONTACT": "JOIN_NO_CONTACT",
+    "JOIN_NON_MANIFOLD": "JOIN_NON_MANIFOLD",
+    "JOIN_TARGET_BODY": "JOIN_TARGET_BODY",
+    "JOIN_TARGET_REQUIRED": "JOIN_TARGET_REQUIRED",
+    "MISSING": "MISSING",
+    "MIXED_BODY_ANCESTRY": "MIXED_BODY_ANCESTRY",
+    "NON_FINITE_VALUE": "NON_FINITE_VALUE",
+    "OVERLAPPING_PROFILES": "OVERLAPPING_PROFILES",
+    "PORT_BLOCKED_BY_LID": "PORT_BLOCKED_BY_LID",
+    "REFERENCE_FAILED": "REFERENCE_FAILED",
+    "TARGET_ALREADY_CONSUMED": "TARGET_ALREADY_CONSUMED",
+    "TOUCHING_PROFILES": "TOUCHING_PROFILES",
+    "UNKNOWN_ID": "UNKNOWN_ID",
+    "UNKNOWN_PLANE": "UNKNOWN_PLANE",
+    "UNSUPPORTED_BOARD_DRILL": "UNSUPPORTED_BOARD_DRILL",
+    "UNSUPPORTED_BOARD_OUTLINE": "UNSUPPORTED_BOARD_OUTLINE",
+}
+
+
 def _safe_error(
     revision: int,
     request_id: str | None,
@@ -1287,6 +1331,11 @@ def _safe_error(
     retryable: bool = False,
     **details: Any,
 ) -> dict[str, Any]:
+    details = dict(details)
+    if "feature" in details and "featureId" not in details:
+        details["featureId"] = details.pop("feature")
+    if terminal := details.get("terminalFeatureId"):
+        details.setdefault("legalTargets", [{"featureId": terminal}])
     return {
         "ok": False,
         "revision": revision,
@@ -1308,28 +1357,8 @@ def _graph_error_response(
     operation: str,
     error: GraphError,
 ) -> dict[str, Any]:
-    code = error.error["code"].upper()
-    known = {
-        "UNKNOWN_ID",
-        "DUPLICATE_ID",
-        "CYCLE",
-        "ORDER",
-        "EMPTY",
-        "SPLIT",
-        "MERGED",
-        "AMBIGUOUS",
-        "JOIN_NO_CONTACT",
-        "JOIN_NON_MANIFOLD",
-        "HOLES_INTERSECT",
-        "HOLE_NO_EFFECT",
-        "HAS_DEPENDENTS",
-        "TARGET_ALREADY_CONSUMED",
-        "PORT_BLOCKED_BY_LID",
-        "BODY_LINEAGE_DIVERGED",
-        "INVALID_PARAMETER",
-        "INVALID_BREP",
-        "MISSING",
-    }
+    internal_code = error.error["code"]
+    code = _GRAPH_ERROR_CODES.get(internal_code, "KERNEL_OPERATION_FAILED")
     details = {
         key: value
         for key, value in error.error.items()
@@ -1340,8 +1369,10 @@ def _graph_error_response(
     return _safe_error(
         revision,
         request_id,
-        code if code in known else "KERNEL_OPERATION_FAILED",
-        str(error) if code in known else "the modeling operation could not produce valid geometry",
+        code,
+        str(error)
+        if internal_code in _GRAPH_ERROR_CODES
+        else "the modeling operation could not produce valid geometry",
         operation=operation,
         **details,
     )
@@ -1446,17 +1477,7 @@ def _apply_import(
             raise RequestError("DUPLICATE_ID", f"duplicate id: {operation.assetId}")
         assert operation.path is not None
         source_path = operation.path
-    try:
-        resolved, board = read_kicad_board(source_path)
-    except BoardImportError as error:
-        raise RequestError(
-            "IMPORT_FAILED",
-            str(error),
-            hint=(
-                "use an explicit absolute path to a readable regular kicad_pcb file "
-                "of 16 MiB or less with one closed, valid board outline"
-            ),
-        ) from None
+    resolved, board = read_kicad_board(source_path)
     snapshot = board.to_dict()
     for key in ("source_digest", "parser_version", "warnings", "errors"):
         snapshot.pop(key)
@@ -2311,13 +2332,15 @@ class DocumentService:
             if kind == "cut"
             else "check target, position, diameter, and depth"
         )
-        raise RequestError(
-            f"{kind.upper()}_NO_EFFECT",
-            f"{kind} {operation.featureId} removes no material from {target}",
-            featureId=operation.featureId,
-            target=target,
-            hint=hint,
-        )
+        details = {
+            "featureId": operation.featureId,
+            "target": target,
+            "hint": hint,
+        }
+        message = f"{kind} {operation.featureId} removes no material from {target}"
+        if isinstance(operation, CutCreate):
+            raise RequestError("CUT_NO_EFFECT", message, **details)
+        raise RequestError("HOLE_NO_EFFECT", message, **details)
 
     def _committed_regeneration(self, operation: MutationOperation) -> RegenResult | None:
         if not isinstance(operation, (ImportDelete, SketchDelete, FeatureDelete)):
@@ -2325,6 +2348,58 @@ class DocumentService:
         self._ensure_geometry()
         assert self._regen is not None
         return self._regen
+
+    def error_response(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        **details: Any,
+    ) -> dict[str, Any]:
+        """Build the public error shape and add model context only when it is known."""
+        failure = _safe_error(
+            self._document.revision,
+            payload.get("requestId"),
+            code,
+            message,
+            operation=operation,
+            retryable=retryable,
+            **details,
+        )
+        return self._with_error_context(payload, failure)
+
+    def _with_error_context(
+        self, payload: dict[str, Any], failure: dict[str, Any]
+    ) -> dict[str, Any]:
+        error = failure["error"]
+        feature_id = error.get("featureId") or payload.get("featureId")
+        if isinstance(feature_id, str):
+            error["featureId"] = feature_id
+
+        target = payload.get("parameters", {}).get("target", {})
+        related = {
+            value
+            for value in (
+                feature_id,
+                error.get("target"),
+                error.get("consumer"),
+                target.get("featureId") if isinstance(target, dict) else None,
+            )
+            if isinstance(value, str)
+        }
+        if self._regen is not None and related:
+            affected = [
+                part.part_id
+                for part in terminal_parts(self._regen)
+                if related
+                & {item["id"] for item in _lineage(self._regen, part.terminal_feature)}
+            ]
+            if affected:
+                error["affectedParts"] = affected
+        return failure
 
     def publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
         """Show a failed sketch or feature call in the viewer; the last good scene stays."""
@@ -2442,31 +2517,55 @@ class DocumentService:
                     )
                 return response
             except RequestError as error:
-                failure = _safe_error(
-                    self._document.revision,
-                    request_id,
+                failure = self.error_response(
+                    operation,
+                    payload,
                     error.code,
                     str(error),
-                    operation=operation,
                     retryable=error.code == "REVISION_CONFLICT",
                     **error.details,
                 )
                 self.publish_failure(payload, failure)
                 return failure
+            except BoardImportError as error:
+                failure = self.error_response(
+                    operation,
+                    payload,
+                    error.code,
+                    str(error),
+                    hint=(
+                        "use an explicit absolute path to a readable regular kicad_pcb file "
+                        "of 16 MiB or less with one closed, valid board outline"
+                    ),
+                )
+                self.publish_failure(payload, failure)
+                return failure
             except GraphError as error:
-                failure = _graph_error_response(
+                graph_failure = _graph_error_response(
                     self._document.revision, request_id, operation, error
+                )
+                graph_details = dict(graph_failure["error"])
+                code = graph_details.pop("code")
+                message = graph_details.pop("message")
+                retryable = graph_details.pop("retryable")
+                graph_details.pop("operation")
+                failure = self.error_response(
+                    operation,
+                    payload,
+                    code,
+                    message,
+                    retryable=retryable,
+                    **graph_details,
                 )
                 self.publish_failure(payload, failure)
                 return failure
             except Exception:  # noqa: BLE001 - translate all kernel failures at this seam.
                 _LOG.exception("kernel failure during %s", operation)
-                failure = _safe_error(
-                    self._document.revision,
-                    request_id,
+                failure = self.error_response(
+                    operation,
+                    payload,
                     "KERNEL_OPERATION_FAILED",
                     "the modeling operation could not produce valid geometry",
-                    operation=operation,
                 )
                 self.publish_failure(payload, failure)
                 return failure
@@ -2617,13 +2716,15 @@ class DocumentService:
             return payload, _safe_error(
                 revision, request_id, "UNKNOWN_ID",
                 f"unknown {noun}: {payload.get('featureId')}", operation="feature",
+                featureId=payload.get("featureId"),
             )
         expected_kind, actual_kind = _infer_update_kind(payload, node)
         if actual_kind is not None and actual_kind != expected_kind:
             return payload, _safe_error(
                 revision, request_id, "INVALID_PARAMETER",
                 f"feature {node.id} is {expected_kind}, not {actual_kind}",
-                operation="feature", expectedKind=expected_kind, actualKind=actual_kind,
+                operation="feature", featureId=node.id,
+                expectedKind=expected_kind, actualKind=actual_kind,
             )
         return {**payload, "kind": expected_kind}, None
 
@@ -2631,6 +2732,7 @@ class DocumentService:
         if payload.get("action") == "update":
             payload, failure = self._resolve_update_kind(payload)
             if failure is not None:
+                failure = self._with_error_context(payload, failure)
                 self.publish_failure(payload, failure)
                 return failure
         return self._mutate(
@@ -2703,12 +2805,11 @@ class DocumentService:
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
         with self._lock:
+            selected: list[Any] = []
             try:
                 self._check_export_revision(payload["expectedRevision"])
-                fields = export_parts(
-                    Path(payload.get("path", "")),
-                    self._select_export_parts(payload.get("partIds")),
-                )
+                selected = self._select_export_parts(payload.get("partIds"))
+                fields = export_parts(Path(payload.get("path", "")), selected)
                 return {
                     "ok": True,
                     "revision": self._document.revision,
@@ -2716,32 +2817,31 @@ class DocumentService:
                     **fields,
                 }
             except ExportFailure as error:
-                return _safe_error(
-                    self._document.revision,
-                    None,
+                return self.error_response(
+                    "export",
+                    payload,
                     error.code,
                     error.message,
-                    operation="export",
+                    **({"affectedParts": [part.part_id for part in selected]} if selected else {}),
                     **error.details,
                 )
             except RequestError as error:
-                return _safe_error(
-                    self._document.revision,
-                    None,
+                return self.error_response(
+                    "export",
+                    payload,
                     error.code,
                     str(error),
-                    operation="export",
                     retryable=error.code == "STALE_REVISION",
                     **error.details,
                 )
             except Exception:  # noqa: BLE001 - filesystem failures are translated at this seam.
                 _LOG.exception("unexpected failure during export")
-                return _safe_error(
-                    self._document.revision,
-                    None,
+                return self.error_response(
+                    "export",
+                    payload,
                     "EXPORT_WRITE_FAILED",
                     "STEP export could not be completed",
-                    operation="export",
+                    **({"affectedParts": [part.part_id for part in selected]} if selected else {}),
                     hint="check the target directory and retry with a new path",
                 )
 
@@ -2947,6 +3047,7 @@ class DocumentService:
                     "REVISION_CONFLICT",
                     "requested revision is not current",
                     operation="check",
+                    retryable=True,
                 )
             if "requirements" in payload and not payload["requirements"]:
                 return _safe_error(

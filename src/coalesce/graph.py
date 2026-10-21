@@ -174,7 +174,7 @@ class GraphError(ValueError):
 def _require_finite(sketch: Sketch, field: str, values: tuple[float, ...]) -> None:
     if not all(isinstance(value, (int, float)) and isfinite(value) for value in values):
         raise GraphError(
-            "non_finite_value",
+            "NON_FINITE_VALUE",
             f"sketch {sketch.id} {field} values must be finite",
             sketch=sketch.id,
             field=field,
@@ -184,7 +184,7 @@ def _require_finite(sketch: Sketch, field: str, values: tuple[float, ...]) -> No
 def validate_sketch(sketch: Sketch) -> None:
     if sketch.plane.name not in {"XY", "XZ", "YZ"}:
         raise GraphError(
-            "unknown_plane",
+            "UNKNOWN_PLANE",
             f"unknown origin plane: {sketch.plane.name}",
             sketch=sketch.id,
             plane=sketch.plane.name,
@@ -200,7 +200,7 @@ def validate_sketch(sketch: Sketch) -> None:
             _require_finite(sketch, f"entity.{entity.id}.radius", (entity.radius,))
             if entity.radius <= 0:
                 raise GraphError(
-                    "invalid_circle_radius",
+                    "INVALID_CIRCLE_RADIUS",
                     f"circle {entity.id} radius must be positive",
                     sketch=sketch.id,
                     entity=entity.id,
@@ -214,13 +214,13 @@ class Graph:
 
     def add(self, node: Any) -> Any:
         if node.id in self.nodes:
-            raise GraphError("duplicate_id", f"duplicate id: {node.id}")
+            raise GraphError("DUPLICATE_ID", f"duplicate id: {node.id}")
         self.nodes[node.id] = node
         return node
 
     def delete(self, feature: str) -> None:
         if feature not in self.nodes:
-            raise GraphError("unknown_id", f"unknown id: {feature}")
+            raise GraphError("UNKNOWN_ID", f"unknown id: {feature}")
         del self.nodes[feature]
 
     def produces_body(self, feature: str) -> bool:
@@ -287,7 +287,7 @@ class Graph:
         )
         if duplicate is not None:
             raise GraphError(
-                "duplicate_entity_id",
+                "DUPLICATE_ENTITY_ID",
                 f"duplicate sketch entity id: {duplicate}",
                 sketch=node.id,
                 entity=duplicate,
@@ -306,7 +306,7 @@ class Graph:
             for dependency in self._dependencies(node):
                 if dependency not in self.nodes:
                     raise GraphError(
-                        "unknown_id",
+                        "UNKNOWN_ID",
                         f"unknown id: {dependency}",
                         feature=node.id,
                     )
@@ -316,7 +316,7 @@ class Graph:
 
         def visit(key: str) -> None:
             if key in visiting:
-                raise GraphError("cycle", "feature graph contains a cycle", feature=key)
+                raise GraphError("CYCLE", "feature graph contains a cycle", feature=key)
             if key in done:
                 return
             visiting.add(key)
@@ -347,7 +347,7 @@ class Graph:
         while terminal in consumers:
             terminal = consumers[terminal]
         raise GraphError(
-            "target_already_consumed",
+            "TARGET_ALREADY_CONSUMED",
             f"target {target} is already consumed by {consumer}",
             feature=node.id,
             target=target,

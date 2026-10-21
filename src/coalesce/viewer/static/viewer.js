@@ -850,7 +850,16 @@ function showRevision(sceneData) {
 }
 
 // what to do next, in words; the stable code and raw message stay under "Error details"
-const REFERENCE_CODES = new Set(['EMPTY', 'SPLIT', 'MERGED', 'AMBIGUOUS']);
+const REFERENCE_CODES = new Set([
+  'REFERENCE_FAILED', 'EMPTY_EDGE_SELECTION', 'INVALID_EDGE_REFERENCE', 'HISTORY_MISSING',
+]);
+const GEOMETRY_CODES = new Set([
+  'BOOLEAN_FAILED', 'CHAMFER_FAILED', 'CUT_NO_EFFECT', 'FILLET_FAILED', 'HOLES_INTERSECT',
+  'HOLE_NO_EFFECT', 'INVALID_BREP', 'INVALID_CHAMFER_DISTANCE', 'INVALID_CIRCLE_RADIUS',
+  'INVALID_CUT_DEPTH', 'INVALID_CUT_TOOL', 'INVALID_EXTRUDE_OPERATION', 'INVALID_FILLET_RADIUS',
+  'INVALID_HOLE', 'JOIN_NO_CONTACT', 'JOIN_NON_MANIFOLD', 'KERNEL_OPERATION_FAILED',
+  'OVERLAPPING_PROFILES', 'TOUCHING_PROFILES',
+]);
 function repair({ code, message, hint }) {
   if (hint) return `${capitalize(message)}. Ask your agent to ${hint}.`;
   if (code === 'UNIT_MISMATCH') return `A value has the wrong unit (${message}). Ask your agent to send it in the expected unit.`;
@@ -858,9 +867,10 @@ function repair({ code, message, hint }) {
   if (code === 'REVISION_CONFLICT') return 'The edit was based on an older revision. Ask your agent to read the current revision and try again.';
   if (code === 'UNKNOWN_ID') return `The edit names something that does not exist: ${message}. Ask your agent to check the id.`;
   if (code === 'DUPLICATE_ID') return `An id in the edit is already in use: ${message}. Ask your agent to pick a new id.`;
-  if (code === 'CYCLE' || code === 'ORDER') return 'The edit makes a feature depend on itself or on a later feature. Ask your agent to reorder the features.';
-  if (REFERENCE_CODES.has(code)) return 'A stored face or edge reference no longer matches exactly one piece of geometry. Ask your agent to select it again.';
-  if (code === 'KERNEL_OPERATION_FAILED' || code === 'INVALID_BREP') {
+  if (code === 'CYCLE') return 'The edit makes a feature depend on itself. Ask your agent to reorder the features.';
+  if (code === 'TARGET_ALREADY_CONSUMED') return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
+  if (REFERENCE_CODES.has(code)) return 'A stored face or edge reference no longer matches the required geometry. Ask your agent to select it again.';
+  if (GEOMETRY_CODES.has(code)) {
     return 'These values do not make valid geometry. Check that every size and distance is greater than 0 mm and that each feature meets the part it changes.';
   }
   return `${capitalize(message)}.`;
