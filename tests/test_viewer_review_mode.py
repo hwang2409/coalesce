@@ -126,6 +126,7 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         drawn = section["scene"]
         assert drawn["positions"] == [[0, 0, 0]] * 3 and drawn["visible"] == [True] * 3
         assert drawn["cut"] == [True] * 3  # the board too: an uncut board would hide the standoffs
+        assert drawn["projected"] == assembled["scene"]["projected"]  # the same parts, the same fit
         assert state["section"]["axis"] == "Y"
         assert state["section"]["value"] == pytest.approx(
             (state["section"]["min"] + state["section"]["max"]) / 2, abs=0.05)

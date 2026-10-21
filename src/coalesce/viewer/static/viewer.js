@@ -15,8 +15,9 @@ const $ = (id) => document.getElementById(id);
 // ---- renderer, camera, controls
 
 const canvas = $('view');
-// preserveDrawingBuffer lets the smoke test (and screenshots) read what was drawn.
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+// preserveDrawingBuffer lets the smoke test (and screenshots) read what was drawn; the stencil
+// buffer finds where the section plane is inside a part
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, stencil: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setClearColor(BACKGROUND);
 renderer.autoClear = false;
@@ -171,9 +172,15 @@ function describeView() {
 
 let gridStep = 10;
 
+const surfaceOf = (group) => {
+  group.updateWorldMatrix(true, true);
+  return group.children[0];
+};
+
 function visibleBox() {
   const box = new THREE.Box3();
-  for (const child of model.children) if (child.visible) box.expandByObject(child);
+  // a part's surface, as placed by its group: a section's cut face quad is larger than the part
+  for (const child of model.children) if (child.visible) box.expandByObject(surfaceOf(child));
   if (box.isEmpty() && current) {
     box.min.fromArray(current.bbox.min);
     box.max.fromArray(current.bbox.max);
@@ -504,11 +511,12 @@ function sectionRange(parts) {
   return [Number(low.toFixed(1)), Number(high.toFixed(1))];
 }
 
-// every part is cut, the board too, so nothing uncut hides what the cut opens up. a cut part gets a
-// flat, light back-face copy: seen through the cut, it reads as the cut face of solid material
-function setCut(group, part, on) {
-  const [surface, lines, cap] = group.children;
-  if (Boolean(cap) === on) return;
+// every part is cut, the board too, so nothing uncut hides what the cut opens up. each cut part counts,
+// per pixel, its back faces minus its front faces behind the plane in the stencil buffer: non-zero means
+// the plane is inside the part there, and a light quad on the plane draws the cut face only there
+function setCut(group, part, index, on) {
+  const [surface, lines, ...cap] = group.children;
+  if (Boolean(cap.length) === on) return;
   for (const object of [surface, lines]) {
     // a fresh material: disposing the old one also frees the shader it compiled for this cut state
     const material = object.material.clone();
@@ -516,16 +524,37 @@ function setCut(group, part, on) {
     object.material.dispose();
     object.material = material;
   }
-  if (on) {
-    group.add(new THREE.Mesh(surface.geometry, new THREE.MeshBasicMaterial({
-      color: new THREE.Color(part.color).lerp(new THREE.Color(0xffffff), 0.45),
-      side: THREE.BackSide,
-      clippingPlanes: [sectionPlane],
-    })));
-  } else {
-    cap.material.dispose(); // the geometry belongs to the mesh cache
-    group.remove(cap);
+  if (!on) {
+    for (const object of cap) {
+      object.material.dispose();
+      if (object.geometry !== surface.geometry) object.geometry.dispose(); // the surface belongs to the mesh cache
+      group.remove(object);
+    }
+    return;
   }
+  const counting = { colorWrite: false, depthWrite: false, depthTest: false, stencilWrite: true, clippingPlanes: [sectionPlane] };
+  for (const [side, op] of [[THREE.BackSide, THREE.IncrementWrapStencilOp], [THREE.FrontSide, THREE.DecrementWrapStencilOp]]) {
+    const counter = new THREE.Mesh(surface.geometry, new THREE.MeshBasicMaterial({
+      ...counting, side, stencilFail: op, stencilZFail: op, stencilZPass: op,
+    }));
+    counter.renderOrder = 2 * index + 1; // after every part's surface, before this part's cut face
+    group.add(counter);
+  }
+  // the quad also sets the stencil back to 0, so the next part counts from a clean buffer
+  const box = geometries.get(part.mesh.id).surface.boundingBox;
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
+    color: new THREE.Color(part.color).lerp(new THREE.Color(0xffffff), 0.45),
+    side: THREE.DoubleSide,
+    stencilWrite: true,
+    stencilRef: 0,
+    stencilFunc: THREE.NotEqualStencilFunc,
+    stencilFail: THREE.ReplaceStencilOp,
+    stencilZFail: THREE.ReplaceStencilOp,
+    stencilZPass: THREE.ReplaceStencilOp,
+  }));
+  face.scale.setScalar(box.min.distanceTo(box.max) * 1.1); // covers the part's whole cut at any position
+  face.renderOrder = 2 * index + 2;
+  group.add(face);
 }
 
 // places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
@@ -550,7 +579,13 @@ function applyMode() {
     group.position.set(0, 0, offsets?.get(part.name) ?? 0);
     const lifted = mode === 'lid-off' && isLid(part);
     group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
-    setCut(group, part, mode === 'section');
+    setCut(group, part, index, mode === 'section');
+    if (mode === 'section') {
+      // the cut face follows the plane: centred on the part's box, facing along the plane normal
+      const face = group.children[4];
+      sectionPlane.projectPoint(geometries.get(part.mesh.id).surface.boundingBox.getCenter(face.position), face.position);
+      face.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sectionPlane.normal);
+    }
     // the lid's own show/hide waits until the view puts the lid back
     toggles[index].disabled = lifted;
     toggles[index].title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggles[index].dataset.title}`;
@@ -913,7 +948,7 @@ if (window.coalesceDebug === true) {
       positions: model.children.map((group) => group.position.toArray()),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       zRanges: model.children.map((group) => {
-        const { min, max } = new THREE.Box3().setFromObject(group);
+        const { min, max } = new THREE.Box3().setFromObject(surfaceOf(group));
         return [min.z, max.z];
       }),
       camera: controls.enabled,
