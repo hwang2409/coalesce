@@ -7,6 +7,16 @@ from evals.checks import check_task
 from evals.run import _claude_metadata, _zeta_metadata
 from evals.tasks import load_tasks
 
+REVISION = {"coalesce_path": Path.cwd(), "coalesce_revision": "0" * 40, "coalesce_dirty": False}
+
+
+@pytest.fixture
+def validated(monkeypatch):
+    import evals.run
+
+    monkeypatch.setattr(evals.run, "_preflight", lambda *_a, **_k: REVISION)
+    return REVISION
+
 
 def _document(path):
     path.write_text(json.dumps({"revision": 0, "graph": {"nodes": []}}))
@@ -88,7 +98,7 @@ def test_zeta_preflight_rejects_revision_mismatch_before_output(tmp_path, monkey
     assert not (tmp_path / "eval-output").exists()
 
 
-def test_root_only_step_does_not_count(tmp_path):
+def test_root_only_step_does_not_count(tmp_path, validated):
     from build123d import Box, export_step
 
     from evals.run import run_tasks
@@ -104,7 +114,7 @@ def test_root_only_step_does_not_count(tmp_path):
         "id": "root", "tier": "easy", "prompt": "x", "fixtures": [],
         "checks": [{"kind": "step_validity"}],
     }))
-    rows = run_tasks(task_dir, tmp_path / "out", ["root"], ["fake"], fake)
+    rows = run_tasks(task_dir, tmp_path / "out", ["root"], ["fake"], fake, coalesce_path=Path.cwd())
     assert rows[0]["checks"][0]["status"] == "fail"
     assert rows[0]["overall"] is False
 
@@ -588,7 +598,7 @@ def test_zeta_fixture_staging_refuses_existing_path(tmp_path, monkeypatch):
     (project / "coalesce-eval-features.kicad_pcb").write_text("do not replace")
     with pytest.raises(FileExistsError, match="coalesce-eval-features.kicad_pcb"):
         zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project,
-                     coalesce_path=Path.cwd())
+                     revision=REVISION)
     assert (project / "coalesce-eval-features.kicad_pcb").read_text() == "do not replace"
 
 
@@ -696,7 +706,7 @@ def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
     fixtures.mkdir()
     fixture = fixtures / "features.kicad_pcb"
     fixture.write_text("fixture")
-    claude_harness("prompt", tmp_path, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+    claude_harness("prompt", tmp_path, model="claude-haiku-4-5", revision=REVISION)
     assert str(fixture) in seen["command"][2]
     assert seen["command"][seen["command"].index("--tools") + 1] == ""
     assert seen["command"][seen["command"].index("--setting-sources") + 1] == ""
@@ -719,7 +729,7 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
     run_dir = tmp_path / "run"
     (run_dir / "fixtures").mkdir(parents=True)
     if harness == "claude":
-        claude_harness("prompt", run_dir, model="claude-haiku-4-5", coalesce_path=Path.cwd())
+        claude_harness("prompt", run_dir, model="claude-haiku-4-5", revision=REVISION)
     else:
         project = tmp_path / "project"
         (project / ".zeta").mkdir(parents=True)
@@ -727,7 +737,7 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
             "servers": {"coalesce": {"args": ["--directory", str(Path.cwd())]}}
         }))
         zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project,
-                     coalesce_path=Path.cwd())
+                     revision=REVISION)
     assert seen["command"][2].count(HEADLESS) == 1
 
 
@@ -753,7 +763,7 @@ def test_task_files_load_and_validate():
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 
-def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path):
+def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path, validated):
     from build123d import export_step
 
     from evals.run import run_tasks
@@ -772,7 +782,7 @@ def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path):
     (task_dir / "plate-holes.json").write_text(
         Path("evals/tasks/plate_holes.json").read_text()
     )
-    rows = run_tasks(task_dir, tmp_path / "out", ["plate-holes"], ["fake"], failed_harness)
+    rows = run_tasks(task_dir, tmp_path / "out", ["plate-holes"], ["fake"], failed_harness, coalesce_path=Path.cwd())
     assert rows[0]["overall"] is False
     assert rows[0]["reason"] == "harness exited with return code 1"
 
@@ -793,7 +803,7 @@ def test_harness_error_or_unparsed_transcript_prevents_scoring(tmp_path, metadat
     assert row["reason"] == reason
 
 
-def test_existing_run_directory_is_rejected_before_reading(tmp_path):
+def test_existing_run_directory_is_rejected_before_reading(tmp_path, validated):
     from evals.run import run_tasks
 
     task_dir = tmp_path / "tasks"
@@ -808,11 +818,11 @@ def test_existing_run_directory_is_rejected_before_reading(tmp_path):
     prompt.write_text("existing")
 
     with pytest.raises(FileExistsError, match="run directory already exists"):
-        run_tasks(task_dir, tmp_path / "out", ["one"], ["fake"], lambda *_a, **_k: {})
+        run_tasks(task_dir, tmp_path / "out", ["one"], ["fake"], lambda *_a, **_k: {}, coalesce_path=Path.cwd())
     assert prompt.read_text() == "existing"
 
 
-def test_runner_fake_harness(tmp_path):
+def test_runner_fake_harness(tmp_path, validated):
     from evals.run import run_tasks
 
     def fake(prompt, run_dir, **kwargs):
@@ -832,7 +842,7 @@ def test_runner_fake_harness(tmp_path):
         "checks": [{"kind": "document_value", "path": "missing", "equals": 1}],
     }))
     out = tmp_path / "out"
-    rows = run_tasks(task_dir, out, ["one"], ["fake"], fake)
+    rows = run_tasks(task_dir, out, ["one"], ["fake"], fake, coalesce_path=Path.cwd())
     assert rows[0]["overall"] is False
     assert (out / "scorecard.md").exists()
     assert len((out / "results.jsonl").read_text().splitlines()) == 1

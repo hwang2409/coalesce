@@ -241,12 +241,7 @@ def _require_clean(path, label):
     return revision
 
 
-def claude_harness(prompt, run_dir, *, model, revision=None, coalesce_path=None, before_state=None, **_):
-    revision = revision or {
-        "coalesce_path": coalesce_path or Path.cwd(),
-        "coalesce_revision": "unknown",
-        "coalesce_dirty": False,
-    }
+def claude_harness(prompt, run_dir, *, model, revision, before_state=None, **_):
     coalesce_revision = revision["coalesce_revision"]
     coalesce_dirty = revision["coalesce_dirty"]
     if before_state:
@@ -311,13 +306,8 @@ def _stage_zeta_fixtures(run_dir, zeta_project):
     return targets
 
 
-def zeta_harness(prompt, run_dir, *, model, zeta_project, revision=None, coalesce_path=None, before_state=None, **_):
+def zeta_harness(prompt, run_dir, *, model, zeta_project, revision, before_state=None, **_):
     """Run in a trusted project while owning every staged input and output path."""
-    revision = revision or {
-        "coalesce_path": coalesce_path or Path.cwd(),
-        "coalesce_revision": "unknown",
-        "coalesce_dirty": False,
-    }
     coalesce_revision = revision["coalesce_revision"]
     coalesce_dirty = revision["coalesce_dirty"]
     fixed = zeta_project / "probe.coalesce.json"
@@ -448,7 +438,7 @@ def _write_scorecard(out, rows):
         overall = "pass" if row["overall"] else "fail/unknown"
         lines.append(
             f"| {row['task']} | {row['model']} | {overall} |"
-            f" {row.get('coalesce_revision', 'unknown')} | {row.get('coalesce_dirty', 'unknown')} |"
+            f" {row['coalesce_revision']} | {row['coalesce_dirty']} |"
             f" {row.get('tool_calls', 0)} | {row.get('failed_tool_calls', 0)} |"
             f" {row.get('wall_time', 0):.1f}s |"
         )
@@ -472,15 +462,9 @@ def _preflight(harness, coalesce_path, zeta_project=None):
     }
 
 
-def run_tasks(task_dir, out, selectors, models, harness, **kwargs):
-    coalesce_path = kwargs.pop("coalesce_path", None)
-    zeta_project = kwargs.get("zeta_project")
-    revision = (
-        _preflight(harness, coalesce_path, zeta_project)
-        if coalesce_path is not None
-        else {"coalesce_path": Path.cwd(), "coalesce_revision": "unknown", "coalesce_dirty": False}
-    )
-    kwargs["revision"] = revision
+def run_tasks(task_dir, out, selectors, models, harness, *, coalesce_path, **kwargs):
+    # The only checkout validation; it runs before any output exists.
+    kwargs["revision"] = _preflight(harness, coalesce_path, kwargs.get("zeta_project"))
     out.mkdir(parents=True, exist_ok=True)
     tasks = [task for selector in selectors for task in select_tasks(task_dir, selector)]
     rows = [
