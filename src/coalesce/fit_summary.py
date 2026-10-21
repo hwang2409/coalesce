@@ -112,7 +112,7 @@ def _standoff_row(inspection: dict[str, Any], board: BoardImport, revision: int)
                 inspection["base"]["partId"], measured, reason)
 
 
-def _lid_rows(inspection: dict[str, Any], revision: int) -> list[dict[str, Any]]:
+def _lid_rows(inspection: dict[str, Any], graph: Any, revision: int) -> list[dict[str, Any]]:
     if not inspection["lids"]:
         result = _rule({"id": "lid", "kind": "lid_interference"}, inspection, revision)
         return [_row("lid", "Lid", "UNKNOWN", "not measured", inspection["base"]["partId"], result["measured"],
@@ -125,6 +125,12 @@ def _lid_rows(inspection: dict[str, Any], revision: int) -> list[dict[str, Any]]
         reason = "lid and base overlap" if result["status"] == "FAIL" else result.get("reason")
         rows.append(_row(f"lid_interference:{lid['featureId']}", "Lid interference", result["status"], value,
                          lid["partId"], result["measured"], reason))
+        node = graph.nodes[lid["featureId"]]
+        if node.lip_depth is None or node.lip_width is None:  # enclosure.py builds a slab only
+            # a lid without a lip has no faces that fit inside the walls: not a gate result, not counted
+            rows.append(_row(f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", "N/A", "the lid has no lip",
+                             lid["partId"], None))
+            continue
         gap = lid["fitGap"]
         low, high = (_mm(gap[end]["value"]) for end in ("min", "max")) if "min" in gap else ("", "")
         rows.append(_measured(f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", gap,
@@ -166,7 +172,7 @@ def _rows(result: Any, base: PcbBase, revision: int) -> list[dict[str, Any]]:
         *_thickness_rows(inspection),
         _board_row(inspection, board_part),
         _standoff_row(inspection, result.graph.nodes[base.board], revision),
-        *_lid_rows(inspection, revision),
+        *_lid_rows(inspection, result.graph, revision),
         *_port_rows(inspection, revision),
     ]
 
@@ -225,9 +231,12 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
     if isinstance(node, PcbBase):
         return tuple(_base_facts(result, node))
     if isinstance(node, PcbLid):
-        facts = [_length("Thickness", node.thickness), _fact("Fit gap", f"{_mm(node.fit_gap)} mm")]
-        if node.lip_depth:
-            width = f", {_mm(node.lip_width)} mm wide" if node.lip_width else ""
-            facts.append(_fact("Lip", f"{_mm(node.lip_depth)} mm deep{width}"))
-        return tuple(facts)
+        if node.lip_depth is None or node.lip_width is None:
+            # the fit gap only spaces a lip from the walls; a slab lid has none to report
+            return (_length("Thickness", node.thickness), _fact("Lip", "none"))
+        return (
+            _length("Thickness", node.thickness),
+            _fact("Fit gap", f"{_mm(node.fit_gap)} mm"),
+            _fact("Lip", f"{_mm(node.lip_depth)} mm deep, {_mm(node.lip_width)} mm wide"),
+        )
     return ()

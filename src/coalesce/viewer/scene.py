@@ -287,6 +287,17 @@ def _build_scene(
     return scene, meshes
 
 
+def _cleared(change: dict | None, failure: dict | None) -> dict | None:
+    """A commit that keeps every value of the feature whose edit just failed cleared that failed edit."""
+    unchanged = ", no value changed"  # the wording of service._edited
+    if not (change and failure and change["featureId"] in failure["featureIds"]
+            and change["summary"].endswith(unchanged)):
+        return change
+    feature = change["summary"].removeprefix("edited ").removesuffix(unchanged)
+    summary = f"cleared failed edit to {feature}, values stay as in revision {failure['revision']}"
+    return {**change, "summary": summary}
+
+
 class ViewerSceneStore:
     """Holds the current and previous committed revision as tessellated named parts.
 
@@ -321,6 +332,7 @@ class ViewerSceneStore:
         with self._changed:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
+            change = _cleared(change, self._failure)
         # tessellate outside the lock: readers keep serving the last scene meanwhile.
         scene, meshes = _build_scene(revision, parts, self.TOLERANCE, change, fit or [])
 

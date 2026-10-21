@@ -26,7 +26,7 @@ def wait_for(store, revision):
     return scene
 
 
-def enclosure(tmp_path, store, *, holes=(*UNNAMED, H1), models="declared", lid=True, port=True):
+def enclosure(tmp_path, store, *, holes=(*UNNAMED, H1), models="declared", lid=True, lip=True, port=True):
     """Board, base, standoffs at ``holes``, a lid with a 0.4 mm lip, and a J1 port; returns the last revision."""
     service = DocumentService(tmp_path / "fit.coalesce.json", scene_store=store)
     assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
@@ -35,7 +35,8 @@ def enclosure(tmp_path, store, *, holes=(*UNNAMED, H1), models="declared", lid=T
     calls = [base_request(), standoffs_request(selection={"mode": "explicit", "holeIds": list(holes)})]
     if lid:
         # a shallow lip stays above the port opening
-        calls.append(lid_request(revision=3, lip={"depth": quantity(0.4), "width": quantity(1)}))
+        calls.append(lid_request(revision=3, lip={"depth": quantity(0.4), "width": quantity(1)}) if lip
+                     else lid_request(revision=3, include_lip=False))
     if port:
         calls.append(port_request(revision=len(calls) + 1))
     for call in calls:
@@ -174,6 +175,18 @@ def test_part_facts_for_board_base_and_lid(tmp_path):
     }
 
 
+def test_lid_without_a_lip_has_no_fit_gap_to_measure(tmp_path):
+    _, scene = enclosure(tmp_path, ViewerSceneStore(), lip=False)
+    gap = rows(scene)["lid_fit_gap:lid"]
+    lid = next(part for part in scene["parts"] if part["label"] == "lid")
+
+    # not applicable: neither a gate result nor an unknown measurement
+    assert (gap["status"], gap["value"], gap.get("reason"), gap["evidence"]) == (
+        "N/A", "the lid has no lip", None, None)
+    assert gap["partId"] == lid["partId"]
+    assert [(fact["label"], fact["value"]) for fact in lid["facts"]] == [("Thickness", "2 mm"), ("Lip", "none")]
+
+
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
 def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):  # noqa: F811
     store = ViewerSceneStore()
@@ -217,7 +230,6 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert state["overflow"] == [], state["overflow"]
         # the canvas shows the row's part, the others faded, from the same camera
         assert state["rows"][0]["pressed"] == "true"
-        assert state["rows"][0]["text"].endswith("Showing base, other parts faded")
         drawn = focused["scene"]
         assert dict(zip(drawn["parts"], drawn["faded"], strict=True)) == {
             name: name != next(part["name"] for part in store.scene(5)["parts"] if part["label"] == "base")

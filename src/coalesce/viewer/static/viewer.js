@@ -515,21 +515,11 @@ function fitRow(row, key) {
     item.type = 'button';
     item.setAttribute('aria-pressed', String(shown));
     item.title = shown ? 'Show all parts again' : `Show ${title} in the view and its facts`;
-    if (shown) {
-      const showing = document.createElement('span');
-      showing.className = 'fit-showing';
-      showing.textContent = `Showing ${title}, other parts faded`;
-      item.append(showing);
-    }
     // a second press shows every part again
     item.addEventListener('click', () => {
-      selected = shown ? null : { key, partId: row.partId };
-      renderInspection(current.fit);
-      applyMode();
-      describeView();
-      requestRender();
+      showPart(shown ? null : { key, partId: row.partId });
       if (shown) {
-        document.querySelector(`.fit-row[data-key="${CSS.escape(key)}"]`)?.focus();
+        fitRowFor(key)?.focus();
         return;
       }
       part.focus({ preventScroll: true });
@@ -539,6 +529,23 @@ function fitRow(row, key) {
   item.dataset.key = key;
   return item;
 }
+
+const fitRowFor = (key) => document.querySelector(`.fit-row[data-key="${CSS.escape(key)}"]`);
+
+function showPart(next) {
+  selected = next;
+  renderInspection(current.fit);
+  applyMode();
+  describeView();
+  requestRender();
+}
+
+// the canvas says which part it shows: after a press, focus and the panel move on to that part's row
+$('showing-clear').addEventListener('click', () => {
+  const { key } = selected;
+  showPart(null);
+  fitRowFor(key)?.focus();
+});
 
 // the measurements in words, with the part each was measured on; the raw record keeps the ids
 function evidenceLine(row) {
@@ -587,6 +594,8 @@ function renderInspection(fit) {
     rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
   }));
   $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
+  $('showing').hidden = !selected;
+  $('showing-text').textContent = selected ? `Showing ${partTitle(selected.partId)}, other parts faded.` : '';
   updateMore();
 }
 
