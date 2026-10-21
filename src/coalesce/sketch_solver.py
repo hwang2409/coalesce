@@ -327,103 +327,95 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
             message += "; on macOS, run `brew install eigen boost` first"
         raise ImportError(message) from exc
 
-    try:
-        sketch = Sketch()
-        point_handles: dict[str, Any] = {}
-        line_handles: dict[str, Any] = {}
-        arc_handles: dict[str, Any] = {}
-        circle_handles: dict[str, Any] = {}
-        tag_to_constraint: dict[int, str] = {}
+    sketch = Sketch()
+    point_handles: dict[str, Any] = {}
+    line_handles: dict[str, Any] = {}
+    arc_handles: dict[str, Any] = {}
+    circle_handles: dict[str, Any] = {}
+    tag_to_constraint: dict[int, str] = {}
 
-        for point in sorted(request.points, key=lambda item: item.id):
-            initial = request.initial.get(point.id, (point.x, point.y))
-            point_handles[point.id] = sketch.add_point(initial[0], initial[1])
-        for line in sorted(request.lines, key=lambda item: item.id):
-            line_handles[line.id] = sketch.add_line(
-                point_handles[line.start], point_handles[line.end]
-            )
-        for arc in sorted(request.arcs, key=lambda item: item.id):
-            initial = request.initial.get(arc.id, (arc.radius, arc.start_angle, arc.end_angle))
-            arc_handles[arc.id] = sketch.add_arc_cse(
-                point_handles[arc.center],
-                point_handles[arc.start],
-                point_handles[arc.end],
-                initial[0],
-                initial[1],
-                initial[2],
-            )
-        for circle in sorted(request.circles, key=lambda item: item.id):
-            radius = request.initial.get(circle.id, (circle.radius,))[0]
-            circle_handles[circle.id] = sketch.add_circle(
-                point_handles[circle.center], sketch.add_param(radius)
-            )
-
-        handles = (point_handles, line_handles, arc_handles, circle_handles)
-        for dimension in sorted(request.dimensions, key=lambda item: item.id):
-            tags = _add_dimension(sketch, dimension, handles)
-            _remember_tags(tag_to_constraint, tags, dimension.id)
-        for constraint in sorted(request.constraints, key=lambda item: item.id):
-            tags = _add_constraint(sketch, constraint, handles, request)
-            _remember_tags(tag_to_constraint, tags, constraint.id)
-
-        diagnosis = sketch.diagnose()
-        redundant = _diagnostic_ids(
-            (*diagnosis.redundant, *diagnosis.partially_redundant), tag_to_constraint
+    for point in sorted(request.points, key=lambda item: item.id):
+        initial = request.initial.get(point.id, (point.x, point.y))
+        point_handles[point.id] = sketch.add_point(initial[0], initial[1])
+    for line in sorted(request.lines, key=lambda item: item.id):
+        line_handles[line.id] = sketch.add_line(point_handles[line.start], point_handles[line.end])
+    for arc in sorted(request.arcs, key=lambda item: item.id):
+        initial = request.initial.get(arc.id, (arc.radius, arc.start_angle, arc.end_angle))
+        arc_handles[arc.id] = sketch.add_arc_cse(
+            point_handles[arc.center],
+            point_handles[arc.start],
+            point_handles[arc.end],
+            initial[0],
+            initial[1],
+            initial[2],
         )
-        conflicting = _diagnostic_ids(diagnosis.conflicting, tag_to_constraint)
-        if conflicting:
-            return SolveResult(
-                SolveStatus.CONFLICTING,
-                degrees_of_freedom=diagnosis.dof,
-                redundant_constraints=redundant,
-                conflicting_constraints=conflicting,
-            )
-        plane_status = sketch.solve()
-        if plane_status not in (PlaneSolveStatus.Success, PlaneSolveStatus.Converged):
-            return _error_result(
-                SolveStatus.DID_NOT_CONVERGE,
-                SketchSolveError(
-                    "DID_NOT_CONVERGE",
-                    "the sketch solver did not converge",
-                    recoverable=True,
-                    details={"solver_status": plane_status.name},
-                ),
-                dof=diagnosis.dof,
-            )
+    for circle in sorted(request.circles, key=lambda item: item.id):
+        radius = request.initial.get(circle.id, (circle.radius,))[0]
+        circle_handles[circle.id] = sketch.add_circle(
+            point_handles[circle.center], sketch.add_param(radius)
+        )
 
-        solved = _read_entities(
-            sketch,
-            request,
-            point_handles,
-            line_handles,
-            arc_handles,
-            circle_handles,
-        )
-        landmarks = _evaluate_landmarks(request, solved)
-        branch_error = _branch_error(request, landmarks)
-        if branch_error:
-            return _error_result(
-                SolveStatus.BRANCH_FLIP, branch_error, dof=diagnosis.dof, landmarks=landmarks
-            )
-        status = (
-            SolveStatus.REDUNDANT
-            if redundant
-            else SolveStatus.FULLY_CONSTRAINED
-            if diagnosis.dof == 0
-            else SolveStatus.UNDER_CONSTRAINED
-        )
+    handles = (point_handles, line_handles, arc_handles, circle_handles)
+    for dimension in sorted(request.dimensions, key=lambda item: item.id):
+        tags = _add_dimension(sketch, dimension, handles)
+        _remember_tags(tag_to_constraint, tags, dimension.id)
+    for constraint in sorted(request.constraints, key=lambda item: item.id):
+        tags = _add_constraint(sketch, constraint, handles, request)
+        _remember_tags(tag_to_constraint, tags, constraint.id)
+
+    diagnosis = sketch.diagnose()
+    redundant = _diagnostic_ids(
+        (*diagnosis.redundant, *diagnosis.partially_redundant), tag_to_constraint
+    )
+    conflicting = _diagnostic_ids(diagnosis.conflicting, tag_to_constraint)
+    if conflicting:
         return SolveResult(
-            status,
-            solved,
-            diagnosis.dof,
+            SolveStatus.CONFLICTING,
+            degrees_of_freedom=diagnosis.dof,
             redundant_constraints=redundant,
-            landmarks=landmarks,
+            conflicting_constraints=conflicting,
         )
-    except (TypeError, ValueError, RuntimeError) as exc:
+    plane_status = sketch.solve()
+    if plane_status not in (PlaneSolveStatus.Success, PlaneSolveStatus.Converged):
         return _error_result(
-            SolveStatus.INVALID_INPUT,
-            SketchSolveError("INVALID_INPUT", str(exc), recoverable=True),
+            SolveStatus.DID_NOT_CONVERGE,
+            SketchSolveError(
+                "DID_NOT_CONVERGE",
+                "the sketch solver did not converge",
+                recoverable=True,
+                details={"solver_status": plane_status.name},
+            ),
+            dof=diagnosis.dof,
         )
+
+    solved = _read_entities(
+        sketch,
+        request,
+        point_handles,
+        line_handles,
+        arc_handles,
+        circle_handles,
+    )
+    landmarks = _evaluate_landmarks(request, solved)
+    branch_error = _branch_error(request, landmarks)
+    if branch_error:
+        return _error_result(
+            SolveStatus.BRANCH_FLIP, branch_error, dof=diagnosis.dof, landmarks=landmarks
+        )
+    status = (
+        SolveStatus.REDUNDANT
+        if redundant
+        else SolveStatus.FULLY_CONSTRAINED
+        if diagnosis.dof == 0
+        else SolveStatus.UNDER_CONSTRAINED
+    )
+    return SolveResult(
+        status,
+        solved,
+        diagnosis.dof,
+        redundant_constraints=redundant,
+        landmarks=landmarks,
+    )
 
 
 def _validate(request: SolveRequest) -> SketchSolveError | None:
@@ -712,10 +704,16 @@ def _validate_circle(
 
 
 def _finite(values: Sequence[object]) -> bool:
-    return all(
-        isinstance(value, Real) and not isinstance(value, bool) and isfinite(value)
-        for value in values
-    )
+    return all(_finite_number(value) for value in values)
+
+
+def _finite_number(value: object) -> bool:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _valid_arc_values(values: tuple[float, ...]) -> bool:

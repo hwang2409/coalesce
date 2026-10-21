@@ -554,3 +554,30 @@ def test_only_solver_seam_may_import_planegcs():
             if isinstance(node, ast.ImportFrom) and node.module == "planegcs":
                 offenders.append(path)
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "sketch_request",
+    (
+        SolveRequest(points=(Point("huge", 10**10000, 0),)),
+        SolveRequest(points=(Point("p", 0, 0),), initial={"p": (10**400, 0)}),
+        SolveRequest(
+            points=(Point("p", 0, 0), Point("q", 1, 0)),
+            dimensions=(Dimension("d", DimensionKind.DISTANCE, ("p", "q"), 10**400),),
+        ),
+    ),
+)
+def test_huge_integers_are_invalid_input_not_overflow(sketch_request):
+    assert solve_sketch(sketch_request).status is SolveStatus.INVALID_INPUT
+
+
+@pytest.mark.parametrize("error_type", (TypeError, ValueError, RuntimeError))
+def test_solver_failures_are_not_reported_as_caller_input_errors(monkeypatch, error_type):
+    import planegcs
+
+    def broken(*_args, **_kwargs):
+        raise error_type("solver defect")
+
+    monkeypatch.setattr(planegcs.Sketch, "solve", broken)
+    with pytest.raises(error_type, match="solver defect"):
+        solve_sketch(rectangle_request(fixed_corner=True))
