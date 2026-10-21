@@ -2111,9 +2111,11 @@ def _selection_changes(
     before: dict[str, list[str]], after: dict[str, list[str]]
 ) -> list[dict[str, Any]]:
     changes = []
-    for feature_id in sorted(set(before) | set(after)):
-        added = sorted(set(after.get(feature_id, ())) - set(before.get(feature_id, ())))
-        removed = sorted(set(before.get(feature_id, ())) - set(after.get(feature_id, ())))
+    # creating or deleting a selector feature is not churn; only a selector that existed
+    # before and after can gain or lose holes.
+    for feature_id in sorted(set(before) & set(after)):
+        added = sorted(set(after[feature_id]) - set(before[feature_id]))
+        removed = sorted(set(before[feature_id]) - set(after[feature_id]))
         if added or removed:
             changes.append({
                 "featureId": feature_id,

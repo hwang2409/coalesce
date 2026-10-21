@@ -559,3 +559,24 @@ def test_numeric_updates_regenerate_semantic_features(tmp_path):
         if item.key.role == "pilot_wall"
     ]
     assert [face.radius for face in pilots] == pytest.approx([1, 1])
+
+
+def test_creating_or_deleting_all_mounting_standoffs_is_not_a_selection_change(tmp_path):
+    service = DocumentService(tmp_path / "selection.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    service.feature(base_request())
+
+    created = service.feature(standoffs_request(selection={"mode": "all_mounting"}))
+    assert created["ok"] is True
+    assert created["selectionChanges"] == []
+
+    deleted = service.feature(
+        {
+            "action": "delete",
+            "expectedRevision": 3,
+            "requestId": "drop-mounts",
+            "featureId": "mounts",
+        }
+    )
+    assert deleted["ok"] is True
+    assert deleted["selectionChanges"] == []
