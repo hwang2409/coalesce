@@ -363,11 +363,11 @@ class _EnclosureRegenerator:
     def _envelope_payload(self, port: PortCutout) -> dict:
         envelope = {
             "source": port.envelope_source,
-            "height": {"value": port.envelope_height, "unit": "mm"},
-            "bottomOffset": {"value": port.bottom_offset, "unit": "mm"},
+            "height": {"value": round(port.envelope_height, 12), "unit": "mm"},
+            "bottomOffset": {"value": round(port.bottom_offset, 12), "unit": "mm"},
         }
         if port.envelope_width is not None:
-            envelope["width"] = {"value": port.envelope_width, "unit": "mm"}
+            envelope["width"] = {"value": round(port.envelope_width, 12), "unit": "mm"}
         return envelope
 
     def _safe_standoff_envelope_alternative(self, port: PortCutout) -> dict | None:
@@ -407,10 +407,10 @@ class _EnclosureRegenerator:
             "set": {"envelope": self._envelope_payload(candidate_port)},
             "limits": {
                 "parameter": "envelope.bottomOffset",
-                "current": port.bottom_offset,
-                "minimum": minimum,
-                "maximum": maximum,
-                "suggested": minimum,
+                "current": round(port.bottom_offset, 12),
+                "minimum": round(minimum, 12),
+                "maximum": round(maximum, 12),
+                "suggested": round(minimum, 12),
                 "unit": "mm",
             },
         }

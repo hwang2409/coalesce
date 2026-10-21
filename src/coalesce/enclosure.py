@@ -39,10 +39,10 @@ def _limits(
 ) -> dict:
     return {
         "parameter": parameter,
-        "current": current,
-        "minimum": minimum,
-        "maximum": maximum,
-        "suggested": maximum if suggested is None else suggested,
+        "current": round(current, 12),
+        "minimum": round(minimum, 12),
+        "maximum": round(maximum, 12),
+        "suggested": round(maximum if suggested is None else suggested, 12),
         "unit": "mm",
     }
 
