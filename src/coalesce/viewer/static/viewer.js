@@ -850,20 +850,23 @@ function showRevision(sceneData) {
 }
 
 // what to do next, in words; the stable code and raw message stay under "Error details"
-const REFERENCE_CODES = new Set(['EMPTY', 'SPLIT', 'MERGED', 'AMBIGUOUS']);
-function repair({ code, message, hint }) {
+const VERIFIED_REPAIR_CODES = new Set([
+  'UNIT_MISMATCH', 'INVALID_PARAMETER', 'REVISION_CONFLICT', 'UNKNOWN_ID',
+  'DUPLICATE_ID', 'CYCLE', 'TARGET_ALREADY_CONSUMED',
+]);
+function repair({ code, message, hint }, feature) {
   if (hint) return `${capitalize(message)}. Ask your agent to ${hint}.`;
+  if (!VERIFIED_REPAIR_CODES.has(code)) {
+    return `${feature} failed: ${message}. The last good model is still shown.`;
+  }
   if (code === 'UNIT_MISMATCH') return `A value has the wrong unit (${message}). Ask your agent to send it in the expected unit.`;
   if (code === 'INVALID_PARAMETER') return `A value in the edit is not valid: ${message}. Ask your agent to correct it.`;
   if (code === 'REVISION_CONFLICT') return 'The edit was based on an older revision. Ask your agent to read the current revision and try again.';
   if (code === 'UNKNOWN_ID') return `The edit names something that does not exist: ${message}. Ask your agent to check the id.`;
   if (code === 'DUPLICATE_ID') return `An id in the edit is already in use: ${message}. Ask your agent to pick a new id.`;
-  if (code === 'CYCLE' || code === 'ORDER') return 'The edit makes a feature depend on itself or on a later feature. Ask your agent to reorder the features.';
-  if (REFERENCE_CODES.has(code)) return 'A stored face or edge reference no longer matches exactly one piece of geometry. Ask your agent to select it again.';
-  if (code === 'KERNEL_OPERATION_FAILED' || code === 'INVALID_BREP') {
-    return 'These values do not make valid geometry. Check that every size and distance is greater than 0 mm and that each feature meets the part it changes.';
-  }
-  return `${capitalize(message)}.`;
+  if (code === 'CYCLE') return 'The edit makes a feature depend on itself. Ask your agent to reorder the features.';
+  if (code === 'TARGET_ALREADY_CONSUMED') return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
+  return `${feature} failed: ${message}. The last good model is still shown.`;
 }
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -881,7 +884,7 @@ function showFailure() {
     return chip;
   }));
   ids.hidden = !failure.featureIds.length;
-  $('failure-repair').textContent = repair(failure.error);
+  $('failure-repair').textContent = repair(failure.error, failure.featureIds[0] || 'Edit');
   $('failure-code').textContent = failure.error.code;
   $('failure-message').textContent = failure.error.message;
   $('failure-kernel').hidden = !failure.error.kernelMessage;

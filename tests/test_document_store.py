@@ -21,7 +21,7 @@ def test_persisted_fork_loads_then_reports_a_clear_validation_error(tmp_path):
 
     with pytest.raises(GraphError) as caught:
         loaded.graph.validate()
-    assert caught.value.error["code"] == "target_already_consumed"
+    assert caught.value.error["code"] == "TARGET_ALREADY_CONSUMED"
     assert caught.value.error["target"] == "wall"
     assert caught.value.error["consumer"] == "holes"
     assert caught.value.error["terminalFeatureId"] == "holes"

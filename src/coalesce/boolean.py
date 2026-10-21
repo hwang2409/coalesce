@@ -60,7 +60,7 @@ def _history_faces(
             unique.append(face)
     if not unique and not algorithm.IsDeleted(source.entity.wrapped):
         raise GraphError(
-            "history_missing",
+            "HISTORY_MISSING",
             f"OCCT history is missing a result face for feature {feature}",
             feature=feature,
             source=source.key,
@@ -86,7 +86,7 @@ def _body_for_face(
         )
     if len(bodies) != 1:
         raise GraphError(
-            "mixed_body_ancestry",
+            "MIXED_BODY_ANCESTRY",
             f"feature {feature} result face does not have one target body",
             feature=feature,
             bodies=sorted((body.feature, body.entity) for body in bodies),
@@ -112,7 +112,7 @@ def _deduplicate(feature: str, result: Shape, faces: list[Candidate]) -> list[Ca
         sources = [item for item in faces if output.is_same(item.entity)]
         if not sources:
             raise GraphError(
-                "history_missing",
+                "HISTORY_MISSING",
                 f"OCCT history is missing provenance for a face from feature {feature}",
                 feature=feature,
             )
@@ -120,7 +120,7 @@ def _deduplicate(feature: str, result: Shape, faces: list[Candidate]) -> list[Ca
         bodies = {key.body for key in keys}
         if len(bodies) != 1 or None in bodies:
             raise GraphError(
-                "mixed_body_ancestry",
+                "MIXED_BODY_ANCESTRY",
                 f"feature {feature} face has mixed target-body ancestry",
                 feature=feature,
                 bodies=sorted(str(body) for body in bodies),
@@ -187,7 +187,7 @@ def cut_shape(
     algorithm = BRepAlgoAPI_Cut(target.wrapped, tool.wrapped)
     algorithm.Build()
     if not algorithm.IsDone():
-        raise GraphError("boolean_failed", f"cut feature {feature} failed", feature=feature)
+        raise GraphError("BOOLEAN_FAILED", f"cut feature {feature} failed", feature=feature)
 
     result = Shape.cast(algorithm.Shape())
     output_faces = result.faces()
@@ -231,7 +231,7 @@ def _join_body(feature: str, target_candidates: list[Candidate]) -> BodySource:
     bodies = {candidate.key.body for candidate in target_candidates}
     if len(bodies) != 1 or None in bodies:
         raise GraphError(
-            "join_target_body",
+            "JOIN_TARGET_BODY",
             f"join extrude {feature} target must contain exactly one body",
             feature=feature,
             bodies=sorted(str(body) for body in bodies),
@@ -282,7 +282,7 @@ def join_contact_failures(
         algorithm.Build()
         if not algorithm.IsDone():
             raise GraphError(
-                "boolean_failed",
+                "BOOLEAN_FAILED",
                 f"join extrude {feature} contact check failed",
                 feature=feature,
             )
@@ -307,7 +307,7 @@ def fuse_shape(
     algorithm = BRepAlgoAPI_Fuse(target.wrapped, tool.wrapped)
     algorithm.Build()
     if not algorithm.IsDone():
-        raise GraphError("boolean_failed", f"join extrude {feature} failed", feature=feature)
+        raise GraphError("BOOLEAN_FAILED", f"join extrude {feature} failed", feature=feature)
     algorithm.SimplifyResult()
 
     result = Shape.cast(algorithm.Shape())

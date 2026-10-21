@@ -117,7 +117,7 @@ def test_duplicate_sketch_entity_ids_fail_graph_validation_before_regen():
     with pytest.raises(GraphError) as caught:
         graph.validate()
 
-    assert caught.value.error["code"] == "duplicate_entity_id"
+    assert caught.value.error["code"] == "DUPLICATE_ENTITY_ID"
     assert caught.value.error["sketch"] == "sk"
     assert caught.value.error["entity"] == "dup"
 
@@ -130,7 +130,7 @@ def _assert_consumed_target_error(
         graph.validate()
 
     assert caught.value.error == {
-        "code": "target_already_consumed",
+        "code": "TARGET_ALREADY_CONSUMED",
         "message": f"target {target} is already consumed by {consumer}",
         "feature": next(reversed(graph.nodes)),
         "target": target,
@@ -430,7 +430,7 @@ def test_fillet_requires_an_edge_reference():
         regenerate(graph)
 
     assert caught.value.error == {
-        "code": "empty_fillet_edges",
+        "code": "EMPTY_EDGE_SELECTION",
         "message": "fillet round requires at least one edge reference",
         "feature": "round",
     }

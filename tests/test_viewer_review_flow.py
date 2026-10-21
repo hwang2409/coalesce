@@ -246,6 +246,8 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         intersect = fail("feature", overlap, "HOLES_INTERSECT")
         assert intersect["revision"] == revision and intersect["change"] == thick["change"]
         assert intersect["scene"]["parts"] == thick["scene"]["parts"]  # the last good model stays
+        assert intersect["repair"].endswith("The last good model is still shown.")
+        assert "greater than 0 mm" not in intersect["repair"]
 
         floating = rectangle_sketch(request_id="lid-sketch", revision=revision, sketch_id="lid_sketch",
                                     entity_id="lid", width=10, height=10, offset=40)
@@ -267,7 +269,8 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         thicker = {**flow[-1][1], "expectedRevision": revision, "requestId": "kernel"}
         kernel = fail("feature", thicker, "KERNEL_OPERATION_FAILED")
         monkeypatch.undo()
-        assert kernel["repair"].startswith("These values do not make valid geometry")
+        assert kernel["repair"].endswith("The last good model is still shown.")
+        assert "greater than 0 mm" not in kernel["repair"]
         assert "BRep" not in kernel["status"]
 
         # Continue the terminal lineage; body forks are rejected by graph validation.
@@ -363,7 +366,7 @@ def test_status_never_moves_or_resizes_the_model(module, viewport):
         store.publish(1, [ScenePart("plate", Box(60, 40, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)))])
         good = step("status-good", wait={"revision": 1})
         store.publish_failure(["edge_fillet"], oversized_fillet_failure())
-        failed = step("status-failed", wait={"failure": "KERNEL_OPERATION_FAILED"})
+        failed = step("status-failed", wait={"failure": "FILLET_FAILED"})
         assert "max_fillet" not in failed["status"] and "reduce the fillet radius" in failed["status"]
         server.close()
         # wait for the status itself: the link label says "Reconnecting" a moment before the status merges

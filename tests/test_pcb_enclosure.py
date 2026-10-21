@@ -244,7 +244,7 @@ def test_invalid_standoff_parameters_fail_atomically(tmp_path, payload, field):
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "mounts"
+    assert failed["error"]["featureId"] == "mounts"
     assert failed["error"]["parameter"] == field
     assert service.revision == 2
     assert document.read_bytes() == before
@@ -260,7 +260,7 @@ def test_invalid_base_clearance_names_feature_and_parameter_and_is_atomic(tmp_pa
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "base"
+    assert failed["error"]["featureId"] == "base"
     assert failed["error"]["parameter"] == "clearance"
     assert service.revision == 1
     assert document.read_bytes() == before
@@ -285,7 +285,7 @@ def test_refresh_that_moves_selected_hole_off_floor_fails_atomically(tmp_path):
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "mounts"
+    assert failed["error"]["featureId"] == "mounts"
     assert failed["error"]["parameter"] == "bossDiameter"
     assert service.revision == 3
     assert document.read_bytes() == before
@@ -322,7 +322,7 @@ def test_refresh_moves_standoff_and_removed_hole_is_missing_and_atomic(tmp_path)
     )
     assert missing["ok"] is False
     assert missing["error"]["code"] == "MISSING"
-    assert missing["error"]["feature"] == "mounts"
+    assert missing["error"]["featureId"] == "mounts"
     assert missing["error"]["hole"] == FEATURE_HOLES[0]
     assert service.revision == 4
     assert document.read_bytes() == before

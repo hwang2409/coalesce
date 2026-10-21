@@ -529,7 +529,7 @@ def test_enclosure_query_never_misreports_aperture_edge_fillets(tmp_path):
                 service._document.graph, reference, f"aperture_{index}"
             )
         except GraphError as error:
-            assert error.error["code"] == "fillet_failed"
+            assert error.error["code"] == "FILLET_FAILED"
             outcomes[role] = "rejected"
 
     assert set(outcomes.values()) <= {"exact", "rejected"}, outcomes
@@ -556,7 +556,7 @@ def test_enclosure_query_thickness_sweep_never_returns_a_wrong_value(tmp_path):
                 f"sweep_{index}",
             )
         except GraphError as error:
-            assert error.error["code"] == "fillet_failed"
+            assert error.error["code"] == "FILLET_FAILED"
             continue
         counts["filleted"] += 1
         counts[outcome] += 1

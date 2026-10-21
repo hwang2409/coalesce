@@ -497,7 +497,7 @@ def test_port_first_still_reports_standoff_collision_atomically(tmp_path):
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "port"
+    assert failed["error"]["featureId"] == "port"
     assert failed["error"]["conflict"] in FEATURE_HOLES
     assert service.revision == 3
     assert service.store.path.read_bytes() == before

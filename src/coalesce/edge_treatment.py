@@ -90,9 +90,13 @@ def edge_treatment_shape(
     edge_keys = [asdict(edge.key) for edge in edges]
     parameter = "radius" if kind == "blend" else "distance"
     public_kind = "fillet" if kind == "blend" else "chamfer"
+    invalid_code, failed_code = {
+        "fillet": ("INVALID_FILLET_RADIUS", "FILLET_FAILED"),
+        "chamfer": ("INVALID_CHAMFER_DISTANCE", "CHAMFER_FAILED"),
+    }[public_kind]
     if size <= 0:
         raise GraphError(
-            f"invalid_{public_kind}_{parameter}",
+            invalid_code,
             f"{public_kind} {feature} {parameter} must be positive",
             feature=feature,
             **{parameter: size},
@@ -124,19 +128,20 @@ def edge_treatment_shape(
         result = Shape.cast(algorithm.Shape())
     except Exception as error:
         _LOGGER.exception("%s kernel operation failed for feature %s", public_kind, feature)
-        raise GraphError(
-            f"{public_kind}_failed",
-            f"{public_kind} feature {feature} failed",
-            feature=feature,
-            **{parameter: size},
-            edges=edge_keys,
-            safeRange="unknown",
-            hint=(
+        details = {
+            "feature": feature,
+            parameter: size,
+            "edges": edge_keys,
+            "safeRange": "unknown",
+            "hint": (
                 "reduce the fillet radius and retry, or find the largest radius that works"
                 if public_kind == "fillet"
                 else "reduce the chamfer distance and retry"
             ),
-            kernelMessage=str(error),
+            "kernelMessage": str(error),
+        }
+        raise GraphError(
+            failed_code, f"{public_kind} feature {feature} failed", **details
         ) from error
 
     inherited, generated, consumed = _collect_history(
@@ -144,15 +149,15 @@ def edge_treatment_shape(
     )
     missing_history = [asdict(edge.key) for edge in edges if not consumed.get(edge.key)]
     if missing_history:
-        raise GraphError(
-            f"{public_kind}_failed",
-            f"{public_kind} feature {feature} did not return complete edge history",
-            feature=feature,
-            **{parameter: size},
-            edges=missing_history,
-            safeRange="unknown",
-            hint="change the selected edges or reduce the treatment size",
-        )
+        details = {
+            "feature": feature,
+            parameter: size,
+            "edges": missing_history,
+            "safeRange": "unknown",
+            "hint": "change the selected edges or reduce the treatment size",
+        }
+        message = f"{public_kind} feature {feature} did not return complete edge history"
+        raise GraphError(failed_code, message, **details)
     result_faces = _deduplicate(feature, result, [*inherited, *generated])
     result_edges = derive_edge_candidates(feature, result, result_faces)
     return EdgeTreatmentResult(

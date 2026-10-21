@@ -32,6 +32,11 @@ TOOLS_GUIDE = """# coalesce tools
 
 Start with `coalesce --document part.coalesce.json` or set `COALESCE_DOCUMENT`.
 coalesce owns one revisioned document. Start with `query` using `select.kind: revision`.
+Failures use the stable UPPER_SNAKE taxonomy in `docs/errors.md`. Every failure includes
+`code`, `message`, `operation`, `retryable`, and the unchanged `revision`; it includes
+`featureId` and `affectedParts` when known. Retry only revision conflicts. Use
+`limits`, `alternatives`, or `legalTargets` only when present: the real edit path proved
+those remedies. Never parse `message` or `kernelMessage` to choose a recovery.
 Use `import` create with an explicit absolute local `kicad_pcb` path to persist a
 `BoardImport` snapshot. The source must be a readable regular file of 16 MiB or less.
 The import stores the resolved path, SHA-256 digest, parser version, stable mechanics ids,
@@ -339,18 +344,9 @@ def create_server(service: DocumentService) -> Server:
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
         if name not in TOOL_SCHEMAS:
             return _tool_result(
-                {
-                    "ok": False,
-                    "revision": service.revision,
-                    "requestId": arguments.get("requestId"),
-                    "units": "mm",
-                    "error": {
-                        "code": "INVALID_PARAMETER",
-                        "message": f"unknown tool: {name}",
-                        "retryable": False,
-                        "operation": name,
-                    },
-                }
+                service.error_response(
+                    name, arguments, "INVALID_PARAMETER", f"unknown tool: {name}"
+                )
             )
         try:
             validate(
@@ -366,19 +362,13 @@ def create_server(service: DocumentService) -> Server:
                 details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
             if error.validator == "additionalProperties":
                 details["allowedFields"] = sorted(error.schema.get("properties", {}))
-            failure = {
-                "ok": False,
-                "revision": service.revision,
-                "requestId": arguments.get("requestId"),
-                "units": "mm",
-                "error": {
-                    "code": "INVALID_PARAMETER",
-                    "message": schema_error_message(error),
-                    "retryable": False,
-                    "operation": name,
-                    **details,
-                },
-            }
+            failure = service.error_response(
+                name,
+                arguments,
+                "INVALID_PARAMETER",
+                schema_error_message(error),
+                **details,
+            )
             if name in ("sketch", "feature"):
                 service.publish_failure(arguments, failure)
             return _tool_result(failure)
@@ -388,18 +378,12 @@ def create_server(service: DocumentService) -> Server:
         except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
             _LOG.exception("unexpected failure during %s", name)
             return _tool_result(
-                {
-                    "ok": False,
-                    "revision": service.revision,
-                    "requestId": arguments.get("requestId"),
-                    "units": "mm",
-                    "error": {
-                        "code": "KERNEL_OPERATION_FAILED",
-                        "message": "the operation failed unexpectedly",
-                        "retryable": False,
-                        "operation": name,
-                    },
-                }
+                service.error_response(
+                    name,
+                    arguments,
+                    "KERNEL_OPERATION_FAILED",
+                    "the operation failed unexpectedly",
+                )
             )
 
     @server.list_resources()
