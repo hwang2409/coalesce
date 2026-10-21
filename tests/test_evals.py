@@ -744,9 +744,9 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
 @pytest.mark.parametrize(
     ("node", "expected", "status"),
     [
-        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 3, "unit": "mm"}}, 3, "pass"),
-        ({"type": "Fillet", "id": "round", "target": "lid", "radius": {"value": 3, "unit": "mm"}}, 3, "fail"),
-        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 2, "unit": "mm"}}, 3, "fail"),
+        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 3, "unit": "mm"}, "edges": [{"role": "between(outer_wall,rim)"}]}, 3, "pass"),
+        ({"type": "Fillet", "id": "round", "target": "lid", "radius": {"value": 3, "unit": "mm"}, "edges": [{"role": "between(outer_wall,rim)"}]}, 3, "fail"),
+        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 2, "unit": "mm"}, "edges": [{"role": "between(outer_wall,rim)"}]}, 3, "fail"),
     ],
 )
 def test_edge_treatment_check_fails_closed(tmp_path, monkeypatch, node, expected, status):
@@ -768,7 +768,7 @@ def test_edge_treatment_check_fails_closed(tmp_path, monkeypatch, node, expected
     steps.mkdir()
     export_step(Box(10, 10, 2), steps / "part.step")
     result = check_task(
-        {"checks": [{"kind": "edge_treatment", "feature": "fillet", "target": "base", "amount": expected}]},
+        {"checks": [{"kind": "edge_treatment", "feature": "fillet", "target": "base", "amount": expected, "edgeRole": "between(outer_wall,rim)"}]},
         _document(tmp_path / "model.coalesce.json"), steps,
     )[0]
     assert result["status"] == status
@@ -957,3 +957,79 @@ def test_preflight_compares_real_zeta_server_revision(tmp_path):
     subprocess.run([*git, "commit", "-qam", "next"], check=True)
     with pytest.raises(RuntimeError, match="does not match revision under test"):
         _preflight(zeta_harness, repo, project)
+
+
+def _treatment(kind, target, amount, role):
+    field = "radius" if kind == "Fillet" else "distance"
+    return {"type": kind, "id": f"{kind}-{target}-{amount}", "target": target,
+            field: {"value": amount, "unit": "mm"}, "edges": [{"role": role}]}
+
+
+EXPECTED_TREATMENTS = [
+    {"feature": "fillet", "target": "base", "amount": 3, "edgeRole": "outer-vertical"},
+    {"feature": "chamfer", "target": "lid", "amount": 1, "edgeRole": "between(edge,top)"},
+]
+
+
+@pytest.mark.parametrize(("nodes", "status"), [
+    ([_treatment("Fillet", "base", 3, "outer-vertical"), _treatment("Chamfer", "lid", 1, "between(edge,top)")], "pass"),
+    ([_treatment("Fillet", "base", 3, "wrong-edge"), _treatment("Chamfer", "lid", 1, "between(edge,top)")], "fail"),
+    ([_treatment("Fillet", "base", 3, "outer-vertical"), _treatment("Chamfer", "lid", 1, "between(edge,top)"),
+      _treatment("Fillet", "base", 7, "outer-vertical")], "fail"),
+    ([_treatment("Fillet", "base", 3, "outer-vertical")], "fail"),
+])
+def test_edge_treatment_set_is_exact(tmp_path, monkeypatch, nodes, status):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class FakeService:
+        revision = 1
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _ensure_geometry(self):
+            pass
+
+        def query(self, request):
+            assert request == {"select": {"kind": "graph"}}
+            return {"ok": True, "graph": {"nodes": nodes}}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", FakeService)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "edge_treatment", "treatments": EXPECTED_TREATMENTS}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == status
+
+
+def test_edge_treatment_without_expected_role_fails_closed(tmp_path, monkeypatch):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class FakeService:
+        revision = 1
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _ensure_geometry(self):
+            pass
+
+        def query(self, _request):
+            return {"ok": True, "graph": {"nodes": [_treatment("Fillet", "base", 3, "any")]}}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", FakeService)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "edge_treatment", "treatments": [{"feature": "fillet", "target": "base", "amount": 3}]}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == "fail"

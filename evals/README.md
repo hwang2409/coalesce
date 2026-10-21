@@ -26,6 +26,9 @@ saved document parts are matched to exported solids approximately by volume, bou
 
 scoring assumes no external process mutates the run artifacts while scoring is in progress; external mutation is not guarded.
 
-## future hard tasks
+## hard tier admission
 
-The hard tier uses only operations that coalesce exposes today. possible future tasks include shell, snap fits, and threads; these are intentionally not included because the current tool set cannot perform them.
+the `edge_treatment` check compares the complete set of fillet and chamfer features (kind, target part, amount, edge roles) with the task's expected set. a wrong edge, a missing treatment, or any extra treatment fails.
+
+
+Each hard task is admitted only with a passing golden artifact generated through the real MCP path. The current hard tasks remain blocked by three product gaps: outer vertical base edges are not selectable, `board_clearance` is not a requirement, and refresh cannot take a replacement source. the base fillet in the two treatment tasks has no expected `edgeRole` yet, so its check fails closed until outer vertical edges get a selectable role.

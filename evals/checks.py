@@ -454,23 +454,33 @@ def _edge_treatment(check, context):
     graph = context.service.query({"select": {"kind": "graph"}})
     if graph.get("ok") is not True:
         return _result(check, "unknown", reason="graph query failed")
-    expected_kind = check["feature"]
-    expected_target = check["target"]
-    expected_amount = check["amount"]
-    expected_role = check.get("edgeRole")
-    matches = []
-    for node in graph.get("graph", {}).get("nodes", []):
-        if node.get("type", "").lower() != expected_kind:
-            continue
-        if node.get("target") != expected_target:
-            continue
-        parameter = node.get("radius" if expected_kind == "fillet" else "distance")
-        amount = _quantity(parameter)
-        roles = [edge.get("role") for edge in node.get("edges", []) if isinstance(edge, dict)]
-        if math.isclose(amount, expected_amount, rel_tol=1e-7, abs_tol=1e-6):
-            matches.append({"id": node.get("id"), "amount": amount, "edgeRoles": roles})
-    passed = bool(matches) and (expected_role is None or any(expected_role in item["edgeRoles"] for item in matches))
-    return _result(check, "pass" if passed else "fail", actual=matches)
+
+    expected = check.get("treatments", [check])
+    if any(not item.get("edgeRole") for item in expected):
+        return _result(check, "fail", reason="expected edge role is missing")
+
+    def normalize(node):
+        kind = node.get("type", "").lower()
+        amount = _quantity(node.get("radius" if kind == "fillet" else "distance"))
+        roles = tuple(sorted({
+            edge.get("role") for edge in node.get("edges", [])
+            if isinstance(edge, dict) and edge.get("role")
+        }))
+        return kind, node.get("target"), amount, roles
+
+    actual = [normalize(node) for node in graph.get("graph", {}).get("nodes", [])
+              if node.get("type", "").lower() in {"fillet", "chamfer"}]
+    wanted = [
+        (item["feature"], item["target"], item["amount"], (item["edgeRole"],))
+        for item in expected
+    ]
+    exact = len(actual) == len(wanted) and all(
+        left[:2] == right[:2]
+        and math.isclose(left[2], right[2], rel_tol=1e-7, abs_tol=1e-6)
+        and left[3] == right[3]
+        for left, right in zip(sorted(actual), sorted(wanted))
+    )
+    return _result(check, "pass" if exact else "fail", actual=actual)
 
 
 def _enclosure_check(check, context):
