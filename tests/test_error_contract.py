@@ -13,6 +13,9 @@ from coalesce.service import DocumentService
 ROOT = Path(__file__).parents[1]
 UPPER_SNAKE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
 ERROR_CONSTRUCTORS = {"GraphError", "RequestError", "BoardImportError", "ExportFailure"}
+VIEWER_CODE_SET = re.compile(
+    r"const [A-Z_]+_CODES = new Set\(\[(.*?)\]\);", re.DOTALL
+)
 
 
 def documented_codes() -> set[str]:
@@ -52,15 +55,45 @@ def assert_failure_shape(result, *, operation, revision, feature_id=None):
         assert isinstance(error["affectedParts"], list)
 
 
-def test_every_raised_error_code_is_documented_upper_snake():
-    documented = documented_codes()
+def test_registry_is_the_exact_documented_public_contract():
+    registry = getattr(service_module, "ERROR_REGISTRY", {})
+
+    assert set(registry) == documented_codes()
+    assert all(UPPER_SNAKE.fullmatch(code) for code in registry)
+    assert {code for code, definition in registry.items() if definition.retryable} == {
+        "REVISION_CONFLICT"
+    }
+
+
+def test_every_raised_error_code_is_registered():
+    registry = getattr(service_module, "ERROR_REGISTRY", {})
     raised = raised_codes()
 
-    assert documented
+    assert registry
     for path, line, code in raised:
         location = f"{path.relative_to(ROOT)}:{line}"
         assert UPPER_SNAKE.fullmatch(code), f"{location}: {code!r} is not UPPER_SNAKE"
-        assert code in documented, f"{location}: {code} is not documented"
+        assert code in registry, f"{location}: {code} is not registered"
+
+
+def test_viewer_code_sets_are_registered():
+    registry = getattr(service_module, "ERROR_REGISTRY", {})
+    viewer = (ROOT / "src" / "coalesce" / "viewer" / "static" / "viewer.js").read_text()
+    code_sets = [set(re.findall(r"'([A-Z0-9_]+)'", body)) for body in VIEWER_CODE_SET.findall(viewer)]
+
+    assert code_sets
+    assert all(codes <= set(registry) for codes in code_sets)
+
+
+def test_safe_error_rejects_unregistered_public_code():
+    with pytest.raises(ValueError, match="UNDOCUMENTED_PROBE"):
+        service_module._safe_error(
+            0,
+            None,
+            "UNDOCUMENTED_PROBE",
+            "review probe",
+            operation="test",
+        )
 
 
 @pytest.mark.anyio
@@ -103,6 +136,38 @@ async def test_boolean_failure_has_public_shape_and_keeps_kernel_text_out_of_mes
     assert result["error"]["code"] == "BOOLEAN_FAILED"
     assert "BRep" not in result["error"]["message"]
     assert result["error"]["kernelMessage"] == "BRep_API: command not done"
+
+
+@pytest.mark.anyio
+async def test_mutation_failures_keep_their_operation_id(tmp_path):
+    service = DocumentService(tmp_path / "mutation-ids.coalesce.json")
+
+    sketch = await call_server_tool(
+        service,
+        "sketch",
+        {
+            "action": "create",
+            "expectedRevision": 0,
+            "requestId": "invalid-sketch",
+            "sketchId": "known-sketch",
+            "plane": {"kind": "origin", "name": "XY"},
+            "entities": [],
+        },
+    )
+    imported = await call_server_tool(
+        service,
+        "import",
+        {
+            "action": "create",
+            "expectedRevision": 0,
+            "requestId": "invalid-import",
+            "assetId": "known-asset",
+            "format": "kicad_pcb",
+        },
+    )
+
+    assert sketch["error"]["sketchId"] == "known-sketch"
+    assert imported["error"]["assetId"] == "known-asset"
 
 
 @pytest.mark.anyio
