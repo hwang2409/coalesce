@@ -211,10 +211,6 @@ def schema_error_message(error: ValidationError) -> str:
     elif kind == "required" and isinstance(instance, dict):
         missing = next(name for name in expected if name not in instance)
         text = f"missing required field {missing!r}"
-        if missing in {"value", "unit"} and {"value", "unit"} <= set(
-            error.schema.get("properties", {})
-        ):
-            text += '; expected shape: {"value": 2, "unit": "mm"}'
     elif kind == "minimum":
         text = f"{subject} must be at least {expected}"
     elif kind == "enum":
@@ -223,8 +219,7 @@ def schema_error_message(error: ValidationError) -> str:
         text = f"{subject} must be {expected!r}"
     else:
         text = "invalid value"
-    if "expected shape" not in text:
-        text += _quantity_shape_hint(error)
+    text += _quantity_shape_hint(error)
     return f"{text} (field: {path})" if path else text
 
 

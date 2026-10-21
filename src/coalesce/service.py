@@ -2448,28 +2448,35 @@ class DocumentService:
             response,
         )
 
+    def _resolve_update_kind(
+        self, payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Fill an update's kind from the stored feature; a different given kind is an error."""
+        with self._lock:
+            node = self._document.graph.nodes.get(payload.get("featureId"))
+            revision = self.revision
+        request_id = payload.get("requestId")
+        if not isinstance(node, Feature):
+            noun = payload.get("kind") or "feature"
+            return payload, _safe_error(
+                revision, request_id, "UNKNOWN_ID",
+                f"unknown {noun}: {payload.get('featureId')}", operation="feature",
+            )
+        expected_kind, actual_kind = _infer_update_kind(payload, node)
+        if actual_kind is not None and actual_kind != expected_kind:
+            return payload, _safe_error(
+                revision, request_id, "INVALID_PARAMETER",
+                f"feature {node.id} is {expected_kind}, not {actual_kind}",
+                operation="feature", expectedKind=expected_kind, actualKind=actual_kind,
+            )
+        return {**payload, "kind": expected_kind}, None
+
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("action") == "update":
-            with self._lock:
-                node = self._document.graph.nodes.get(payload.get("featureId"))
-                if not isinstance(node, Feature):
-                    noun = payload.get("kind") or "feature"
-                    failure = _safe_error(
-                        self.revision, payload.get("requestId"), "UNKNOWN_ID",
-                        f"unknown {noun}: {payload.get('featureId')}", operation="feature",
-                    )
-                    self.publish_failure(payload, failure)
-                    return failure
-                expected_kind, actual_kind = _infer_update_kind(payload, node)
-                if actual_kind is not None and actual_kind != expected_kind:
-                    failure = _safe_error(
-                        self.revision, payload.get("requestId"), "INVALID_PARAMETER",
-                        f"feature {node.id} is {expected_kind}, not {actual_kind}",
-                        operation="feature", expectedKind=expected_kind, actualKind=actual_kind,
-                    )
-                    self.publish_failure(payload, failure)
-                    return failure
-                payload = {**payload, "kind": expected_kind}
+            payload, failure = self._resolve_update_kind(payload)
+            if failure is not None:
+                self.publish_failure(payload, failure)
+                return failure
         return self._mutate(
             "feature",
             payload,

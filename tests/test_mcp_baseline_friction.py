@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 
 import pytest
 from jsonschema import ValidationError
@@ -8,31 +10,24 @@ from coalesce.server import TOOLS_GUIDE, _schema_for_action, schema_error_messag
 from coalesce.service import DocumentService
 
 
+def _old_standoffs_document(path, key="minimum_diameter"):
+    node = {
+        "type": "Standoffs",
+        "id": "standoffs",
+        "target": "base",
+        "board": "board",
+        "selection": "explicit",
+        "hole_ids": [],
+        key: 2,
+        "boss_diameter": 5,
+        "pilot_diameter": 2,
+    }
+    path.write_text(json.dumps({"formatVersion": 1, "revision": 2, "graph": {"nodes": [node]}}))
+    return path
+
+
 def test_saved_removed_standoff_field_is_structured_document_error(tmp_path):
-    path = tmp_path / "old.coalesce.json"
-    path.write_text(
-        json.dumps(
-            {
-                "formatVersion": 1,
-                "revision": 2,
-                "graph": {
-                    "nodes": [
-                        {
-                            "type": "Standoffs",
-                            "id": "standoffs",
-                            "target": "base",
-                            "board": "board",
-                            "selection": "explicit",
-                            "hole_ids": [],
-                            "minimum_diameter": 2,
-                            "boss_diameter": 5,
-                            "pilot_diameter": 2,
-                        }
-                    ]
-                },
-            }
-        )
-    )
+    path = _old_standoffs_document(tmp_path / "old.coalesce.json")
 
     with pytest.raises(GraphError) as caught:
         DocumentService(path, warmup=False)
@@ -69,3 +64,22 @@ def test_bare_quantity_number_includes_expected_shape(tmp_path):
 
 def test_export_guide_describes_feature_id_resolution():
     assert "exactly one terminal manufacturing part" in TOOLS_GUIDE
+
+
+@pytest.mark.parametrize("key", ["minimum_diameter", "minimumDiameter"])
+@pytest.mark.parametrize("viewer", [True, False])
+def test_cli_reports_invalid_document_without_traceback(tmp_path, key, viewer):
+    path = _old_standoffs_document(tmp_path / "old.coalesce.json", key)
+    before = path.read_text()
+    command = [sys.executable, "-m", "coalesce", "--document", str(path)]
+    if not viewer:
+        command.append("--no-viewer")
+    result = subprocess.run(command, input="", capture_output=True, text=True, timeout=60, check=False)
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "coalesce viewer:" not in result.stderr
+    error = json.loads(result.stderr.strip().splitlines()[-1])["error"]
+    assert error["code"] == "INVALID_DOCUMENT"
+    assert "all_mounting" in error["message"]
+    assert path.read_text() == before

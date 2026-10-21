@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
 import webbrowser
 from pathlib import Path
 
+from .document_store import DocumentStore
+from .graph import GraphError
 from .server import run_stdio
 from .service import DocumentService
 
@@ -46,6 +49,12 @@ def main() -> None:
         parser.error("--document or COALESCE_DOCUMENT is required")
     if arguments.no_viewer and arguments.open:
         parser.error("--open cannot be used with --no-viewer")
+    try:
+        # Read-only check before the viewer starts, so a bad document never advertises a URL.
+        DocumentStore(arguments.document).load()
+    except GraphError as error:
+        print(json.dumps({"error": error.error}), file=sys.stderr, flush=True)
+        sys.exit(2)
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
         _run(
