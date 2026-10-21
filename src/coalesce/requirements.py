@@ -47,9 +47,10 @@ def evaluate(requirements: list[dict[str, Any]], inspection: dict[str, Any], rev
             results.append(_result(requirement, "PASS" if value is not None and minimum is not None and value >= minimum else "FAIL", measured, threshold, involved, revision))
         elif kind in {"mounting_holes", "standoff_coverage"}:
             standoffs = inspection["standoffs"]
-            involved += standoffs["uncoveredHoleIds"] + standoffs["coveredHoleIds"]
-            missing = standoffs["uncoveredHoleIds"]
-            measured = {"coveredHoleIds": standoffs["coveredHoleIds"], "uncoveredHoleIds": missing, "unit": "holes"}
+            covered = standoffs.get("requiredCoveredHoleIds", standoffs["coveredHoleIds"])
+            missing = standoffs.get("requiredUncoveredHoleIds", standoffs["uncoveredHoleIds"])
+            involved += missing + covered
+            measured = {"coveredHoleIds": covered, "uncoveredHoleIds": missing, "unit": "holes"}
             results.append(_result(requirement, "FAIL" if missing else "PASS", measured, {"all": "intact"}, involved, revision))
         elif kind == "lid_interference":
             lids = inspection["lids"]

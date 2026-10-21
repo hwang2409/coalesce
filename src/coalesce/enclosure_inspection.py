@@ -259,12 +259,15 @@ def _standoffs(
         if source in holes_by_id
     ]
     intact = {item["holeId"] for item in items if item["classification"] == "intact"}
-    hole_ids = [hole["id"] for hole in required_holes]
+    hole_ids = [hole["id"] for hole in holes]
+    required_ids = [hole["id"] for hole in required_holes]
     return {
         "count": len(items),
         "mountingHoleCount": len(holes),
         "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
         "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
+        "requiredCoveredHoleIds": [hole_id for hole_id in required_ids if hole_id in intact],
+        "requiredUncoveredHoleIds": [hole_id for hole_id in required_ids if hole_id not in intact],
         "items": items,
     }
 
