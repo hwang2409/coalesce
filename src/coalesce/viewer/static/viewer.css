@@ -46,12 +46,14 @@ button {
 
 /* panel */
 
+/* the whole panel scrolls: the fit check and the part list share its height */
 .panel {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
   background: var(--panel);
   box-shadow: 1px 0 0 var(--rule), 4px 0 16px rgba(29, 35, 41, 0.04);
 }
@@ -137,13 +139,80 @@ button {
 }
 
 .parts {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
+  flex: 1 0 auto;
   padding: 16px 8px;
 }
 
-.parts h2 {
+.inspection {
+  padding: 16px 8px 12px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.inspection[hidden] { display: none; }
+
+.inspection ul { list-style: none; padding: 0; }
+
+/* one measurement: the status, then what was measured, its value and why it is not a pass */
+.fit-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  column-gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  transition-property: background-color;
+  transition-duration: 120ms;
+}
+
+button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
+
+@media (hover: hover) {
+  button.fit-row:hover { background: rgba(29, 35, 41, 0.05); }
+}
+
+.fit-status {
+  grid-row: 1 / span 3;
+  align-self: start;
+  justify-self: start;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--mute);
+}
+
+.fit-row[data-status="PASS"] .fit-status { color: var(--live); background: #edf6f0; }
+.fit-row[data-status="FAIL"] .fit-status { color: var(--fail); background: var(--fail-wash); }
+.fit-row[data-status="UNKNOWN"] .fit-status { color: var(--wait); background: #fbf3e4; }
+
+.fit-label { grid-column: 2; font-weight: 500; overflow-wrap: anywhere; }
+.fit-value, .fit-reason { grid-column: 2; color: var(--mute); font-size: 12px; overflow-wrap: anywhere; }
+.fit-row[data-status="FAIL"] .fit-reason { color: var(--fail); }
+
+.fit-base { padding: 8px 8px 0; color: var(--mute); font-size: 12px; }
+
+.fit-evidence { margin: 4px 8px 0; color: var(--mute); font-size: 12px; }
+.fit-evidence summary { min-height: 32px; padding: 6px 0; cursor: pointer; }
+
+.fit-evidence pre {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 4px;
+  background: rgba(29, 35, 41, 0.04);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+:is(.parts, .inspection) h2 {
   display: flex;
   justify-content: space-between;
   padding: 0 8px 8px;
@@ -226,6 +295,15 @@ button {
 
 /* a reference part (the imported board) is shown for fit only: say so on every screen width */
 .part-role { grid-column: 1 / -1; color: var(--mute); font-size: 12px; }
+
+/* the committed numbers of a part (wall, standoffs, ports, fit gap), shown for the open part */
+.part-facts { display: none; grid-column: 1 / -1; font-size: 12px; }
+.part.open .part-facts { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; }
+.fact { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+.fact-label { color: var(--mute); }
+.fact-value { overflow-wrap: anywhere; }
+.part.has-facts .disclosure { display: inline-block; }
+.part.open .disclosure { transform: rotate(180deg); }
 
 /* named holes and the feature chain; narrow screens show it only for the focused row */
 .part-detail {
@@ -569,7 +647,7 @@ button {
 @media (max-width: 720px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .panel { max-height: 40vh; }
-  .part:not(:focus) .part-detail { display: none; }
+  .part:not(:focus, .open) .part-detail { display: none; }
   /* a row with hidden details says so beside its name, and flips the hint when open */
   .part.has-detail .disclosure { display: inline-block; }
   .part:focus .disclosure { transform: rotate(180deg); }

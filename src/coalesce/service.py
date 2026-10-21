@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from .board_import import BoardImportError, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .export import ExportFailure, export_parts
+from .fit_summary import fit_summary, part_facts
 from .graph import (
     BoardImport,
     Circle,
@@ -1991,6 +1992,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
             area=part.shape.area,
             volume=part.shape.volume,
             features=_lineage(result, part.terminal_feature),
+            facts=part_facts(result, part.source_body.feature),
         )
 
 
@@ -2024,7 +2026,7 @@ class _ScenePublisher:
                     revision, result, before, changed_id, change = arguments
                     if change is None and changed_id:
                         change = _change(before, result, changed_id)
-                    self._store.publish(revision, _scene_parts(result), change)
+                    self._store.publish(revision, _scene_parts(result), change, fit_summary(result, revision))
                 else:
                     self._store.publish_failure(*arguments)
             except Exception:  # noqa: BLE001 - viewer work must not affect document calls.

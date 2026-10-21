@@ -238,6 +238,34 @@ async function act(action) {
       });
     }, action.pixels);
   }
+  if ('fitRow' in action) await press(page.locator('.fit-row').nth(action.fitRow));
+  if ('evidence' in action) await press(page.locator('.fit-evidence summary'));
+  // the fit check panel: its rows, the focused part's facts, and any text cut off or past the panel edge
+  if ('fit' in action) {
+    return page.evaluate(() => {
+      const panel = document.getElementById('inspection');
+      const edge = document.querySelector('.panel').getBoundingClientRect().right;
+      const shown = (el) => el.checkVisibility();
+      const part = document.activeElement.closest?.('.part');
+      const open = document.querySelector('.part.open');
+      return {
+        visible: Boolean(panel?.checkVisibility()),
+        rows: [...document.querySelectorAll('.fit-row')].map((row) => ({
+          status: row.querySelector('.fit-status').textContent,
+          text: row.innerText.replace(/\s+/g, ' ').trim(),
+        })),
+        focusedPart: part?.querySelector('.part-name').textContent ?? null,
+        openPart: open?.querySelector('.part-name').textContent ?? null,
+        facts: open ? [...open.querySelectorAll('.fact')].filter(shown).map((fact) => [...fact.children].map((c) => c.textContent)) : [],
+        overflow: [...document.querySelectorAll('.panel *')].filter(shown).filter((el) => {
+          const clipped = el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === 'hidden';
+          return clipped || el.getBoundingClientRect().right > edge + 0.5;
+        }).map((el) => `${el.tagName.toLowerCase()}.${el.className}: ${el.textContent.slice(0, 40)}`),
+        evidenceOpen: Boolean(document.querySelector('.fit-evidence')?.open),
+        evidence: document.querySelector('.fit-evidence pre')?.textContent ?? '',
+      };
+    });
+  }
   if ('fill' in action) await page.getByLabel(action.fill.label, { exact: true }).fill(String(action.fill.value));
   if ('focus' in action) await page.locator(action.focus).focus();
   if ('key' in action) await page.keyboard.press(action.key);

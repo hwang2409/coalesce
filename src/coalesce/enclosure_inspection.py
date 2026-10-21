@@ -179,7 +179,7 @@ def _part_for(parts: list[TerminalPart], source_feature: str) -> TerminalPart:
     return matches[0]
 
 
-def _mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
+def mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
     mounting_footprints = {
         footprint["id"]
         for footprint in board.mechanics.get("footprints", [])
@@ -262,7 +262,7 @@ def _standoffs(
     graph: Any, result: Any, base: PcbBase, board_shape: Shape, base_shape: Shape
 ) -> dict[str, Any]:
     board = graph.nodes[base.board]
-    holes = _mounting_holes(board)
+    holes = mounting_holes(board)
     holes_by_id = {hole["id"]: hole for hole in holes}
     board_bottom = board_shape.bounding_box().min.Z
     floor_top = min(face.bounding_box().min.Z for face in _faces(result, base.id, "floor"))
@@ -449,14 +449,9 @@ def _actual_opening(base_shape: Shape, inner_walls: list[Face], tool: Shape, wal
 
 
 def _port_clearances(
-    node: PortCutout, board: BoardImport, board_shape: Shape, opening: Shape, wall: str
+    node: PortCutout, footprint: dict[str, Any], board_shape: Shape, opening: Shape, wall: str
 ) -> list[float]:
     metadata_box = opening.bounding_box()
-    footprint = next(
-        footprint
-        for footprint in board.mechanics.get("footprints", [])
-        if footprint["id"] == node.footprint_id
-    )
     if node.envelope_source == "courtyard":
         wire, _ = board_loop_wire(
             {"id": footprint["id"], "closed": True, "segments": footprint["courtyard"]}
@@ -533,28 +528,22 @@ def _ports(
 ) -> list[dict[str, Any]]:
     inspected = []
     inner_walls = _faces(result, base.id, "inner_wall")
+    footprints = {item["id"]: item for item in board.mechanics.get("footprints", [])}
     for node in graph.ordered():
         if not isinstance(node, PortCutout) or node.base != base.id:
             continue
         metadata = result.metadata[node.id]
         wall = metadata["wall"]
         opening = _actual_opening(base_shape, inner_walls, result.opening_tools[node.id], wall)
-        clearances = _port_clearances(node, board, board_shape, opening, wall)
+        footprint = footprints[node.footprint_id]
+        clearances = _port_clearances(node, footprint, board_shape, opening, wall)
         inspected.append(
             {
                 "featureId": node.id,
                 "footprintId": metadata["footprintId"],
                 "reference": metadata["reference"],
-                "libraryId": next(
-                    item.get("libraryId")
-                    for item in board.mechanics.get("footprints", [])
-                    if item["id"] == node.footprint_id
-                ),
-                "value": next(
-                    item.get("value")
-                    for item in board.mechanics.get("footprints", [])
-                    if item["id"] == node.footprint_id
-                ),
+                "libraryId": footprint.get("libraryId"),
+                "value": footprint.get("value"),
                 "wall": wall,
                 "opening": _opening_rectangle(opening, wall),
                 "clearance": {
@@ -567,25 +556,8 @@ def _ports(
     return inspected
 
 
-def _same_board_sources(graph: Any, board_id: str) -> set[str]:
-    bases = {
-        node.id for node in graph.ordered() if isinstance(node, PcbBase) and node.board == board_id
-    }
-    lids = {
-        node.id
-        for node in graph.ordered()
-        if isinstance(node, PcbLid)
-        and isinstance(graph.nodes.get(node.base), PcbBase)
-        and graph.nodes[node.base].board == board_id
-    }
-    return bases | lids
-
-
 def _other_body_warnings(
-    graph: Any,
-    board: BoardImport,
-    parts: list[TerminalPart],
-    enclosure_parts: list[TerminalPart],
+    parts: list[TerminalPart], enclosure_parts: list[TerminalPart]
 ) -> list[dict[str, Any]]:
     selected_ids = {part.part_id for part in enclosure_parts}
     return [
@@ -600,7 +572,7 @@ def _other_body_warnings(
 
 
 def _unclassified_hole_ids(board: BoardImport) -> list[str]:
-    mounting_ids = {hole["id"] for hole in _mounting_holes(board)}
+    mounting_ids = {hole["id"] for hole in mounting_holes(board)}
     return [
         hole["id"] for hole in board.mechanics.get("holes", []) if hole["id"] not in mounting_ids
     ]
@@ -613,7 +585,7 @@ def _warnings(
     enclosure_parts: list[TerminalPart],
     ports: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    warnings = _other_body_warnings(graph, board, parts, enclosure_parts)
+    warnings = _other_body_warnings(parts, enclosure_parts)
     if ports and board.availability.get("models") != "declared":
         warnings.append(
             {

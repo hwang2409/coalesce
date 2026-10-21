@@ -24,6 +24,16 @@
     <p class="revision-meta" id="revision-meta">No committed geometry yet</p>
   </section>
 
+  <!-- measured on the as-built solids of this revision; a row focuses the part it is about -->
+  <section class="inspection" id="inspection" aria-labelledby="inspection-title" hidden>
+    <h2 id="inspection-title">Fit check <span class="unit" id="inspection-count"></span></h2>
+    <ul id="inspection-rows"></ul>
+    <details class="fit-evidence">
+      <summary>Measured evidence</summary>
+      <pre id="inspection-evidence"></pre>
+    </details>
+  </section>
+
   <section class="parts" aria-labelledby="parts-title">
     <h2 id="parts-title">Parts <span class="unit">size in mm</span></h2>
     <ul id="parts"><li class="parts-empty">No parts yet</li></ul>
