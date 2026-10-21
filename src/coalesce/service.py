@@ -20,10 +20,12 @@ from .export import ExportFailure, export_parts
 from .fit_summary import fit_summary, part_facts
 from .graph import (
     BoardImport,
+    Chamfer,
     Circle,
     Cut,
     Extrude,
     Feature,
+    Fillet,
     GraphError,
     Hole,
     HolePosition,
@@ -59,6 +61,8 @@ _ALLOWED_FEATURE_KINDS = [
     "extrude",
     "cut",
     "hole",
+    "fillet",
+    "chamfer",
     "pcb_base",
     "standoffs",
     "pcb_lid",
@@ -299,6 +303,13 @@ class HoleParameters:
 
 
 @dataclass(frozen=True)
+class EdgeTreatmentParameters:
+    target: FeatureTarget
+    edges: tuple[Reference, ...]
+    size: float
+
+
+@dataclass(frozen=True)
 class PcbBaseParameters:
     board: FeatureTarget
     wallThickness: float
@@ -395,6 +406,11 @@ class TargetChanges:
 
 
 @dataclass(frozen=True)
+class EdgeTreatmentChanges:
+    size: float
+
+
+@dataclass(frozen=True)
 class SketchCreate(_Operation):
     action: Action
     expectedRevision: float
@@ -450,6 +466,26 @@ class HoleCreate(_FeatureCreate):
     featureId: str
     parameters: HoleParameters
     kind: ClassVar[str] = "hole"
+
+
+@dataclass(frozen=True)
+class FilletCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: EdgeTreatmentParameters
+    kind: ClassVar[str] = "fillet"
+
+
+@dataclass(frozen=True)
+class ChamferCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: EdgeTreatmentParameters
+    kind: ClassVar[str] = "chamfer"
 
 
 @dataclass(frozen=True)
@@ -563,6 +599,34 @@ class PortCutoutUpdate(_Operation):
 
 
 @dataclass(frozen=True)
+class FilletUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: EdgeTreatmentChanges
+    kind: ClassVar[str] = "fillet"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class ChamferUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: EdgeTreatmentChanges
+    kind: ClassVar[str] = "chamfer"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
 class CutUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -602,6 +666,8 @@ MutationOperation = (
     | ExtrudeCreate
     | CutCreate
     | HoleCreate
+    | FilletCreate
+    | ChamferCreate
     | PcbBaseCreate
     | StandoffsCreate
     | PcbLidCreate
@@ -611,6 +677,8 @@ MutationOperation = (
     | StandoffsUpdate
     | PcbLidUpdate
     | PortCutoutUpdate
+    | FilletUpdate
+    | ChamferUpdate
     | CutUpdate
     | HoleUpdate
 )
@@ -830,6 +898,37 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate |
                 else None
             ),
             positions=_hole_positions(parameters),
+        ),
+    )
+
+
+def _parse_edge_treatment(
+    payload: dict[str, Any],
+    common: dict[str, Any],
+) -> FilletCreate | ChamferCreate | FilletUpdate | ChamferUpdate:
+    kind = payload["kind"]
+    parameter = "radius" if kind == "fillet" else "distance"
+    create = FilletCreate if kind == "fillet" else ChamferCreate
+    update = FilletUpdate if kind == "fillet" else ChamferUpdate
+    if common["action"] is Action.UPDATE:
+        changes = payload.get("set")
+        if not isinstance(changes, dict) or set(changes) != {parameter}:
+            raise RequestError(
+                "INVALID_PARAMETER", f"{kind} update requires set.{parameter}"
+            )
+        return update(
+            **common,
+            set=EdgeTreatmentChanges(
+                size=_positive_quantity(changes[parameter], parameter)
+            ),
+        )
+    parameters = payload.get("parameters", {})
+    return create(
+        **common,
+        parameters=EdgeTreatmentParameters(
+            target=FeatureTarget(parameters.get("target", {}).get("featureId")),
+            edges=tuple(_reference(edge) for edge in parameters.get("edges", [])),
+            size=_positive_quantity(parameters.get(parameter), parameter),
         ),
     )
 
@@ -1117,6 +1216,8 @@ def _parse_feature(
     ExtrudeCreate
     | CutCreate
     | HoleCreate
+    | FilletCreate
+    | ChamferCreate
     | PcbBaseCreate
     | StandoffsCreate
     | PcbLidCreate
@@ -1126,6 +1227,8 @@ def _parse_feature(
     | StandoffsUpdate
     | PcbLidUpdate
     | PortCutoutUpdate
+    | FilletUpdate
+    | ChamferUpdate
     | CutUpdate
     | HoleUpdate
     | FeatureDelete
@@ -1137,6 +1240,8 @@ def _parse_feature(
         "extrude": _parse_extrude,
         "cut": _parse_cut,
         "hole": _parse_hole,
+        "fillet": _parse_edge_treatment,
+        "chamfer": _parse_edge_treatment,
         "pcb_base": _parse_pcb_base,
         "standoffs": _parse_standoffs,
         "pcb_lid": _parse_pcb_lid,
@@ -1570,6 +1675,35 @@ def _apply_target_update(
     return operation.featureId
 
 
+def _apply_edge_treatment(
+    graph: Any,
+    operation: FilletCreate | ChamferCreate | FilletUpdate | ChamferUpdate,
+) -> str:
+    feature_type = Fillet if operation.kind == "fillet" else Chamfer
+    parameter = "radius" if operation.kind == "fillet" else "distance"
+    if isinstance(operation, (FilletUpdate, ChamferUpdate)):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, feature_type):
+            raise RequestError(
+                "UNKNOWN_ID", f"unknown {operation.kind}: {operation.featureId}"
+            )
+        setattr(node, parameter, operation.set.size)
+        return operation.featureId
+
+    parameters = operation.parameters
+    target = parameters.target.featureId
+    _validate_body_target(graph, target, operation.kind)
+    graph.add(
+        feature_type(
+            operation.featureId,
+            target=target,
+            edges=list(parameters.edges),
+            **{parameter: parameters.size},
+        )
+    )
+    return operation.featureId
+
+
 def _apply_cut(graph: Any, operation: CutCreate | CutUpdate) -> str:
     if isinstance(operation, CutUpdate):
         return _apply_target_update(graph, operation, Cut)
@@ -1812,6 +1946,10 @@ def _apply_feature(
         CutUpdate: _apply_cut,
         HoleCreate: _apply_hole,
         HoleUpdate: _apply_hole,
+        FilletCreate: _apply_edge_treatment,
+        FilletUpdate: _apply_edge_treatment,
+        ChamferCreate: _apply_edge_treatment,
+        ChamferUpdate: _apply_edge_treatment,
         PcbBaseCreate: _apply_pcb_base,
         PcbBaseUpdate: _apply_pcb_base,
         StandoffsCreate: _apply_standoffs,
@@ -1911,6 +2049,8 @@ _EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
     "board_seat_height": ("board seat height", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
     "boss_diameter": ("boss diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
     "pilot_diameter": ("pilot diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "radius": ("radius", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
+    "distance": ("distance", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
 }
 
 
@@ -2406,6 +2546,22 @@ class DocumentService:
             return self._cut_metadata(graph, result, node)
         if isinstance(node, Hole):
             return self._hole_metadata(result, node)
+        if isinstance(node, (Fillet, Chamfer)):
+            generated_prefix = "blend(" if isinstance(node, Fillet) else "chamfer("
+            return {
+                "edgeTreatment": {
+                    "kind": type(node).__name__.lower(),
+                    "sources": [reference.to_dict() for reference in node.edges],
+                    "generatedFaces": [
+                        {
+                            "role": candidate.key.role,
+                            "source": _wire_value(asdict(candidate.key.source)),
+                        }
+                        for candidate in result.provenance[node.id]
+                        if candidate.key.role.startswith(generated_prefix)
+                    ],
+                }
+            }
         if isinstance(node, PortCutout):
             return {"portCutout": result.metadata[node.id]}
         return {}

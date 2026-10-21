@@ -16,13 +16,17 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         "extrude",
         "cut",
         "hole",
+        "fillet",
+        "chamfer",
         "pcb_base",
         "standoffs",
         "pcb_lid",
         "port_cutout",
     ]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
-    assert "fillet" not in advertised
+    assert "constant-radius fillet" in advertised
+    assert "symmetric one-distance chamfer" in advertised
+    assert "two-distance" in advertised and "not supported" in advertised
     assert "boolean" not in tools["feature"].inputSchema["properties"]["kind"]["enum"]
     assert tools["query"].annotations.readOnlyHint is True
     assert tools["query"].annotations.destructiveHint is False
@@ -69,6 +73,8 @@ async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
         ("pcb_lid_thickness", "pcb_lid", {"thickness": quantity}),
         ("pcb_lid_fit_gap", "pcb_lid", {"fitGap": quantity}),
         ("pcb_lid_lip", "pcb_lid", {"lip": {"depth": quantity, "width": quantity}}),
+        ("fillet", "fillet", {"radius": quantity}),
+        ("chamfer", "chamfer", {"distance": quantity}),
         ("port_cutout", "port_cutout", {"clearance": quantity}),
     ]
 
