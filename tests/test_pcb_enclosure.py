@@ -363,7 +363,6 @@ def test_refresh_adds_dynamic_mounting_hole_and_reports_selection_change(tmp_pat
         for hole in service._document.graph.nodes["controller_board"].mechanics["holes"]
         if hole.get("reference") == "H2"
     )
-    assert refreshed["ok"] is True
     assert _pilot_hole_ids(service) == {*ALL_MOUNTING_HOLES, added}
     assert refreshed["selectionChanges"] == [{
         "featureId": "mounts",

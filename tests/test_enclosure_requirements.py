@@ -14,7 +14,8 @@ from test_pcb_enclosure import (
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 
-from coalesce.schemas import CHECK_SCHEMA
+from coalesce.requirements import REQUIREMENT_HANDLERS
+from coalesce.schemas import CHECK_REQUIREMENT, CHECK_SCHEMA, SUPPORTED_REQUIREMENT_KINDS
 from coalesce.server import TOOLS_GUIDE
 from coalesce.service import DocumentService
 
@@ -200,6 +201,12 @@ def test_inch_fit_gap_threshold_is_unknown():
     result = evaluate([{"id": "fit", "kind": "fit_gap", "threshold": threshold}], inspection, 1)["results"][0]
     assert result["status"] == "UNKNOWN"
     assert "threshold" in result["reason"]
+
+
+def test_requirement_handler_map_defines_public_schema_kinds():
+    expected = sorted(("valid_brep", *REQUIREMENT_HANDLERS))
+    assert list(SUPPORTED_REQUIREMENT_KINDS) == expected
+    assert CHECK_REQUIREMENT["properties"]["kind"]["enum"] == expected
 
 
 def test_check_schema_rejects_empty_requirements():
