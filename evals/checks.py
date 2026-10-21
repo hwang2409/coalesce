@@ -209,10 +209,12 @@ def _lid_fit(check, inspected):
 
 
 def _enclosure_parts(check, inspected):
-    feature_ids = {part.get("featureId") for part in inspected.get("terminalParts", [])}
-    lid_ids = {lid.get("featureId") for lid in inspected.get("lids", [])}
-    passed = bool(lid_ids) and inspected.get("baseId") in feature_ids and lid_ids <= feature_ids
-    return _result(check, "pass" if passed else "fail", actual=sorted(feature_ids - {None}))
+    terminal_ids = {part.get("partId") for part in inspected.get("terminalParts", [])}
+    base_id = inspected.get("base", {}).get("partId")
+    lid_ids = {lid.get("partId") for lid in inspected.get("lids", [])}
+    passed = base_id in terminal_ids and bool(lid_ids) and lid_ids <= terminal_ids
+    actual = {"base": base_id, "lids": sorted(lid_ids - {None})}
+    return _result(check, "pass" if passed else "fail", actual=actual)
 
 
 def _standoffs(check, inspected):

@@ -123,9 +123,22 @@ def test_missing_standoff_fails(tmp_path, monkeypatch):
 
 
 def test_unrelated_parts_do_not_satisfy_base_and_lid_roles(tmp_path, monkeypatch):
-    inspected = {"baseId": "base", "lids": [], "terminalParts": [{"featureId": "x"}, {"featureId": "y"}]}
+    inspected = {"base": {"partId": "base"}, "lids": [], "terminalParts": [{"partId": "x"}, {"partId": "y"}]}
     result, _ = _enclosure_check(tmp_path, monkeypatch, inspected, {"kind": "enclosure_parts"})
     assert result["status"] == "fail"
+
+
+def test_base_and_lid_part_roles_pass_after_base_edit(tmp_path, monkeypatch):
+    inspected = {
+        "base": {"partId": "part:base"},
+        "lids": [{"featureId": "lid", "partId": "part:lid"}],
+        "terminalParts": [
+            {"partId": "part:base", "featureId": "j1_cutout"},
+            {"partId": "part:lid", "featureId": "lid"},
+        ],
+    }
+    result, _ = _enclosure_check(tmp_path, monkeypatch, inspected, {"kind": "enclosure_parts"})
+    assert result["status"] == "pass"
 
 
 def test_reference_resolution_uses_regeneration_not_warnings(tmp_path, monkeypatch):
