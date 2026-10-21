@@ -72,8 +72,8 @@ includes `resolution`, including when `cardinality` is `any`.
 For a PCB enclosure, create `pcb_base` with a BoardImport id, wall and floor thickness,
 board-edge clearance, wall height above the board top, and board seat height. The inner
 cavity is the board outline offset outward by the clearance; arcs remain arcs. Base walls
-expose `outer_vertical` and `inner_vertical`; `outer_vertical` selects every sharp outer
-corner with exact cardinality. Lid slabs expose `lid_vertical`. The board
+expose `outer_vertical` and `inner_vertical` for sharp corners only, excluding tangent
+line/arc seams. Lid slabs expose `lid_vertical` with the same sharp-corner rule. The board
 stays at its imported Z position. The floor top is `-boardSeatHeight`, the floor bottom is
 lower by `floorThickness`, and the wall top is the board top plus
 `wallHeightAboveBoard`. Then create `standoffs` with that base as target and the same board.

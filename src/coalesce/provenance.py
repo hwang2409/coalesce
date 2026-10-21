@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
+
 from build123d import Face, Shape
 
-from .references import BodySource, Candidate, ElementKey
+from .references import VERTICAL_EDGE_ROLES, BodySource, Candidate, ElementKey
 
 
 def descriptor(entity: Shape) -> dict[str, object]:
@@ -40,16 +42,31 @@ def _between_role(roles: list[str]) -> str:
     return f"between({ordered[0]},{ordered[1]})"
 
 
-def _adjacent_keys(edge: Shape, faces: list[Candidate]) -> list[ElementKey]:
-    adjacent = [
+def _adjacent_faces(edge: Shape, faces: list[Candidate]) -> list[Candidate]:
+    return [
         face
         for face in faces
         if any(edge.is_same(face_edge) for face_edge in face.entity.edges())
     ]
+
+
+def _adjacent_keys(edge: Shape, faces: list[Candidate]) -> list[ElementKey]:
     return sorted(
-        {face.key for face in adjacent},
+        {face.key for face in _adjacent_faces(edge, faces)},
         key=lambda key: (key.feature, key.role, str(key.source)),
     )
+
+
+def _is_sharp(edge: Shape, faces: list[Candidate], tolerance: float = 1e-6) -> bool:
+    adjacent = _adjacent_faces(edge, faces)
+    if len(adjacent) != 2:
+        return False
+    point = edge.center()
+    normals = [face.entity.normal_at(point) for face in adjacent]
+    dot = sum(
+        getattr(normals[0], axis) * getattr(normals[1], axis) for axis in "XYZ"
+    )
+    return math.acos(max(-1.0, min(1.0, abs(dot)))) > tolerance
 
 
 def _same_body(keys: list[ElementKey]) -> BodySource:
@@ -67,13 +84,6 @@ def derive_edge_candidates(
     faces: list[Candidate],
 ) -> list[Candidate]:
     result: list[Candidate] = []
-    vertical_roles = {
-        "outer_wall": "outer_vertical",
-        "inner_wall": "inner_vertical",
-        "edge": "lid_vertical",
-        "lip_outer": "lip_outer_vertical",
-        "lip_inner": "lip_inner_vertical",
-    }
     for edge in shape.edges():
         keys = _adjacent_keys(edge, faces)
         if len(keys) == 2:
@@ -91,11 +101,15 @@ def derive_edge_candidates(
                     body=body,
                 )
             )
-            if keys[0].role == keys[1].role and keys[0].role in vertical_roles:
+            if (
+                keys[0].role == keys[1].role
+                and keys[0].role in VERTICAL_EDGE_ROLES
+                and _is_sharp(edge, faces)
+            ):
                 result.append(
                     candidate(
                         edge_feature,
-                        vertical_roles[keys[0].role],
+                        VERTICAL_EDGE_ROLES[keys[0].role],
                         source,
                         edge,
                         body=body,

@@ -88,6 +88,14 @@ class MaxAlong:
 
 Filter = Normal | Position | MaxAlong
 
+VERTICAL_EDGE_ROLES = {
+    "outer_wall": "outer_vertical",
+    "inner_wall": "inner_vertical",
+    "edge": "lid_vertical",
+    "lip_outer": "lip_outer_vertical",
+    "lip_inner": "lip_inner_vertical",
+}
+
 
 @dataclass
 class Reference:
@@ -222,14 +230,34 @@ def _edge_orientation(entity: Any) -> str:
 def edge_role_catalog(
     provenance: dict[str, list[Candidate]], feature: str
 ) -> list[dict[str, Any]]:
-    from build123d import Edge
+    from build123d import Edge, Face
 
     by_role: dict[str, list[Candidate]] = {}
+    empty_roles: dict[str, str] = {}
     for candidates in provenance.values():
         for candidate in candidates:
-            if candidate.key.feature == feature and isinstance(candidate.entity, Edge):
+            if candidate.key.feature != feature:
+                continue
+            if isinstance(candidate.entity, Edge):
                 by_role.setdefault(candidate.key.role, []).append(candidate)
+            elif isinstance(candidate.entity, Face) and candidate.key.role in VERTICAL_EDGE_ROLES:
+                empty_roles[VERTICAL_EDGE_ROLES[candidate.key.role]] = "vertical"
     result = []
+    for role, orientation in sorted(empty_roles.items()):
+        if role not in by_role:
+            result.append({
+                "role": role,
+                "edgeCount": 0,
+                "orientation": orientation,
+                "length": None,
+                "description": f"0 {orientation} edges",
+                "exampleReference": {
+                    "feature": feature,
+                    "role": role,
+                    "cardinality": "exactly",
+                    "count": 0,
+                },
+            })
     for role, candidates in sorted(by_role.items()):
         unique = []
         for candidate in candidates:

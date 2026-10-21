@@ -8,7 +8,9 @@ from test_pcb_enclosure import FIXTURES, base_request, import_request, standoffs
 from test_pcb_lid import lid_request
 
 
-def _fillet(revision=2, *, role="outer_vertical", cardinality="exactly", count=4):
+def _fillet(
+    revision=2, *, role="outer_vertical", cardinality="exactly", count=4, radius=3
+):
     reference = {
         "feature": "base",
         "role": role,
@@ -25,7 +27,7 @@ def _fillet(revision=2, *, role="outer_vertical", cardinality="exactly", count=4
         "parameters": {
             "target": {"featureId": "base"},
             "edges": [reference],
-            "radius": {"value": 3, "unit": "mm"},
+            "radius": {"value": radius, "unit": "mm"},
         },
     }
 
@@ -86,6 +88,70 @@ async def test_outer_vertical_role_is_discoverable_and_fillet_survives_board_ref
     reloaded = import_step(step)
     assert len(reloaded.solids()) == 1
     assert reloaded.is_valid
+
+
+@pytest.mark.anyio
+async def test_mixed_outline_roles_exclude_tangent_seams_and_fillet_exports(tmp_path):
+    fixture = FIXTURES / "mixed-corners.kicad_pcb"
+    document = tmp_path / "mixed.coalesce.json"
+    step = tmp_path / "mixed.step"
+
+    results = await run_server(
+        document,
+        [
+            ("import", import_request(fixture)),
+            ("feature", base_request()),
+            ("query", {"select": {"kind": "edge_roles", "id": "base"}}),
+            ("feature", _fillet(count=2, radius=1)),
+            ("export", {"expectedRevision": 3, "path": str(step)}),
+        ],
+    )
+
+    roles = {item["role"]: item for item in results[2]["roles"]}
+    assert roles["outer_vertical"]["edgeCount"] == 2
+    assert roles["inner_vertical"]["edgeCount"] == 2
+    assert results[3]["ok"] is True
+    assert results[4]["ok"] is True
+    reloaded = import_step(step)
+    assert len(reloaded.solids()) == 1
+    assert reloaded.is_valid
+
+    lid_results = await run_server(
+        tmp_path / "mixed-lid.coalesce.json",
+        [
+            ("import", import_request(fixture)),
+            ("feature", base_request()),
+            ("feature", lid_request(revision=2, include_lip=False)),
+            ("query", {"select": {"kind": "edge_roles", "id": "lid"}}),
+        ],
+    )
+    lid_roles = {item["role"]: item for item in lid_results[3]["roles"]}
+    assert lid_roles["lid_vertical"]["edgeCount"] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fixture", ["rounded.kicad_pcb", "circle.kicad_pcb"])
+async def test_smooth_outlines_report_no_sharp_outer_edges_and_fail_closed(
+    tmp_path, fixture
+):
+    results = await run_server(
+        tmp_path / f"{fixture}.coalesce.json",
+        [
+            ("import", import_request(FIXTURES / fixture)),
+            ("feature", base_request()),
+            ("query", {"select": {"kind": "edge_roles", "id": "base"}}),
+            ("feature", _fillet()),
+        ],
+    )
+
+    roles = {item["role"]: item for item in results[2]["roles"]}
+    assert roles["outer_vertical"]["edgeCount"] == 0
+    assert roles["inner_vertical"]["edgeCount"] == 0
+    assert results[3]["ok"] is False
+    assert results[3]["error"]["code"] == "REFERENCE_FAILED"
+    assert results[3]["error"]["resolution"]["status"] == "EMPTY"
+    available = results[3]["error"]["resolution"]["availableRoles"]
+    assert {item["role"]: item["edgeCount"] for item in available}["outer_vertical"] == 0
 
 
 @pytest.mark.anyio
