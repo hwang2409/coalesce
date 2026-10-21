@@ -109,7 +109,18 @@ def edge_treatment_shape(
             algorithm.Add(size, edge.entity.wrapped)
         algorithm.Build()
         if not algorithm.IsDone():
-            raise RuntimeError(f"BRepFilletAPI_Make{public_kind.title()} did not complete")
+            if isinstance(algorithm, BRepFilletAPI_MakeFillet):
+                statuses = ", ".join(
+                    f"contour {contour} {algorithm.StripeStatus(contour).name}"
+                    for contour in map(
+                        algorithm.FaultyContour,
+                        range(1, algorithm.NbFaultyContours() + 1),
+                    )
+                )
+                raise RuntimeError(
+                    f"BRepFilletAPI_MakeFillet not done: {statuses or 'no status'}"
+                )
+            raise RuntimeError("BRepFilletAPI_MakeChamfer did not complete")
         result = Shape.cast(algorithm.Shape())
     except Exception as error:
         _LOGGER.exception("%s kernel operation failed for feature %s", public_kind, feature)
