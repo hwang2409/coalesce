@@ -23,10 +23,13 @@ page.on('console', (message) => message.type() === 'error' && errors.push(messag
 page.on('requestfailed', (request) => errors.push(`${request.method()} ${new URL(request.url()).pathname} ${request.failure()?.errorText}`));
 
 const shown = async (selector) => ((await page.locator(selector).isVisible()) ? page.locator(selector).innerText() : null);
-const waitForText = async (text) => {
+const waitForText = (text) => waitOrExplain(page.getByText(text, { exact: true }).first());
+// the link label changes a moment before #status merges, so status assertions wait on #status itself
+const waitForStatus = (text) => waitOrExplain(page.locator('#status').getByText(text));
+const waitOrExplain = async (locator) => {
   const started = Date.now();
   try {
-    await page.getByText(text, { exact: true }).first().waitFor({ timeout: 30000 });
+    await locator.waitFor({ timeout: 30000 });
   } catch (error) {
     const link = await page.locator('#link-text').textContent().catch(() => null);
     const status = await shown('#status').catch(() => null);
@@ -261,6 +264,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (wait.revision) await page.waitForFunction((n) => window.coalesceViewer?.revision === n, wait.revision, { timeout: 15000 });
   if (wait.failure) await page.waitForFunction((code) => window.coalesceViewer.failure?.error.code === code, wait.failure, { timeout: 15000 });
   if (wait.text) await waitForText(wait.text);
+  if (wait.status) await waitForStatus(wait.status);
   if (wait.ready) await page.getByText('Waiting for the first revision').waitFor({ timeout: 15000 });
   const results = [];
   for (const action of actions) results.push(await act(action));
