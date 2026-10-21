@@ -241,9 +241,14 @@ def _require_clean(path, label):
     return revision
 
 
-def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, **_):
-    coalesce_revision = _require_clean(coalesce_path, "coalesce checkout")
-    coalesce_dirty = False
+def claude_harness(prompt, run_dir, *, model, revision=None, coalesce_path=None, before_state=None, **_):
+    revision = revision or {
+        "coalesce_path": coalesce_path or Path.cwd(),
+        "coalesce_revision": "unknown",
+        "coalesce_dirty": False,
+    }
+    coalesce_revision = revision["coalesce_revision"]
+    coalesce_dirty = revision["coalesce_dirty"]
     if before_state:
         build_before_state(
             before_state,
@@ -257,7 +262,7 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, before_state=None, 
             "coalesce": {
                 "command": "uv",
                 "args": [
-                    "run", "--project", str(coalesce_path), "coalesce", "--document",
+                    "run", "--project", str(revision["coalesce_path"]), "coalesce", "--document",
                     str(run_dir / "model.coalesce.json"),
                 ],
             }
@@ -306,17 +311,15 @@ def _stage_zeta_fixtures(run_dir, zeta_project):
     return targets
 
 
-def zeta_harness(prompt, run_dir, *, model, zeta_project, coalesce_path, before_state=None, **_):
+def zeta_harness(prompt, run_dir, *, model, zeta_project, revision=None, coalesce_path=None, before_state=None, **_):
     """Run in a trusted project while owning every staged input and output path."""
-    expected_revision = _require_clean(coalesce_path, "coalesce checkout")
-    server_directory = _zeta_server_directory(zeta_project)
-    server_revision = _require_clean(server_directory, "coalesce server checkout")
-    server_dirty = False
-    if server_revision != expected_revision:
-        raise RuntimeError(
-            f"coalesce server revision {server_revision} does not match revision under test "
-            f"{expected_revision}; run git -C {server_directory} checkout --detach {expected_revision}"
-        )
+    revision = revision or {
+        "coalesce_path": coalesce_path or Path.cwd(),
+        "coalesce_revision": "unknown",
+        "coalesce_dirty": False,
+    }
+    coalesce_revision = revision["coalesce_revision"]
+    coalesce_dirty = revision["coalesce_dirty"]
     fixed = zeta_project / "probe.coalesce.json"
     fixed_out = zeta_project / "out"
     if fixed.exists() or fixed_out.exists():
@@ -355,8 +358,8 @@ def zeta_harness(prompt, run_dir, *, model, zeta_project, coalesce_path, before_
         "wall_time": time.monotonic() - started,
         **metadata,
         "returncode": result.returncode,
-        "coalesce_revision": server_revision,
-        "coalesce_dirty": server_dirty,
+        "coalesce_revision": coalesce_revision,
+        "coalesce_dirty": coalesce_dirty,
     }
 
 
@@ -428,6 +431,8 @@ def _run_task(task, model, out, harness, kwargs):
     except Exception as error:  # noqa: BLE001 - harness failures are scorecard evidence
         metadata = {"error": str(error)}
     metadata.setdefault("wall_time", time.monotonic() - started)
+    metadata.setdefault("coalesce_revision", kwargs["revision"]["coalesce_revision"])
+    metadata.setdefault("coalesce_dirty", kwargs["revision"]["coalesce_dirty"])
     row = _run_result(task, model, run_dir, metadata)
     (run_dir / "check-results.json").write_text(json.dumps(row, indent=2))
     return row
@@ -450,7 +455,32 @@ def _write_scorecard(out, rows):
     (out / "scorecard.md").write_text("\n".join(lines) + "\n")
 
 
+def _preflight(harness, coalesce_path, zeta_project=None):
+    coalesce_revision = _require_clean(coalesce_path, "coalesce checkout")
+    if harness is zeta_harness:
+        server_directory = _zeta_server_directory(zeta_project)
+        server_revision = _require_clean(server_directory, "coalesce server checkout")
+        if server_revision != coalesce_revision:
+            raise RuntimeError(
+                f"coalesce server revision {server_revision} does not match revision under test "
+                f"{coalesce_revision}; run git -C {server_directory} checkout --detach {coalesce_revision}"
+            )
+    return {
+        "coalesce_path": coalesce_path,
+        "coalesce_revision": coalesce_revision,
+        "coalesce_dirty": False,
+    }
+
+
 def run_tasks(task_dir, out, selectors, models, harness, **kwargs):
+    coalesce_path = kwargs.pop("coalesce_path", None)
+    zeta_project = kwargs.get("zeta_project")
+    revision = (
+        _preflight(harness, coalesce_path, zeta_project)
+        if coalesce_path is not None
+        else {"coalesce_path": Path.cwd(), "coalesce_revision": "unknown", "coalesce_dirty": False}
+    )
+    kwargs["revision"] = revision
     out.mkdir(parents=True, exist_ok=True)
     tasks = [task for selector in selectors for task in select_tasks(task_dir, selector)]
     rows = [
