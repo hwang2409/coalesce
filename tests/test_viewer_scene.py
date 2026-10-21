@@ -177,3 +177,26 @@ def test_first_twelve_manufactured_colours_are_perceptually_apart_from_each_othe
     # 0.03 in OKLab is about three just-noticeable differences; the fixed palette's closest pair is 0.031
     for a, b in itertools.combinations([*colors, REFERENCE_COLOR], 2):
         assert math.dist(_oklab(a), _oklab(b)) >= 0.03, (a, b)
+
+
+def test_split_shades_stay_apart_from_every_body_colour_and_from_each_other():
+    """Six bodies, each split into 1..8 pieces: no shade reads as another body or a sibling piece."""
+    from coalesce.references import BodySource
+    from coalesce.viewer.scene import _part_colors
+
+    bases = _part_colors([ScenePart(f"b{i}/body", None) for i in range(6)])
+    for pieces in range(1, 9):
+        parts = [
+            ScenePart(f"b{i}/body#{k}", None, source_body=BodySource(f"b{i}", "body"))
+            for i in range(6)
+            for k in range(pieces)
+        ]
+        colors = _part_colors(parts)
+        assert len(set(colors)) == len(colors), (pieces, colors)
+        for i in range(6):
+            family = colors[i * pieces : (i + 1) * pieces]
+            assert family[0] == bases[i]  # the first piece keeps the body colour
+            # 0.03 in OKLab is about three just-noticeable differences (_MIN_DISTANCE)
+            for shade in family[1:]:
+                for other in [*bases, REFERENCE_COLOR, *(s for s in family if s != shade)]:
+                    assert math.dist(_oklab(shade), _oklab(other)) >= 0.03, (pieces, i, shade, other)
