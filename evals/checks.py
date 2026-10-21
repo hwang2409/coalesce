@@ -421,6 +421,36 @@ def identity_snapshot(inspected, port_feature_id="port"):
     }
 
 
+def _board_refresh(check, context):
+    response = context.service.query({"select": {"kind": "feature", "id": check.get("board", "board")}})
+    feature = response.get("feature") if response.get("ok") is True else None
+    mechanics = feature.get("mechanics") if isinstance(feature, dict) else None
+    if not isinstance(mechanics, dict):
+        return _result(check, "fail", reason="saved board mechanics are missing")
+    holes = {
+        hole.get("footprintId"): hole.get("position")
+        for hole in mechanics.get("holes", [])
+        if hole.get("footprintId") in check.get("mountingHoles", {})
+    }
+    expected_holes = check.get("mountingHoles", {})
+    footprints = {
+        footprint.get("reference"): footprint
+        for footprint in mechanics.get("footprints", [])
+    }
+    connector = footprints.get(check.get("connector", "J1"))
+    actual_connector = (
+        [connector.get("position"), connector.get("rotation")]
+        if connector else None
+    )
+    expected_connector = [check.get("connectorPosition"), check.get("connectorRotation", 0)]
+    passed = holes == expected_holes and actual_connector == expected_connector
+    return _result(
+        check,
+        "pass" if passed else "fail",
+        actual={"mountingHoles": holes, "connector": actual_connector},
+    )
+
+
 def _edit_survival(check, context, inspected):
     if context.before_state is None or not context.before_state.is_file():
         return _result(check, "fail", reason="runner before-state facts are missing")
@@ -492,6 +522,8 @@ def _enclosure_check(check, context):
         return _edge_treatment(check, context)
     if kind == "requirement_gate":
         return _requirement_gate(check, context)
+    if kind == "board_refresh":
+        return _board_refresh(check, context)
     inspected = context.inspection
     if kind == "wall_thickness":
         return _range_result(check, inspected.get("base", {}).get("minimumWallThickness"))

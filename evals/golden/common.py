@@ -10,7 +10,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).parents[2]
-FIXTURES = ROOT / "tests" / "fixtures" / "kicad"
+FIXTURES = ROOT / "evals" / "fixtures"
 
 def q(value): return {"value": value, "unit": "mm"}
 

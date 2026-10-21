@@ -307,6 +307,44 @@ def test_non_step_file_in_steps_fails(tmp_path):
     }
 
 
+def test_board_refresh_rejects_no_refresh_after_unrelated_update(tmp_path, monkeypatch):
+    import coalesce.service
+
+    class Service:
+        revision = 8
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _ensure_geometry(self):
+            pass
+
+        def query(self, query):
+            assert query["select"] == {"kind": "feature", "id": "board"}
+            return {
+                "ok": True,
+                "feature": {
+                    "mechanics": {
+                        "holes": [
+                            {"id": "m2-id", "position": [2, 3]},
+                            {"id": "m3-id", "position": [18, 3]},
+                            {"id": "npth-id", "position": [10, 7]},
+                        ],
+                        "footprints": [{"reference": "J1", "position": [1, 5], "rotation": 0}],
+                    }
+                },
+            }
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    result = check_task(
+        {"checks": [{"kind": "board_refresh", "mountingHoles": {
+            "m2-id": [4, 4], "m3-id": [16, 4], "npth-id": [10, 6]
+        }, "connectorPosition": [3, 5], "connectorRotation": 0}]},
+        _document(tmp_path / "model.coalesce.json"), tmp_path / "steps",
+    )[0]
+    assert result["status"] == "fail"
+
+
 def test_blocked_expected_port_fails(tmp_path, monkeypatch):
     port = {"reference": "J1", "wall": "left", "blocked": True, "clearance": {"min": {"value": .5}}}
     result, _ = _enclosure_check(tmp_path, monkeypatch, {"ports": [port]}, {"kind": "port_opening_clears_connector", "reference": "J1", "wall": "left"})
