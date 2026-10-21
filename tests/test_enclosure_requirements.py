@@ -11,6 +11,7 @@ from test_pcb_enclosure import (
     standoffs_request,
 )
 from test_pcb_lid import lid_request
+from test_port_cutout import port_request
 
 from coalesce.service import DocumentService
 
@@ -25,6 +26,23 @@ def _service(tmp_path: Path, *, holes):
     assert service.feature(base_request())["ok"]
     assert service.feature(standoffs_request(selection={"mode": "explicit", "holeIds": holes}))["ok"]
     return service
+
+
+def test_connector_warning_follows_declared_model_availability(tmp_path):
+    service = _service(
+        tmp_path,
+        holes=["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"],
+    )
+    assert service.feature(port_request(revision=3))["ok"]
+    board = service._document.graph.nodes["controller_board"]
+
+    board.availability["models"] = "declared"
+    declared = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    assert not any(item["code"] == "CONNECTOR_HEIGHT_UNRESOLVED" for item in declared["warnings"])
+
+    board.availability["models"] = "missing"
+    missing = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    assert any(item["code"] == "CONNECTOR_HEIGHT_UNRESOLVED" for item in missing["warnings"])
 
 
 def test_missing_mount_is_a_fail_with_the_hole_id(tmp_path):

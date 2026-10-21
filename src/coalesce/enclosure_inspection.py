@@ -603,7 +603,7 @@ def _warnings(
     ports: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     warnings = _other_body_warnings(graph, board, parts, enclosure_parts)
-    if ports and board.availability.get("models") != "available":
+    if ports and board.availability.get("models") != "declared":
         warnings.append(
             {
                 "code": "CONNECTOR_HEIGHT_UNRESOLVED",
