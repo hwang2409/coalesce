@@ -16,8 +16,8 @@ def claude_harness(prompt, run_dir, *, model, coalesce_path, **_):
     config.write_text(json.dumps({"mcpServers": {"coalesce": {"command": "uv", "args": ["run", "--project", str(coalesce_path), "coalesce", "--document", str(run_dir / "model.coalesce.json")]}}}, indent=2))
     started = time.monotonic()
     instruction = prompt + f"\nUse the coalesce MCP document at {run_dir / 'model.coalesce.json'} and export every STEP file under {run_dir / 'steps'}; do not write artifacts elsewhere."
-(run_dir / "steps").mkdir(exist_ok=True)
-result = subprocess.run(["claude", "-p", instruction, "--model", model, "--mcp-config", str(config), "--strict-mcp-config", "--allowedTools", "mcp__coalesce__*"], cwd=run_dir, capture_output=True, text=True, check=False)
+    (run_dir / "steps").mkdir(exist_ok=True)
+    result = subprocess.run(["claude", "-p", instruction, "--model", model, "--mcp-config", str(config), "--strict-mcp-config", "--allowedTools", "mcp__coalesce__*"], cwd=run_dir, capture_output=True, text=True, check=False)
     (run_dir / "transcript.txt").write_text(result.stdout + "\n" + result.stderr)
     return {"wall_time": time.monotonic()-started, "tool_calls": result.stdout.count('tool'), "failed_tool_calls": result.stdout.lower().count('error'), "returncode": result.returncode}
 
