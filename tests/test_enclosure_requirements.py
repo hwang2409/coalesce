@@ -241,3 +241,22 @@ def test_clean_base_passes_measured_requirements(tmp_path):
     assert response["gate"] == "PASS"
     assert all(result["status"] == "PASS" for result in response["results"])
     assert all(result["revision"] == service.revision for result in response["results"])
+
+
+def test_inspection_failure_keeps_exception_text_out_of_message(tmp_path, monkeypatch):
+    import coalesce.enclosure_inspection
+
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("BRep_API: command not done")
+
+    monkeypatch.setattr(coalesce.enclosure_inspection, "inspect_enclosure", broken)
+    response = service.check(
+        {"action": "evaluate", "base": "base", "requirements": [{"id": "mounts", "kind": "mounting_holes"}]}
+    )
+
+    error = response["error"]
+    assert error["code"] == "INSPECTION_FAILED"
+    assert "BRep_API" not in error["message"]
+    assert error["kernelMessage"] == "BRep_API: command not done"

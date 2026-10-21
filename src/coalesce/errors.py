@@ -65,3 +65,10 @@ ERROR_REGISTRY = {
     "EXPORT_VALIDATION_FAILED": ErrorDefinition("export"),
     "EXPORT_WRITE_FAILED": ErrorDefinition("export"),
 }
+
+# Codes of non-blocking warnings inside a successful enclosure inspection result.
+WARNING_CODES = frozenset({
+    "OTHER_MANUFACTURING_BODY",
+    "CONNECTOR_HEIGHT_UNRESOLVED",
+    "UNCLASSIFIED_BOARD_HOLES",
+})

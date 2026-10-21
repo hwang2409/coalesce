@@ -3045,8 +3045,9 @@ class DocumentService:
                         self._document.revision,
                         None,
                         "INSPECTION_FAILED",
-                        str(error),
+                        "enclosure inspection could not be completed",
                         operation="check",
+                        kernelMessage=str(error),
                     )
             results.extend(
                 _valid_brep_result(self._regen, item, self._document.revision)

@@ -1,3 +1,4 @@
+import ast
 import re
 from pathlib import Path
 
@@ -189,3 +190,104 @@ def test_error_document_is_machine_readable():
     assert "## error shape" in text
     assert "## families" in text
     assert all(f"| `{code}` |" in text for code in documented_codes())
+
+
+# Positional index of the code argument for every public error builder.
+ERROR_BUILDERS = {
+    "_safe_error": 2,
+    "error_response": 2,
+    "RequestError": 0,
+    "GraphError": 0,
+    "BoardImportError": 0,
+    "ExportFailure": 0,
+}
+# Non-literal codes that only pass on a code already checked elsewhere:
+# builder internals, re-raises of a caught error, and the fillet/chamfer table below.
+PASS_THROUGH_CODES = {
+    ("src/coalesce/edge_treatment.py", "GraphError", "failed_code"),
+    ("src/coalesce/edge_treatment.py", "GraphError", "invalid_code"),
+    ("src/coalesce/graph.py", "dict", "code"),
+    ("src/coalesce/service.py", "_safe_error", "code"),
+    ("src/coalesce/service.py", "dict", "code"),
+    ("src/coalesce/service.py", "error_response", "code"),
+    ("src/coalesce/service.py", "error_response", "error.code"),
+}
+
+
+def _builder_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _code_argument(call: ast.Call, index: int) -> ast.expr | None:
+    keyword = next((item.value for item in call.keywords if item.arg == "code"), None)
+    if keyword is not None:
+        return keyword
+    return call.args[index] if len(call.args) > index else None
+
+
+def emitted_codes(root: Path = ROOT) -> tuple[list[tuple[str, int, str]], set[tuple[str, str, str]]]:
+    """Every code literal given to a public error builder or a ``"code"`` dict key."""
+    literals: list[tuple[str, int, str]] = []
+    dynamic: set[tuple[str, str, str]] = set()
+
+    def record(rel: str, line: int, kind: str, value: ast.expr) -> None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            literals.append((rel, line, value.value))
+        else:
+            dynamic.add((rel, kind, ast.unparse(value)))
+
+    for path in sorted((root / "src" / "coalesce").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and _builder_name(node) in ERROR_BUILDERS:
+                name = _builder_name(node)
+                value = _code_argument(node, ERROR_BUILDERS[name])
+                if value is not None:
+                    record(rel, node.lineno, name, value)
+            elif isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values, strict=True):
+                    if isinstance(key, ast.Constant) and key.value == "code":
+                        record(rel, node.lineno, "dict", value)
+    return literals, dynamic
+
+
+def edge_treatment_table_codes(root: Path = ROOT) -> set[str]:
+    source = (root / "src" / "coalesce" / "edge_treatment.py").read_text()
+    codes = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "(invalid_code, failed_code)":
+            codes |= {
+                item.value for item in ast.walk(node.value)
+                if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.isupper()
+            }
+    return codes
+
+
+def documented_warnings() -> set[str]:
+    text = (ROOT / "docs" / "errors.md").read_text().split("## inspection warnings", 1)[-1]
+    return set(re.findall(r"^\| `([A-Z0-9_]+)` \|", text, re.MULTILINE))
+
+
+def test_every_emitted_code_is_registered():
+    from coalesce.errors import WARNING_CODES
+
+    literals, dynamic = emitted_codes()
+    known = set(service_module.ERROR_REGISTRY) | WARNING_CODES
+
+    assert literals
+    assert [item for item in literals if item[2] not in known] == []
+    assert dynamic == PASS_THROUGH_CODES
+    table = edge_treatment_table_codes()
+    assert table == {"INVALID_FILLET_RADIUS", "FILLET_FAILED", "INVALID_CHAMFER_DISTANCE", "CHAMFER_FAILED"}
+    assert table <= set(service_module.ERROR_REGISTRY)
+
+
+def test_inspection_warning_codes_are_documented():
+    from coalesce.errors import WARNING_CODES
+
+    assert documented_warnings() == set(WARNING_CODES)
+    assert not WARNING_CODES & set(service_module.ERROR_REGISTRY)
