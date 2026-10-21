@@ -124,8 +124,11 @@ async function act(action) {
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
   // the revision number's box and look with and without the transient update signal
   if ('fresh' in action) {
-    return page.locator('#revision').evaluate(async (el) => {
-      await Promise.all(el.getAnimations().map((animation) => animation.finished)); // the last update's fade
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#revision');
+      return !el.classList.contains('fresh') && getComputedStyle(el).color === getComputedStyle(el.parentElement).color;
+    });
+    return page.locator('#revision').evaluate((el) => {
       const look = () => {
         const style = getComputedStyle(el);
         const { width, height, x, y } = el.getBoundingClientRect();
