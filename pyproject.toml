@@ -12,6 +12,7 @@ dependencies = [
 coalesce = "coalesce.__main__:main"
 
 [project.optional-dependencies]
+sketch = ["planegcs==0.9.6"]
 test = ["pytest>=8", "ruff>=0.8"]
 
 [build-system]
