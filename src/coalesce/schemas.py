@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .requirements import SUPPORTED_REQUIREMENT_KINDS as EVALUATED_REQUIREMENT_KINDS
+
+SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT_KINDS)))
+
 QUANTITY = {
     "type": "object",
     "properties": {"value": {"type": "number"}, "unit": {"const": "mm"}},
@@ -693,7 +697,14 @@ IMPORT_DELETE_SCHEMA = {
 }
 IMPORT_REFRESH_SCHEMA = {
     "type": "object",
-    "properties": {"action": {"const": "refresh"}, **IMPORT_PROPERTIES},
+    "properties": {
+        "action": {"const": "refresh"},
+        **IMPORT_PROPERTIES,
+        "path": {
+            **IMPORT_CREATE_SCHEMA["properties"]["path"],
+            "description": "Optional explicit absolute path to the replacement local regular file, at most 16 MiB.",
+        },
+    },
     "required": ["action", *IMPORT_PROPERTIES],
     "additionalProperties": False,
 }
@@ -704,7 +715,7 @@ IMPORT_SCHEMA = {
         **IMPORT_PROPERTIES,
         "path": {
             **IMPORT_CREATE_SCHEMA["properties"]["path"],
-            "description": "Required for create; refresh re-reads the persisted resolved path.",
+            "description": "Required for create; optional replacement path for refresh. If omitted, refresh re-reads the persisted resolved path.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
@@ -793,6 +804,9 @@ CHECK_FIT_THRESHOLD = {
     "additionalProperties": False,
 }
 CHECK_REQUIREMENT = {
+    "type": "object",
+    "properties": {"kind": {"enum": list(SUPPORTED_REQUIREMENT_KINDS)}},
+    "required": ["kind"],
     "oneOf": [
         {
             "type": "object",
@@ -826,15 +840,22 @@ CHECK_REQUIREMENT = {
                 "id": CHECK_ID,
                 "kind": {
                     "enum": [
-                        "wall_thickness",
-                        "floor_thickness",
-                        "engagement_depth",
-                        "lid_engagement",
-                        "port_clearance",
-                        "connector_clearance",
+                        "wall_thickness", "floor_thickness", "engagement_depth",
+                        "lid_engagement", "port_clearance", "connector_clearance",
                     ]
                 },
                 "threshold": QUANTITY,
+            },
+            "required": ["id", "kind", "threshold"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"const": "board_clearance"},
+                "threshold": QUANTITY,
+                "side": {"enum": ["left", "right", "front", "back", "all"]},
             },
             "required": ["id", "kind", "threshold"],
             "additionalProperties": False,

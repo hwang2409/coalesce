@@ -114,6 +114,31 @@ def _threshold_unknown(
     )
 
 
+def _board_clearance(
+    requirement: dict[str, Any], inspection: dict[str, Any], revision: int
+) -> dict[str, Any]:
+    side = requirement.get("side", "all")
+    clearance = inspection.get("cavity", {}).get("boardClearance", {})
+    involved = [inspection["board"]["assetId"], inspection["base"]["partId"]]
+    if side == "all":
+        measured = list(clearance.values())
+        values = [_value(item) for item in measured]
+        value = min(values) if values and all(item is not None for item in values) else None
+        measured = {"value": value, "unit": "mm"} if value is not None else {
+            "status": "unknown", "reason": "one or more board sides could not be measured"
+        }
+    else:
+        measured = clearance.get(side)
+    minimum = _value(requirement.get("threshold", {}))
+    if minimum is None:
+        return _threshold_unknown(requirement, involved, revision, measured)
+    value = _value(measured) if isinstance(measured, dict) else None
+    return _finish(
+        requirement, measured, requirement.get("threshold"), involved, revision,
+        "PASS" if value is not None and value >= minimum else "FAIL",
+    )
+
+
 def _thickness(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
@@ -344,6 +369,25 @@ def _clean(
     )
 
 
+REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "wall_thickness": _thickness,
+    "board_clearance": _board_clearance,
+    "floor_thickness": _thickness,
+    "mounting_holes": _mounting,
+    "standoff_coverage": _mounting,
+    "lid_interference": _lid_interference,
+    "fit_gap": _fit_gap,
+    "lid_fit_gap": _fit_gap,
+    "engagement_depth": _engagement,
+    "lid_engagement": _engagement,
+    "port_clearance": _ports,
+    "connector_clearance": _ports,
+    "clean_deliverables": _clean,
+    "clean_manufacturing_bodies": _clean,
+}
+SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(REQUIREMENT_HANDLERS))
+
+
 def reduce_gate(results: list[dict[str, Any]]) -> str:
     statuses = {item["status"] for item in results}
     if "FAIL" in statuses:
@@ -358,20 +402,18 @@ def reduce_gate(results: list[dict[str, Any]]) -> str:
 def evaluate(
     requirements: list[dict[str, Any]], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
-    handlers: dict[str, Callable[..., dict[str, Any]]] = {
-        "wall_thickness": _thickness,
-        "floor_thickness": _thickness,
-        "mounting_holes": _mounting,
-        "standoff_coverage": _mounting,
-        "lid_interference": _lid_interference,
-        "fit_gap": _fit_gap,
-        "lid_fit_gap": _fit_gap,
-        "engagement_depth": _engagement,
-        "lid_engagement": _engagement,
-        "port_clearance": _ports,
-        "connector_clearance": _ports,
-        "clean_deliverables": _clean,
-        "clean_manufacturing_bodies": _clean,
-    }
-    results = [handlers[item["kind"]](item, inspection, revision) for item in requirements]
+    unknown = [
+        item.get("kind")
+        for item in requirements
+        if item.get("kind") not in REQUIREMENT_HANDLERS
+    ]
+    if unknown:
+        raise ValueError(
+            "unknown requirement kind: "
+            f"{unknown[0]}; supported kinds: {', '.join(SUPPORTED_REQUIREMENT_KINDS)}"
+        )
+    results = [
+        REQUIREMENT_HANDLERS[item["kind"]](item, inspection, revision)
+        for item in requirements
+    ]
     return {"gate": reduce_gate(results), "results": results}

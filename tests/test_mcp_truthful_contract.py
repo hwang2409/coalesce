@@ -205,6 +205,10 @@ def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup()
     assert "flip has no effect for through-all" in guide
     assert "pcb_base" in guide
     assert "stable `holeids`" in guide
+    assert "optional replacement absolute path" in guide
+    assert "`all_mounting` standoff selections follow the refreshed board" in guide
+    assert "explicit hole ids stay fixed" in guide
+    assert "`selectionchanges`" in guide
     assert "import` the board, create `pcb_base`, create `standoffs`, create" in guide
     assert "`pcb_lid`, create `port_cutout`, run `check`" in guide
     assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE

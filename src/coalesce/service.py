@@ -52,6 +52,7 @@ from .references import (
 )
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
+from .schemas import SUPPORTED_REQUIREMENT_KINDS
 from .serialization import dumps, loads
 
 if TYPE_CHECKING:
@@ -1430,7 +1431,7 @@ def _apply_import(
     if operation.action is Action.REFRESH:
         if not isinstance(current, BoardImport):
             raise RequestError("UNKNOWN_ID", f"unknown board import: {operation.assetId}")
-        source_path = current.source_path
+        source_path = operation.path or current.source_path
     else:
         if current is not None:
             raise RequestError("DUPLICATE_ID", f"duplicate id: {operation.assetId}")
@@ -2096,6 +2097,35 @@ def _edited(old: Any, node: Any) -> str:
     return f"{summary} {', '.join(edits)}" if edits else f"{summary}, no value changed"
 
 
+def _selection_snapshot(graph: Any) -> dict[str, list[str]]:
+    snapshot = {}
+    for node in graph.nodes.values():
+        if isinstance(node, Standoffs) and node.selection == "all_mounting":
+            board = graph.nodes.get(node.board)
+            if isinstance(board, BoardImport):
+                snapshot[node.id] = sorted(hole["id"] for hole in mounting_holes(board))
+    return snapshot
+
+
+def _selection_changes(
+    before: dict[str, list[str]], after: dict[str, list[str]]
+) -> list[dict[str, Any]]:
+    changes = []
+    # creating or deleting a selector feature is not churn; only a selector that existed
+    # before and after can gain or lose holes.
+    for feature_id in sorted(set(before) & set(after)):
+        added = sorted(set(after[feature_id]) - set(before[feature_id]))
+        removed = sorted(set(before[feature_id]) - set(after[feature_id]))
+        if added or removed:
+            changes.append({
+                "featureId": feature_id,
+                "selector": "all_mounting",
+                "holesAdded": added,
+                "holesRemoved": removed,
+            })
+    return changes
+
+
 def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]:
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = result.graph.nodes[changed_id]
@@ -2429,6 +2459,7 @@ class DocumentService:
 
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
+                previous_selections = _selection_snapshot(self._document.graph)
                 graph = loads(dumps(self._document.graph))
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
                 changed_id, changed_ids, deletion = _applied_result(applied)
@@ -2445,6 +2476,9 @@ class DocumentService:
                     "changedFeatureIds": changed_ids,
                     "regeneration": {"status": "OK", "valid": True},
                     "warnings": [],
+                    "selectionChanges": _selection_changes(
+                        previous_selections, _selection_snapshot(graph)
+                    ),
                     **deletion_fields,
                     **response_fields(graph, result, changed_id),
                 }
@@ -3035,6 +3069,21 @@ class DocumentService:
             requirements = payload.get(
                 "requirements", [{"id": "valid", "kind": "valid_brep"}]
             )
+            supported_requirement_kinds = set(SUPPORTED_REQUIREMENT_KINDS)
+            unknown_kinds = [
+                item.get("kind") for item in requirements
+                if item.get("kind") not in supported_requirement_kinds
+            ]
+            if unknown_kinds:
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    "INVALID_PARAMETER",
+                    f"unknown requirement kind: {unknown_kinds[0]}",
+                    operation="check",
+                    kind=unknown_kinds[0],
+                    supportedKinds=sorted(supported_requirement_kinds),
+                )
             results = []
             enclosure_requirements = [
                 item for item in requirements if item.get("kind") != "valid_brep"

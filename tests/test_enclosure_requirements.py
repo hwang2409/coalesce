@@ -14,7 +14,8 @@ from test_pcb_enclosure import (
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 
-from coalesce.schemas import CHECK_SCHEMA
+from coalesce.requirements import REQUIREMENT_HANDLERS
+from coalesce.schemas import CHECK_REQUIREMENT, CHECK_SCHEMA, SUPPORTED_REQUIREMENT_KINDS
 from coalesce.server import TOOLS_GUIDE
 from coalesce.service import DocumentService
 
@@ -202,6 +203,12 @@ def test_inch_fit_gap_threshold_is_unknown():
     assert "threshold" in result["reason"]
 
 
+def test_requirement_handler_map_defines_public_schema_kinds():
+    expected = sorted(("valid_brep", *REQUIREMENT_HANDLERS))
+    assert list(SUPPORTED_REQUIREMENT_KINDS) == expected
+    assert CHECK_REQUIREMENT["properties"]["kind"]["enum"] == expected
+
+
 def test_check_schema_rejects_empty_requirements():
     with pytest.raises(ValidationError):
         validate({"action": "evaluate", "requirements": []}, CHECK_SCHEMA)
@@ -219,6 +226,65 @@ def test_port_evidence_keeps_board_identity_and_part_id(tmp_path):
     result = service.check({"action": "evaluate", "base": "base", "requirements": [{"id": "port", "kind": "port_clearance", "threshold": quantity(0)}]})["results"][0]
     assert result["involved"] == [service.query({"select": {"kind": "enclosure", "base": "base"}})["base"]["partId"]]
     assert {"reference", "value", "libraryId", "clearance", "blocked"} <= set(result["measured"][0])
+
+
+def test_board_clearance_reports_pass_fail_and_unknown(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    checks = [
+        {"id": "pass", "kind": "board_clearance", "side": "left", "threshold": quantity(1)},
+        {"id": "fail", "kind": "board_clearance", "side": "all", "threshold": quantity(2)},
+    ]
+    results = service.check({"action": "evaluate", "base": "base", "requirements": checks})["results"]
+    assert [item["status"] for item in results] == ["PASS", "FAIL"]
+    assert results[0]["involved"][0] == "controller_board"
+    inspection = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    inspection["cavity"]["boardClearance"]["left"] = {"status": "unknown", "reason": "test"}
+    from coalesce.requirements import evaluate
+    unknown = evaluate([checks[0]], inspection, service.revision)["results"][0]
+    assert unknown["status"] == "UNKNOWN"
+
+
+def test_unknown_requirement_kind_is_structured_parameter_error(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    response = service.check({"action": "evaluate", "requirements": [{"id": "bad", "kind": "board_clearance_typo"}]})
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["kind"] == "board_clearance_typo"
+    assert "board_clearance" in response["error"]["supportedKinds"]
+
+
+@pytest.mark.anyio
+async def test_stdio_unknown_requirement_kind_reports_supported_kinds(tmp_path):
+    response, = await run_server(
+        tmp_path / "unknown-kind.coalesce.json",
+        [("check", {
+            "action": "evaluate",
+            "requirements": [{"id": "bad", "kind": "board_clearance_typo"}],
+        })],
+    )
+
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["kind"] == "board_clearance_typo"
+    assert response["error"]["supportedKinds"] == sorted(response["error"]["supportedKinds"])
+    assert "board_clearance" in response["error"]["supportedKinds"]
+
+
+@pytest.mark.anyio
+async def test_stdio_rejects_side_on_wall_thickness(tmp_path):
+    response, = await run_server(
+        tmp_path / "wall-side.coalesce.json",
+        [("check", {
+            "action": "evaluate",
+            "requirements": [{
+                "id": "wall",
+                "kind": "wall_thickness",
+                "threshold": quantity(2),
+                "side": "left",
+            }],
+        })],
+    )
+
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["allowedFields"] == ["id", "kind", "threshold"]
 
 
 def test_clean_base_passes_measured_requirements(tmp_path):
