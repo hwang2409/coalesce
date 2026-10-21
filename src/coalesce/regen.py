@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import math
 from dataclasses import dataclass, field, replace
 
 from build123d import Edge, Shape
@@ -91,6 +93,120 @@ def _consumed_edge_suggestion(
         f"{replacement.feature}.{replacement.role}" for replacement in replacements
     )
     return f"use generated blend face {names}"
+
+
+_REMEDY_STEP = 0.01
+_PARAMETER_FIELDS = {
+    "bossDiameter": "boss_diameter",
+    "clearance": "clearance",
+    "envelope.bottomOffset": "bottom_offset",
+    "fitGap": "fit_gap",
+    "lip.depth": "lip_depth",
+    "lip.width": "lip_width",
+}
+
+
+def _round_minimum(value: float) -> float:
+    # Move inward by one 0.01 mm step when the computed bound is exact.
+    return round(math.ceil((value + 1e-9) / _REMEDY_STEP) * _REMEDY_STEP, 2)
+
+
+def _round_maximum(value: float) -> float:
+    return round(math.floor((value - 1e-9) / _REMEDY_STEP) * _REMEDY_STEP, 2)
+
+
+def _quantity_value(value: dict) -> float:
+    return float(value["value"])
+
+
+def _alternative_updates(node: object, values: dict) -> dict[str, object] | None:
+    updates: dict[str, object] = {}
+    if "wall" in values:
+        updates["wall"] = values["wall"]
+    envelope = values.get("envelope")
+    if envelope is None:
+        return updates
+    if not isinstance(node, PortCutout):
+        return None
+    width = _quantity_value(envelope["width"]) if "width" in envelope else None
+    height = _quantity_value(envelope["height"])
+    if width != node.envelope_width or height != node.envelope_height:
+        return None
+    updates.update(
+        envelope_source=envelope["source"],
+        envelope_width=width,
+        envelope_height=height,
+        bottom_offset=_quantity_value(envelope["bottomOffset"]),
+    )
+    return updates
+
+
+def _remedy_succeeds(graph: Graph, feature: str, updates: dict[str, object]) -> bool:
+    """Run one unchanged remedy through the normal in-memory regeneration path."""
+    candidate = copy.deepcopy(graph)
+    node = candidate.nodes.get(feature)
+    if node is None:
+        return False
+    try:
+        candidate.nodes[feature] = replace(node, **updates)
+        _regenerate(candidate)
+    except (GraphError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _verified_limits(graph: Graph, feature: str, limits: dict) -> dict | None:
+    field = _PARAMETER_FIELDS.get(limits.get("parameter"))
+    if field is None:
+        return None
+    verified = dict(limits)
+    for name in ("minimum", "maximum", "suggested"):
+        value = verified.get(name)
+        if value is not None and not _remedy_succeeds(graph, feature, {field: value}):
+            verified.pop(name)
+    return verified if any(name in verified for name in ("minimum", "maximum", "suggested")) else None
+
+
+def _verified_alternative(
+    graph: Graph, feature: str, alternative: dict
+) -> dict | None:
+    updates = _alternative_updates(
+        graph.nodes.get(feature), alternative.get("set", {})
+    )
+    if updates is None or not _remedy_succeeds(graph, feature, updates):
+        return None
+    verified = dict(alternative)
+    if limits := alternative.get("limits"):
+        safe_limits = _verified_limits(graph, feature, limits)
+        if safe_limits is None:
+            verified.pop("limits", None)
+        else:
+            verified["limits"] = safe_limits
+    return verified
+
+
+def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
+    details = error.error
+    feature = details.get("feature")
+    if not isinstance(feature, str):
+        details.pop("limits", None)
+        details.pop("alternatives", None)
+        return
+    if limits := details.get("limits"):
+        verified = _verified_limits(graph, feature, limits)
+        if verified is None:
+            details.pop("limits")
+        else:
+            details["limits"] = verified
+    alternatives = [
+        verified
+        for alternative in details.get("alternatives", [])
+        if (verified := _verified_alternative(graph, feature, alternative)) is not None
+    ]
+    if alternatives:
+        details["alternatives"] = alternatives
+    else:
+        details.pop("alternatives", None)
 
 
 def _resolve_fillet_edges(
@@ -377,7 +493,7 @@ class _EnclosureRegenerator:
         if not tops:
             return None
         board_top = board.mechanics["thickness"]
-        minimum = max(tops) + port.clearance - board_top + 1e-6
+        minimum = max(tops) + port.clearance - board_top
         maximum = base.wall_height_above_board - port.envelope_height - port.clearance
         lids = self._base_lids(port)
         if lids:
@@ -387,9 +503,10 @@ class _EnclosureRegenerator:
                 lid_top
                 - board_top
                 - port.envelope_height
-                - port.clearance
-                - 1e-6,
+                - port.clearance,
             )
+        minimum = _round_minimum(minimum)
+        maximum = _round_maximum(maximum)
         if minimum > maximum:
             return None
         candidate_port = replace(port, bottom_offset=minimum)
@@ -407,39 +524,13 @@ class _EnclosureRegenerator:
             "set": {"envelope": self._envelope_payload(candidate_port)},
             "limits": {
                 "parameter": "envelope.bottomOffset",
-                "current": round(port.bottom_offset, 12),
-                "minimum": round(minimum, 12),
-                "maximum": round(maximum, 12),
-                "suggested": round(minimum, 12),
+                "current": round(port.bottom_offset, 2),
+                "minimum": minimum,
+                "maximum": maximum,
+                "suggested": minimum,
                 "unit": "mm",
             },
         }
-
-    def _safe_envelope_alternative(self, port: PortCutout) -> dict | None:
-        base, board = self._base_context(port.base, port.id)
-        terminal = self.lineage.terminal(port.base)
-        lids = self._base_lids(port)
-        lower = max(self._standoff_tops(port), default=-base.board_seat_height) + 1e-6
-        upper = min(self.shapes[lid.id].bounding_box().min.Z for lid in lids) - 1e-6
-        height = upper - lower - 2 * port.clearance
-        if height <= 0:
-            return None
-        candidate_port = replace(
-            port,
-            envelope_height=height,
-            bottom_offset=lower + port.clearance - board.mechanics["thickness"],
-        )
-        try:
-            tool, _, _ = build_port_opening(
-                candidate_port, base, board, self.states[terminal]
-            )
-        except GraphError:
-            return None
-        if self._standoff_conflict(port, tool) is not None or any(
-            self._lid_overlap(lid, tool) is not None for lid in lids
-        ):
-            return None
-        return {"set": {"envelope": self._envelope_payload(candidate_port)}}
 
     def _validate_standoff_clearance(self, port: PortCutout, tool: Shape) -> None:
         conflict = self._standoff_conflict(port, tool)
@@ -476,9 +567,6 @@ class _EnclosureRegenerator:
         volume = sum(solid.volume for solid in overlap.solids())
         bounds = overlap.bounding_box()
         alternatives = self._safe_wall_alternatives(port)
-        envelope_alternative = self._safe_envelope_alternative(port)
-        if envelope_alternative is not None:
-            alternatives.append(envelope_alternative)
         details = {"alternatives": alternatives} if alternatives else {}
         raise GraphError(
             "PORT_BLOCKED_BY_LID",
@@ -512,7 +600,7 @@ class _EnclosureRegenerator:
                     self._validate_lid_clearance(node, lid, tool)
 
 
-def regenerate(graph: Graph) -> RegenResult:
+def _regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
     provenance: dict[str, list[Candidate]] = {}
@@ -632,3 +720,11 @@ def regenerate(graph: Graph) -> RegenResult:
         superseded=lineage.superseded,
         predecessors=lineage.predecessors,
     )
+
+
+def regenerate(graph: Graph) -> RegenResult:
+    try:
+        return _regenerate(graph)
+    except GraphError as error:
+        _verify_error_remedies(graph, error)
+        raise

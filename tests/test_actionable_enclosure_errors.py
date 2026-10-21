@@ -58,7 +58,7 @@ async def test_standoff_wall_conflict_limit_is_safe_when_applied(tmp_path):
     limits = failed["error"]["limits"]
     assert limits["parameter"] == "bossDiameter"
     assert limits["current"] == 7
-    assert limits["minimum"] == 1.6
+    assert limits["minimum"] == 1.61
     assert limits["maximum"] < 7
     assert limits["unit"] == "mm"
 
@@ -146,7 +146,7 @@ async def test_lid_depth_conflict_limit_is_safe_when_applied(tmp_path):
     limits = failed["error"]["limits"]
     assert limits["parameter"] == "lip.depth"
     assert limits["current"] == 5
-    assert limits["maximum"] == 4
+    assert limits["maximum"] == 3.99
 
     repaired = await _call(
         service,

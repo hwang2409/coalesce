@@ -29,6 +29,18 @@ class PortCutoutResult(EnclosureResult):
     opening_tool: Shape
 
 
+_REMEDY_STEP = 0.01
+
+
+def _safe_minimum(value: float) -> float:
+    # Keep remedies inside the valid range instead of on a kernel contact boundary.
+    return math.ceil((value + 1e-9) / _REMEDY_STEP) * _REMEDY_STEP
+
+
+def _safe_maximum(value: float) -> float:
+    return math.floor((value - 1e-9) / _REMEDY_STEP) * _REMEDY_STEP
+
+
 def _limits(
     parameter: str,
     current: float,
@@ -37,12 +49,16 @@ def _limits(
     maximum: float,
     suggested: float | None = None,
 ) -> dict:
+    safe_minimum = _safe_minimum(minimum)
+    safe_maximum = _safe_maximum(maximum)
+    proposal = maximum if suggested is None else suggested
+    safe_suggested = min(safe_maximum, max(safe_minimum, round(proposal, 2)))
     return {
         "parameter": parameter,
-        "current": round(current, 12),
-        "minimum": round(minimum, 12),
-        "maximum": round(maximum, 12),
-        "suggested": round(maximum if suggested is None else suggested, 12),
+        "current": round(current, 2),
+        "minimum": round(safe_minimum, 2),
+        "maximum": round(safe_maximum, 2),
+        "suggested": round(safe_suggested, 2),
         "unit": "mm",
     }
 
@@ -465,31 +481,6 @@ def _opening_bounds(
     envelope_bottom = board_top + node.bottom_offset
     bottom = envelope_bottom - node.clearance
     top = envelope_bottom + node.envelope_height + node.clearance
-    if bottom < floor_top and envelope_bottom >= floor_top:
-        maximum = envelope_bottom - floor_top
-        raise GraphError(
-            "INVALID_PARAMETER",
-            f"port_cutout {node.id} clearance would cut the base floor",
-            feature=node.id,
-            parameter="clearance",
-            measuredBottom=bottom,
-            floorTop=floor_top,
-            unit="mm",
-            hint="raise bottomOffset or reduce clearance",
-            **(
-                {
-                    "limits": _limits(
-                        "clearance",
-                        node.clearance,
-                        minimum=0,
-                        maximum=maximum,
-                        suggested=maximum / 2,
-                    )
-                }
-                if maximum > 0
-                else {}
-            ),
-        )
 
     bounds, wall_span = _opening_xy_bounds(
         wall,
@@ -512,18 +503,63 @@ def _opening_bounds(
             wall=wall,
         )
     straight_min, straight_max = wall_span
-    if tangent_min < straight_min - 1e-7 or tangent_max > straight_max + 1e-7:
-        envelope_width = opening_width - 2 * node.clearance
-        maximum = (straight_max - straight_min - envelope_width) / 2
-        details = {}
-        if maximum > 0:
-            details["limits"] = _limits(
+    envelope_width = opening_width - 2 * node.clearance
+    center = (tangent_min + tangent_max) / 2
+    envelope_min = center - envelope_width / 2
+    envelope_max = center + envelope_width / 2
+    maximums = [
+        envelope_min - straight_min,
+        straight_max - envelope_max,
+        envelope_bottom - floor_top,
+    ]
+    rim_heights = [
+        item.entity.bounding_box().min.Z
+        for item in target_candidates
+        if item.key.role == "rim"
+    ]
+    if rim_heights:
+        maximums.append(
+            min(rim_heights) - envelope_bottom - node.envelope_height
+        )
+    maximum = min(maximums)
+    limit_details = (
+        {
+            "limits": _limits(
                 "clearance",
                 node.clearance,
                 minimum=0,
                 maximum=maximum,
                 suggested=maximum / 2,
             )
+        }
+        if maximum > 0
+        else {}
+    )
+    if bottom < floor_top and envelope_bottom >= floor_top:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} clearance would cut the base floor",
+            feature=node.id,
+            parameter="clearance",
+            measuredBottom=bottom,
+            floorTop=floor_top,
+            unit="mm",
+            hint="raise bottomOffset or reduce clearance",
+            **limit_details,
+        )
+    if rim_heights and top > min(rim_heights) + 1e-7:
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"port_cutout {node.id} clearance reaches above the base rim",
+            feature=node.id,
+            parameter="clearance",
+            measuredTop=top,
+            rimTop=min(rim_heights),
+            unit="mm",
+            hint="lower bottomOffset or reduce clearance",
+            **limit_details,
+        )
+    if tangent_min < straight_min - 1e-7 or tangent_max > straight_max + 1e-7:
         raise GraphError(
             "INVALID_PARAMETER",
             f"port_cutout {node.id} opening reaches an adjacent or curved wall",
@@ -532,7 +568,7 @@ def _opening_bounds(
             wall=wall,
             openingSpan=[tangent_min, tangent_max],
             wallSpan=[straight_min, straight_max],
-            **details,
+            **limit_details,
         )
     return _OpeningBounds(
         minimum_x,
@@ -702,6 +738,19 @@ def _maximum_boss_diameter(cavity: Face, x: float, y: float) -> float:
     return 2 * min(edge.distance_to(center) for edge in cavity.edges())
 
 
+def _boss_limits(node: Standoffs, cavity: Face, x: float, y: float) -> dict | None:
+    maximum = _maximum_boss_diameter(cavity, x, y)
+    if maximum <= node.pilot_diameter:
+        return None
+    return _limits(
+        "bossDiameter",
+        node.boss_diameter,
+        minimum=node.pilot_diameter,
+        maximum=maximum,
+        suggested=(node.pilot_diameter + maximum) / 2,
+    )
+
+
 def _validate_bosses(node: Standoffs, cavity: Face, holes: list[dict]) -> None:
     radius = node.boss_diameter / 2
     for hole in holes:
@@ -714,18 +763,7 @@ def _validate_bosses(node: Standoffs, cavity: Face, holes: list[dict]) -> None:
             continue
         else:
             message = f"standoffs {node.id} boss at hole {hole['id']} crosses a wall"
-            maximum = _maximum_boss_diameter(cavity, x, y)
-            limits = (
-                _limits(
-                    "bossDiameter",
-                    node.boss_diameter,
-                    minimum=node.pilot_diameter,
-                    maximum=maximum,
-                    suggested=(node.pilot_diameter + maximum) / 2,
-                )
-                if maximum > node.pilot_diameter
-                else None
-            )
+            limits = _boss_limits(node, cavity, x, y)
         details = {"limits": limits} if limits is not None else {}
         raise GraphError(
             "INVALID_PARAMETER",
