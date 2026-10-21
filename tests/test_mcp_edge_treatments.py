@@ -179,7 +179,11 @@ async def test_public_oversized_chamfer_error_is_atomic(tmp_path):
 
     error = results[2]
     assert error["ok"] is False and error["revision"] == 2
-    assert error["error"]["feature"] == "bevel"
+    assert error["error"]["code"] == "CHAMFER_FAILED"
+    assert error["error"]["operation"] == "feature"
+    assert error["error"]["featureId"] == "bevel"
+    assert error["error"]["retryable"] is False
+    assert error["error"]["affectedParts"] == ["box/outline"]
     assert error["error"]["distance"] == 100
     assert len(error["error"]["edges"]) == 4
     assert error["error"]["safeRange"] == "unknown"
