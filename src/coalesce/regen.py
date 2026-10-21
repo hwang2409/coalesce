@@ -600,6 +600,115 @@ class _EnclosureRegenerator:
                     self._validate_lid_clearance(node, lid, tool)
 
 
+def _apply_extrude(
+    node: Extrude,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    joined_material: dict[str, bool],
+    lineage: BodyLineage,
+) -> None:
+    if node.operation == "new_body":
+        prism = extrude_sketch(node, graph.nodes[node.sketch])
+        shapes[node.id] = prism.shape
+        states[node.id] = prism.candidates
+        provenance[node.id] = prism.candidates
+        lineage.create(node.id, prism.candidates)
+        return
+    if node.operation != "join":
+        raise GraphError(
+            "invalid_extrude_operation",
+            f"extrude {node.id} has unknown operation {node.operation}",
+            feature=node.id,
+            operation=node.operation,
+        )
+    assert node.target is not None
+    target = lineage.terminal(node.target)
+    result = _join_extrude(node, graph, shapes, states, target)
+    joined_material[node.id] = result.joined_material
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_cut(
+    node: Cut,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    removed_material: dict[str, bool],
+    lineage: BodyLineage,
+) -> None:
+    tool_sketch = graph.nodes[node.tool]
+    if not isinstance(tool_sketch, Sketch):
+        raise GraphError(
+            "invalid_cut_tool",
+            f"cut {node.id} tool must reference a sketch",
+            feature=node.id,
+            tool=node.tool,
+        )
+    target = lineage.terminal(node.target)
+    tool = make_cut_tool(node, tool_sketch, shapes[target])
+    result = cut_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        tool.shape,
+        tool.candidates,
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    removed_material[node.id] = result.removed_material
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_hole(
+    node: Hole,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    removed_material: dict[str, bool],
+    lineage: BodyLineage,
+) -> None:
+    target = lineage.terminal(node.target)
+    tool = make_hole_tool(node, shapes[target])
+    result = cut_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        tool.shape,
+        tool.candidates,
+        kind="hole",
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    removed_material[node.id] = result.removed_material
+    lineage.replace(node.target, node.id, result.candidates)
+
+
+def _apply_fillet(
+    node: Fillet,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    ordered_features: list[str],
+    consumed: dict[ElementKey, tuple[ElementKey, ...]],
+    lineage: BodyLineage,
+) -> None:
+    target = lineage.terminal(node.target)
+    result = fillet_shape(
+        node.id,
+        shapes[target],
+        states[target],
+        _resolve_fillet_edges(node, provenance, ordered_features),
+        node.radius,
+    )
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    consumed.update(result.consumed)
+    lineage.replace(node.target, node.id, result.candidates)
+
+
 def _regenerate(graph: Graph) -> RegenResult:
     ordered = graph.ordered()
     shapes: dict[str, Shape] = {}
@@ -634,77 +743,29 @@ def _regenerate(graph: Graph) -> RegenResult:
         elif isinstance(node, (PcbBase, PcbLid, PortCutout, Standoffs)):
             enclosure.apply(node)
         elif isinstance(node, Extrude):
-            if node.operation == "new_body":
-                prism = extrude_sketch(node, graph.nodes[node.sketch])
-                shapes[node.id] = prism.shape
-                states[node.id] = prism.candidates
-                provenance[node.id] = prism.candidates
-                lineage.create(node.id, prism.candidates)
-                continue
-            if node.operation != "join":
-                raise GraphError(
-                    "invalid_extrude_operation",
-                    f"extrude {node.id} has unknown operation {node.operation}",
-                    feature=node.id,
-                    operation=node.operation,
-                )
-            assert node.target is not None
-            target = lineage.terminal(node.target)
-            result = _join_extrude(node, graph, shapes, states, target)
-            joined_material[node.id] = result.joined_material
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            lineage.replace(node.target, node.id, result.candidates)
+            _apply_extrude(
+                node,
+                graph,
+                shapes,
+                states,
+                provenance,
+                joined_material,
+                lineage,
+            )
         elif isinstance(node, Cut):
-            tool_sketch = graph.nodes[node.tool]
-            if not isinstance(tool_sketch, Sketch):
-                raise GraphError(
-                    "invalid_cut_tool",
-                    f"cut {node.id} tool must reference a sketch",
-                    feature=node.id,
-                    tool=node.tool,
-                )
-            target = lineage.terminal(node.target)
-            tool = make_cut_tool(node, tool_sketch, shapes[target])
-            result = cut_shape(
-                node.id,
-                shapes[target],
-                states[target],
-                tool.shape,
-                tool.candidates,
-            )
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            removed_material[node.id] = result.removed_material
-            lineage.replace(node.target, node.id, result.candidates)
+            _apply_cut(node, graph, shapes, states, removed_material, lineage)
         elif isinstance(node, Hole):
-            target = lineage.terminal(node.target)
-            tool = make_hole_tool(node, shapes[target])
-            result = cut_shape(
-                node.id,
-                shapes[target],
-                states[target],
-                tool.shape,
-                tool.candidates,
-                kind="hole",
-            )
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            removed_material[node.id] = result.removed_material
-            lineage.replace(node.target, node.id, result.candidates)
+            _apply_hole(node, shapes, states, removed_material, lineage)
         elif isinstance(node, Fillet):
-            target = lineage.terminal(node.target)
-            result = fillet_shape(
-                node.id,
-                shapes[target],
-                states[target],
-                _resolve_fillet_edges(node, provenance, ordered_features),
-                node.radius,
+            _apply_fillet(
+                node,
+                shapes,
+                states,
+                provenance,
+                ordered_features,
+                consumed,
+                lineage,
             )
-            shapes[node.id] = result.shape
-            states[node.id] = result.candidates
-            consumed.update(result.consumed)
-            lineage.replace(node.target, node.id, result.candidates)
 
     enclosure.validate()
     return RegenResult(
