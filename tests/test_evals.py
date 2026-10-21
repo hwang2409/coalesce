@@ -558,8 +558,7 @@ def _zeta_project(tmp_path, directory):
     return project
 
 
-def test_zeta_relative_server_directory_resolves_from_project(tmp_path, monkeypatch):
-    import evals.run
+def test_zeta_relative_server_directory_resolves_from_project(tmp_path):
     from evals.run import _zeta_server_directory
 
     project = _zeta_project(tmp_path, Path("relative-server"))
