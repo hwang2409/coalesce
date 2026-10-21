@@ -2483,7 +2483,7 @@ class DocumentService:
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")
-        if kind in {"measurements", "feature", "reference"} and (
+        if kind in {"measurements", "feature", "reference", "enclosure"} and (
             failure := self._geometry_failure("query")
         ):
             return failure
@@ -2509,6 +2509,8 @@ class DocumentService:
                 return {**base, **self._metrics(select.get("role", "manufacturing"))}
             if kind == "feature":
                 return self._query_feature(select, base)
+            if kind == "enclosure":
+                return self._query_enclosure(select, base)
             if kind == "reference":
                 return self._query_reference(select, base)
             return _safe_error(
@@ -2517,6 +2519,35 @@ class DocumentService:
                 "INVALID_PARAMETER",
                 f"unknown query kind: {kind}",
                 operation="query",
+            )
+
+    def _query_enclosure(
+        self, select: dict[str, Any], base: dict[str, Any]
+    ) -> dict[str, Any]:
+        base_id = select.get("base")
+        if not isinstance(self._document.graph.nodes.get(base_id), PcbBase):
+            return _safe_error(
+                self._document.revision,
+                None,
+                "UNKNOWN_ID",
+                f"unknown pcb_base: {base_id}",
+                operation="query.enclosure",
+            )
+        try:
+            from .enclosure_inspection import inspect_enclosure
+
+            return {
+                **base,
+                **inspect_enclosure(self._document.graph, self._regen, base_id),
+            }
+        except (TypeError, ValueError):
+            _LOG.exception("enclosure inspection failed")
+            return _safe_error(
+                self._document.revision,
+                None,
+                "KERNEL_OPERATION_FAILED",
+                "the enclosure could not be inspected",
+                operation="query.enclosure",
             )
 
     def _query_feature(

@@ -23,6 +23,7 @@ packages = ["src/coalesce"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: exhaustive tests that take more than 60 seconds"]
 
 [tool.ruff]
 target-version = "py312"
