@@ -229,7 +229,8 @@ def _hole_positions(check, context):
         index, _distance = min(candidates, key=lambda item: item[1])
         matched.append(unmatched.pop(index))
     volume, expected_volume = _plate_volumes(context.step_metrics[0], context.step_shapes[0], matched)
-    # A plate task is a box minus its holes: any other cavity, pocket, or boss changes the volume.
+    # shortcut: aggregate volume, so a box minus its holes; an extra cavity, pocket, or boss changes it,
+    # but equal-volume compensation can spoof it (see evals/README.md for the upgrade condition).
     exact = math.isclose(volume, expected_volume, rel_tol=1e-6, abs_tol=1e-3)
     return _result(
         check,
