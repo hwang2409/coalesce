@@ -555,7 +555,7 @@ function showAll(focus = true) {
 $('showing-clear').addEventListener('click', () => showAll());
 // Escape shows all parts again; in the section controls their own Escape ends the section view first.
 // a field, a disclosure or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
-const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), summary, details[open], dialog';
+const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || event.defaultPrevented || !selected || event.target.closest?.(OWNS_ESCAPE)) return;
   event.preventDefault();
@@ -1032,6 +1032,12 @@ async function loadMeshes(parts) {
   if (failed) throw failed.reason;
 }
 
+// the shown part still exists and its fit row still points at it
+function selectionExists(data, { partId, key }) {
+  const fitRowPointsAtPart = ({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && row.partId === partId);
+  return data.parts.some((part) => part.partId === partId) && data.fit.some(fitRowPointsAtPart);
+}
+
 async function loadOne(revision) {
   if (!current) notice(`Loading revision ${revision}`);
   else $('revision-meta').textContent = `Loading revision ${revision}`;
@@ -1044,8 +1050,7 @@ async function loadOne(revision) {
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     // a shown part outlives a new revision while its fit row still points at it; else all parts again,
     // and focus on its row follows to the replacement row
-    const dropped = selected && !(data.parts.some((part) => part.partId === selected.partId)
-      && data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === selected.key && row.partId === selected.partId)));
+    const dropped = selected && !selectionExists(data, selected);
     const held = dropped && [fitRowFor(selected.key), partRow(selected.partId)].includes(document.activeElement);
     for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
     clearGroup(model, { ownsGeometry: false });

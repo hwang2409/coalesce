@@ -295,10 +295,11 @@ def test_shown_part_ends_only_by_its_own_escape_or_a_revision_that_drops_it(modu
         step("empty", wait={"ready": True})
         store.publish(1, [ScenePart("base", plate(6)), lid], fit=gap_check("lid"))
         step("shown", wait={"revision": 1}, do=[{"fitRow": 0}, {"settle": True}])
-        # Escape in a disclosure is the disclosure's own: the part stays shown
-        kept = step("summary-escape", do=[{"focus": ".fit-evidence > summary"}, {"key": "Escape"}, {"settle": True}])
-        assert kept["scene"]["faded"] == [True, False]
-        # Escape anywhere else shows all parts again
+        # a native disclosure does not use Escape, so Escape on its summary shows all parts
+        summary = step("summary-escape", do=[{"focus": ".fit-evidence > summary"}, {"key": "Escape"}, {"settle": True}])
+        assert summary["scene"]["faded"] == [False, False]
+        # Escape on the page shows all parts too
+        step("shown-for-body", do=[{"fitRow": 0}, {"settle": True}])
         cleared = step("body-escape", do=[{"blur": True}, {"key": "Escape"}, {"settle": True}])
         assert cleared["scene"]["faded"] == [False, False]
 
