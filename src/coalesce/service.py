@@ -2284,7 +2284,7 @@ class DocumentService:
         details = failure["error"]
         feature_ids = [
             value
-            for key in ("target", "consumer", "feature")
+            for key in ("target", "consumer", "featureId")
             if isinstance((value := details.get(key)), str)
         ]
         self._publisher.publish_failure(

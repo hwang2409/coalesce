@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .graph import GraphError
 from .server import run_stdio
-from .service import DocumentService, _safe_error
+from .service import DocumentService, _graph_error_response
 
 
 async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> None:
@@ -62,19 +62,7 @@ def main() -> None:
             revision = int(json.loads(arguments.document.read_text()).get("revision", 0))
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             revision = 0
-        details = {
-            key: value
-            for key, value in error.error.items()
-            if key not in {"code", "message"}
-        }
-        failure = _safe_error(
-            revision,
-            None,
-            error.error["code"],
-            str(error),
-            operation="load",
-            **details,
-        )
+        failure = _graph_error_response(revision, None, "load", error)
         print(json.dumps(failure), file=sys.stderr, flush=True)
         sys.exit(2)
 
