@@ -2,7 +2,7 @@ import json
 import shutil
 
 import pytest
-from build123d import Align, Box, Compound, Face, Location, Shape
+from build123d import Align, Box, Compound, Edge, Face, Location, Shape
 from jsonschema import validate
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -20,9 +20,9 @@ from test_pcb_lid import lid_request
 from test_port_cutout import port_request
 
 from coalesce.enclosure_inspection import inspect_enclosure
-from coalesce.graph import Fillet
+from coalesce.graph import Fillet, GraphError
 from coalesce.pcb import board_loop_wire
-from coalesce.references import Cardinality, Reference
+from coalesce.references import Cardinality, Position, Reference
 from coalesce.regen import regenerate
 from coalesce.serialization import dumps, loads
 from coalesce.service import DocumentService
@@ -98,6 +98,90 @@ def _filleted_inspection(service, filleted_role):
         ]
     )
     return inspect_enclosure(graph, regenerated, "base"), _exact_distance(blend, opposite)
+
+
+def _edge_reference(candidate):
+    center = candidate.descriptor["center"]
+    return Reference(
+        candidate.key.feature,
+        candidate.key.role,
+        source=candidate.key.source,
+        body=candidate.key.body,
+        filters=[
+            Position(direction=direction, value=center[index])
+            for index, direction in enumerate(((1, 0, 0), (0, 1, 0), (0, 0, 1)))
+        ],
+    )
+
+
+def _terminal_edge_candidates(regenerated, terminal):
+    final_edges = regenerated.shapes[terminal].edges()
+    candidates = [
+        candidate
+        for items in regenerated.provenance.values()
+        for candidate in items
+        if isinstance(candidate.entity, Edge)
+        and any(candidate.entity.is_same(edge) for edge in final_edges)
+    ]
+    unique = []
+    for candidate in candidates:
+        if not any(candidate.entity.is_same(existing.entity) for existing in unique):
+            unique.append(candidate)
+    return unique
+
+
+def _boundary_faces(regenerated, fillet_id, edge_role, kind):
+    role = {"wall": ("inner_wall", "outer_wall"), "floor": ("floor", "floor_bottom")}
+    inside_role, outside_role = role[kind]
+    inside = [
+        candidate.entity
+        for candidate in regenerated.provenance["base"]
+        if candidate.key.role == inside_role
+    ]
+    outside = [
+        candidate.entity
+        for candidate in regenerated.provenance["base"]
+        if candidate.key.role == outside_role
+    ]
+    blends = [
+        candidate.entity
+        for candidate in regenerated.provenance[fillet_id]
+        if candidate.key.role.startswith("blend(")
+    ]
+    if inside_role in edge_role:
+        inside.extend(blends)
+    if outside_role in edge_role:
+        outside.extend(blends)
+    return Compound(children=inside), Compound(children=outside)
+
+
+def _independent_thicknesses(regenerated, fillet_id, edge_role):
+    return {
+        kind: _exact_distance(*_boundary_faces(regenerated, fillet_id, edge_role, kind))
+        for kind in ("wall", "floor")
+    }
+
+
+def _thickness_outcome(result, truth):
+    measured = {
+        "wall": result["base"]["minimumWallThickness"],
+        "floor": result["base"]["floorThickness"],
+    }
+    if any(value.get("status") == "unknown" for value in measured.values()):
+        return "unknown"
+    exact = all(
+        measured[kind]["value"] == pytest.approx(truth[kind], abs=1e-6) for kind in truth
+    )
+    return "exact" if exact else "wrong"
+
+
+def _fillet_case(graph, reference, fillet_id):
+    graph = loads(dumps(graph))
+    graph.add(Fillet(fillet_id, target="port", edges=[reference], radius=0.25))
+    regenerated = regenerate(graph)
+    result = inspect_enclosure(graph, regenerated, "base")
+    truth = _independent_thicknesses(regenerated, fillet_id, reference.role)
+    return _thickness_outcome(result, truth)
 
 
 def _assert_bbox(actual, expected):
@@ -409,6 +493,57 @@ async def test_enclosure_query_without_lid_or_ports_returns_empty_lists(tmp_path
     assert result["ports"] == []
     assert result["standoffs"]["count"] == 0
     assert result["standoffs"]["items"] == []
+
+
+def test_enclosure_query_never_misreports_aperture_edge_fillets(tmp_path):
+    service, _, _ = _base_service(tmp_path, port=True)
+    roles = [
+        "between(outer_wall,port_top)",
+        "between(inner_wall,port_top)",
+        "between(outer_wall,port_side)",
+        "between(inner_wall,port_side)",
+        "between(outer_wall,port_bottom)",
+        "between(inner_wall,port_bottom)",
+    ]
+    outcomes = {}
+    for index, role in enumerate(roles):
+        reference = Reference("port", role, Cardinality.ONE_OR_MORE)
+        outcomes[role] = _fillet_case(service._document.graph, reference, f"aperture_{index}")
+
+    assert set(outcomes.values()) <= {"exact", "unknown"}, outcomes
+
+
+@pytest.mark.slow
+def test_enclosure_query_thickness_sweep_never_returns_a_wrong_value(tmp_path):
+    service, _, terminal = _base_service(tmp_path, standoffs=True, port=True)
+    candidates = _terminal_edge_candidates(service._regen, terminal)
+    counts = {
+        "tried": len(candidates),
+        "filleted": 0,
+        "exact": 0,
+        "unknown": 0,
+        "wrong": 0,
+    }
+    for index, candidate in enumerate(candidates):
+        try:
+            outcome = _fillet_case(
+                service._document.graph,
+                _edge_reference(candidate),
+                f"sweep_{index}",
+            )
+        except GraphError as error:
+            assert error.error["code"] == "fillet_failed"
+            continue
+        counts["filleted"] += 1
+        counts[outcome] += 1
+
+    print(
+        "thickness sweep: "
+        + ", ".join(f"{key}={value}" for key, value in counts.items())
+    )
+    assert counts["tried"] > 0
+    assert counts["filleted"] == counts["exact"] + counts["unknown"] + counts["wrong"]
+    assert counts["wrong"] == 0, counts
 
 
 @pytest.mark.parametrize("filleted_role", ["outer_wall", "inner_wall"])
