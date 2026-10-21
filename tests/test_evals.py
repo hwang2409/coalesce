@@ -15,23 +15,23 @@ def _document(path):
 
 def _inspection(monkeypatch, inspected):
     import coalesce.service
-    from coalesce.graph import PcbBase
-
-    class Graph:
-        def ordered(self):
-            return [PcbBase(id="base")]
 
     class FakeService:
         calls = 0
 
         def __init__(self, *_args, **_kwargs):
-            self._document = type("Document", (), {"graph": Graph()})()
+            pass
 
         def _ensure_geometry(self):
             FakeService.calls += 1
 
-        def query(self, _query):
-            return inspected
+        def query(self, query):
+            if query["select"]["kind"] == "graph":
+                return {
+                    "ok": True,
+                    "graph": {"nodes": [{"type": "PcbBase", "id": "base"}]},
+                }
+            return {"ok": True, **inspected}
 
     monkeypatch.setattr(coalesce.service, "DocumentService", FakeService)
     return FakeService
@@ -53,7 +53,7 @@ def test_root_only_step_does_not_count(tmp_path):
     def fake(_prompt, run_dir, **_kwargs):
         _document(run_dir / "model.coalesce.json")
         export_step(Box(60, 40, 6), run_dir / "stray.step")
-        return {}
+        return {"returncode": 0, "transcript_parsed": True}
 
     task_dir = tmp_path / "tasks"
     task_dir.mkdir()
@@ -154,6 +154,25 @@ def test_correct_single_plate_in_stated_frame_passes(tmp_path):
     assert all(result["status"] == "pass" for result in results)
 
 
+def test_plate_with_fifth_qualifying_hole_fails(tmp_path):
+    from build123d import Align, Cylinder, Pos, export_step
+
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    plate = _plate_with_holes()
+    plate -= Pos(30, 20, 0) * Cylinder(
+        1.7, 6, align=(Align.CENTER, Align.CENTER, Align.MIN)
+    )
+    export_step(plate, steps / "plate.step")
+    results = check_task(
+        _plate_holes_task(), _document(tmp_path / "model.coalesce.json"), steps
+    )
+    holes = next(result for result in results if result["kind"] == "hole_positions")
+    assert holes["status"] == "fail"
+    assert holes["unmatchedDetected"] == [[30.0, 20.0]]
+    assert holes["unmatchedExpected"] == []
+
+
 def test_blocked_expected_port_fails(tmp_path, monkeypatch):
     port = {"reference": "J1", "wall": "left", "blocked": True, "clearance": {"min": {"value": .5}}}
     result, _ = _enclosure_check(tmp_path, monkeypatch, {"ports": [port]}, {"kind": "port_opening_clears_connector", "reference": "J1", "wall": "left"})
@@ -199,6 +218,20 @@ def test_base_and_lid_part_roles_pass_after_base_edit(tmp_path, monkeypatch):
     }
     result, _ = _enclosure_check(tmp_path, monkeypatch, inspected, {"kind": "enclosure_parts"})
     assert result["status"] == "pass"
+
+
+def test_extra_terminal_part_fails(tmp_path, monkeypatch):
+    inspected = {
+        "base": {"partId": "part:base"},
+        "lids": [{"featureId": "lid", "partId": "part:lid"}],
+        "terminalParts": [
+            {"partId": "part:base"},
+            {"partId": "part:lid"},
+            {"partId": "part:unexpected"},
+        ],
+    }
+    result, _ = _enclosure_check(tmp_path, monkeypatch, inspected, {"kind": "enclosure_parts"})
+    assert result["status"] == "fail"
 
 
 def test_reference_resolution_uses_regeneration_not_warnings(tmp_path, monkeypatch):
@@ -278,14 +311,79 @@ def test_pcb_change_rebuilt_with_new_ids_fails(tmp_path):
     results = check_task(task, document, tmp_path / "steps", facts)
     edit = next(result for result in results if result["kind"] == "edit_survival")
     assert edit["status"] == "fail"
-    assert "base partId changed" in edit["reason"]
+    assert edit["reason"] == "saved part or reference identity changed"
+    assert edit["actual"]["basePartId"].startswith("replacement-base/")
+
+
+def _pcb_change_with_document_parts(tmp_path):
+    task, document, facts = _staged_pcb_change(tmp_path)
+    task["documentParts"] = True
+    _change_wall(document)
+    return task, document, facts
+
+
+def _export_document_parts(document, steps):
+    from coalesce.service import DocumentService
+
+    service = DocumentService(document, warmup=False)
+    measured = service.query({"select": {"kind": "measurements"}})
+    assert measured["ok"] is True
+    steps.mkdir()
+    for index, part in enumerate(measured["parts"]):
+        result = service.export({
+            "expectedRevision": service.revision,
+            "path": str((steps / f"part-{index}.step").resolve()),
+            "partIds": [part["partId"]],
+        })
+        assert result["ok"] is True
 
 
 def test_pcb_change_correct_in_place_edit_passes(tmp_path):
-    task, document, facts = _staged_pcb_change(tmp_path)
-    _change_wall(document)
+    task, document, facts = _pcb_change_with_document_parts(tmp_path)
+    _export_document_parts(document, tmp_path / "steps")
     results = check_task(task, document, tmp_path / "steps", facts)
     assert all(result["status"] == "pass" for result in results), results
+
+
+def test_pcb_document_with_unrelated_cube_steps_fails(tmp_path):
+    from build123d import Box, Pos, export_step
+
+    task, document, facts = _pcb_change_with_document_parts(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(1, 1, 1), steps / "wrong-a.step")
+    export_step(Pos(10, 0, 0) * Box(1, 1, 1), steps / "wrong-b.step")
+    results = check_task(task, document, steps, facts)
+    binding = next(result for result in results if result["kind"] == "document_parts")
+    assert binding["status"] == "fail"
+    assert len(binding["unmappedSteps"]) == 2
+    assert len(binding["unmatchedParts"]) == 2
+
+
+def test_pcb_stale_step_exported_before_edit_fails(tmp_path):
+    task, document, facts = _staged_pcb_change(tmp_path)
+    task["documentParts"] = True
+    steps = tmp_path / "steps"
+    _export_document_parts(document, steps)
+    _change_wall(document)
+    results = check_task(task, document, steps, facts)
+    binding = next(result for result in results if result["kind"] == "document_parts")
+    assert binding["status"] == "fail"
+    assert binding["unmappedSteps"]
+    assert binding["unmatchedParts"]
+
+
+def test_pcb_duplicate_step_for_one_document_part_fails(tmp_path):
+    import shutil
+
+    task, document, facts = _pcb_change_with_document_parts(tmp_path)
+    steps = tmp_path / "steps"
+    _export_document_parts(document, steps)
+    shutil.copy2(steps / "part-0.step", steps / "duplicate.step")
+    results = check_task(task, document, steps, facts)
+    binding = next(result for result in results if result["kind"] == "document_parts")
+    assert binding["status"] == "fail"
+    assert len(binding["duplicateParts"]) == 1
 
 
 def test_one_enclosure_inspection_per_run(tmp_path, monkeypatch):
@@ -327,7 +425,12 @@ def test_claude_stream_transcript_metadata():
         {"type": "result", "result": "done", "total_cost_usd": 0.0123},
     ]
     metadata, final = _claude_metadata("\n".join(json.dumps(line) for line in lines))
-    assert metadata == {"tool_calls": 2, "failed_tool_calls": 1, "cost_usd": 0.0123}
+    assert metadata == {
+        "tool_calls": 2,
+        "failed_tool_calls": 1,
+        "transcript_parsed": True,
+        "cost_usd": 0.0123,
+    }
     assert final == "done"
 
 
@@ -339,7 +442,7 @@ def test_zeta_json_transcript_metadata_from_real_shape():
 {"type":"usage","usage":{"output_tokens":12}}
 {"type":"message","role":"assistant","text":"done"}"""
     metadata, final = _zeta_metadata(transcript)
-    assert metadata == {"tool_calls": 2, "failed_tool_calls": 1}
+    assert metadata == {"tool_calls": 2, "failed_tool_calls": 1, "transcript_parsed": True}
     assert final == "done"
 
 
@@ -403,13 +506,77 @@ def test_task_files_load_and_validate():
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 
+def test_harness_nonzero_returncode_fails_with_good_artifacts(tmp_path):
+    from build123d import export_step
+
+    from evals.run import run_tasks
+
+    def failed_harness(_prompt, run_dir, **_kwargs):
+        _document(run_dir / "model.coalesce.json")
+        (run_dir / "steps").mkdir()
+        export_step(
+            _plate_with_holes(),
+            run_dir / "steps" / "plate.step",
+        )
+        return {"returncode": 1, "transcript_parsed": True}
+
+    task_dir = tmp_path / "tasks"
+    task_dir.mkdir()
+    (task_dir / "plate-holes.json").write_text(
+        Path("evals/tasks/plate_holes.json").read_text()
+    )
+    rows = run_tasks(task_dir, tmp_path / "out", ["plate-holes"], ["fake"], failed_harness)
+    assert rows[0]["overall"] is False
+    assert rows[0]["reason"] == "harness exited with return code 1"
+
+
+@pytest.mark.parametrize(("metadata", "reason"), [
+    ({"error": "agent failed", "returncode": 0, "transcript_parsed": True},
+     "harness error: agent failed"),
+    ({"exception": "runner crashed", "returncode": 0, "transcript_parsed": True},
+     "harness exception: runner crashed"),
+    ({"returncode": 0, "transcript_parsed": False}, "harness transcript was not parsed"),
+])
+def test_harness_error_or_unparsed_transcript_prevents_scoring(tmp_path, metadata, reason):
+    from evals.run import _run_result
+
+    row = _run_result({"id": "x"}, "fake", tmp_path, metadata)
+    assert row["overall"] is False
+    assert row["checks"] == []
+    assert row["reason"] == reason
+
+
+def test_existing_run_directory_is_rejected_before_reading(tmp_path):
+    from evals.run import run_tasks
+
+    task_dir = tmp_path / "tasks"
+    task_dir.mkdir()
+    (task_dir / "one.json").write_text(json.dumps({
+        "id": "one", "tier": "easy", "prompt": "new", "fixtures": [],
+        "checks": [{"kind": "step_validity"}],
+    }))
+    run_dir = tmp_path / "out" / "one" / "fake"
+    run_dir.mkdir(parents=True)
+    prompt = run_dir / "prompt.txt"
+    prompt.write_text("existing")
+
+    with pytest.raises(FileExistsError, match="run directory already exists"):
+        run_tasks(task_dir, tmp_path / "out", ["one"], ["fake"], lambda *_a, **_k: {})
+    assert prompt.read_text() == "existing"
+
+
 def test_runner_fake_harness(tmp_path):
     from evals.run import run_tasks
 
     def fake(prompt, run_dir, **kwargs):
         _document(run_dir / "model.coalesce.json")
         (run_dir / "steps").mkdir()
-        return {"tool_calls": 1, "failed_tool_calls": 0}
+        return {
+            "tool_calls": 1,
+            "failed_tool_calls": 0,
+            "returncode": 0,
+            "transcript_parsed": True,
+        }
 
     task_dir = tmp_path / "tasks"
     task_dir.mkdir()

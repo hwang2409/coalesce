@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .checks import check_task
+from .checks import check_task, identity_snapshot
 from .tasks import select_tasks
 
 
@@ -47,15 +47,17 @@ def _build_pcb_change(document, fixture_dir):
             "boardSeatHeight": _quantity(1),
         },
     }))
-    board = service._document.graph.nodes["board"]
+    graph = service.query({"select": {"kind": "graph"}})
+    _require_ok(graph)
+    board = next(node for node in graph["graph"]["nodes"] if node["id"] == "board")
     mounting_footprints = {
         item["id"]
-        for item in board.mechanics["footprints"]
+        for item in board["mechanics"]["footprints"]
         if item["libraryId"].startswith("MountingHole:")
     }
     mounting_holes = [
         item["id"]
-        for item in board.mechanics["holes"]
+        for item in board["mechanics"]["holes"]
         if item["footprintId"] in mounting_footprints
     ]
     _require_ok(service.feature({
@@ -109,16 +111,8 @@ def _build_pcb_change(document, fixture_dir):
         raise RuntimeError(f"before-state wall is not 2 mm: {wall}")
     return {
         "revision": service.revision,
-        "basePartId": inspected["base"]["partId"],
-        "lidPartIds": {item["featureId"]: item["partId"] for item in inspected["lids"]},
-        "port": {
-            field: port[field]
-            for field in ("featureId", "reference", "footprintId", "wall")
-        },
         "wallThickness": wall,
-        "manufacturingPartIds": sorted(
-            item["partId"] for item in inspected["terminalParts"]
-        ),
+        **identity_snapshot(inspected, port["featureId"]),
     }
 
 
@@ -158,7 +152,7 @@ def _claude_message_counts(event):
 
 
 def _claude_metadata(transcript):
-    metadata = {"tool_calls": 0, "failed_tool_calls": 0}
+    metadata = {"tool_calls": 0, "failed_tool_calls": 0, "transcript_parsed": False}
     final = ""
     for event in _json_events(transcript):
         tools, failures = _claude_message_counts(event)
@@ -167,20 +161,24 @@ def _claude_metadata(transcript):
         if event.get("type") == "user":
             metadata["failed_tool_calls"] += failures
         if event.get("type") == "result":
+            metadata["transcript_parsed"] = True
             final = event.get("result", "")
+            if event.get("is_error"):
+                metadata["error"] = final or event.get("subtype") or "unknown harness error"
             if event.get("total_cost_usd") is not None:
                 metadata["cost_usd"] = event["total_cost_usd"]
     return metadata, final
 
 
 def _zeta_metadata(transcript):
-    metadata = {"tool_calls": 0, "failed_tool_calls": 0}
+    metadata = {"tool_calls": 0, "failed_tool_calls": 0, "transcript_parsed": False}
     final = ""
     for event in _json_events(transcript):
         event_type = event.get("type")
         metadata["tool_calls"] += event_type == "tool_call"
         metadata["failed_tool_calls"] += event_type == "tool_result" and event.get("is_error", False)
         if event_type == "message" and event.get("role") == "assistant":
+            metadata["transcript_parsed"] = True
             final = event.get("text", "")
         cost = event.get("cost_usd") or (event.get("usage") or {}).get("cost_usd")
         if cost is not None:
@@ -292,9 +290,50 @@ def _copy_fixtures(task, run_dir):
         shutil.copy2(source, fixtures / source.name)
 
 
+def _harness_failure(metadata):
+    for field in ("error", "exception"):
+        if field in metadata:
+            return f"harness {field}: {metadata[field]}"
+    if "returncode" not in metadata:
+        return "harness return code is missing"
+    if metadata["returncode"] != 0:
+        return f"harness exited with return code {metadata['returncode']}"
+    if metadata.get("transcript_parsed") is not True:
+        return "harness transcript was not parsed"
+    return None
+
+
+def _run_result(task, model, run_dir, metadata):
+    failure = _harness_failure(metadata)
+    if failure:
+        return {
+            "task": task["id"],
+            "model": model,
+            "checks": [],
+            "overall": False,
+            "reason": failure,
+            **metadata,
+        }
+    results = check_task(
+        task,
+        run_dir / "model.coalesce.json",
+        run_dir / "steps",
+        run_dir / "before-state.json",
+    )
+    return {
+        "task": task["id"],
+        "model": model,
+        "checks": results,
+        "overall": bool(results) and all(result["status"] == "pass" for result in results),
+        **metadata,
+    }
+
+
 def _run_task(task, model, out, harness, kwargs):
     run_dir = out / task["id"] / model
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if run_dir.exists():
+        raise FileExistsError(f"run directory already exists: {run_dir}; choose a new output path")
+    run_dir.mkdir(parents=True)
     (run_dir / "prompt.txt").write_text(task["prompt"])
     _copy_fixtures(task, run_dir)
     started = time.monotonic()
@@ -309,19 +348,7 @@ def _run_task(task, model, out, harness, kwargs):
     except Exception as error:  # noqa: BLE001 - harness failures are scorecard evidence
         metadata = {"error": str(error)}
     metadata.setdefault("wall_time", time.monotonic() - started)
-    results = check_task(
-        task,
-        run_dir / "model.coalesce.json",
-        run_dir / "steps",
-        run_dir / "before-state.json",
-    )
-    row = {
-        "task": task["id"],
-        "model": model,
-        "checks": results,
-        "overall": bool(results) and all(result["status"] == "pass" for result in results),
-        **metadata,
-    }
+    row = _run_result(task, model, run_dir, metadata)
     (run_dir / "check-results.json").write_text(json.dumps(row, indent=2))
     return row
 

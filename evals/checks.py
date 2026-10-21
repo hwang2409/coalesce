@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import tempfile
 from pathlib import Path
 
 
@@ -23,6 +25,7 @@ class ArtifactContext:
         self._step_shapes = None
         self._service = None
         self._inspection = None
+        self._document_parts = None
 
     @property
     def step_metrics(self):
@@ -57,16 +60,43 @@ class ArtifactContext:
     @property
     def inspection(self):
         if self._inspection is None:
-            from coalesce.graph import PcbBase
-
-            graph = self.service._document.graph
-            base = next((node.id for node in graph.ordered() if isinstance(node, PcbBase)), None)
+            graph = self.service.query({"select": {"kind": "graph"}})
+            if graph.get("ok") is not True:
+                raise ValueError(f"saved document graph query failed: {graph}")
+            base = next(
+                (node["id"] for node in graph["graph"]["nodes"] if node["type"] == "PcbBase"),
+                None,
+            )
             if base is None:
                 raise ValueError("saved document has no pcb base")
             self._inspection = self.service.query({"select": {"kind": "enclosure", "base": base}})
-            if self._inspection.get("ok") is False:
-                raise ValueError(str(self._inspection))
+            if self._inspection.get("ok") is not True:
+                raise ValueError(f"saved document enclosure query failed: {self._inspection}")
         return self._inspection
+
+    @property
+    def document_parts(self):
+        if self._document_parts is None:
+            part_ids = [part["partId"] for part in self.inspection["terminalParts"]]
+            measured = self.service.query({"select": {"kind": "measurements"}})
+            if measured.get("ok") is not True:
+                raise ValueError(f"saved document measurements query failed: {measured}")
+            if {part["partId"] for part in measured["parts"]} != set(part_ids):
+                raise ValueError("enclosure and measurement manufacturing parts disagree")
+            with tempfile.TemporaryDirectory(prefix="coalesce-eval-") as temporary:
+                directory = Path(temporary)
+                self._document_parts = {}
+                for index, part_id in enumerate(part_ids):
+                    path = directory / f"reference-{index}.step"
+                    exported = self.service.export({
+                        "expectedRevision": measured["revision"],
+                        "path": str(path),
+                        "partIds": [part_id],
+                    })
+                    if exported.get("ok") is not True:
+                        raise ValueError(f"reference export failed: {exported}")
+                    self._document_parts[part_id] = _single_solid_metrics(path)
+        return self._document_parts
 
 
 def _parts_result(expected, context):
@@ -176,12 +206,101 @@ def _hole_positions(check, context):
     points = _metric_hole_points(
         context.step_metrics[0], context.step_shapes[0], check["diameter"]
     )
+    unmatched = list(points)
+    unmatched_expected = []
     tolerance = check.get("tolerance", 0.1)
-    passed = all(
-        any(abs(x - expected_x) <= tolerance and abs(y - expected_y) <= tolerance for x, y in points)
-        for expected_x, expected_y in check["positions"]
+    for expected_x, expected_y in check["positions"]:
+        candidates = [
+            (index, math.hypot(x - expected_x, y - expected_y))
+            for index, (x, y) in enumerate(unmatched)
+            if abs(x - expected_x) <= tolerance and abs(y - expected_y) <= tolerance
+        ]
+        if not candidates:
+            unmatched_expected.append([expected_x, expected_y])
+            continue
+        index, _distance = min(candidates, key=lambda item: item[1])
+        unmatched.pop(index)
+    return _result(
+        check,
+        "pass" if not unmatched and not unmatched_expected else "fail",
+        actual=[list(point) for point in points],
+        unmatchedDetected=[list(point) for point in unmatched],
+        unmatchedExpected=unmatched_expected,
     )
-    return _result(check, "pass" if passed else "fail", actual=points)
+
+
+def _solid_metrics(solid):
+    from build123d import CenterOf
+
+    box = solid.bounding_box()
+    center = solid.center(CenterOf.MASS)
+    return {
+        "volume": float(solid.volume),
+        "bbox": [
+            float(value)
+            for point in (box.min, box.max)
+            for value in (point.X, point.Y, point.Z)
+        ],
+        "centerOfMass": [float(center.X), float(center.Y), float(center.Z)],
+    }
+
+
+def _single_solid_metrics(path):
+    from build123d import import_step
+
+    solids = list(import_step(path).solids())
+    if len(solids) != 1:
+        raise ValueError(f"reference export contains {len(solids)} solids")
+    return _solid_metrics(solids[0])
+
+
+def _same_solid(first, second):
+    return all(
+        math.isclose(left, right, rel_tol=1e-7, abs_tol=1e-6)
+        for field in ("volume", "bbox", "centerOfMass")
+        for left, right in zip(
+            first[field] if isinstance(first[field], list) else [first[field]],
+            second[field] if isinstance(second[field], list) else [second[field]],
+            strict=True,
+        )
+    )
+
+
+def _document_parts(context):
+    expected = context.document_parts
+    matches = {}
+    unmapped = []
+    ambiguous = []
+    for path, shape in zip(context.step_paths, context.step_shapes, strict=True):
+        for index, solid in enumerate(shape.solids()):
+            solid_id = f"{path}#{index}"
+            candidates = [
+                part_id
+                for part_id, reference in expected.items()
+                if _same_solid(_solid_metrics(solid), reference)
+            ]
+            if len(candidates) == 1:
+                matches[solid_id] = candidates[0]
+            elif candidates:
+                ambiguous.append({"solid": solid_id, "partIds": candidates})
+            else:
+                unmapped.append(solid_id)
+    counts = {
+        part_id: sum(matched == part_id for matched in matches.values())
+        for part_id in expected
+    }
+    unmatched = [part_id for part_id, count in counts.items() if count == 0]
+    duplicates = [part_id for part_id, count in counts.items() if count > 1]
+    passed = not unmapped and not ambiguous and not unmatched and not duplicates
+    return {
+        "kind": "document_parts",
+        "status": "pass" if passed else "fail",
+        "matches": matches,
+        "unmappedSteps": unmapped,
+        "ambiguousSteps": ambiguous,
+        "unmatchedParts": unmatched,
+        "duplicateParts": duplicates,
+    }
 
 
 def _step_check(check, context):
@@ -237,9 +356,10 @@ def _lid_fit(check, inspected):
 def _enclosure_parts(check, inspected):
     terminal_ids = {part.get("partId") for part in inspected.get("terminalParts", [])}
     base_id = inspected.get("base", {}).get("partId")
-    lid_ids = {lid.get("partId") for lid in inspected.get("lids", [])}
-    passed = base_id in terminal_ids and bool(lid_ids) and lid_ids <= terminal_ids
-    actual = {"base": base_id, "lids": sorted(lid_ids - {None})}
+    lid_ids = {lid.get("partId") for lid in inspected.get("lids", [])} - {None}
+    expected_ids = {base_id, *lid_ids} - {None}
+    passed = base_id is not None and len(lid_ids) == 1 and terminal_ids == expected_ids
+    actual = {"base": base_id, "lids": sorted(lid_ids), "terminalParts": sorted(terminal_ids)}
     return _result(check, "pass" if passed else "fail", actual=actual)
 
 
@@ -251,57 +371,45 @@ def _standoffs(check, inspected):
     return _result(check, "pass" if passed else "fail", actual=evidence)
 
 
+def identity_snapshot(inspected, port_feature_id="port"):
+    port = next(
+        (item for item in inspected.get("ports", []) if item.get("featureId") == port_feature_id),
+        None,
+    )
+    return {
+        "basePartId": inspected.get("base", {}).get("partId"),
+        "lidPartIds": {
+            lid.get("featureId"): lid.get("partId") for lid in inspected.get("lids", [])
+        },
+        "port": (
+            {field: port.get(field) for field in ("featureId", "reference", "footprintId", "wall")}
+            if port
+            else None
+        ),
+        "manufacturingPartIds": sorted(
+            part.get("partId")
+            for part in inspected.get("terminalParts", [])
+            if part.get("partId")
+        ),
+    }
+
+
 def _edit_survival(check, context, inspected):
     if context.before_state is None or not context.before_state.is_file():
         return _result(check, "fail", reason="runner before-state facts are missing")
     before = json.loads(context.before_state.read_text())
     if context.service.revision <= before["revision"]:
         return _result(check, "fail", reason="document revision did not advance from before-state")
-    base_id = inspected.get("base", {}).get("partId")
-    if base_id != before["basePartId"]:
-        return _result(
-            check,
-            "fail",
-            reason=f"base partId changed: {before['basePartId']} -> {base_id}",
-        )
-    lids = {lid.get("featureId"): lid.get("partId") for lid in inspected.get("lids", [])}
-    if lids != before["lidPartIds"]:
-        return _result(check, "fail", reason="lid feature or partId changed", actual=lids)
-    ports = [
-        port
-        for port in inspected.get("ports", [])
-        if port.get("featureId") == before["port"]["featureId"]
-    ]
-    if len(ports) != 1:
-        return _result(check, "fail", reason="saved port feature id no longer resolves")
-    port = ports[0]
-    expected_port = before["port"]
-    if any(port.get(field) != expected_port[field] for field in ("reference", "footprintId", "wall")):
-        return _result(check, "fail", reason="saved port reference changed", actual=port)
+    expected = {field: before[field] for field in identity_snapshot(inspected)}
+    actual = identity_snapshot(inspected, before["port"]["featureId"])
+    if actual != expected:
+        return _result(check, "fail", reason="saved part or reference identity changed", actual=actual)
+    port = next(
+        item for item in inspected["ports"] if item.get("featureId") == before["port"]["featureId"]
+    )
     if port.get("blocked") is not False:
         return _result(check, "fail", reason="saved port no longer clears J1", actual=port)
-    part_ids = sorted(
-        part.get("partId") for part in inspected.get("terminalParts", []) if part.get("partId")
-    )
-    if part_ids != before["manufacturingPartIds"]:
-        return _result(
-            check,
-            "fail",
-            reason="manufacturing bodies were added, removed, or orphaned",
-            actual=part_ids,
-        )
-    orphaned = [
-        warning
-        for warning in inspected.get("warnings", [])
-        if warning.get("code") == "OTHER_MANUFACTURING_BODY"
-    ]
-    if orphaned:
-        return _result(check, "fail", reason="orphan manufacturing body", actual=orphaned)
-    return _result(
-        check,
-        "pass",
-        actual={"basePartId": base_id, "lidPartIds": lids, "port": port},
-    )
+    return _result(check, "pass", actual=actual)
 
 
 def _enclosure_check(check, context):
@@ -336,6 +444,11 @@ def check_task(
     output = []
     if "parts" in task:
         output.append(_parts_result(task["parts"], context))
+    if task.get("documentParts"):
+        try:
+            output.append(_document_parts(context))
+        except Exception as error:  # noqa: BLE001 - failed evidence is recorded
+            output.append({"kind": "document_parts", "status": "unknown", "reason": str(error)})
     for check in task["checks"]:
         try:
             result = _step_check(check, context) or _enclosure_check(check, context)
