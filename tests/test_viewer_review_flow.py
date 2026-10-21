@@ -425,7 +425,6 @@ def circle_centers(shape, radius):
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
 def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_path):
     """An MCP-built enclosure: round features draw round, and the part rows line up."""
-    narrow = viewport[0] < 720
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
     server = ViewerServer(store)
@@ -461,19 +460,20 @@ def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_
             # the swatch sits on the name line, centered within a pixel
             middle = (swatch["top"] + swatch["bottom"]) / 2
             assert abs(middle - (name["top"] + name["bottom"]) / 2) <= 1, row
-            if narrow:
-                # the details hint sits just after the name, on its line, in the muted ink (not --faint)
-                assert row["hint"]["left"] >= name["right"] and row["hint"]["left"] - name["right"] <= 8, row
-                assert name["top"] <= (row["hint"]["top"] + row["hint"]["bottom"]) / 2 <= name["bottom"], row
-                assert row["hintColor"] == "rgb(93, 104, 115)", row
-            else:
-                assert row["hint"] is None  # wide rows always show their details
-        # narrow rows say whether their details are open; wide rows have nothing to open
-        assert shown["expanded"] == (["false", "false"] if narrow else [None, None])
+            # both rows have facts to open: the hint sits just after the name, on its line, in the muted
+            # ink (not --faint), on every width
+            assert row["hint"]["left"] >= name["right"] and row["hint"]["left"] - name["right"] <= 8, row
+            assert name["top"] <= (row["hint"]["top"] + row["hint"]["bottom"]) / 2 <= name["bottom"], row
+            assert row["hintColor"] == "rgb(93, 104, 115)", row
+        # rows say whether their facts are open
+        assert shown["expanded"] == ["false", "false"]
         opened = step("row-open", do=[{"tapPart": 0}])
-        assert opened["expanded"] == (["true", "false"] if narrow else [None, None])
-        closed = step("row-closed", do=[{"blur": True}])
-        assert closed["expanded"] == shown["expanded"]
+        assert opened["expanded"] == ["true", "false"]
+        # the facts stay open when focus moves on, so nothing below them jumps; the next part's replace them
+        kept = step("row-kept", do=[{"blur": True}])
+        assert kept["expanded"] == ["true", "false"]
+        moved = step("row-moved", do=[{"tapPart": 1}])
+        assert moved["expanded"] == ["false", "true"]
 
         # keyboard: the swatch control shows a visible focus ring
         keys = step("swatch-focus", do=[{"tabTo": "pcb reference", "press": "Shift+Tab"}])
