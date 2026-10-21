@@ -100,6 +100,13 @@ def test_missing_standoff_fails_and_names_the_hole(tmp_path):
     assert standoffs["evidence"]["uncoveredHoleIds"] == [H1]
 
 
+def test_missing_standoff_without_a_reference_names_its_footprint_and_place(tmp_path):
+    _, scene = enclosure(tmp_path, ViewerSceneStore(), holes=(H1,))
+    # REF** holes: the footprint name and the position, never "unnamed"
+    assert rows(scene)["standoffs"]["reason"] == (
+        "no standoff at M2 mounting hole at (2, 3) mm, M3 mounting hole at (18, 3) mm")
+
+
 def test_unknown_rows_say_why(tmp_path):
     # the fixture's connector height is unresolved, and there is no lid to measure
     _, scene = enclosure(tmp_path, ViewerSceneStore(), models="unresolved", lid=False)
@@ -154,7 +161,7 @@ def test_part_facts_for_board_base_and_lid(tmp_path):
 
     assert facts == {
         "pcb reference": [
-            ("Mounting holes", "3: unnamed at (2, 3), unnamed at (18, 3), H1 at (10, 7) mm"),
+            ("Mounting holes", "3: M2 mounting hole at (2, 3), M3 mounting hole at (18, 3), H1 at (10, 7) mm"),
         ],
         "base": [
             ("Wall", "2 mm"),
@@ -175,32 +182,68 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
     try:
         empty = step("fit-empty", wait={"ready": True}, do=[{"fit": True}])
         assert empty["actions"][0]["visible"] is False
-        enclosure(tmp_path, store, holes=UNNAMED)
+        # the review's model: the connector height is unresolved, so the port check is UNKNOWN
+        enclosure(tmp_path, store, holes=UNNAMED, models="unresolved")
         shown = step("fit-shown", wait={"revision": 5}, do=[{"fit": True}])
         fit = shown["actions"][0]
         assert fit["visible"] is True
         assert [row["status"] for row in fit["rows"]] == [
-            "FAIL", "Measured", "Measured", "Measured", "PASS", "Measured", "PASS",
+            "FAIL", "UNKNOWN", "MEASURED ONLY", "MEASURED ONLY", "MEASURED ONLY", "PASS", "MEASURED ONLY",
         ]  # problems first
         assert fit["rows"][0]["text"] == "FAIL Standoffs 2 of 3 mounting holes no standoff at H1"
-        assert fit["rows"][1]["text"] == "Measured Wall thickness 2 mm · no requirement set"
+        assert fit["rows"][2]["text"] == "MEASURED ONLY Wall thickness 2 mm · no requirement set"
+        # a measured value is no gate result, and the panel says so once
+        assert fit["count"] == "1 fail, 1 unknown, 1 pass, 4 measured only"
+        assert fit["note"] == "Measured only values have no threshold and do not pass the fit gate."
+        # the heading's title keeps one line, and no badge runs into its label
+        assert fit["titleLines"] == 1
+        assert fit["countLines"] == [1, 1, 1, 1], fit["count"]  # a count never wraps away from its status
+        # the "scroll for more" bar sits below the scrolled rows, not over the last one
+        assert fit["moreTop"] is None or fit["scrollBottom"] <= fit["moreTop"] + 0.5, fit
+        assert min(row["gap"] for row in fit["rows"]) >= 4, fit["rows"]
+        assert len({row["labelLeft"] for row in fit["rows"]}) == 1, fit["rows"]  # one label column
         assert fit["overflow"] == [], fit["overflow"]
         assert fit["evidenceOpen"] is False
+        if viewport[0] < 720:
+            # the panel ends in a cue below the row it cuts, so more checks are not a surprise
+            assert fit["more"] == "Scroll for more checks and parts"
 
-        focused = step("fit-row-focused", do=[{"fitRow": 0}, {"fit": True}])
-        state = focused["actions"][1]
+        view = shown["scene"]["view"]
+        focused = step("fit-row-focused", do=[{"fitRow": 0}, {"settle": True}, {"fit": True}])
+        state = focused["actions"][2]
         assert (state["focusedPart"], state["openPart"]) == ("base", "base")
         assert ["Standoffs", "3 × ⌀5 mm, pilot ⌀1.6 mm"] not in state["facts"]  # two holes, not three
         assert ["Standoffs", "2 × ⌀5 mm, pilot ⌀1.6 mm"] in state["facts"]
         assert state["overflow"] == [], state["overflow"]
+        # the canvas shows the row's part, the others faded, from the same camera
+        assert state["rows"][0]["pressed"] == "true"
+        assert state["rows"][0]["text"].endswith("Showing base, other parts faded")
+        drawn = focused["scene"]
+        assert dict(zip(drawn["parts"], drawn["faded"], strict=True)) == {
+            name: name != next(part["name"] for part in store.scene(5)["parts"] if part["label"] == "base")
+            for name in drawn["parts"]
+        }
+        assert drawn["view"] == view
+        assert "Showing base, other parts faded." in focused["description"]
+        cleared = step("fit-row-cleared", do=[{"fitRow": 0}, {"settle": True}, {"fit": True}])
+        assert cleared["actions"][2]["rows"][0]["pressed"] == "false"
+        assert cleared["scene"]["faded"] == [False] * 3
+        assert cleared["scene"]["view"] == view
 
         evidence = step("fit-evidence", do=[{"evidence": True}, {"fit": True}])
         opened = evidence["actions"][1]
         assert opened["evidenceOpen"] is True
-        assert H1 in opened["evidence"]
+        # one line per row in words, with the part it was measured on; ids only in the raw record
+        assert opened["evidence"][0] == "Standoffs on base: 2 of 3 mounting holes, fail"
+        assert "Wall thickness on base: 2 mm, measured only" in opened["evidence"]
+        assert len(opened["evidence"]) == 7
+        assert not any("hole-" in line or "{" in line for line in opened["evidence"])
+        assert (opened["rawOpen"], opened["raw"]) == (False, None)
         # focus moved on, the facts stay open: nothing below them jumped
         assert (opened["focusedPart"], opened["openPart"]) == (None, "base")
         assert ["Standoffs", "2 × ⌀5 mm, pilot ⌀1.6 mm"] in opened["facts"]
+        raw = step("fit-evidence-raw", do=[{"rawEvidence": True}, {"fit": True}])["actions"][1]
+        assert raw["rawOpen"] is True and H1 in raw["raw"]
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

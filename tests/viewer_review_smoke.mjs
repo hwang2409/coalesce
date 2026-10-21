@@ -190,6 +190,10 @@ async function act(action) {
           reason: b.title,
         })),
         hint: box(document.getElementById('review-hint')) && document.getElementById('review-hint').textContent,
+        announced: document.getElementById('review-announce')?.textContent ?? null,
+        // what a screen reader reads after the range's name
+        described: (range.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+          .map((id) => document.getElementById(id).textContent).join(' '),
         section: box(document.getElementById('section-controls')) && {
           axis: document.querySelector('[data-axis][aria-pressed="true"]')?.textContent,
           value: Number(document.getElementById('section-value').value),
@@ -225,6 +229,56 @@ async function act(action) {
       return changed / (data.length / 4);
     }, { capture: action.capture, diff: action.diff });
   }
+  // the cut faces on the canvas: per given sRGB color, its inner pixel count and its separate regions
+  // (4-connected, at least 200 device pixels, so anti-aliased specks do not count)
+  if ('caps' in action) {
+    return page.evaluate((colors) => {
+      const source = document.getElementById('view');
+      const copy = document.createElement('canvas');
+      copy.width = source.width;
+      copy.height = source.height;
+      const context = copy.getContext('2d');
+      context.drawImage(source, 0, 0);
+      const { width, height } = copy;
+      const { data } = context.getImageData(0, 0, width, height);
+      const owner = new Int8Array(width * height).fill(-1);
+      for (let p = 0; p < owner.length; p += 1) {
+        const i = 4 * p;
+        owner[p] = colors.findIndex((c) => Math.max(Math.abs(data[i] - c[0]), Math.abs(data[i + 1] - c[1]), Math.abs(data[i + 2] - c[2])) <= 3);
+      }
+      // a region counts only its inner pixels (all four neighbors the same color): thin lines of a matching
+      // color, such as the ground grid, have none
+      const inner = new Int8Array(owner.length).fill(-1);
+      for (let p = width; p < owner.length - width; p += 1) {
+        const x = p % width;
+        if (x > 0 && x < width - 1 && owner[p] >= 0 && [p - 1, p + 1, p - width, p + width].every((q) => owner[q] === owner[p])) inner[p] = owner[p];
+      }
+      const areas = colors.map(() => 0);
+      const regions = colors.map(() => 0);
+      const seen = new Uint8Array(owner.length);
+      for (let start = 0; start < owner.length; start += 1) {
+        const color = inner[start];
+        if (color < 0 || seen[start]) continue;
+        let size = 0;
+        const stack = [start];
+        seen[start] = 1;
+        while (stack.length) {
+          const p = stack.pop();
+          size += 1;
+          const x = p % width;
+          for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
+            if (q >= 0 && q < owner.length && !seen[q] && inner[q] === color) {
+              seen[q] = 1;
+              stack.push(q);
+            }
+          }
+        }
+        areas[color] += size;
+        if (size >= 200) regions[color] += 1;
+      }
+      return { areas, regions };
+    }, action.caps);
+  }
   // the canvas color where each world point [x, y, z] lands through the viewer's own camera
   if ('pixels' in action) {
     return page.evaluate((points) => {
@@ -242,7 +296,8 @@ async function act(action) {
     }, action.pixels);
   }
   if ('fitRow' in action) await press(page.locator('.fit-row').nth(action.fitRow));
-  if ('evidence' in action) await press(page.locator('.fit-evidence summary'));
+  if ('evidence' in action) await press(page.locator('.fit-evidence > summary'));
+  if ('rawEvidence' in action) await press(page.locator('.fit-raw summary'));
   // the fit check panel: its rows, the focused part's facts, and any text cut off or past the panel edge
   if ('fit' in action) {
     return page.evaluate(() => {
@@ -256,7 +311,45 @@ async function act(action) {
         rows: [...document.querySelectorAll('.fit-row')].map((row) => ({
           status: row.querySelector('.fit-status').textContent,
           text: row.innerText.replace(/\s+/g, ' ').trim(),
+          pressed: row.getAttribute('aria-pressed'),
+          // the badge ends before the label starts
+          gap: row.querySelector('.fit-label').getBoundingClientRect().left - row.querySelector('.fit-status').getBoundingClientRect().right,
+          labelLeft: row.querySelector('.fit-label').getBoundingClientRect().left,
         })),
+        // the heading's title on one line
+        titleLines: (() => {
+          const range = document.createRange();
+          range.selectNodeContents(document.getElementById('inspection-title').firstChild);
+          return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+        })(),
+        count: document.getElementById('inspection-count').textContent,
+        // each "<n> <status>" count, by the lines it takes
+        countLines: (() => {
+          const nodes = [];
+          const walker = document.createTreeWalker(document.getElementById('inspection-count'), NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          return document.getElementById('inspection-count').textContent.split(', ').filter(Boolean).map((count) => {
+            const node = nodes.find((n) => n.textContent.includes(count));
+            const range = document.createRange();
+            range.setStart(node, node.textContent.indexOf(count));
+            range.setEnd(node, node.textContent.indexOf(count) + count.length);
+            return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+          });
+        })(),
+        // the scrolling panel's visible bottom and the "scroll for more" bar's top: the bar covers no row
+        scrollBottom: (() => {
+          let el = document.getElementById('parts');
+          while (el && getComputedStyle(el).overflowY !== 'auto') el = el.parentElement;
+          return el.getBoundingClientRect().bottom;
+        })(),
+        moreTop: document.getElementById('more')?.checkVisibility() ? document.getElementById('more').getBoundingClientRect().top : null,
+        note: document.getElementById('inspection-note')?.checkVisibility() ? document.getElementById('inspection-note').textContent : null,
+        parts: (() => {
+          const title = document.getElementById('parts-title').getBoundingClientRect();
+          const panelBox = document.querySelector('.panel').getBoundingClientRect();
+          return { top: title.top, panelBottom: panelBox.bottom };
+        })(),
+        more: document.getElementById('more')?.checkVisibility() ? document.getElementById('more').textContent : null,
         focusedPart: part?.querySelector('.part-name').textContent ?? null,
         openPart: open?.querySelector('.part-name').textContent ?? null,
         facts: open ? [...open.querySelectorAll('.fact')].filter(shown).map((fact) => [...fact.children].map((c) => c.textContent)) : [],
@@ -265,7 +358,9 @@ async function act(action) {
           return clipped || el.getBoundingClientRect().right > edge + 0.5;
         }).map((el) => `${el.tagName.toLowerCase()}.${el.className}: ${el.textContent.slice(0, 40)}`),
         evidenceOpen: Boolean(document.querySelector('.fit-evidence')?.open),
-        evidence: document.querySelector('.fit-evidence pre')?.textContent ?? '',
+        evidence: [...document.querySelectorAll('#inspection-evidence li')].filter(shown).map((li) => li.textContent),
+        rawOpen: Boolean(document.querySelector('.fit-raw')?.open),
+        raw: document.querySelector('.fit-evidence pre')?.checkVisibility() ? document.querySelector('.fit-evidence pre').textContent : null,
       };
     });
   }

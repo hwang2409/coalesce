@@ -6,9 +6,10 @@ Set VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 """
 
 import copy
+import math
 
 import pytest
-from build123d import Align, Box, Pos
+from build123d import Align, Axis, Box, Cylinder, Pos, fillet
 from test_feature_delete import delete_feature
 from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
 from test_pcb_lid import lid_request
@@ -168,13 +169,15 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
             focused = step(f"{name}-focused", do=[{"click": "Section"}, {"settle": True}, {"focus": control},
                                                   {"review": True}])
             assert review(focused, 3)["hint"] == "Esc returns to Assembled"
+            # a screen reader hears it with the control, not only from the visible hint
+            assert review(focused, 3)["described"] == "Escape returns to the Assembled view."
             escaped = step(f"{name}-escape", do=[{"key": "Escape"}, {"settle": True}, {"review": True},
                                                  {"diff": "assembled"}])
             state = review(escaped, 2)
             assert pressed(state) == ["Assembled"] and state["section"] is None and state["hint"] is None
             assert escaped["scene"]["cut"] == [False] * 3
             assert review(escaped, 3) == 0
-            assert escaped["description"].startswith("Section view closed, back to Assembled. "), escaped
+            assert state["announced"] == "Section view ended; Assembled view restored."
             assert escaped["focused"] == "Assembled"
 
         # a new revision keeps the chosen mode while it still applies
@@ -343,6 +346,155 @@ def test_section_draws_the_cut_material_on_the_plane(module, viewport, tmp_path)
         server.close()
 
 
+# each section axis, and the camera that looks straight at its cut face from the removed side
+AXIS_VIEWS = {"X": "Right", "Y": "Front", "Z": "Top"}
+
+
+def plane_grid(axis, value, bbox):
+    """Points 1 mm apart on the section plane, across the model's box."""
+    i = "XYZ".index(axis)
+    u, v = (j for j in range(3) if j != i)
+    for a in range(math.floor(bbox["min"][u]), math.ceil(bbox["max"][u]) + 1):
+        for b in range(math.floor(bbox["min"][v]), math.ceil(bbox["max"][v]) + 1):
+            point = [0.0, 0.0, 0.0]
+            point[i], point[u], point[v] = value, a, b
+            yield tuple(point), u, v
+
+
+def deep_inside(shape, point, u, v, margin=0.3):
+    """Inside the solid, and so are the points ``margin`` away in the plane: clear of outline edges."""
+    def moved(axis, step):
+        p = list(point)
+        p[axis] += step
+        return tuple(p)
+
+    return all(shape.is_inside(p) for p in [point, *(moved(a, s) for a in (u, v) for s in (margin, -margin))])
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800)])
+def test_section_at_each_end_of_the_slider_draws_a_solid_cut_face(module, viewport, tmp_path):  # noqa: F811
+    """At the slider ends the plane stays inside the material: one flat cut colour, no stipple of a coplanar face."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        for tool, arguments in [
+            ("import", import_request(FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", standoffs_request()),
+        ]:
+            result = call(service, tool, arguments)
+            assert result.get("ok"), result
+        scene = wait_for(store, result["revision"])
+        base_cut = cut_color(next(part["color"] for part in scene["parts"] if part["label"] == "base"))
+        base, board = service._regen.shapes["mounts"], service._regen.shapes["controller_board"]
+        step("review", wait={"revision": result["revision"]}, do=[{"click": "Section"}, {"settle": True}])
+        off, inset = {}, {}
+        for axis, view in AXIS_VIEWS.items():
+            for end, typed in (("max", 999), ("min", -999)):
+                shown = step(f"section-{axis}-{end}", do=[
+                    {"click": axis}, {"fill": {"label": "Section position in mm", "value": typed}},
+                    {"click": view}, {"settle": True}, {"review": True}])
+                state = review(shown, 4)["section"]
+                value = state[end]
+                assert state["value"] == value
+                extent = scene["bbox"][end]["XYZ".index(axis)]
+                inset[f"{axis} {end}"] = round(abs(value - extent), 2)
+                points = [p for p, u, v in plane_grid(axis, value, scene["bbox"])
+                          if deep_inside(base, p, u, v) and not board.is_inside(p)]
+                assert len(points) > 20, (axis, end, len(points))
+                sampled = step(f"section-{axis}-{end}-pixels", do=[{"pixels": points}])["actions"][0]
+                off[f"{axis} {end}"] = [(p, s["rgb"]) for p, s in zip(points, sampled, strict=True)
+                                        if distance(s["rgb"], base_cut) > 3]
+        assert all(not bad for bad in off.values()), {key: (len(bad), bad[:5]) for key, bad in off.items() if bad}
+        # one 0.1 mm step past the 2 mm walls and floor; the open top keeps one step inside the wall tops
+        assert inset == {"X max": 2.1, "X min": 2.1, "Y max": 2.1, "Y min": 2.1, "Z max": 0.1, "Z min": 2.1}, inset
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800)])
+def test_section_at_each_end_of_the_slider_still_cuts_through_the_cavity(module, viewport, tmp_path):  # noqa: F811
+    """Every slider position is useful: at each end the plane is past the outer wall, so it opens the cavity."""
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        revision = enclosure(service)
+        scene = wait_for(store, revision)
+        cuts = [cut_color(part["color"]) for part in scene["parts"]]
+        bbox = scene["bbox"]
+        step("review", wait={"revision": revision}, do=[{"click": "Section"}, {"settle": True}])
+        found = {}
+        for axis, view in AXIS_VIEWS.items():
+            for end, typed in (("mid", None), ("max", 999), ("min", -999)):
+                fill = [] if typed is None else [{"fill": {"label": "Section position in mm", "value": typed}}]
+                shown = step(f"section-{axis}-{end}", do=[{"click": axis}, *fill, {"click": view}, {"settle": True},
+                                                         {"review": True}, {"caps": cuts}])
+                value = review(shown, len(fill) + 3)["section"]["value"]
+                caps = review(shown, len(fill) + 4)
+                # the middle of the model across the plane: open cavity in this enclosure (the kernel agrees)
+                middle = [(bbox["min"][i] + bbox["max"][i]) / 2 for i in range(3)]
+                middle["XYZ".index(axis)] = value
+                solid = any(shape.is_inside(tuple(middle)) for shape in service._regen.shapes.values())
+                pixel = step(f"section-{axis}-{end}-middle", do=[{"pixels": [middle]}])["actions"][0][0]["rgb"]
+                found[f"{axis} {end}"] = {"value": value, "area": sum(caps["areas"]), "regions": sum(caps["regions"]),
+                                          "middle solid": solid, "middle cut": min(distance(pixel, cut) for cut in cuts) <= 3}
+        print(viewport, found)
+        for key in (f"{axis} {end}" for axis in AXIS_VIEWS for end in ("min", "max")):
+            shown, mid = found[key], found[f"{key[0]} mid"]["area"]
+            # the end cut loses only the board and standoffs the middle cut crosses (0.88 of it or more here);
+            # a sliver at a rounded edge or a wall's rim would be far less than half
+            assert shown["area"] >= 0.5 * mid, (key, shown, mid)
+            assert shown["regions"] > 1, (key, shown)
+            # a slab of the outer wall passes both checks above (it is larger than the middle cut); this one
+            # rejects it: the middle of the end cut is open cavity, not cut material
+            assert not shown["middle solid"] and not shown["middle cut"], (key, shown)
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800)])
+def test_section_of_a_model_with_no_enclosure_spans_its_full_extent(module, viewport):  # noqa: F811
+    """No pcb base: each end keeps one 0.1 mm step inside the outer face, a through-hole sets no wall."""
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    models = {
+        "holed plate": plate(6) - Pos(0, 0, 3) * Cylinder(5, 6),
+        "plain plate": plate(6),
+        "filleted plate": fillet(plate(6).edges().filter_by(Axis.Z), radius=5),
+    }
+    try:
+        step("empty", wait={"ready": True})
+        found = {}
+        for revision, (name, shape) in enumerate(models.items(), start=1):
+            store.publish(revision, [ScenePart("plate", shape)])
+            shot = name.replace(" ", "-")  # a step name is one word
+            step(shot, wait={"revision": revision}, do=[{"click": "Section"}, {"settle": True}])
+            for axis in "XYZ":
+                state = review(step(f"{shot}-{axis}", do=[{"click": axis}, {"review": True}]), 1)["section"]
+                found[f"{name} {axis}"] = (state["min"], state["max"])
+            step(f"{shot}-off", do=[{"click": "Assembled"}])
+        full = {"X": (-29.9, 29.9), "Y": (-19.9, 19.9), "Z": (0.1, 5.9)}
+        assert found == {f"{name} {axis}": full[axis] for name in models for axis in "XYZ"}, found
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
 def test_section_of_overlapping_parts_shows_the_nearer_surface(module, viewport):  # noqa: F811
     """Two overlapping closed solids: a 20 mm cube A at the origin and cube B moved 10 mm along X and Y."""
@@ -355,7 +507,9 @@ def test_section_of_overlapping_parts_shows_the_nearer_surface(module, viewport)
         store.publish(1, [ScenePart("a", cube), ScenePart("b", Pos(10, 10, 0) * cube)])
         colors = [part["color"] for part in wait_for(store, 1)["parts"]]
         step("overlap", wait={"revision": 1}, do=[{"settle": True}])
-        section_front(step, "overlap-section-front-r3", 5)
+        shown = section_front(step, "overlap-section-front-r3", 5)
+        # solids with no wall to cross: the range keeps one step inside the outer faces, full cross-sections
+        assert (review(shown, 4)["section"]["min"], review(shown, 4)["section"]["max"]) == (0.1, 29.9)
         # on the Y = 5 plane: A's material at x 0..20, none of B's (B starts at y = 10)
         points = {"A only": (5, 5, 10), "A, B behind it": (15, 5, 10), "B behind the plane": (25, 5, 10)}
         measured = step("overlap-pixels", do=[{"pixels": list(points.values())}])["actions"][0]
