@@ -358,12 +358,37 @@ function partTitles(parts) {
   });
 }
 
-// narrow screens show a part's detail line only while its row has focus: say so to screen readers
+// narrow screens show a part's detail line only while its row has focus, and its facts from when its
+// row gets focus until another part's do, so nothing below them jumps when focus moves on. wide
+// screens always show both. say so to screen readers.
+let openPart = null;
 function syncExpanded(button) {
-  if (narrow.matches) button.setAttribute('aria-expanded', String(document.activeElement === button));
+  const facts = button.classList.contains('has-facts');
+  const open = facts ? button.dataset.partId === openPart : document.activeElement === button;
+  button.classList.toggle('open', facts && open);
+  if (narrow.matches) button.setAttribute('aria-expanded', String(open));
   else button.removeAttribute('aria-expanded');
 }
-narrow.addEventListener('change', () => document.querySelectorAll('.part.has-detail').forEach(syncExpanded));
+const syncAllExpanded = () => document.querySelectorAll('.part.has-detail, .part.has-facts').forEach(syncExpanded);
+narrow.addEventListener('change', syncAllExpanded);
+
+function partFacts(part) {
+  const facts = document.createElement('span');
+  facts.className = 'part-facts';
+  for (const { label, value } of part.facts) {
+    const fact = document.createElement('span');
+    fact.className = 'fact';
+    const name = document.createElement('span');
+    name.className = 'fact-label';
+    name.textContent = label;
+    const text = document.createElement('span');
+    text.className = 'fact-value';
+    text.textContent = value;
+    fact.append(name, text);
+    facts.append(fact);
+  }
+  return facts;
+}
 
 function renderPartList(parts) {
   const list = $('parts');
@@ -402,6 +427,7 @@ function renderPartList(parts) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'part';
+    button.dataset.partId = part.partId;
     const name = document.createElement('span');
     name.className = 'part-name';
     name.textContent = titles[index];
@@ -422,17 +448,26 @@ function renderPartList(parts) {
     }
     const detail = partDetail(part);
     if (detail) {
-      const hint = document.createElement('span');
-      hint.className = 'disclosure';
-      hint.setAttribute('aria-hidden', 'true');
-      hint.textContent = '\u25BE';
-      title.append(hint);
       const line = document.createElement('span');
       line.className = 'part-detail';
       line.textContent = detail;
       button.append(line);
       button.classList.add('has-detail');
-      button.addEventListener('focus', () => syncExpanded(button));
+    }
+    if (part.facts.length) {
+      button.append(partFacts(part));
+      button.classList.add('has-facts');
+    }
+    if (detail || part.facts.length) {
+      const hint = document.createElement('span');
+      hint.className = 'disclosure';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = '\u25BE';
+      title.append(hint);
+      button.addEventListener('focus', () => {
+        if (part.facts.length) openPart = part.partId;
+        syncAllExpanded();
+      });
       button.addEventListener('blur', () => syncExpanded(button));
       syncExpanded(button);
     }
@@ -440,6 +475,72 @@ function renderPartList(parts) {
     item.append(toggle, button);
     list.append(item);
   });
+}
+
+// ---- fit check: the enclosure inspection of this revision, one row per measurement
+
+// problems first: on a phone only the first rows show without scrolling
+const STATUS_TEXT = { FAIL: 'FAIL', UNKNOWN: 'UNKNOWN', PASS: 'PASS', MEASURED: 'Measured' };
+const severity = (row) => ['FAIL', 'UNKNOWN'].indexOf(row.status) >>> 0; // not a problem: last, in order
+
+function fitRow(row) {
+  const part = row.partId && document.querySelector(`.part[data-part-id="${CSS.escape(row.partId)}"]`);
+  const item = document.createElement(part ? 'button' : 'div');
+  item.className = 'fit-row';
+  item.dataset.status = row.status;
+  const cells = [
+    ['fit-status', STATUS_TEXT[row.status] ?? row.status],
+    ['fit-label', row.label],
+    // a value with no requirement keeps its note on the same line: only a problem gets its own line
+    ['fit-value', row.status === 'MEASURED' ? `${row.value} · ${row.reason}` : row.value],
+    ['fit-reason', row.status === 'MEASURED' ? null : row.reason],
+  ];
+  for (const [className, text] of cells) {
+    if (!text) continue;
+    const cell = document.createElement('span');
+    cell.className = className;
+    cell.textContent = text;
+    item.append(cell);
+  }
+  if (part) {
+    item.type = 'button';
+    item.title = `Show the facts of ${part.querySelector('.part-name').textContent}`;
+    item.addEventListener('click', () => {
+      part.focus({ preventScroll: true });
+      part.scrollIntoView({ block: 'nearest' });
+    });
+  }
+  return item;
+}
+
+function renderInspection(fit) {
+  $('inspection').hidden = !fit.length;
+  const rows = fit.flatMap((summary) => summary.rows);
+  const counts = Object.entries(STATUS_TEXT)
+    .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
+    .filter(([count]) => count)
+    .map(([count, text]) => `${count} ${text}`);
+  $('inspection-count').textContent = counts.join(', ');
+  const list = $('inspection-rows');
+  list.replaceChildren();
+  for (const summary of fit) {
+    if (fit.length > 1) {
+      const heading = document.createElement('li');
+      heading.className = 'fit-base';
+      heading.textContent = summary.baseId;
+      list.append(heading);
+    }
+    for (const row of summary.rows.toSorted((a, b) => severity(a) - severity(b))) {
+      const item = document.createElement('li');
+      item.append(fitRow(row));
+      list.append(item);
+    }
+  }
+  const evidence = fit.map(({ baseId, rows: measured }) => ({
+    baseId,
+    rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
+  }));
+  $('inspection-evidence').textContent = JSON.stringify(evidence, null, 1);
 }
 
 // ---- review modes: lid off, exploded and one section plane. they only move, hide or cut what this
@@ -829,6 +930,7 @@ async function loadOne(revision) {
     data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
     current = data;
     renderPartList(data.parts);
+    renderInspection(data.fit);
     applyMode(); // the chosen review mode stays while it applies to the new revision
     showRevision(data);
     const empty = !data.parts.length;
@@ -864,6 +966,7 @@ async function connect() {
     setLink('denied', 'No access');
     document.querySelector('.revision-line').hidden = true;
     document.querySelector('.parts').hidden = true;
+    $('inspection').hidden = true;
     $('revision-meta').textContent = 'Open the link printed as “coalesce viewer:” to see the current model';
     notice('Open the viewer link that coalesce printed',
       'This page needs the access key in that link, after #token=. coalesce prints the link to its '

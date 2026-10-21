@@ -468,13 +468,17 @@ def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_
                 assert name["top"] <= (row["hint"]["top"] + row["hint"]["bottom"]) / 2 <= name["bottom"], row
                 assert row["hintColor"] == "rgb(93, 104, 115)", row
             else:
-                assert row["hint"] is None  # wide rows always show their details
-        # narrow rows say whether their details are open; wide rows have nothing to open
-        assert shown["expanded"] == (["false", "false"] if narrow else [None, None])
+                assert row["hint"] is None  # wide rows always show their details and facts
+        # narrow rows say whether their facts are open; wide rows have nothing to open
+        closed, first, second = (["false", "false"], ["true", "false"], ["false", "true"]) if narrow else ([None] * 2,) * 3
+        assert shown["expanded"] == closed
         opened = step("row-open", do=[{"tapPart": 0}])
-        assert opened["expanded"] == (["true", "false"] if narrow else [None, None])
-        closed = step("row-closed", do=[{"blur": True}])
-        assert closed["expanded"] == shown["expanded"]
+        assert opened["expanded"] == first
+        # the facts stay open when focus moves on, so nothing below them jumps; the next part's replace them
+        kept = step("row-kept", do=[{"blur": True}])
+        assert kept["expanded"] == first
+        moved = step("row-moved", do=[{"tapPart": 1}])
+        assert moved["expanded"] == second
 
         # keyboard: the swatch control shows a visible focus ring
         keys = step("swatch-focus", do=[{"tabTo": "pcb reference", "press": "Shift+Tab"}])
