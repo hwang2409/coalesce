@@ -248,6 +248,10 @@ BOARD_POINTS = {"board": (10, 0.9)}
 # open on the plane: the ray goes on through the cavity to the far inner wall's shaded face
 CAVITY_POINTS = {"cavity": (10, 3.5), "beside wall": (-0.6, 3.5), "above board": (10, 1.6), "pilot": (2, -0.5)}
 OUTSIDE_POINTS = {"left of the box": (-6, 2), "above the box": (10, 8)}
+# rows across the cut faces, finer than a pixel: edges behind the plane (the seams of the board's NPTH
+# hole, the floor's inner corners at x = -1 and 21) must not draw over the cut face
+BOARD_ROW = [(3.5 + 0.02 * i, 0.9) for i in range(626)]  # x 3.5..16, through x = 10.75
+FLOOR_ROW = [(-2.8 + 0.02 * i, -2) for i in range(1281)]  # x -2.8..22.8
 
 
 def on_plane(xz):
@@ -279,10 +283,12 @@ def test_section_draws_the_cut_material_on_the_plane(module, viewport, tmp_path)
             assert not base.is_inside(on_plane(p)), p
         for p in [*CAVITY_POINTS.values(), *OUTSIDE_POINTS.values(), *BASE_POINTS.values()]:
             assert not board.is_inside(on_plane(p)), p
+        assert all(board.is_inside(on_plane(p)) for p in BOARD_ROW)
+        assert all(base.is_inside(on_plane(p)) for p in FLOOR_ROW)
 
         step("review", wait={"revision": result["revision"]}, do=[{"settle": True}])
         named = {**BASE_POINTS, **BOARD_POINTS, **CAVITY_POINTS, **OUTSIDE_POINTS}
-        shown = section_front(step, "section-front-r2", CUT_Y)
+        shown = section_front(step, "section-front-r3", CUT_Y)
         measured = step("section-pixels", do=[{"pixels": [on_plane(p) for p in named.values()]}])["actions"][0]
         rgb = {name: point["rgb"] for name, point in zip(named, measured, strict=True)}
         print(viewport, {name: (rgb[name], point["pixel"]) for name, point in zip(named, measured, strict=True)})
@@ -297,8 +303,14 @@ def test_section_draws_the_cut_material_on_the_plane(module, viewport, tmp_path)
             assert distance(rgb[name], srgb(BACKGROUND)) > 12, (name, rgb[name])
         for name in OUTSIDE_POINTS:
             assert distance(rgb[name], srgb(BACKGROUND)) <= 3, (name, rgb[name])
+        off = {}
+        for name, row, color in [("board", BOARD_ROW, board_cut), ("floor", FLOOR_ROW, base_cut)]:
+            sampled = step("section-rows", do=[{"pixels": [on_plane(p) for p in row]}])["actions"][0]
+            off[name] = [(round(p[0], 2), s["pixel"], s["rgb"]) for p, s in zip(row, sampled, strict=True)
+                         if distance(s["rgb"], color) > 3]
+        assert off == {"board": [], "floor": []}, off
         assert shown["scene"]["cut"] == [True, True]
-        step("section-iso-r2", do=[{"click": "Iso"}, {"settle": True}])
+        step("section-iso-r3", do=[{"click": "Iso"}, {"settle": True}])
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
@@ -318,7 +330,7 @@ def test_section_of_overlapping_parts_shows_the_nearer_surface(module, viewport)
         store.publish(1, [ScenePart("a", cube), ScenePart("b", Pos(10, 10, 0) * cube)])
         colors = [part["color"] for part in wait_for(store, 1)["parts"]]
         step("overlap", wait={"revision": 1}, do=[{"settle": True}])
-        section_front(step, "overlap-section-front-r2", 5)
+        section_front(step, "overlap-section-front-r3", 5)
         # on the Y = 5 plane: A's material at x 0..20, none of B's (B starts at y = 10)
         points = {"A only": (5, 5, 10), "A, B behind it": (15, 5, 10), "B behind the plane": (25, 5, 10)}
         measured = step("overlap-pixels", do=[{"pixels": list(points.values())}])["actions"][0]
@@ -326,9 +338,8 @@ def test_section_of_overlapping_parts_shows_the_nearer_surface(module, viewport)
         print(viewport, rgb)
         assert distance(rgb["A only"], cut_color(colors[0])) <= 3
         assert distance(rgb["B behind the plane"], cut_color(colors[1])) > 12  # B's lit front face
-        # known limit (PR #38 body): the cut face is A's back face at y = 20, so B's front face at y = 10
-        # draws over it inside A's material. a stencil cap would show A's cut face here.
-        assert distance(rgb["A, B behind it"], rgb["B behind the plane"]) <= 3
+        # B's front face at y = 10 is behind the plane: A's cut face covers it
+        assert distance(rgb["A, B behind it"], cut_color(colors[0])) <= 3, rgb
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
