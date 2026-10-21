@@ -813,6 +813,7 @@ async function loadOne(revision) {
     if (data.superseded) throw new Superseded();
     await loadMeshes(data.parts);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
+    for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
     clearGroup(model, { ownsGeometry: false });
     const ranks = depthRanks(data.parts);
     data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));

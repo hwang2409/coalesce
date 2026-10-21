@@ -201,6 +201,11 @@ def test_modes_that_do_not_apply_are_disabled_with_a_reason(module, viewport):  
         assert pressed(review(cut, 1)) == ["Section"]
         assert cut["scene"]["cut"] == [True]
         assert_clear_layout(review(cut, 1))
+        # a new revision while cut, then the assembled view: the old cut faces were freed with their part
+        store.publish(2, [ScenePart("plate", plate(6))])
+        step("plate-section-2", wait={"revision": 2}, do=[{"settle": True}])
+        back = step("plate-assembled", do=[{"click": "Assembled"}, {"settle": True}, {"review": True}])
+        assert review(back, 2)["memory"] == state["memory"]
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
