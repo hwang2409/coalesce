@@ -307,6 +307,49 @@ def test_non_step_file_in_steps_fails(tmp_path):
     }
 
 
+def test_board_refresh_rejects_no_refresh_after_unrelated_update(tmp_path, monkeypatch):
+    import coalesce.service
+
+    class Service:
+        revision = 8
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _ensure_geometry(self):
+            pass
+
+        def query(self, query):
+            assert query["select"] == {"kind": "feature", "id": "board"}
+            return {
+                "ok": True,
+                "feature": {
+                    "mechanics": {
+                        "holes": [
+                            {"footprintId": "m2-id", "position": [2, 3]},
+                            {"footprintId": "m3-id", "position": [18, 3]},
+                            {"footprintId": "npth-id", "position": [10, 7]},
+                        ],
+                        "footprints": [{"reference": "J1", "position": [1, 5], "rotation": 0}],
+                    }
+                },
+            }
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    result = check_task(
+        {"checks": [{"kind": "board_refresh", "mountingHoles": {
+            "m2-id": [4, 4], "m3-id": [16, 4], "npth-id": [10, 6]
+        }, "connectorPosition": [3, 5], "connectorRotation": 0}]},
+        _document(tmp_path / "model.coalesce.json"), tmp_path / "steps",
+    )[0]
+    assert result["status"] == "fail"
+    # the saved board is the unrefreshed one: old holes and old J1, read through footprintId
+    assert result["actual"] == {
+        "mountingHoles": {"m2-id": [2, 3], "m3-id": [18, 3], "npth-id": [10, 7]},
+        "connector": [[1, 5], 0],
+    }
+
+
 def test_blocked_expected_port_fails(tmp_path, monkeypatch):
     port = {"reference": "J1", "wall": "left", "blocked": True, "clearance": {"min": {"value": .5}}}
     result, _ = _enclosure_check(tmp_path, monkeypatch, {"ports": [port]}, {"kind": "port_opening_clears_connector", "reference": "J1", "wall": "left"})
@@ -741,6 +784,65 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
     assert seen["command"][2].count(HEADLESS) == 1
 
 
+@pytest.mark.parametrize(
+    ("node", "expected", "status"),
+    [
+        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 3, "unit": "mm"}, "edges": [{"role": "between(outer_wall,rim)"}]}, 3, "pass"),
+        ({"type": "Fillet", "id": "round", "target": "lid", "radius": {"value": 3, "unit": "mm"}, "edges": [{"role": "between(outer_wall,rim)"}]}, 3, "fail"),
+        ({"type": "Fillet", "id": "round", "target": "base", "radius": {"value": 2, "unit": "mm"}, "edges": [{"role": "between(outer_wall,rim)"}]}, 3, "fail"),
+    ],
+)
+def test_edge_treatment_check_fails_closed(tmp_path, monkeypatch, node, expected, status):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class Service:
+        revision = 1
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def _ensure_geometry(self):
+            pass
+        def query(self, query):
+            return {"ok": True, "graph": {"nodes": [node]}}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "edge_treatment", "feature": "fillet", "target": "base", "amount": expected, "edgeRole": "between(outer_wall,rim)"}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == status
+
+
+@pytest.mark.parametrize("statuses, expected", [(["PASS"], "pass"), (["FAIL"], "fail"), (["UNKNOWN"], "fail")])
+def test_requirement_gate_fails_closed(tmp_path, monkeypatch, statuses, expected):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class Service:
+        revision = 1
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def _ensure_geometry(self):
+            pass
+        def check(self, _request):
+            return {"ok": True, "results": [{"id": "valid", "status": status} for status in statuses]}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "requirement_gate", "requirements": [{"id": "valid", "kind": "valid_brep"}]}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == expected
+
+
 def test_checks_pass_fail_unknown(tmp_path):
     from build123d import Box, export_step
 
@@ -759,7 +861,7 @@ def test_checks_pass_fail_unknown(tmp_path):
 
 def test_task_files_load_and_validate():
     tasks = load_tasks(Path("evals/tasks"))
-    assert len(tasks) == 5
+    assert len(tasks) == 8
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 
@@ -898,3 +1000,79 @@ def test_preflight_compares_real_zeta_server_revision(tmp_path):
     subprocess.run([*git, "commit", "-qam", "next"], check=True)
     with pytest.raises(RuntimeError, match="does not match revision under test"):
         _preflight(zeta_harness, repo, project)
+
+
+def _treatment(kind, target, amount, role):
+    field = "radius" if kind == "Fillet" else "distance"
+    return {"type": kind, "id": f"{kind}-{target}-{amount}", "target": target,
+            field: {"value": amount, "unit": "mm"}, "edges": [{"role": role}]}
+
+
+EXPECTED_TREATMENTS = [
+    {"feature": "fillet", "target": "base", "amount": 3, "edgeRole": "outer-vertical"},
+    {"feature": "chamfer", "target": "lid", "amount": 1, "edgeRole": "between(edge,top)"},
+]
+
+
+@pytest.mark.parametrize(("nodes", "status"), [
+    ([_treatment("Fillet", "base", 3, "outer-vertical"), _treatment("Chamfer", "lid", 1, "between(edge,top)")], "pass"),
+    ([_treatment("Fillet", "base", 3, "wrong-edge"), _treatment("Chamfer", "lid", 1, "between(edge,top)")], "fail"),
+    ([_treatment("Fillet", "base", 3, "outer-vertical"), _treatment("Chamfer", "lid", 1, "between(edge,top)"),
+      _treatment("Fillet", "base", 7, "outer-vertical")], "fail"),
+    ([_treatment("Fillet", "base", 3, "outer-vertical")], "fail"),
+])
+def test_edge_treatment_set_is_exact(tmp_path, monkeypatch, nodes, status):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class FakeService:
+        revision = 1
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _ensure_geometry(self):
+            pass
+
+        def query(self, request):
+            assert request == {"select": {"kind": "graph"}}
+            return {"ok": True, "graph": {"nodes": nodes}}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", FakeService)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "edge_treatment", "treatments": EXPECTED_TREATMENTS}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == status
+
+
+def test_edge_treatment_without_expected_role_fails_closed(tmp_path, monkeypatch):
+    from build123d import Box, export_step
+
+    import coalesce.service
+
+    class FakeService:
+        revision = 1
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _ensure_geometry(self):
+            pass
+
+        def query(self, _request):
+            return {"ok": True, "graph": {"nodes": [_treatment("Fillet", "base", 3, "any")]}}
+
+    monkeypatch.setattr(coalesce.service, "DocumentService", FakeService)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    result = check_task(
+        {"checks": [{"kind": "edge_treatment", "treatments": [{"feature": "fillet", "target": "base", "amount": 3}]}]},
+        _document(tmp_path / "model.coalesce.json"), steps,
+    )[0]
+    assert result["status"] == "fail"

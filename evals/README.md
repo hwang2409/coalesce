@@ -25,3 +25,10 @@ hole checks match every detected through-hole one-to-one with the expected posit
 saved document parts are matched to exported solids approximately by volume, bounding box, and centre of mass, using `rel_tol=1e-7` and `abs_tol=1e-6`. a property-equivalent different solid can spoof this comparison. move to exact topology or shape-distance comparison when a task needs stronger identity proof.
 
 scoring assumes no external process mutates the run artifacts while scoring is in progress; external mutation is not guarded.
+
+## hard tier admission
+
+the `edge_treatment` check compares the complete set of fillet and chamfer features (kind, target part, amount, edge roles) with the task's expected set. a wrong edge, a missing treatment, or any extra treatment fails.
+
+
+Each hard task is admitted only with a passing golden artifact generated through the real MCP path. The hard tier is admitted on this branch with golden scripts under `evals/golden/` and artifacts generated through the stdio MCP server. Base fillets use the public `outer_vertical` edge role; lid top chamfers use `between(edge,top)`. `pcb-refresh-treatments` uses the replacement absolute `path` on import refresh and checks that stable feature identities, moved board features, and treatments survive. The three goldens run in CI with `uv run python -m evals.golden.pcb_change <out>`, `uv run python -m evals.golden.pcb_edge_treatments <out>`, and `uv run python -m evals.golden.pcb_refresh_treatments <out>`; each command must exit successfully with every recorded check passing. Goldens use fixtures from `evals/fixtures`.
