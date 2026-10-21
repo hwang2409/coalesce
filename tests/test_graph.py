@@ -430,7 +430,7 @@ def test_fillet_requires_an_edge_reference():
         regenerate(graph)
 
     assert caught.value.error == {
-        "code": "empty_fillet_edges",
+        "code": "EMPTY_EDGE_SELECTION",
         "message": "fillet round requires at least one edge reference",
         "feature": "round",
     }

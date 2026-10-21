@@ -363,7 +363,7 @@ def test_status_never_moves_or_resizes_the_model(module, viewport):
         store.publish(1, [ScenePart("plate", Box(60, 40, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)))])
         good = step("status-good", wait={"revision": 1})
         store.publish_failure(["edge_fillet"], oversized_fillet_failure())
-        failed = step("status-failed", wait={"failure": "KERNEL_OPERATION_FAILED"})
+        failed = step("status-failed", wait={"failure": "FILLET_FAILED"})
         assert "max_fillet" not in failed["status"] and "reduce the fillet radius" in failed["status"]
         server.close()
         # wait for the status itself: the link label says "Reconnecting" a moment before the status merges

@@ -332,11 +332,12 @@ async def test_real_stdio_rejects_review_fork_and_accepts_terminal_target(tmp_pa
         "message": "target wall is already consumed by holes",
         "retryable": False,
         "operation": "feature",
-        "feature": "portcut",
+        "featureId": "portcut",
         "target": "wall",
         "consumer": "holes",
         "terminalFeatureId": "holes",
         "hint": "target holes to apply this after holes",
+        "legalTargets": [{"featureId": "holes"}],
     }
     assert path.read_bytes() == before
 

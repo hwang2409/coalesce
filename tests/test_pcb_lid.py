@@ -187,7 +187,7 @@ def test_invalid_lid_parameters_are_structured_and_atomic(
 
     assert failed["ok"] is False
     assert failed["error"]["code"] == "INVALID_PARAMETER"
-    assert failed["error"]["feature"] == "lid"
+    assert failed["error"]["featureId"] == "lid"
     assert failed["error"]["parameter"] == parameter
     if distance is not None:
         assert failed["error"]["measuredDistance"] == pytest.approx(distance)

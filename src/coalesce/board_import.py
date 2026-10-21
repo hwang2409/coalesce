@@ -47,11 +47,12 @@ def read_kicad_board(path: str) -> tuple[Path, Board]:
         flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         descriptor = os.open(resolved, flags)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise BoardImportError(
+                "IMPORT_PATH_NOT_FILE", "KiCad import path must name a regular file"
+            )
         with os.fdopen(descriptor, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise BoardImportError(
-                    "IMPORT_PATH_NOT_FILE", "KiCad import path must name a regular file"
-                )
             raw = stream.read(MAX_KICAD_IMPORT_BYTES + 1)
     except BoardImportError:
         raise
