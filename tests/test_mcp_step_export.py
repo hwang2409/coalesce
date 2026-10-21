@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from test_mcp_cut_hole_circle import extrude, rectangle_sketch
+from test_mcp_cut_hole_circle import cut, extrude, rectangle_sketch
 from test_mcp_join_holes_frames import join_extrude, patterned_hole
 from test_mcp_vertical import call_server_tool, list_server_tools, run_server
 
@@ -201,6 +201,88 @@ async def test_step_export_excludes_pcb_reference_parts_like_default_measurement
     assert exported["partIds"] == ["plate/plate"]
     assert exported["validation"]["reimport"]["partCount"] == 1
     assert exported["validation"]["reimport"]["solidCount"] == 1
+
+
+@pytest.mark.anyio
+async def test_step_export_accepts_terminal_feature_id(tmp_path):
+    document = tmp_path / "feature-id.coalesce.json"
+    target = tmp_path / "plate.step"
+    await run_server(document, enclosure_calls())
+
+    result = (
+        await run_server(
+            document,
+            [("export", export_request(target, part_ids=["mounting_holes"]))],
+        )
+    )[0]
+
+    assert result["ok"] is True
+    assert result["partIds"] == ["plate/plate"]
+
+
+@pytest.mark.anyio
+async def test_step_export_ambiguous_feature_lists_valid_parts_and_builders(tmp_path):
+    document = tmp_path / "split.coalesce.json"
+    target = tmp_path / "split.step"
+    calls = [
+        (
+            "sketch",
+            rectangle_sketch(
+                request_id="plate-sketch",
+                revision=0,
+                sketch_id="plate_sketch",
+                entity_id="plate",
+                width=60,
+                height=40,
+            ),
+        ),
+        (
+            "feature",
+            extrude(
+                request_id="plate",
+                revision=1,
+                feature_id="plate",
+                sketch_id="plate_sketch",
+                profile_ids=["plate"],
+                distance=3,
+            ),
+        ),
+        (
+            "sketch",
+            rectangle_sketch(
+                request_id="slot-sketch",
+                revision=2,
+                sketch_id="slot_sketch",
+                entity_id="slot",
+                width=10,
+                height=50,
+            ),
+        ),
+        (
+            "feature",
+            cut(
+                request_id="split",
+                revision=3,
+                feature_id="split",
+                target="plate",
+                tool="slot_sketch",
+            ),
+        ),
+    ]
+    await run_server(document, calls)
+
+    result = (
+        await run_server(
+            document,
+            [("export", export_request(target, part_ids=["split"], revision=4))],
+        )
+    )[0]
+
+    assert result["error"]["code"] == "UNKNOWN_ID"
+    assert result["error"]["unknownPartIds"] == ["split"]
+    assert len(result["error"]["validParts"]) == 2
+    assert all(part["partId"].startswith("plate/plate#") for part in result["error"]["validParts"])
+    assert {part["featureId"] for part in result["error"]["validParts"]} == {"split"}
 
 
 @pytest.mark.anyio

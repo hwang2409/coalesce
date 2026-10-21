@@ -6,6 +6,7 @@ import os
 import stat
 from pathlib import Path
 
+from .graph import BoardImport
 from .importers.kicad import Board, parse_kicad_pcb_bytes
 
 MAX_KICAD_IMPORT_BYTES = 16 * 1024 * 1024
@@ -13,6 +14,23 @@ MAX_KICAD_IMPORT_BYTES = 16 * 1024 * 1024
 
 class BoardImportError(ValueError):
     pass
+
+
+def mounting_holes(board: BoardImport) -> list[dict]:
+    """Classify board holes and return those from MountingHole:* footprints."""
+    footprints = {
+        footprint["id"]: footprint
+        for footprint in board.mechanics.get("footprints", [])
+    }
+    mounting = []
+    for hole in board.mechanics.get("holes", []):
+        footprint = footprints.get(hole.get("footprintId"), {})
+        reference = footprint.get("reference")
+        hole["reference"] = None if reference in (None, "REF**") else reference
+        hole["mounting"] = footprint.get("libraryId", "").startswith("MountingHole:")
+        if hole["mounting"]:
+            mounting.append(hole)
+    return mounting
 
 
 def read_kicad_board(path: str) -> tuple[Path, Board]:

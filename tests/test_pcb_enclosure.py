@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
-from test_mcp_vertical import run_server
+from test_mcp_vertical import call_server_tool, run_server
 
 from coalesce.service import DocumentService
 
@@ -12,6 +12,10 @@ FIXTURES = Path(__file__).parent / "fixtures/kicad"
 FEATURE_HOLES = [
     "hole-03e3c0594f5f1b105237c4c0",
     "hole-89c529cbad8407f9ccb81676",
+]
+ALL_MOUNTING_HOLES = [
+    *FEATURE_HOLES,
+    "hole-9ddb205ba1bc297f95347452",
 ]
 
 
@@ -168,20 +172,58 @@ def test_standoffs_follow_hole_ids_and_join_with_exact_pilots(tmp_path):
     ]
 
 
-def test_all_mounting_selects_all_drills_at_or_above_minimum_dimension(tmp_path):
+def test_all_mounting_selects_every_mounting_hole_including_npth(tmp_path):
     service = DocumentService(tmp_path / "all.coalesce.json")
     service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
     service.feature(base_request())
-    request = standoffs_request(
-        selection={"mode": "all_mounting", "minimumDiameter": quantity(2)}
-    )
+    request = standoffs_request(selection={"mode": "all_mounting"})
 
     assert service.feature(request)["ok"] is True
     assert {
         item.key.source
         for item in service._regen.provenance["mounts"]
         if item.key.role == "pilot_wall"
-    } == set(FEATURE_HOLES)
+    } == set(ALL_MOUNTING_HOLES)
+
+
+def test_all_mounting_standoffs_pass_mounting_requirement(tmp_path):
+    service = DocumentService(tmp_path / "all-check.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    service.feature(base_request())
+    created = service.feature(
+        standoffs_request(selection={"mode": "all_mounting"})
+    )
+
+    checked = service.check(
+        {
+            "action": "evaluate",
+            "base": "base",
+            "requirements": [{"id": "mounts", "kind": "mounting_holes"}],
+        }
+    )
+
+    assert created["ok"] is True
+    assert checked["results"][0]["status"] == "PASS"
+    assert checked["results"][0]["measured"]["coveredHoleIds"] == ALL_MOUNTING_HOLES
+
+
+@pytest.mark.anyio
+async def test_removed_minimum_diameter_explains_all_mounting_replacement(tmp_path):
+    service = DocumentService(tmp_path / "minimum.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    service.feature(base_request())
+
+    result = await call_server_tool(
+        service,
+        "feature",
+        standoffs_request(
+            selection={"mode": "all_mounting", "minimumDiameter": quantity(2)}
+        ),
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert "minimumDiameter was removed" in result["error"]["message"]
+    assert "MountingHole:*" in result["error"]["message"]
 
 
 @pytest.mark.parametrize(

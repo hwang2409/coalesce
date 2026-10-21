@@ -594,6 +594,54 @@ async def test_common_tool_seam_redacts_unexpected_metric_failure(tmp_path, monk
     assert "/secret/kernel/path" not in encoded
 
 
+@pytest.mark.anyio
+async def test_feature_update_uses_existing_kind_when_omitted(tmp_path):
+    service = DocumentService(tmp_path / "update-without-kind.coalesce.json")
+    service.sketch(SKETCH)
+    service.feature(FEATURE)
+
+    result = await call_server_tool(
+        service,
+        "feature",
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "thicker",
+            "featureId": "plate_extrude",
+            "set": {"distance": {"value": 8, "unit": "mm"}},
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["revision"] == 3
+    assert service._document.graph.nodes["plate_extrude"].height == 8
+
+
+@pytest.mark.anyio
+async def test_feature_update_rejects_kind_that_differs_from_existing_feature(tmp_path):
+    service = DocumentService(tmp_path / "update-wrong-kind.coalesce.json")
+    service.sketch(SKETCH)
+    service.feature(FEATURE)
+
+    result = await call_server_tool(
+        service,
+        "feature",
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "wrong-kind",
+            "featureId": "plate_extrude",
+            "kind": "pcb_base",
+            "set": {"wallThickness": {"value": 2, "unit": "mm"}},
+        },
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["expectedKind"] == "extrude"
+    assert result["error"]["actualKind"] == "pcb_base"
+    assert service.revision == 2
+
+
 def test_unknown_feature_kind_and_invalid_geometry_are_safe(tmp_path):
     service = DocumentService(tmp_path / "plate.coalesce.json")
     unknown = service.feature(

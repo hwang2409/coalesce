@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
-from .board_import import BoardImportError, read_kicad_board
+from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .export import ExportFailure, export_parts
 from .fit_summary import fit_summary, part_facts
@@ -312,7 +312,6 @@ class PcbBaseParameters:
 class StandoffSelection:
     mode: str
     holeIds: tuple[str, ...]
-    minimumDiameter: float | None
 
 
 @dataclass(frozen=True)
@@ -371,7 +370,6 @@ class PcbBaseChanges:
 
 @dataclass(frozen=True)
 class StandoffsChanges:
-    minimumDiameter: float | None = None
     bossDiameter: float | None = None
     pilotDiameter: float | None = None
 
@@ -900,19 +898,23 @@ def _standoff_selection(parameters: dict[str, Any], feature: str) -> StandoffSel
             raise RequestError("INVALID_PARAMETER", "explicit selection requires holeIds")
         if len(hole_ids) != len(set(hole_ids)):
             raise RequestError("INVALID_PARAMETER", "selection holeIds must be unique")
-        return StandoffSelection(mode, tuple(hole_ids), None)
+        return StandoffSelection(mode, tuple(hole_ids))
     if mode == "all_mounting":
-        minimum = _feature_quantity(
-            selection.get("minimumDiameter"), "minimumDiameter", feature
-        )
-        return StandoffSelection(mode, (), minimum)
+        if "minimumDiameter" in selection:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "minimumDiameter was removed; all_mounting now selects every MountingHole:* footprint hole",
+                feature=feature,
+                parameter="selection.minimumDiameter",
+            )
+        return StandoffSelection(mode, ())
     raise RequestError("INVALID_PARAMETER", "unknown standoff selection mode")
 
 
 def _parse_standoffs(
     payload: dict[str, Any], common: dict[str, Any]
 ) -> StandoffsCreate | StandoffsUpdate:
-    names = {"minimumDiameter", "bossDiameter", "pilotDiameter"}
+    names = {"bossDiameter", "pilotDiameter"}
     if common["action"] is Action.UPDATE:
         return StandoffsUpdate(
             **common,
@@ -1363,6 +1365,7 @@ def _apply_import(
         warnings=list(board.warnings),
         errors=[_wire_value(asdict(error)) for error in board.errors],
     )
+    mounting_holes(imported)
     graph.nodes[operation.assetId] = imported
     return operation.assetId
 
@@ -1665,18 +1668,9 @@ def _apply_standoffs(
         if not isinstance(node, Standoffs):
             raise RequestError("UNKNOWN_ID", f"unknown standoffs: {operation.featureId}")
         changes = asdict(operation.set)
-        if changes["minimumDiameter"] is not None and node.selection != "all_mounting":
-            raise RequestError(
-                "INVALID_PARAMETER",
-                "minimumDiameter only applies to all_mounting selection",
-                feature=node.id,
-                parameter="minimumDiameter",
-            )
         boss = changes["bossDiameter"] or node.boss_diameter
         pilot = changes["pilotDiameter"] or node.pilot_diameter
         _validate_standoff_diameters(node.id, boss, pilot)
-        if changes["minimumDiameter"] is not None:
-            node.minimum_diameter = changes["minimumDiameter"]
         node.boss_diameter = boss
         node.pilot_diameter = pilot
         return operation.featureId
@@ -1707,7 +1701,6 @@ def _apply_standoffs(
             board=board.id,
             selection=parameters.selection.mode,
             hole_ids=parameters.selection.holeIds,
-            minimum_diameter=parameters.selection.minimumDiameter,
             boss_diameter=parameters.bossDiameter,
             pilot_diameter=parameters.pilotDiameter,
         )
@@ -1865,6 +1858,25 @@ def _hole_names(node: Hole) -> list[str | None]:
     return [position.name for position in node.positions] or [None]
 
 
+def _infer_update_kind(payload: dict[str, Any], node: Any) -> tuple[str, str | None]:
+    return _node_kind(node), payload.get("kind")
+
+
+def _resolve_export_part(
+    requested_id: str, available: list[Any], by_id: dict[str, Any], result: RegenResult
+) -> Any | None:
+    if requested_id in by_id:
+        return by_id[requested_id]
+    matches = [
+        part
+        for part in available
+        if requested_id in {
+            feature["id"] for feature in _lineage(result, part.terminal_feature)
+        }
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]:
     """The features that built a terminal part, oldest first."""
     chain = []
@@ -1897,7 +1909,6 @@ _EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
         lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm",
     ),
     "board_seat_height": ("board seat height", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
-    "minimum_diameter": ("minimum diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
     "boss_diameter": ("boss diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
     "pilot_diameter": ("pilot diameter", lambda was, now: f"{_mm(was)} \u2192 {_mm(now)} mm"),
 }
@@ -2437,7 +2448,35 @@ class DocumentService:
             response,
         )
 
+    def _resolve_update_kind(
+        self, payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Fill an update's kind from the stored feature; a different given kind is an error."""
+        with self._lock:
+            node = self._document.graph.nodes.get(payload.get("featureId"))
+            revision = self.revision
+        request_id = payload.get("requestId")
+        if not isinstance(node, Feature):
+            noun = payload.get("kind") or "feature"
+            return payload, _safe_error(
+                revision, request_id, "UNKNOWN_ID",
+                f"unknown {noun}: {payload.get('featureId')}", operation="feature",
+            )
+        expected_kind, actual_kind = _infer_update_kind(payload, node)
+        if actual_kind is not None and actual_kind != expected_kind:
+            return payload, _safe_error(
+                revision, request_id, "INVALID_PARAMETER",
+                f"feature {node.id} is {expected_kind}, not {actual_kind}",
+                operation="feature", expectedKind=expected_kind, actualKind=actual_kind,
+            )
+        return {**payload, "kind": expected_kind}, None
+
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "update":
+            payload, failure = self._resolve_update_kind(payload)
+            if failure is not None:
+                self.publish_failure(payload, failure)
+                return failure
         return self._mutate(
             "feature",
             payload,
@@ -2478,18 +2517,24 @@ class DocumentService:
             unknown = []
         else:
             by_id = {part.part_id: part for part in available}
-            selected = [by_id.get(part_id) for part_id in requested]
-            unknown = [
-                part_id
-                for part_id, part in zip(requested, selected, strict=True)
-                if part is None
-            ]
+            selected = []
+            unknown = []
+            for requested_id in requested:
+                match = _resolve_export_part(requested_id, available, by_id, self._regen)
+                if match is not None:
+                    selected.append(match)
+                else:
+                    unknown.append(requested_id)
         if unknown:
             raise RequestError(
                 "UNKNOWN_ID",
-                "one or more partIds are not exportable terminal manufacturing parts",
+                "each requested id must name a partId or resolve to exactly one terminal manufacturing part",
                 unknownPartIds=unknown,
-                hint="query measurements and use a listed manufacturing partId",
+                validParts=[
+                    {"partId": part.part_id, "featureId": part.terminal_feature}
+                    for part in available
+                ],
+                hint="use one of the listed partIds when a feature built multiple parts",
             )
         if not selected:
             raise RequestError(

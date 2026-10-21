@@ -59,9 +59,10 @@ cavity is the board outline offset outward by the clearance; arcs remain arcs. T
 stays at its imported Z position. The floor top is `-boardSeatHeight`, the floor bottom is
 lower by `floorThickness`, and the wall top is the board top plus
 `wallHeightAboveBoard`. Then create `standoffs` with that base as target and the same board.
-Use `selection.mode: explicit` with stable `holeIds`, or `all_mounting` with
-`minimumDiameter`; all plated and non-plated drills whose smaller drill dimension meets the
-minimum are selected. Boss height is derived from the base seat height, so the board bottom
+Use `selection.mode: explicit` with stable `holeIds`, or `all_mounting` to select every
+hole in a `MountingHole:*` footprint, plated or non-plated. The import response marks every
+hole with `mounting: true|false` and its footprint `reference`. Boss height is derived from
+the base seat height, so the board bottom
 sits on the boss tops. `pilotDiameter` must be smaller than `bossDiameter`, and every boss
 must fit fully on the cavity floor without crossing a wall. Board refresh recomputes the
 base and standoff positions; a missing explicit hole id fails the refresh atomically.
@@ -94,7 +95,8 @@ Export excludes the board reference geometry.
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
 idempotent. Use update when the same sketch or feature should remain in the timeline with new
-parameters. Use delete to remove a sketch, feature, or imported board. Delete without cascade
+parameters. `kind` is optional on feature update; when supplied, it must match the existing
+feature. Use delete to remove a sketch, feature, or imported board. Delete without cascade
 fails with every transitive dependent in graph order; delete those first or pass `cascade: true`
 to remove the target and all dependents in one revision. Supplied update entities replace the
 full list; omitted entities stay unchanged.
@@ -109,7 +111,9 @@ from manufacturing totals. Use `select.kind: feature` with `id` for one node. Us
 excludes BoardImport reference geometry. Zero manufacturing solids return `UNKNOWN` with
 `solidCount: 0` and block readiness. Use `export` with the current `expectedRevision` and an explicit absolute new
 `path`; export is stateless and does not accept `requestId`. It defaults to all terminal
-manufacturing parts; select stable `partIds` from measurements when needed. BoardImport
+manufacturing parts; select stable `partIds` from measurements when needed. A feature id is
+accepted only when it resolves to exactly one terminal manufacturing part; otherwise
+`UNKNOWN_ID` lists valid part ids and the feature that built each. BoardImport
 reference geometry is never included. STEP export never overwrites, renames, truncates, or
 removes a destination. It validates bytes in a private directory. A fresh Python process
 reimports them and compares part and solid counts, bounding boxes, per-part and
@@ -176,6 +180,17 @@ def _quoted(values) -> str:
     return ", ".join(repr(value) for value in values)
 
 
+def _quantity_shape_hint(error: ValidationError) -> str:
+    schema = error.schema
+    if (
+        isinstance(schema, dict)
+        and schema.get("type") == "object"
+        and set(schema.get("properties", {})) >= {"value", "unit"}
+    ):
+        return '; expected shape: {"value": 2, "unit": "mm"}'
+    return ""
+
+
 def schema_error_message(error: ValidationError) -> str:
     """Stable coalesce wording for a schema failure; never the jsonschema library text."""
     path = "".join(
@@ -189,7 +204,10 @@ def schema_error_message(error: ValidationError) -> str:
         text = f"{subject} must be " + " or ".join(_TYPE_NAMES.get(t, t) for t in types_)
     elif kind == "additionalProperties" and isinstance(instance, dict):
         unknown = sorted(set(instance) - set(error.schema.get("properties", {})))
-        text = f"unknown field{'s' if len(unknown) > 1 else ''} {_quoted(unknown)}"
+        if unknown == ["minimumDiameter"]:
+            text = "minimumDiameter was removed; all_mounting now selects every MountingHole:* footprint hole"
+        else:
+            text = f"unknown field{'s' if len(unknown) > 1 else ''} {_quoted(unknown)}"
     elif kind == "required" and isinstance(instance, dict):
         missing = next(name for name in expected if name not in instance)
         text = f"missing required field {missing!r}"
@@ -201,6 +219,7 @@ def schema_error_message(error: ValidationError) -> str:
         text = f"{subject} must be {expected!r}"
     else:
         text = "invalid value"
+    text += _quantity_shape_hint(error)
     return f"{text} (field: {path})" if path else text
 
 
