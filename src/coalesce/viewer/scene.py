@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import copy
 import hashlib
 import itertools
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 
     from coalesce.references import BodySource
 
-# restrained engineering-review colors for manufactured parts, assigned in their order when no color
+# restrained engineering-review colors for manufactured parts, assigned in part order when no color
 # is given; no greens, so a part never looks like the board.
 PALETTE = ("#8c9bab", "#a9a08e", "#a08c9b", "#9aa7b8", "#b3a37c")
 # a reference part (the imported board) is solder-mask green, so it reads apart from the box it sits in
@@ -108,6 +109,26 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     return data, counts, lo, hi
 
 
+def _manufactured_color(index: int) -> str:
+    if index < len(PALETTE):
+        return PALETTE[index]
+    # past the palette: muted hues a golden-ratio step apart in 170..420 degrees, so never green
+    hue = (170 + (index * 0.6180339887) % 1 * 250) % 360 / 360
+    return "#" + "".join(f"{round(c * 255):02x}" for c in colorsys.hls_to_rgb(hue, 0.62, 0.2))
+
+
+def _part_colors(parts: Sequence[ScenePart]) -> list[str]:
+    """Given color, reference green, or the next manufactured color.
+
+    Callers list parts in body creation order, so a part keeps its color while later features change.
+    """
+    made = itertools.count()
+    return [
+        part.color or (REFERENCE_COLOR if part.role == "reference" else _manufactured_color(next(made)))
+        for part in parts
+    ]
+
+
 def _build_scene(
     revision: int, parts: Iterable[ScenePart], tolerance: float, change: dict | None
 ) -> tuple[dict, dict[str, bytes]]:
@@ -122,14 +143,7 @@ def _build_scene(
         if part.color is not None and not _COLOR.fullmatch(part.color):
             raise ValueError(f"part {part.name!r} color must be #rrggbb, got {part.color!r}")
     meshes, scene_parts, lows, highs = {}, [], [], []
-    made = 0
-    for part in parts:
-        if part.color:
-            color = part.color
-        elif part.role == "reference":
-            color = REFERENCE_COLOR
-        else:
-            color, made = PALETTE[made % len(PALETTE)], made + 1
+    for part, color in zip(parts, _part_colors(parts), strict=True):
         data, counts, lo, hi = _tessellate(part, tolerance)
         digest = hashlib.sha256(data).hexdigest()[:32]
         meshes[digest] = data

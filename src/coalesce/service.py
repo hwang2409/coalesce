@@ -1894,7 +1894,9 @@ _EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
 def _added(node: Any) -> str:
     if isinstance(node, BoardImport):
         return f"imported board {node.id}"
-    summary = f"added {_kind(node)} {node.id}"
+    kind = _kind(node)
+    # "pcb lid lid" says the id twice; keep the id only when it adds a word
+    summary = f"added {kind}" if f" {kind}".endswith(" " + node.id.replace("_", " ")) else f"added {kind} {node.id}"
     target = getattr(node, "target", None)
     if target:
         summary += f" on {target}"
@@ -1932,7 +1934,10 @@ def _change(before: Any, after: Any, changed_id: str) -> dict[str, str]:
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     from .viewer import ScenePart
 
-    for part in terminal_parts(result, role=None):
+    # body creation order, not regen order: a later feature on one body must not move its row or color
+    order = {feature: index for index, feature in enumerate(result.graph.nodes)}
+    parts = terminal_parts(result, role=None)
+    for part in sorted(parts, key=lambda p: (order[p.source_body.feature], p.part_id)):
         yield ScenePart(
             part.part_id,
             part.shape,
