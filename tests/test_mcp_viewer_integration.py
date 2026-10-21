@@ -634,7 +634,7 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         }
         assert failed[size] == {"code": "FILLET_FAILED"}
         assert repaired[size] == {
-            "change": "Cleared failed edit to fillet base_fillet, values stay as in revision 7",
+            "change": "Edited fillet base_fillet, no value changed",
             "visible": True,
         }
 

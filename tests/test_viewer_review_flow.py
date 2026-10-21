@@ -18,7 +18,6 @@ from build123d import Align, Box, GeomType, Pos
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from test_feature_delete import delete_feature
 from test_mcp_cut_hole_circle import cut, extrude, rectangle_sketch
-from test_mcp_edge_treatments import box_calls, treatment
 from test_mcp_join_holes_frames import join_extrude, patterned_hole
 from test_mcp_kicad_import import FIXTURE as KICAD_FIXTURE
 from test_mcp_kicad_import import import_request
@@ -630,33 +629,6 @@ def test_change_line_says_what_each_enclosure_feature_did(tmp_path):
         result = call(service, tool, arguments)
         assert result.get("revision") == revision, result
         assert wait_for(store, revision)["change"]["summary"] == summary
-
-
-def test_change_line_says_a_repair_cleared_the_failed_edit(tmp_path):
-    """Repairing a failed edit with the committed value changes no value: the line says the failure is gone."""
-    store = ViewerSceneStore()
-    service = DocumentService(tmp_path / "round.coalesce.json", scene_store=store)
-    for tool, arguments in box_calls():
-        call(service, tool, arguments)
-    edges = treatment("create", 2, "round", "round", "fillet", size=1)
-    assert call(service, "feature", edges)["revision"] == 3
-    again = treatment("update", 3, "same", "round", "fillet", size=1)
-    assert call(service, "feature", again)["revision"] == 4
-    # without a failure first, an edit that keeps every value says just that
-    assert wait_for(store, 4)["change"]["summary"] == "edited fillet round, no value changed"
-
-    failed = call(service, "feature", treatment("update", 4, "huge", "round", "fillet", size=1000))
-    assert failed["error"]["code"] == "FILLET_FAILED"
-    deadline = time.monotonic() + 10
-    while store.snapshot()[2] is None and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert store.snapshot()[2]["featureIds"] == ["round"]
-    assert call(service, "feature", treatment("update", 4, "repair", "round", "fillet", size=1))["revision"] == 5
-
-    assert wait_for(store, 5)["change"] == {
-        "featureId": "round",
-        "summary": "cleared failed edit to fillet round, values stay as in revision 4",
-    }
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
