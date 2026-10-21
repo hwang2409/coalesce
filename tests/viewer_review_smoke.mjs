@@ -121,6 +121,11 @@ async function act(action) {
     await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new DOMException('denied', 'NotAllowedError')); });
   }
   if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
+  // a control marked aria-disabled still takes a click or tap; playwright waits for it to look enabled unless forced
+  if ('force' in action) {
+    const button = page.getByRole('button', { name: action.force, exact: true });
+    await (touch ? button.tap({ force: true }) : button.click({ force: true }));
+  }
   if ('until' in action) await page.getByText(action.until, { exact: true }).waitFor({ timeout: 5000 });
   // the revision number's box and look with and without the transient update signal
   if ('fresh' in action) {
@@ -165,6 +170,75 @@ async function act(action) {
     await page.waitForFunction((n) => window.coalesceViewer?.revision === n, action.revision, { timeout: 15000 });
     await settled();
   }
+  // review-mode controls: each mode's state, the shown reason, the section controls, and the boxes of
+  // everything drawn over the canvas, so a test can check they do not overlap
+  if ('review' in action) {
+    return page.evaluate(() => {
+      const box = (el) => (el && el.checkVisibility() ? el.getBoundingClientRect().toJSON() : null);
+      const range = document.getElementById('section-range');
+      return {
+        memory: window.coalesceViewer.memory,
+        modes: [...document.querySelectorAll('[data-mode]')].map((b) => ({
+          name: b.textContent,
+          pressed: b.getAttribute('aria-pressed'),
+          disabled: b.disabled || b.getAttribute('aria-disabled') === 'true',
+          reason: b.title,
+        })),
+        hint: box(document.getElementById('review-hint')) && document.getElementById('review-hint').textContent,
+        section: box(document.getElementById('section-controls')) && {
+          axis: document.querySelector('[data-axis][aria-pressed="true"]')?.textContent,
+          value: Number(document.getElementById('section-value').value),
+          min: Number(range.min),
+          max: Number(range.max),
+        },
+        boxes: Object.fromEntries(['#modes', '#section-controls', '#review-hint', '.views', '#scale', '#gizmo', '#status', '.panel', '#view']
+          .map((selector) => [selector, box(document.querySelector(selector))])),
+      };
+    });
+  }
+  // the canvas pixels: keep a copy by name, or count the share of pixels that differ from a kept copy
+  if ('capture' in action || 'diff' in action) {
+    return page.evaluate(({ capture, diff }) => {
+      const source = document.getElementById('view');
+      const copy = document.createElement('canvas');
+      copy.width = source.width;
+      copy.height = source.height;
+      const context = copy.getContext('2d');
+      context.drawImage(source, 0, 0);
+      const { data } = context.getImageData(0, 0, copy.width, copy.height);
+      window.kept ??= {};
+      if (capture) {
+        window.kept[capture] = data;
+        return null;
+      }
+      const kept = window.kept[diff];
+      if (kept.length !== data.length) return 1;
+      let changed = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (Math.abs(data[i] - kept[i]) + Math.abs(data[i + 1] - kept[i + 1]) + Math.abs(data[i + 2] - kept[i + 2]) > 24) changed += 1;
+      }
+      return changed / (data.length / 4);
+    }, { capture: action.capture, diff: action.diff });
+  }
+  // the canvas color where each world point [x, y, z] lands through the viewer's own camera
+  if ('pixels' in action) {
+    return page.evaluate((points) => {
+      const source = document.getElementById('view');
+      const copy = document.createElement('canvas');
+      copy.width = source.width;
+      copy.height = source.height;
+      const context = copy.getContext('2d');
+      context.drawImage(source, 0, 0);
+      return window.coalesceViewer.project(points).map(([x, y]) => {
+        const px = Math.floor(((x + 1) / 2) * copy.width);
+        const py = Math.floor(((1 - y) / 2) * copy.height);
+        return { pixel: [px, py], rgb: [...context.getImageData(px, py, 1, 1).data.slice(0, 3)] };
+      });
+    }, action.pixels);
+  }
+  if ('fill' in action) await page.getByLabel(action.fill.label, { exact: true }).fill(String(action.fill.value));
+  if ('key' in action) await page.keyboard.press(action.key);
+  if ('settle' in action) await settled();
   // keyboard only: Tab until the named control has focus, then press the key
   if ('tabTo' in action) {
     const visited = [];

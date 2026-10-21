@@ -65,6 +65,26 @@
       <span class="scale-text"><span id="scale-text"></span><span class="scale-grid" id="scale-grid"></span></span>
     </div>
 
+    <!-- review modes move, hide or cut only what this page draws; the model does not change -->
+    <div class="review" id="review">
+      <div class="segmented" id="modes" role="group" aria-label="Review view">
+        <button type="button" data-mode="assembled" aria-pressed="true" disabled>Assembled</button>
+        <button type="button" data-mode="lid-off" aria-pressed="false" disabled>Lid off</button>
+        <button type="button" data-mode="exploded" aria-pressed="false" disabled>Exploded</button>
+        <button type="button" data-mode="section" aria-pressed="false" disabled>Section</button>
+      </div>
+      <div class="section-controls" id="section-controls" role="group" aria-label="Section plane" hidden>
+        <div class="axes" role="group" aria-label="Section axis">
+          <button type="button" data-axis="x" aria-pressed="false">X</button>
+          <button type="button" data-axis="y" aria-pressed="true">Y</button>
+          <button type="button" data-axis="z" aria-pressed="false">Z</button>
+        </div>
+        <input type="range" id="section-range" aria-label="Section position" step="0.1">
+        <label class="section-value"><input type="number" id="section-value" aria-label="Section position in mm" step="0.1"><span aria-hidden="true">mm</span></label>
+      </div>
+      <p class="review-hint" id="review-hint" role="status" hidden></p>
+    </div>
+
     <nav class="views" aria-label="Camera">
       <div class="segmented" role="group" aria-label="View direction">
         <button type="button" data-view="iso" aria-pressed="false" disabled>Iso</button>
