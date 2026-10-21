@@ -82,10 +82,61 @@ async def test_stdio_returns_pass_and_unknown_gates(tmp_path):
     assert response["results"][1]["reason"]
 
 
+def test_explicit_empty_requirements_rejected(tmp_path):
+    service = DocumentService(tmp_path / "empty.coalesce.json")
+    response = service.check({"action": "evaluate", "requirements": []})
+    assert response["ok"] is False
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_empty_document_is_not_valid_brep(tmp_path):
+    service = DocumentService(tmp_path / "empty-brep.coalesce.json")
+    response = service.check({"action": "evaluate", "requirements": [{"id": "valid", "kind": "valid_brep"}]})
+    assert response["gate"] in {"UNKNOWN", "ERROR"}
+    assert response["results"][0]["status"] in {"UNKNOWN", "ERROR"}
+
+
+def test_uncovered_npth_mount_is_a_fail(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    result = service.check({"action": "evaluate", "base": "base", "requirements": [{"id": "mounts", "kind": "mounting_holes"}]})["results"][0]
+    assert result["status"] == "FAIL"
+    assert "H1" in result["measured"]["uncoveredHoleIds"]
+
+
+def test_mount_subset_reports_waived_hole(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"])
+    result = service.check({"action": "evaluate", "base": "base", "requirements": [{"id": "mounts", "kind": "mounting_holes", "holeIds": ["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"]}]})["results"][0]
+    assert result["status"] == "PASS"
+    assert "H1" in result["measured"]["notRequired"]
+
+
+def test_no_mounting_holes_is_unknown():
+    from coalesce.requirements import evaluate
+    inspection = {"baseId": "base", "base": {"partId": "part"}, "standoffs": {"holeIds": [], "coveredHoleIds": [], "uncoveredHoleIds": []}}
+    result = evaluate([{"id": "mounts", "kind": "mounting_holes"}], inspection, 1)["results"][0]
+    assert result["status"] == "UNKNOWN"
+
+
+def test_non_mm_measurement_is_unknown():
+    from coalesce.requirements import evaluate
+    inspection = {"baseId": "base", "base": {"partId": "part", "minimumWallThickness": {"value": 2, "unit": "inch"}, "floorThickness": {"value": 2, "unit": "mm"}}}
+    result = evaluate([{"id": "wall", "kind": "wall_thickness", "threshold": quantity(1)}], inspection, 1)["results"][0]
+    assert result["status"] == "UNKNOWN"
+
+
+def test_port_evidence_keeps_board_identity_and_part_id(tmp_path):
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    assert service.feature(port_request(revision=3))['ok']
+    service._document.graph.nodes["controller_board"].availability["models"] = "declared"
+    result = service.check({"action": "evaluate", "base": "base", "requirements": [{"id": "port", "kind": "port_clearance", "threshold": quantity(0)}]})["results"][0]
+    assert result["involved"] == [service.query({"select": {"kind": "enclosure", "base": "base"}})["base"]["partId"]]
+    assert {"reference", "value", "libraryId", "clearance", "blocked"} <= set(result["measured"][0])
+
+
 def test_clean_base_passes_measured_requirements(tmp_path):
     service = _service(
         tmp_path,
-        holes=["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"],
+        holes=["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676", "hole-9ddb205ba1bc297f95347452"],
     )
     response = service.check(
         {
@@ -94,7 +145,7 @@ def test_clean_base_passes_measured_requirements(tmp_path):
             "requirements": [
                 {"id": "wall", "kind": "wall_thickness", "threshold": quantity(2)},
                 {"id": "floor", "kind": "floor_thickness", "threshold": quantity(2)},
-                {"id": "mounts", "kind": "mounting_holes"},
+                {"id": "mounts", "kind": "mounting_holes", "holeIds": ["hole-03e3c0594f5f1b105237c4c0", "hole-89c529cbad8407f9ccb81676"]},
                 {"id": "clean", "kind": "clean_deliverables"},
             ],
         }

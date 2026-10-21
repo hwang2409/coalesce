@@ -185,8 +185,9 @@ def _mounting_holes(board: BoardImport) -> list[dict[str, Any]]:
         for footprint in board.mechanics.get("footprints", [])
         if footprint.get("libraryId", "").startswith("MountingHole:")
     }
+    footprints = {item["id"]: item for item in board.mechanics.get("footprints", [])}
     return [
-        hole
+        {**hole, "reference": footprints.get(hole.get("footprintId"), {}).get("reference")}
         for hole in board.mechanics.get("holes", [])
         if hole.get("footprintId") in mounting_footprints
     ]
@@ -264,6 +265,8 @@ def _standoffs(
     return {
         "count": len(items),
         "mountingHoleCount": len(holes),
+        "holeIds": hole_ids,
+        "references": {hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")},
         "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
         "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
         "requiredCoveredHoleIds": [hole_id for hole_id in required_ids if hole_id in intact],

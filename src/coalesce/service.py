@@ -2687,7 +2687,15 @@ class DocumentService:
                     "requested revision is not current",
                     operation="check",
                 )
-            requirements = payload.get("requirements") or [{"id": "valid", "kind": "valid_brep"}]
+            if "requirements" in payload and not payload["requirements"]:
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    "INVALID_PARAMETER",
+                    "requirements must contain at least one item",
+                    operation="check",
+                )
+            requirements = payload.get("requirements", [{"id": "valid", "kind": "valid_brep"}])
             results = []
             enclosure_requirements = [item for item in requirements if item.get("kind") != "valid_brep"]
             if enclosure_requirements:
@@ -2712,27 +2720,29 @@ class DocumentService:
             for requirement in requirements:
                 if requirement.get("kind") != "valid_brep":
                     continue
-                valid = all(
-                    BRepCheck_Analyzer(part.shape.wrapped).IsValid()
-                    for part in terminal_parts(self._regen)
-                )
-                results.append(
-                    {
-                        "id": requirement.get("id"),
-                        "kind": "valid_brep",
-                        "status": "PASS" if valid else "FAIL",
-                        "measured": {"value": valid, "unit": "boolean"},
-                        "threshold": {"value": True, "unit": "boolean"},
-                        "involved": [part.part_id for part in terminal_parts(self._regen)],
-                        "evidence": {"solidCount": self._metrics()["solidCount"]},
-                        "revision": self._document.revision,
-                    }
-                )
+                parts = terminal_parts(self._regen)
+                valid = bool(parts) and all(BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in parts)
+                status = "PASS" if valid else "FAIL" if parts else "UNKNOWN"
+                result = {
+                    "id": requirement.get("id"),
+                    "kind": "valid_brep",
+                    "status": status,
+                    "measured": {"value": valid, "unit": "boolean"},
+                    "threshold": {"value": True, "unit": "boolean"},
+                    "involved": [part.part_id for part in parts],
+                    "evidence": {"solidCount": len(parts)},
+                    "revision": self._document.revision,
+                }
+                if not parts:
+                    result["reason"] = "no manufacturing solids exist"
+                results.append(result)
             statuses = [item["status"] for item in results]
             if gate is None:
-                gate = "FAIL" if "FAIL" in statuses else "PASS"
+                gate = "PASS" if statuses and all(status == "PASS" for status in statuses) else "FAIL" if "FAIL" in statuses else "UNKNOWN" if "UNKNOWN" in statuses else "ERROR"
             elif "FAIL" in statuses:
                 gate = "FAIL"
+            elif "UNKNOWN" in statuses:
+                gate = "UNKNOWN"
             return {
                 "ok": True,
                 "revision": self._document.revision,

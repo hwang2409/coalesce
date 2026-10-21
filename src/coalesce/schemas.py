@@ -755,6 +755,7 @@ CHECK_SCHEMA = {
                     "id": {"type": "string", "minLength": 1},
                     "kind": {"enum": ["valid_brep", "wall_thickness", "floor_thickness", "mounting_holes", "standoff_coverage", "lid_interference", "fit_gap", "lid_fit_gap", "engagement_depth", "lid_engagement", "port_clearance", "connector_clearance", "clean_deliverables", "clean_manufacturing_bodies"]},
                     "threshold": {},
+                    "holeIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": True},
                 },
                 "required": ["id", "kind"],
                 "additionalProperties": False,
