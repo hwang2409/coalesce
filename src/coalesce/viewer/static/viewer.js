@@ -431,7 +431,6 @@ function renderPartList(parts) {
     const name = document.createElement('span');
     name.className = 'part-name';
     name.textContent = titles[index];
-    name.classList.toggle('collides', titles[index] !== part.label);
     name.title = part.name;
     const title = document.createElement('span');
     title.className = 'part-title';

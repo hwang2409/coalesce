@@ -275,20 +275,19 @@ button.fit-row:focus { background: rgba(29, 35, 41, 0.05); }
 
 .part-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 
+/* names of several words wrap at spaces beside the size; only one long word is cut with an ellipsis */
 .part-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 500;
 }
 
-/* a focused row (keyboard or tap) and a name with a distinguishing suffix show the full name,
-   wrapped beside the size so the size does not jump to a line of its own */
-.part-name.collides { white-space: normal; }
+/* a focused row (keyboard or tap) shows even one long word in full, wrapped beside the size so the
+   size does not jump to a line of its own */
 .part:focus .part-name { white-space: normal; overflow-wrap: anywhere; }
 
-/* narrow screens only: the detail line opens when the row has focus */
+/* the facts open, and on narrow screens the detail line, when the row has focus */
 .disclosure { display: none; flex: none; color: var(--mute); }
 
 .part-size { grid-column: 2; color: var(--mute); font-size: 12px; }
