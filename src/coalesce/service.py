@@ -2432,17 +2432,20 @@ class DocumentService:
             with self._lock:
                 node = self._document.graph.nodes.get(payload.get("featureId"))
                 if not isinstance(node, Feature):
-                    return _safe_error(
+                    noun = payload.get("kind") or "feature"
+                    failure = _safe_error(
                         self.revision,
                         payload.get("requestId"),
                         "UNKNOWN_ID",
-                        f"unknown feature: {payload.get('featureId')}",
+                        f"unknown {noun}: {payload.get('featureId')}",
                         operation="feature",
                     )
+                    self.publish_failure(payload, failure)
+                    return failure
                 expected_kind = _node_kind(node)
                 actual_kind = payload.get("kind")
                 if actual_kind is not None and actual_kind != expected_kind:
-                    return _safe_error(
+                    failure = _safe_error(
                         self.revision,
                         payload.get("requestId"),
                         "INVALID_PARAMETER",
@@ -2451,6 +2454,8 @@ class DocumentService:
                         expectedKind=expected_kind,
                         actualKind=actual_kind,
                     )
+                    self.publish_failure(payload, failure)
+                    return failure
                 payload = {**payload, "kind": expected_kind}
         return self._mutate(
             "feature",
