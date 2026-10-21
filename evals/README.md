@@ -4,7 +4,9 @@ run one task with either supported harness:
 
 ```bash
 uv run python -m evals.run --task plate-holes --model <model> --harness claude --out <new-output-directory>
-uv run python -m evals.run --task plate-holes --model <model> --harness zeta --zeta-project <project> --out <new-output-directory>
+uv run python -m evals.run --task plate-holes --model <model> --harness zeta --zeta-project <project> --coalesce-path <checkout> --out <new-output-directory>
+
+`--coalesce-path` is the revision under test. the zeta harness reads the coalesce server's `--directory` or `--project` from `<zeta-project>/.zeta/mcp.json` and fails closed unless that checkout has the same `HEAD`. it never changes that checkout; run the checkout command in the error message, then retry. every run records the revision and dirty-tree state in its metadata and scorecard.
 ```
 
 `--task` accepts a task id, a tier (`easy`, `medium`, or `hard`), or `all`. the output directory must not contain an existing directory for the same task and model.

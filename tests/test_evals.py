@@ -535,11 +535,76 @@ def test_zeta_fixture_staging_refuses_existing_path(tmp_path):
     fixtures.mkdir(parents=True)
     (fixtures / "features.kicad_pcb").write_text("fixture")
     project = tmp_path / "project"
-    project.mkdir()
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(json.dumps({
+        "mcpServers": {"coalesce": {"args": ["--directory", str(Path.cwd())]}}
+    }))
     (project / "coalesce-eval-features.kicad_pcb").write_text("do not replace")
     with pytest.raises(FileExistsError, match="coalesce-eval-features.kicad_pcb"):
-        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project)
+        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project,
+                     coalesce_path=Path.cwd())
     assert (project / "coalesce-eval-features.kicad_pcb").read_text() == "do not replace"
+
+
+def _zeta_project(tmp_path, directory):
+    project = tmp_path / "project"
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(json.dumps({
+        "mcpServers": {"coalesce": {"args": ["run", "--directory", str(directory)]}}
+    }))
+    return project
+
+
+def test_zeta_mismatched_server_revision_fails_closed(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import zeta_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda path: ("under-test" if path == Path("source") else "stale", False))
+    monkeypatch.setattr(evals.run.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("zeta was called"))
+    run_dir = tmp_path / "run"
+    (run_dir / "fixtures").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="git -C .* checkout --detach under-test"):
+        zeta_harness("prompt", run_dir, model="m", zeta_project=_zeta_project(tmp_path, Path("server")), coalesce_path=Path("source"))
+    assert not (run_dir / "transcript.json").exists()
+
+
+def test_zeta_matching_server_revision_runs(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import zeta_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("same", False))
+    def fake_run(*_args, **_kwargs):
+        return type("Result", (), {"stdout": '{"type":"message","role":"assistant","text":"done"}', "stderr": "", "returncode": 0})()
+    monkeypatch.setattr(evals.run.subprocess, "run", fake_run)
+    run_dir = tmp_path / "run"
+    (run_dir / "fixtures").mkdir(parents=True)
+    result = zeta_harness("prompt", run_dir, model="m", zeta_project=_zeta_project(tmp_path, Path("server")), coalesce_path=Path("source"))
+    assert result["coalesce_revision"] == "same"
+
+
+@pytest.mark.parametrize("config", ["not json", {"mcpServers": {"coalesce": {"args": []}}}])
+def test_zeta_invalid_server_config_fails_closed(tmp_path, monkeypatch, config):
+    import evals.run
+    from evals.run import zeta_harness
+
+    project = tmp_path / "project"
+    (project / ".zeta").mkdir(parents=True)
+    (project / ".zeta" / "mcp.json").write_text(config if isinstance(config, str) else json.dumps(config))
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("same", False))
+    with pytest.raises(RuntimeError, match="(parse.*config|config .*names no)"):
+        zeta_harness("prompt", tmp_path / "run", model="m", zeta_project=project, coalesce_path=Path("source"))
+
+
+def test_claude_run_metadata_includes_revision(tmp_path, monkeypatch):
+    import evals.run
+    from evals.run import claude_harness
+
+    monkeypatch.setattr(evals.run, "_git_state", lambda _path: ("revision", True))
+    monkeypatch.setattr(evals.run.subprocess, "run", lambda *_args, **_kwargs: type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})())
+    (tmp_path / "fixtures").mkdir()
+    result = claude_harness("prompt", tmp_path, model="m", coalesce_path=Path("source"))
+    assert result["coalesce_revision"] == "revision"
+    assert result["coalesce_dirty"] is True
 
 
 def test_claude_disables_builtin_tools_and_settings(tmp_path, monkeypatch):
@@ -583,8 +648,12 @@ def test_harness_instruction_says_no_human_is_available(tmp_path, monkeypatch, h
         claude_harness("prompt", run_dir, model="claude-haiku-4-5", coalesce_path=Path.cwd())
     else:
         project = tmp_path / "project"
-        project.mkdir()
-        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project)
+        (project / ".zeta").mkdir(parents=True)
+        (project / ".zeta" / "mcp.json").write_text(json.dumps({
+            "mcpServers": {"coalesce": {"args": ["--directory", str(Path.cwd())]}}
+        }))
+        zeta_harness("prompt", run_dir, model="claude-haiku-4-5", zeta_project=project,
+                     coalesce_path=Path.cwd())
     assert seen["command"][2].count(HEADLESS) == 1
 
 
