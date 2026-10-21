@@ -44,6 +44,7 @@ def _bbox(shapes: list[Any]) -> dict[str, list[float]]:
 
 def _cylinders(shape: Any) -> list[dict[str, Any]]:
     from build123d import GeomType
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
 
     cylinders = []
     for face in shape.faces():
@@ -62,7 +63,7 @@ def _cylinders(shape: Any) -> list[dict[str, Any]]:
         ]
         cylinders.append(
             {
-                "radius": float(face.radius),
+                "radius": float(BRepAdaptor_Surface(face.wrapped).Cylinder().Radius()),
                 "axis": {"position": line_position, "direction": direction},
             }
         )
