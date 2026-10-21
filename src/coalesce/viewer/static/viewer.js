@@ -51,31 +51,17 @@ for (const [x, y, z, color] of AXES) {
 
 let frame = 0;
 let frames = 0; // completed renders, for the browser test
-let shownTop = null; // canvas page top and height at the last render
+let shownTop = null; // canvas page top and height at the last render, for the browser test
 let shownHeight = 0;
 function requestRender() {
   if (!frame) frame = requestAnimationFrame(render);
-}
-
-// the status row moves the canvas top edge: keep the model's scale and screen position
-function holdModel(top, h) {
-  const unitsPerPx = (camera.top - camera.bottom) / camera.zoom / shownHeight;
-  const half = ((camera.top - camera.bottom) / 2) * (h / shownHeight);
-  camera.top = half;
-  camera.bottom = -half;
-  const down = top + h / 2 - (shownTop + shownHeight / 2); // css px the view center moved
-  const offset = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).multiplyScalar(-down * unitsPerPx);
-  camera.position.add(offset);
-  controls.target.add(offset);
 }
 
 function render() {
   frame = 0;
   const { clientWidth: w, clientHeight: h } = canvas;
   if (!w || !h) return;
-  const top = canvas.getBoundingClientRect().top;
-  if (shownTop !== null && top !== shownTop) holdModel(top, h);
-  shownTop = top;
+  shownTop = canvas.getBoundingClientRect().top;
   shownHeight = h;
   const ratio = renderer.getPixelRatio();
   if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) renderer.setSize(w, h, false);
@@ -656,6 +642,19 @@ for (const input of [$('section-range'), $('section-value')]) {
     requestRender();
   });
 }
+// Escape in the section controls ends the section view; the hint says so while they have focus
+const sectionControls = $('section-controls');
+sectionControls.addEventListener('focusin', () => hint('Esc returns to Assembled'));
+sectionControls.addEventListener('focusout', (event) => {
+  if (!sectionControls.contains(event.relatedTarget)) hint(null);
+});
+sectionControls.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  setMode('assembled');
+  document.querySelector('[data-mode="assembled"]').focus(); // the hidden controls drop focus
+  $('view-description').textContent = `Section view closed, back to Assembled. ${$('view-description').textContent}`;
+});
 $('section-value').addEventListener('change', () => {
   $('section-value').value = Number(section.position.toFixed(1)); // shows the clamped position
 });
@@ -701,22 +700,31 @@ function copyButton() {
 function setLink(state, text) {
   $('link').dataset.state = state;
   $('link-text').textContent = text;
+  if (state === 'ended') enableCamera(false);
+  showStatus();
+  syncGizmo();
+}
+
+// one status at a time: while the link is down that is the news, and a failed edit is one sentence of it
+function showStatus() {
+  const state = $('link').dataset.state;
   const stale = (state === 'lost' || state === 'ended') && current !== null;
   const line = $('stale');
   line.hidden = !stale;
   line.dataset.state = state;
-  if (state === 'ended') {
-    enableCamera(false);
+  const ids = failure?.featureIds.length ? `, ${failure.featureIds.join(', ')},` : '';
+  const failed = failure ? ` The last edit${ids} failed.` : '';
+  if (state === 'ended' && stale) {
     const title = document.createElement('strong');
-    title.textContent = `${ENDED}. Revision ${current?.revision} is the last one this page saw.`;
+    title.textContent = `${ENDED}. Revision ${current.revision} is the last one this page saw.`;
     const sample = document.createElement('code');
     sample.textContent = ENDED_LINE;
-    line.replaceChildren(title, ` ${ENDED_HELP} `, sample, ` ${ENDED_ASK} `, copyButton());
+    line.replaceChildren(title, `${failed} ${ENDED_HELP} `, sample, ` ${ENDED_ASK} `, copyButton());
   } else {
-    line.textContent = stale ? `Revision ${current.revision} may be out of date. Reconnecting to coalesce.` : '';
+    line.textContent = stale ? `Revision ${current.revision} may be out of date. Reconnecting to coalesce.${failed}` : '';
   }
+  $('failure').hidden = !failure || stale;
   $('stage').toggleAttribute('data-stale', stale);
-  syncGizmo();
 }
 
 // orientation means nothing without a model, or once the page can no longer follow it
@@ -759,7 +767,7 @@ function repair({ code, message, hint }) {
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 function showFailure() {
-  $('failure').hidden = !failure;
+  showStatus();
   if (!failure) return;
   $('failure-title').textContent = failure.revision == null
     ? 'Last edit failed. There is no good revision yet.'
@@ -775,6 +783,8 @@ function showFailure() {
   $('failure-repair').textContent = repair(failure.error);
   $('failure-code').textContent = failure.error.code;
   $('failure-message').textContent = failure.error.message;
+  $('failure-kernel').hidden = !failure.error.kernelMessage;
+  $('failure-kernel').textContent = failure.error.kernelMessage ? `Kernel: ${failure.error.kernelMessage}` : '';
 }
 
 // loads run one at a time, then catch up to the newest announced revision,

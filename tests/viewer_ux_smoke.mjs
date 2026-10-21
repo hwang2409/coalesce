@@ -88,10 +88,15 @@ await step('failure', async () => ({
   ...(await texts()),
   repair: await page.locator('#failure-repair').innerText(),
   codeVisible: await page.locator('#failure-code').isVisible(),
+  kernelVisible: await page.locator('#failure-kernel').isVisible(),
   ...(await drawn()),
 }));
 await page.locator('.failure-details summary').click();
-await step('failure-details', async () => ({ codeVisible: await page.locator('#failure-code').isVisible() }));
+await step('failure-details', async () => ({
+  codeVisible: await page.locator('#failure-code').isVisible(),
+  kernelVisible: await page.locator('#failure-kernel').isVisible(),
+  kernel: await page.locator('#failure-kernel').innerText(),
+}));
 
 await waitRevision(3);
 await settled();

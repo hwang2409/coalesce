@@ -63,11 +63,11 @@ const stale = async () => ({
   link: await page.locator('#link-text').textContent(),
   banner: await shown('#stale'),
   filter: await page.locator('#view').evaluate((canvas) => getComputedStyle(canvas).filter),
-  failureColor: await page.locator('#failure-title').evaluate((el) => getComputedStyle(el).color),
+  failure: await shown('#failure'),
   gizmo: await gizmo(),
   ...(await layout()),
 });
-// css px: the canvas must fill the stage below the status row, never under it
+// css px: the canvas fills the stage in every state; the status lies over it
 const layout = () => page.evaluate(() => {
   const view = document.getElementById('view').getBoundingClientRect();
   const status = document.getElementById('status').getBoundingClientRect();
@@ -106,18 +106,18 @@ await step('revision-1', async () => ({
 }));
 await waitRevision(2);
 await settled();
-const second = await step('revision-2', async () => ({
+await step('revision-2', async () => ({
   label: await revision().textContent(),
   ...(await layout()),
   memory: await page.evaluate(() => window.coalesceViewer.memory),
   ...(await drawn()),
 }));
 await page.locator('#failure').waitFor({ state: 'visible', timeout: 15000 });
-await settledAfter(second.scene.frames);
+await settled(); // the status lies over the canvas: nothing to redraw
 await step('failure', async () => ({
   label: await revision().textContent(),
   failure: await page.locator('#failure').innerText(),
-  failureColor: await page.locator('#failure-title').evaluate((el) => getComputedStyle(el).color),
+  ...(await layout()),
   ...(await drawn()),
 }));
 const beforeFront = await currentFrames();
