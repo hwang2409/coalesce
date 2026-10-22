@@ -1862,11 +1862,9 @@ def _terminal_base_source(committed: RegenResult, base: str) -> str:
     return next(iter(terminals))
 
 
-def _set_lid_outline(
+def _set_lid_outline_source(
     node: PcbLid, requested: str | None, committed: RegenResult
 ) -> None:
-    from .lid_outline import capture_lid_outline
-
     source = _terminal_base_source(committed, node.base)
     if requested is not None and requested != source:
         raise RequestError(
@@ -1878,7 +1876,6 @@ def _set_lid_outline(
             legalSource=source,
         )
     node.outline_source = source
-    node.outline_geometry = capture_lid_outline(source, committed.states[source])
 
 
 def _apply_pcb_lid(
@@ -1898,7 +1895,7 @@ def _apply_pcb_lid(
             node.lip_depth = operation.set.lip.depth
             node.lip_width = operation.set.lip.width
         if operation.set.outlineSource is not None:
-            _set_lid_outline(node, operation.set.outlineSource.featureId, committed)
+            _set_lid_outline_source(node, operation.set.outlineSource.featureId, committed)
         return operation.featureId
 
     parameters = operation.parameters
@@ -1918,7 +1915,7 @@ def _apply_pcb_lid(
         lip_depth=parameters.lip.depth if parameters.lip else None,
         lip_width=parameters.lip.width if parameters.lip else None,
     )
-    _set_lid_outline(node, None, committed)
+    _set_lid_outline_source(node, None, committed)
     graph.add(node)
     return operation.featureId
 

@@ -107,30 +107,47 @@ def test_lid_uses_filleted_terminal_outline_with_analytic_arcs(tmp_path):
     assert len(cylinders) == 4
     assert cylinders == pytest.approx([1, 1, 1, 1], abs=1e-6)
     assert service._document.graph.nodes["lid"].outline_source == "base_round"
+    ordered = [node.id for node in service._document.graph.ordered()]
+    assert ordered.index("base_round") < ordered.index("lid")
 
 
-def test_changed_source_stays_stale_until_explicit_lid_update(tmp_path):
+def test_changed_source_geometry_updates_lid_without_rebinding(tmp_path):
     service = _service(tmp_path)
     assert service.feature(_fillet_request(revision=2))["ok"]
     assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
-    before = _outline_measurements(service)
 
     assert service.feature(_update_fillet(revision=4, radius=2))["ok"]
     inspection = service.query({"select": {"kind": "enclosure", "base": "base"}})
 
-    after = _outline_measurements(service)
-    assert after[:2] == before[:2]
-    assert after[2] == pytest.approx(before[2], abs=1e-6)
-    assert {
-        (item["code"], item["currentSource"], item["legalSource"])
-        for item in inspection["warnings"]
-    } >= {("LID_OUTLINE_STALE", "base_round", "base_round")}
-    assert _check_outline(service)["status"] == "FAIL"
-
-    assert service.feature(_update_lid_source(revision=5))["ok"]
-    _, _, cylinders = _outline_measurements(service)
-    assert _check_outline(service)["status"] == "PASS"
+    area, bbox, cylinders = _outline_measurements(service)
+    assert area == pytest.approx(400 + 4 * math.pi, abs=1e-6)
+    assert bbox == pytest.approx((-3, -3, 23, 13), abs=1e-6)
     assert cylinders == pytest.approx([2, 2, 2, 2], abs=1e-6)
+    assert not any(item["code"] == "LID_OUTLINE_STALE" for item in inspection["warnings"])
+    assert _check_outline(service)["status"] == "PASS"
+
+
+def test_board_refresh_updates_lid_outline(tmp_path):
+    source = tmp_path / "wider.kicad_pcb"
+    source.write_text((FIXTURES / "features.kicad_pcb").read_text())
+    service = DocumentService(tmp_path / "refresh.coalesce.json")
+    assert service.import_board(import_request(source))["ok"]
+    assert service.feature(base_request())["ok"]
+    assert service.feature(_fillet_request(revision=2))["ok"]
+    assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
+
+    source.write_text(source.read_text().replace("(end 20 10)", "(end 22 10)"))
+    refreshed = service.import_board({
+        **import_request(source, revision=4, request_id="refresh", action="refresh"),
+        "path": str(source.resolve()),
+    })
+
+    assert refreshed["ok"] is True
+    assert refreshed["boardChanges"]["outlineChanged"] is True
+    assert refreshed["boardChanges"]["dependentFeatures"] == ["pcb base", "fillet", "pcb lid"]
+    _, bbox, _ = _outline_measurements(service)
+    assert bbox == pytest.approx((-3, -3, 25, 13), abs=1e-6)
+    assert _check_outline(service)["status"] == "PASS"
 
 
 def test_outline_source_survives_reload_and_separate_export(tmp_path):
@@ -160,6 +177,7 @@ def test_outline_source_survives_reload_and_separate_export(tmp_path):
     serialized = json.loads(document.read_text())
     lid = next(node for node in serialized["graph"]["nodes"] if node["id"] == "lid")
     assert lid["outlineSource"]["featureId"] == "base_round"
+    assert "outlineGeometry" not in lid
 
 
 def test_treatment_after_lid_reports_stale_until_update(tmp_path):
@@ -205,7 +223,6 @@ def test_legacy_lid_without_outline_source_keeps_board_outline(tmp_path):
     payload = json.loads(service.store.path.read_text())
     lid = next(node for node in payload["graph"]["nodes"] if node["id"] == "lid")
     lid.pop("outlineSource", None)
-    lid.pop("outlineGeometry", None)
     service.store.path.write_text(json.dumps(payload))
 
     restarted = DocumentService(service.store.path)

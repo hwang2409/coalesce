@@ -13,8 +13,6 @@ from .graph import (
     GraphError,
     Hole,
     HolePosition,
-    LidOutlineGeometry,
-    LidOutlineSegment,
     PcbBase,
     PcbLid,
     Plane,
@@ -124,12 +122,8 @@ def _extrude_payload(node: Extrude, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _lid_payload(node: PcbLid, payload: dict[str, Any]) -> dict[str, Any]:
     payload.pop("outline_source")
-    payload.pop("outline_geometry")
-    if node.outline_source is not None and node.outline_geometry is not None:
+    if node.outline_source is not None:
         payload["outlineSource"] = {"featureId": node.outline_source}
-        payload["outlineGeometry"] = {
-            "segments": [asdict(segment) for segment in node.outline_geometry.segments]
-        }
     return payload
 
 
@@ -191,26 +185,7 @@ def _load_standoffs(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _load_lid(payload: dict[str, Any]) -> dict[str, Any]:
     source = payload.pop("outlineSource", None)
-    geometry = payload.pop("outlineGeometry", None)
     payload["outline_source"] = source.get("featureId") if source else None
-    payload["outline_geometry"] = (
-        LidOutlineGeometry(
-            tuple(
-                LidOutlineSegment(
-                    kind=item["kind"],
-                    start=tuple(item["start"]),
-                    midpoint=tuple(item["midpoint"]),
-                    end=tuple(item["end"]),
-                    source=item["source"],
-                    center=tuple(item["center"]) if item.get("center") is not None else None,
-                    radius=item.get("radius"),
-                )
-                for item in geometry["segments"]
-            )
-        )
-        if geometry is not None
-        else None
-    )
     return payload
 
 

@@ -37,7 +37,7 @@ from .graph import (
     Standoffs,
 )
 from .hole import make_hole_tool
-from .lid_outline import outline_profile
+from .lid_outline import capture_lid_outline, outline_profile
 from .lineage import BodyLineage
 from .pcb import build_pcb
 from .references import (
@@ -435,8 +435,10 @@ class _EnclosureRegenerator:
     def _regenerate_pcb_lid(self, node: PcbLid) -> None:
         base, board = self._base_context(node.base, node.id)
         outline = (
-            outline_profile(node.outline_geometry)
-            if node.outline_geometry is not None
+            outline_profile(
+                capture_lid_outline(node.outline_source, self.states[node.outline_source])
+            )
+            if node.outline_source is not None
             else None
         )
         lid = build_pcb_lid(node, base, board, outline)

@@ -19,7 +19,7 @@ from .graph import (
     PortCutout,
     Standoffs,
 )
-from .lid_outline import capture_lid_outline, outline_difference, outline_profile
+from .lid_outline import capture_lid_outline, outline_profile
 from .parts import TerminalPart, terminal_parts
 from .pcb import board_loop_wire
 
@@ -448,13 +448,9 @@ def _current_outline(result: Any, terminal: str) -> Any | None:
 def _outline_is_stale(
     node: PcbLid, current: Any | None, terminal: str, has_outer_treatment: bool
 ) -> bool:
-    if node.outline_geometry is None:
+    if node.outline_source is None:
         return has_outer_treatment
-    return (
-        node.outline_source != terminal
-        or current is None
-        or max(outline_difference(node.outline_geometry, current).values()) > 1e-6
-    )
+    return node.outline_source != terminal or current is None
 
 
 def _legacy_match(measurement: dict[str, Any]) -> None:
@@ -481,7 +477,7 @@ def _lids(
     lids = []
     warnings = []
     for node in nodes:
-        comparison = current if node.outline_geometry is not None or has_outer_treatment else None
+        comparison = current if node.outline_source is not None or has_outer_treatment else None
         measurement = _lid_measurement(result, parts, node, base_part, comparison)
         if comparison is None and not has_outer_treatment:
             _legacy_match(measurement)

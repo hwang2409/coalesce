@@ -225,25 +225,17 @@ def test_restart_refresh_and_base_update_regenerate_lid(tmp_path):
     assert service.import_board(
         import_request(source, revision=3, request_id="refresh-board", action="refresh")
     )["ok"] is True
-    stale = service.query({"select": {"kind": "enclosure", "base": "base"}})
-    assert any(warning["code"] == "LID_OUTLINE_STALE" for warning in stale["warnings"])
-    assert service.feature(
-        {
-            "action": "update",
-            "expectedRevision": 4,
-            "requestId": "refresh-lid-outline",
-            "featureId": "lid",
-            "kind": "pcb_lid",
-            "set": {"outlineSource": {"featureId": "base"}},
-        }
-    )["ok"] is True
+    inspection = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    assert not any(
+        warning["code"] == "LID_OUTLINE_STALE" for warning in inspection["warnings"]
+    )
     refreshed = service._regen.shapes["lid"].bounding_box()
     assert refreshed.max.X - original.max.X == pytest.approx(2)
 
     assert service.feature(
         {
             "action": "update",
-            "expectedRevision": 5,
+            "expectedRevision": 4,
             "requestId": "higher-base",
             "featureId": "base",
             "kind": "pcb_base",

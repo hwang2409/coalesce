@@ -130,7 +130,6 @@ class PcbLid(Feature):
     lip_depth: float | None = None
     lip_width: float | None = None
     outline_source: str | None = None
-    outline_geometry: LidOutlineGeometry | None = None
 
 
 @dataclass
