@@ -5,8 +5,10 @@ import os
 import shutil
 import stat
 import threading
+import time
 from pathlib import Path
 
+import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
@@ -59,6 +61,44 @@ FEATURE = {
 }
 
 
+@pytest.mark.anyio
+async def test_slow_tool_call_does_not_block_other_mcp_requests(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "concurrent.coalesce.json", warmup=False)
+    started = threading.Event()
+
+    def slow_query(_arguments):
+        started.set()
+        time.sleep(0.5)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "query", slow_query)
+    server = create_server(service)
+    call_handler = server.request_handlers[types.CallToolRequest]
+    list_handler = server.request_handlers[types.ListToolsRequest]
+
+    async def call_slow_tool():
+        await call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query", arguments={"select": {"kind": "revision"}}
+                )
+            )
+        )
+
+    slow_completed = anyio.Event()
+
+    async def call_slow_tool_and_record_completion():
+        await call_slow_tool()
+        slow_completed.set()
+
+    with anyio.fail_after(3):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(call_slow_tool_and_record_completion)
+            assert await anyio.to_thread.run_sync(started.wait, 1.0)
+            await list_handler(types.ListToolsRequest())
+            assert not slow_completed.is_set()
+
+
 async def call_server_tool(service, name, arguments):
     server = create_server(service)
     handler = server.request_handlers[types.CallToolRequest]
@@ -68,6 +108,115 @@ async def call_server_tool(service, name, arguments):
         )
     )
     return result.root.structuredContent
+
+
+@pytest.mark.anyio
+async def test_schema_error_uses_one_locked_snapshot_off_event_loop(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "atomic-error.coalesce.json", warmup=False)
+    assert service.sketch(SKETCH)["revision"] == 1
+    context_started = threading.Event()
+    mutation_attempted = threading.Event()
+    committed = threading.Event()
+    context_threads = []
+    with_context = service._with_error_context
+
+    def overlap_mutation(payload, failure):
+        context_threads.append(threading.get_ident())
+        context_started.set()
+        assert mutation_attempted.wait(1)
+        if not service._lock._is_owned():
+            assert committed.wait(3)
+        return with_context(payload, failure)
+
+    monkeypatch.setattr(service, "_with_error_context", overlap_mutation)
+
+    def mutate():
+        assert context_started.wait(1)
+        mutation_attempted.set()
+        assert service.feature(FEATURE)["revision"] == 2
+        committed.set()
+
+    mutation = threading.Thread(target=mutate)
+    mutation.start()
+    event_loop_thread = threading.get_ident()
+    result = await call_server_tool(
+        service,
+        "feature",
+        {
+            "action": "update",
+            "expectedRevision": 1,
+            "requestId": "invalid-update",
+            "featureId": "plate_extrude",
+            "kind": "extrude",
+            "set": {"distance": {"value": "bad", "unit": "mm"}},
+        },
+    )
+    mutation.join(timeout=3)
+
+    assert not mutation.is_alive()
+    assert result["revision"] == 1
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert "affectedParts" not in result["error"]
+    assert context_threads and context_threads[0] != event_loop_thread
+
+
+def test_update_kind_error_uses_one_locked_snapshot(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "atomic-kind-error.coalesce.json", warmup=False)
+    assert service.sketch(SKETCH)["revision"] == 1
+    assert service.feature(FEATURE)["revision"] == 2
+    resolved = threading.Event()
+    mutation_attempted = threading.Event()
+    committed = threading.Event()
+    resolve_update_kind = service._resolve_update_kind
+
+    def wait_for_mutation():
+        resolved.set()
+        assert mutation_attempted.wait(1)
+        if not service._lock._is_owned():
+            assert committed.wait(3)
+
+    def pause_after_resolution(payload):
+        try:
+            result = resolve_update_kind(payload)
+        except Exception:
+            wait_for_mutation()
+            raise
+        wait_for_mutation()
+        return result
+
+    monkeypatch.setattr(service, "_resolve_update_kind", pause_after_resolution)
+
+    def mutate():
+        assert resolved.wait(1)
+        mutation_attempted.set()
+        assert service.feature(
+            {
+                "action": "delete",
+                "expectedRevision": 2,
+                "requestId": "delete-feature",
+                "featureId": "plate_extrude",
+            }
+        )["revision"] == 3
+        committed.set()
+
+    mutation = threading.Thread(target=mutate)
+    mutation.start()
+    result = service.feature(
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "wrong-kind",
+            "featureId": "plate_extrude",
+            "kind": "hole",
+            "set": {"diameter": {"value": 2, "unit": "mm"}},
+        }
+    )
+    mutation.join(timeout=3)
+
+    assert not mutation.is_alive()
+    assert result["revision"] == 2
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["affectedParts"] == ["plate_extrude/outline"]
 
 
 def result_json(result):

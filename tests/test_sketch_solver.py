@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ast
 import builtins
+import io
 import math
 import os
 import random
 import re
+import struct
 import sys
 import time
 from collections import defaultdict
@@ -21,6 +23,7 @@ if os.environ.get("COALESCE_REQUIRE_SKETCH"):
 else:
     pytest.importorskip("planegcs")
 
+import coalesce.sketch_solver as sketch_solver_module
 from coalesce.sketch_solver import (
     OPERAND_SIGNATURES,
     Arc,
@@ -38,6 +41,8 @@ from coalesce.sketch_solver import (
     SolveRequest,
     SolveResult,
     SolveStatus,
+    _read_message,
+    _solve_sketch_native,
     solve_sketch,
 )
 
@@ -100,9 +105,72 @@ def test_missing_solver_extra_has_actionable_install_error(monkeypatch: pytest.M
     monkeypatch.setattr(builtins, "__import__", import_without_planegcs)
 
     with pytest.raises(ImportError, match=r"pip install 'coalesce\[sketch\]'") as error:
-        solve_sketch(SolveRequest())
+        _solve_sketch_native(SolveRequest())
     if sys.platform == "darwin":
         assert "brew install eigen boost" in str(error.value)
+
+
+class _ExitedChild:
+    def __init__(self):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+
+    def poll(self):
+        return 23
+
+    def terminate(self):
+        raise AssertionError("an exited child must not be terminated")
+
+    def wait(self):
+        return 23
+
+
+def test_child_exit_without_message_is_structured_and_reaped(monkeypatch):
+    child = _ExitedChild()
+    monkeypatch.setattr(sketch_solver_module, "_start_solver_child", lambda: child)
+
+    result = solve_sketch(SolveRequest())
+
+    assert result.status is SolveStatus.DID_NOT_CONVERGE
+    assert [error.code for error in result.errors] == ["SOLVER_FAILED"]
+    assert child.stdin.closed
+
+
+def test_solver_stdout_noise_does_not_corrupt_protocol(tmp_path, monkeypatch):
+    fake = tmp_path / "fake-planegcs"
+    fake.mkdir()
+    (fake / "planegcs.py").write_text(
+        """
+import os
+from enum import Enum
+from types import SimpleNamespace
+
+print("python planegcs warning")
+os.write(1, b"native planegcs warning\\n")
+
+class SolveStatus(Enum):
+    Success = 1
+    Converged = 2
+
+class Sketch:
+    def diagnose(self):
+        return SimpleNamespace(redundant=(), partially_redundant=(), conflicting=(), dof=0)
+    def solve(self):
+        return SolveStatus.Success
+"""
+    )
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(fake), os.environ.get("PYTHONPATH", ""))))
+
+    result = solve_sketch(SolveRequest())
+
+    assert result.status is SolveStatus.FULLY_CONSTRAINED
+
+
+def test_read_message_rejects_oversized_frame_header():
+    stream = io.BytesIO(struct.pack("!Q", sketch_solver_module.MAX_FRAME_BYTES + 1))
+
+    with pytest.raises(ValueError, match="solver frame exceeds"):
+        _read_message(stream)
 
 
 def test_rectangle_coordinates_dof_and_repeated_solves_are_deterministic():
@@ -580,4 +648,4 @@ def test_solver_failures_are_not_reported_as_caller_input_errors(monkeypatch, er
 
     monkeypatch.setattr(planegcs.Sketch, "solve", broken)
     with pytest.raises(error_type, match="solver defect"):
-        solve_sketch(rectangle_request(fixed_corner=True))
+        _solve_sketch_native(rectangle_request(fixed_corner=True))

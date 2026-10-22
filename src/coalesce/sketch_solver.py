@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import pickle
+import queue
+import struct
+import subprocess
+import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from math import isfinite, tau
@@ -307,7 +314,103 @@ class SolveResult:
     errors: tuple[SketchSolveError, ...] = ()
 
 
+SOLVE_TIMEOUT_SECONDS = 1.0
+MAX_FRAME_BYTES = 16 * 1024 * 1024
+
+
+def _write_message(stream: Any, value: Any) -> None:
+    payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    stream.write(struct.pack("!Q", len(payload)))
+    stream.write(payload)
+    stream.flush()
+
+
+def _read_message(stream: Any) -> Any:
+    header = stream.read(8)
+    if len(header) != 8:
+        raise EOFError
+    remaining = struct.unpack("!Q", header)[0]
+    if remaining > MAX_FRAME_BYTES:
+        raise ValueError(f"solver frame exceeds {MAX_FRAME_BYTES} bytes")
+    chunks = bytearray()
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            raise EOFError
+        chunks.extend(chunk)
+        remaining -= len(chunk)
+    return pickle.loads(chunks)
+
+
+def _start_solver_child() -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-m", "coalesce._solver_child"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+
+
+def _receive_child_message(process: subprocess.Popen, messages: queue.Queue) -> None:
+    assert process.stdout is not None
+    try:
+        messages.put(_read_message(process.stdout))
+    except (EOFError, OSError, ValueError, pickle.UnpicklingError) as error:
+        messages.put(error)
+
+
 def solve_sketch(request: SolveRequest) -> SolveResult:
+    """Solve in a child whose stdin closes automatically when this process dies."""
+    process = _start_solver_child()
+    messages: queue.Queue[Any] = queue.Queue(maxsize=1)
+    try:
+        assert process.stdin is not None
+        _write_message(process.stdin, request)
+        threading.Thread(
+            target=_receive_child_message, args=(process, messages), daemon=True
+        ).start()
+        try:
+            message = messages.get(timeout=SOLVE_TIMEOUT_SECONDS)
+        except queue.Empty:
+            return _error_result(
+                SolveStatus.DID_NOT_CONVERGE,
+                SketchSolveError(
+                    "SOLVE_TIMEOUT",
+                    f"the sketch solver exceeded {SOLVE_TIMEOUT_SECONDS:g} seconds",
+                    recoverable=True,
+                ),
+            )
+        if isinstance(message, BaseException):
+            return _error_result(
+                SolveStatus.DID_NOT_CONVERGE,
+                SketchSolveError("SOLVER_FAILED", "the sketch solver process exited unexpectedly"),
+            )
+        kind, value = message
+        if kind == "result":
+            return value
+        if kind == "import_error":
+            raise ImportError(value)
+        return _error_result(
+            SolveStatus.DID_NOT_CONVERGE,
+            SketchSolveError(
+                "SOLVER_FAILED", "the sketch solver process failed", details={"error": value}
+            ),
+        )
+    finally:
+        if process.stdin is not None:
+            with suppress(OSError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
+
+
+def _success_status(redundant: tuple[str, ...], dof: int) -> SolveStatus:
+    if redundant:
+        return SolveStatus.REDUNDANT
+    return SolveStatus.FULLY_CONSTRAINED if dof == 0 else SolveStatus.UNDER_CONSTRAINED
+
+
+def _solve_sketch_native(request: SolveRequest) -> SolveResult:
     """Solve one sketch without exposing PlaneGCS handles or mutating the request."""
     try:
         validation_error = _validate(request)
@@ -402,13 +505,7 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
         return _error_result(
             SolveStatus.BRANCH_FLIP, branch_error, dof=diagnosis.dof, landmarks=landmarks
         )
-    status = (
-        SolveStatus.REDUNDANT
-        if redundant
-        else SolveStatus.FULLY_CONSTRAINED
-        if diagnosis.dof == 0
-        else SolveStatus.UNDER_CONSTRAINED
-    )
+    status = _success_status(redundant, diagnosis.dof)
     return SolveResult(
         status,
         solved,

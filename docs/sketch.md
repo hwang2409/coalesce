@@ -62,6 +62,24 @@ The following table is the coalesce-owned contract. `length` uses the caller's s
 
 Invalid ids, references, initial tuples, geometry, or operand signatures return `INVALID_INPUT`. The error names the responsible entity or constraint id before the PlaneGCS adapter builds solver objects.
 
+## public constrained sketch form
+
+The existing `sketch` tool accepts one mutually exclusive `constrained` form. It stores
+stable solver-owned ids and the accepted solved result; coordinates are never solve-and-discard.
+The shape is `{kind: "constrained", points, lines, arcs, circles, dimensions, constraints,
+initial, landmarks}`. `query` returns `solve.status`, `solve.dof`, solved entities,
+diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
+
+```json
+{"action":"create","sketchId":"bracket","expectedRevision":0,"requestId":"r1",
+ "plane":{"kind":"origin","name":"XY"},
+ "constrained":{"kind":"constrained",
+  "points":[{"id":"a","x":0,"y":0},{"id":"b","x":10,"y":0}],
+  "lines":[{"id":"edge","start":"a","end":"b"}],
+  "dimensions":[{"id":"length","kind":"distance","entities":["a","b"],"value":10}],
+  "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
+```
+
 ## replace the solver
 
 PlaneGCS is a separate optional dependency. To use a different compatible solver, replace only the private implementation in `src/coalesce/sketch_solver.py` while keeping its coalesce-owned request and result types stable. No other coalesce module imports PlaneGCS.

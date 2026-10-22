@@ -58,6 +58,13 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `UNKNOWN_PLANE` | request | a sketch names an unsupported origin plane | use `XY`, `XZ`, or `YZ` |
 | `NON_FINITE_VALUE` | request | a numeric value is NaN or infinite | send a finite number |
 | `INVALID_CIRCLE_RADIUS` | request | a sketch circle radius is not positive | send a positive radius |
+| `SKETCH_SOLVER_UNAVAILABLE` | request | the optional constrained sketch solver is not installed | install `coalesce[sketch]` |
+| `SKETCH_SOLVER_FAILED` | request | the constrained sketch solver child exits or sends a malformed or oversized frame | retry once, then report the failing sketch and solver environment |
+| `SKETCH_REDUNDANT` | request | constrained sketch constraints are redundant | remove the redundant constraint |
+| `SKETCH_CONFLICTING` | request | constrained sketch constraints conflict | revise the constraint model |
+| `SKETCH_DID_NOT_CONVERGE` | request | constrained sketch did not converge | revise initial values or constraints |
+| `SKETCH_SOLVE_TIMEOUT` | request | constrained sketch exceeded the 1 second solve bound | simplify or repair the sketch and retry |
+| `SKETCH_BRANCH_FLIP` | request | constrained sketch changed branch | preserve the branch landmark |
 | `REQUEST_ID_REUSED` | request | a request id was used for a different body or its receipt expired | send the intended edit with a new request id |
 | `REVISION_CONFLICT` | request | a mutation was based on an old revision | query revision, review the model, and retry against that revision |
 | `STALE_REVISION` | request | export was requested from an old revision | query revision, review the model, and export that revision |

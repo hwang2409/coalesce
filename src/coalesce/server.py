@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import sys
+from functools import partial
 from typing import Any
 
+import anyio
 from jsonschema import ValidationError, validate
 from jsonschema.exceptions import best_match, relevance
 from mcp import types
@@ -323,10 +325,20 @@ def _prefer_unknown_field(error: ValidationError) -> ValidationError:
     return error
 
 
+def _schema_error_field(error: ValidationError) -> str:
+    field = "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" for part in error.absolute_path
+    ).lstrip(".")
+    if error.validator == "required" and isinstance(error.instance, dict):
+        missing = next(name for name in error.validator_value if name not in error.instance)
+        return f"{field}.{missing}" if field else missing
+    return field
+
+
 def _schema_error_details(
     name: str, arguments: dict[str, Any], error: ValidationError
 ) -> dict[str, Any]:
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = {"field": _schema_error_field(error)}
     if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
         details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
     if name == "check" and error.validator == "enum":
@@ -344,7 +356,10 @@ def _schema_error_details(
                 supportedKinds=list(SUPPORTED_REQUIREMENT_KINDS),
             )
     if error.validator == "additionalProperties":
-        details["allowedFields"] = sorted(error.schema.get("properties", {}))
+        allowed = set(error.schema.get("properties", {}))
+        if name == "sketch":
+            allowed.discard("constrained")
+        details["allowedFields"] = sorted(allowed)
     return details
 
 
@@ -359,6 +374,81 @@ def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "query" and arguments.get("select", {}).get("kind") == "feature":
         return QUERY_FEATURE_SCHEMA
     return ACTION_SCHEMAS.get(name, {}).get(arguments.get("action"), TOOL_SCHEMAS[name])
+
+
+def _stateful_error(
+    service: DocumentService,
+    name: str,
+    arguments: dict[str, Any],
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+    *,
+    publish: bool = False,
+) -> dict[str, Any]:
+    failure = service.error_response(name, arguments, code, message, **(details or {}))
+    if publish:
+        service.publish_failure(arguments, failure)
+    return failure
+
+
+async def _schema_failure(
+    service: DocumentService, name: str, arguments: dict[str, Any], raised: ValidationError
+) -> types.CallToolResult:
+    error = _branch_error(raised)
+    if name == "feature" and arguments.get("action") == "update":
+        error = _prefer_unknown_field(error)
+    details = _schema_error_details(name, arguments, error)
+    failure = await anyio.to_thread.run_sync(
+        partial(
+            _stateful_error,
+            service,
+            name,
+            arguments,
+            "INVALID_PARAMETER",
+            schema_error_message(error),
+            details,
+            publish=name in ("sketch", "feature"),
+        )
+    )
+    return _tool_result(failure)
+
+
+async def _call_tool(
+    service: DocumentService, name: str, arguments: dict[str, Any]
+) -> types.CallToolResult:
+    if name not in TOOL_SCHEMAS:
+        failure = await anyio.to_thread.run_sync(
+            partial(
+                _stateful_error,
+                service,
+                name,
+                arguments,
+                "INVALID_PARAMETER",
+                f"unknown tool: {name}",
+            )
+        )
+        return _tool_result(failure)
+    try:
+        validate(instance=arguments, schema=_schema_for_action(name, arguments))
+    except ValidationError as raised:
+        return await _schema_failure(service, name, arguments, raised)
+    try:
+        handler = service.import_board if name == "import" else getattr(service, name)
+        return _tool_result(await anyio.to_thread.run_sync(handler, arguments))
+    except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
+        _LOG.exception("unexpected failure during %s", name)
+        failure = await anyio.to_thread.run_sync(
+            partial(
+                _stateful_error,
+                service,
+                name,
+                arguments,
+                "KERNEL_OPERATION_FAILED",
+                "the operation failed unexpectedly",
+            )
+        )
+        return _tool_result(failure)
 
 
 def create_server(service: DocumentService) -> Server:
@@ -394,45 +484,7 @@ def create_server(service: DocumentService) -> Server:
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        if name not in TOOL_SCHEMAS:
-            return _tool_result(
-                service.error_response(
-                    name, arguments, "INVALID_PARAMETER", f"unknown tool: {name}"
-                )
-            )
-        try:
-            validate(
-                instance=arguments,
-                schema=_schema_for_action(name, arguments),
-            )
-        except ValidationError as raised:
-            error = _branch_error(raised)
-            if name == "feature" and arguments.get("action") == "update":
-                error = _prefer_unknown_field(error)
-            details = _schema_error_details(name, arguments, error)
-            failure = service.error_response(
-                name,
-                arguments,
-                "INVALID_PARAMETER",
-                schema_error_message(error),
-                **details,
-            )
-            if name in ("sketch", "feature"):
-                service.publish_failure(arguments, failure)
-            return _tool_result(failure)
-        try:
-            handler = service.import_board if name == "import" else getattr(service, name)
-            return _tool_result(handler(arguments))
-        except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
-            _LOG.exception("unexpected failure during %s", name)
-            return _tool_result(
-                service.error_response(
-                    name,
-                    arguments,
-                    "KERNEL_OPERATION_FAILED",
-                    "the operation failed unexpectedly",
-                )
-            )
+        return await _call_tool(service, name, arguments)
 
     @server.list_resources()
     async def list_resources() -> list[types.Resource]:
