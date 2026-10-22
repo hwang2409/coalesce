@@ -110,8 +110,9 @@ def test_missing_solver_extra_has_actionable_install_error(monkeypatch: pytest.M
 
 
 class _ExitedChild:
-    stdin = io.BytesIO()
-    stdout = io.BytesIO()
+    def __init__(self):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
 
     def poll(self):
         return 23
