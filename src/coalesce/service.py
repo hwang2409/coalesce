@@ -2145,9 +2145,16 @@ def _board_changes(before: Any, after: Any) -> dict[str, Any]:
     new = after.mechanics if isinstance(after, BoardImport) else {}
     old_holes = [hole for hole in old.get("holes", []) if hole.get("mounting")]
     new_holes = [hole for hole in new.get("holes", []) if hole.get("mounting")]
+    footprints = [
+        footprint
+        for footprint in old.get("footprints", []) + new.get("footprints", [])
+        if not footprint.get("libraryId", "").startswith("MountingHole:")
+    ]
+    old_footprints = {item["id"]: item for item in old.get("footprints", []) if item in footprints}
+    new_footprints = {item["id"]: item for item in new.get("footprints", []) if item in footprints}
     return {
         "mountingHoles": _delta_items(old_holes, new_holes, reference="reference"),
-        "footprints": _delta_items(old.get("footprints", []), new.get("footprints", [])),
+        "footprints": _delta_items(list(old_footprints.values()), list(new_footprints.values())),
         "outlineChanged": old.get("outline") != new.get("outline"),
     }
 
@@ -2205,7 +2212,10 @@ def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]
         holes = sum(item["distance"] is not None for item in delta["mountingHoles"])
         if holes:
             labels.append(f"{holes} mounting hole{'s' if holes != 1 else ''} moved")
-        dependent = _dependent_features(result.graph, changed_id)
+        dependent = [
+            node_id for node_id in _dependent_features(result.graph, changed_id)
+            if getattr(result.graph.nodes[node_id], "kind", "") in {"standoffs", "port_cutout"}
+        ]
         if dependent:
             names = {
                 node_id: getattr(result.graph.nodes[node_id], "kind", node_id).replace("_", " ")
