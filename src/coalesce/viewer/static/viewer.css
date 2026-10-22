@@ -136,9 +136,8 @@ button {
 .revision-change {
   margin-top: 4px;
   font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 
 .revision-meta {
