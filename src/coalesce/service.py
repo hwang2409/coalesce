@@ -1642,14 +1642,23 @@ def _accept_constrained_sketch(model: ConstrainedSketch) -> None:
         raise _sketch_rejection(result, model)
 
 
-def _solve_constrained_sketches(graph: Any) -> None:
+def _constrained_sketch_failures(graph: Any) -> dict[str, RequestError]:
+    failures = {}
     for node in graph.nodes.values():
         if not isinstance(node, Sketch) or node.constrained is None:
             continue
         try:
             _accept_constrained_sketch(node.constrained)
         except RequestError as error:
-            raise GraphError(error.code, str(error), featureId=node.id) from error
+            failures[node.id] = error
+    return failures
+
+
+def _solve_constrained_sketches(graph: Any) -> None:
+    failures = _constrained_sketch_failures(graph)
+    if failures:
+        feature_id, error = next(iter(failures.items()))
+        raise GraphError(error.code, str(error), featureId=feature_id) from error
 
 
 def _apply_sketch(
@@ -3127,18 +3136,13 @@ class DocumentService:
                 )
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
-        kind = payload.get("select", {}).get("kind")
-        constrained_query = kind in {"document", "graph", "timeline"} and any(
-            isinstance(node, Sketch) and node.constrained is not None
-            for node in self._document.graph.nodes.values()
-        )
-        if (constrained_query or kind in {
-            "measurements", "feature", "reference", "edge_roles", "enclosure"
-        }) and (
-            failure := self._geometry_failure("query")
-        ):
-            return failure
         with self._lock:
+            kind = payload.get("select", {}).get("kind")
+            graph_query = kind in {"document", "graph", "timeline"}
+            if not graph_query and kind in {
+                "measurements", "feature", "reference", "edge_roles", "enclosure"
+            } and (failure := self._geometry_failure("query")):
+                return failure
             requested_revision = payload.get("revision", self._document.revision)
             if requested_revision != self._document.revision:
                 return _safe_error(
@@ -3150,8 +3154,12 @@ class DocumentService:
                 )
             select = payload.get("select", {})
             base = {"ok": True, "revision": self._document.revision, "units": "mm"}
-            if kind in {"document", "graph", "timeline"}:
-                return {**base, "graph": json.loads(dumps(self._document.graph))}
+            if graph_query:
+                failures = _constrained_sketch_failures(self._document.graph)
+                graph = json.loads(dumps(self._document.graph))
+                if failures:
+                    graph.update(self._unavailable_sketch_output(failures))
+                return {**base, "graph": graph}
             if kind == "revision":
                 return base
             if kind == "server":
@@ -3173,6 +3181,44 @@ class DocumentService:
                 f"unknown query kind: {kind}",
                 operation="query",
             )
+
+    def _unavailable_sketch_output(
+        self, failures: dict[str, RequestError]
+    ) -> dict[str, list[dict[str, Any]]]:
+        errors = [
+            _safe_error(
+                self._document.revision,
+                None,
+                error.code,
+                str(error),
+                operation="query",
+                featureId=feature_id,
+            )["error"]
+            for feature_id, error in failures.items()
+        ]
+        unavailable = []
+        reported = set(failures)
+        for feature_id in failures:
+            for dependent in self._document.graph.transitive_dependents(feature_id, {}):
+                if dependent.id in reported:
+                    continue
+                reported.add(dependent.id)
+                unavailable.append(
+                    {
+                        "featureId": dependent.id,
+                        "dependsOn": feature_id,
+                        "error": _safe_error(
+                            self._document.revision,
+                            None,
+                            "REFERENCE_FAILED",
+                            f"{dependent.id} depends on unavailable sketch {feature_id}",
+                            operation="query",
+                            featureId=dependent.id,
+                            target=feature_id,
+                        )["error"],
+                    }
+                )
+        return {"errors": errors, "unavailable": unavailable}
 
     def _query_enclosure(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
         base_id = select.get("base")

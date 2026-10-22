@@ -10,6 +10,12 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from coalesce.constrained_sketch import ConstrainedSketch
+from coalesce.constrained_sketch import from_payload as constrained_from_payload
+from coalesce.graph import Extrude, Sketch
+from coalesce.service import DocumentService
+from coalesce.sketch_solver import SketchSolveError, SolveResult, SolveStatus
+
 
 def rectangle_model(*, width: float = 30.0, fixed_corner: bool = True) -> dict:
     points = [
@@ -451,8 +457,63 @@ async def test_did_not_converge_update_is_atomic(tmp_path):
     assert path.read_bytes() == saved
 
 
+def test_graph_query_isolates_failed_sketch_and_marks_dependents_unavailable(
+    tmp_path, monkeypatch
+):
+    service = DocumentService(tmp_path / "partial-graph.coalesce.json", warmup=False)
+    service._document.graph.add(
+        Sketch("failed", constrained=constrained_from_payload(rectangle_model(width=30)))
+    )
+    service._document.graph.add(
+        Sketch("healthy", constrained=constrained_from_payload(rectangle_model(width=40)))
+    )
+    service._document.graph.add(Extrude("dependent", sketch="failed", height=5))
+
+    def solve(model: ConstrainedSketch) -> SolveResult:
+        if model.dimensions[0].value == 30:
+            result = SolveResult(
+                SolveStatus.DID_NOT_CONVERGE,
+                errors=(SketchSolveError("SOLVE_TIMEOUT", "solver timed out"),),
+            )
+        else:
+            result = SolveResult(SolveStatus.FULLY_CONSTRAINED, degrees_of_freedom=0)
+        model.solved = result
+        return result
+
+    monkeypatch.setattr(ConstrainedSketch, "solve", solve)
+
+    result = service.query({"select": {"kind": "graph"}})
+
+    assert result["ok"] is True
+    nodes = {node["id"]: node for node in result["graph"]["nodes"]}
+    assert nodes["healthy"]["constrained"]["solved"]["status"] == "fully_constrained"
+    assert result["graph"]["errors"] == [
+        {
+            "code": "SKETCH_SOLVE_TIMEOUT",
+            "message": "constrained sketch did not converge",
+            "operation": "query",
+            "retryable": False,
+            "featureId": "failed",
+        }
+    ]
+    assert result["graph"]["unavailable"] == [
+        {
+            "featureId": "dependent",
+            "dependsOn": "failed",
+            "error": {
+                "code": "REFERENCE_FAILED",
+                "message": "dependent depends on unavailable sketch failed",
+                "operation": "query",
+                "retryable": False,
+                "featureId": "dependent",
+                "target": "failed",
+            },
+        }
+    ]
+
+
 @pytest.mark.anyio
-async def test_slow_load_fails_closed_within_bound_and_can_be_repaired(tmp_path):
+async def test_slow_load_reports_failed_sketch_and_can_be_repaired(tmp_path):
     path = tmp_path / "slow-load.coalesce.json"
     (await run_server(path, [("sketch", create_request(rectangle_model()))]))[0]
     fake = fake_planegcs(tmp_path / "fake-slow", status="Success", delay=10)
@@ -469,9 +530,10 @@ async def test_slow_load_fails_closed_within_bound_and_can_be_repaired(tmp_path)
     )
 
     assert time.monotonic() - started < 6
-    assert failed["ok"] is False
-    assert failed["error"]["code"] == "SKETCH_SOLVE_TIMEOUT"
-    assert failed["error"]["featureId"] == "profile"
+    assert failed["ok"] is True
+    assert failed["graph"]["errors"][0]["code"] == "SKETCH_SOLVE_TIMEOUT"
+    assert failed["graph"]["errors"][0]["featureId"] == "profile"
+    assert failed["graph"]["unavailable"] == []
     assert repaired["ok"] is True
     assert repaired["revision"] == 2
     assert "constrained" not in graph_sketch(queried)
