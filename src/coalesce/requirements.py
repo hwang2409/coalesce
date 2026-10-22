@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .lid_outline import compare_lid_outlines
-
 
 class InvalidHoleIds(ValueError):
     """A mounting requirement selected values outside the stable hole-id namespace."""
@@ -233,6 +231,8 @@ def _lid_parts(inspection: dict[str, Any]) -> tuple[list[dict[str, Any]], list[s
 
 
 def _outline_results(lids: list[dict[str, Any]]) -> tuple[list[bool], str | None]:
+    from .lid_outline import compare_lid_outlines
+
     comparisons = [
         compare_lid_outlines(**lid["_outlineComparison"])
         for lid in lids
