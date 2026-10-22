@@ -27,3 +27,9 @@ jobs:
       - run: uv run --extra test --extra sketch pytest -q
         env:
           COALESCE_REQUIRE_SKETCH: "1"
+      - name: run eval goldens through stdio server
+        run: |
+          out=$(mktemp -d)
+          uv run python -m evals.golden.pcb_change "$out/change"
+          uv run python -m evals.golden.pcb_edge_treatments "$out/edge"
+          uv run python -m evals.golden.pcb_refresh_treatments "$out/refresh"
