@@ -228,7 +228,7 @@ class BoardImportOperation(_Operation):
     expectedRevision: float
     requestId: str
     assetId: str
-    format: str
+    format: str | None = None
     path: str | None = None
 
 
@@ -1433,14 +1433,22 @@ def _apply_import(
     if isinstance(operation, ImportDelete):
         assert committed is not None
         return _apply_delete(graph, operation, committed)
-    if operation.format != "kicad_pcb":
-        raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
     current = graph.nodes.get(operation.assetId)
     if operation.action is Action.REFRESH:
         if not isinstance(current, BoardImport):
             raise RequestError("UNKNOWN_ID", f"unknown board import: {operation.assetId}")
+        expected_format = "kicad_pcb"
+        if operation.format is not None and operation.format != expected_format:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                f"refresh format {operation.format!r} differs from asset format {expected_format!r}",
+                expected=expected_format,
+                actual=operation.format,
+            )
         source_path = operation.path or current.source_path
     else:
+        if operation.format != "kicad_pcb":
+            raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
         if current is not None:
             raise RequestError("DUPLICATE_ID", f"duplicate id: {operation.assetId}")
         assert operation.path is not None
@@ -2092,6 +2100,58 @@ def _added(node: Any, result: RegenResult) -> str:
     return summary
 
 
+def _point(value: Any) -> list[float]:
+    return [float(value[0]), float(value[1])]
+
+
+def _delta_items(before: list[dict], after: list[dict], *, reference: str = "reference") -> list[dict]:
+    old = {item.get("id"): item for item in before}
+    new = {item.get("id"): item for item in after}
+    changes = []
+    for item_id in sorted(set(old) | set(new)):
+        was, now = old.get(item_id), new.get(item_id)
+        old_position = _point(was["position"]) if was and was.get("position") else None
+        new_position = _point(now["position"]) if now and now.get("position") else None
+        distance = None
+        if old_position is not None and new_position is not None:
+            distance = math.hypot(new_position[0] - old_position[0], new_position[1] - old_position[1])
+            if distance <= 1e-6:
+                continue
+        changes.append({
+            "id": item_id,
+            "reference": (now or was).get(reference),
+            "oldPosition": old_position,
+            "newPosition": new_position,
+            "distance": distance,
+        })
+    return changes
+
+
+def _dependent_features(graph: Any, board_id: str) -> list[str]:
+    affected = {board_id}
+    changed = True
+    while changed:
+        changed = False
+        for node_id, node in graph.nodes.items():
+            refs = {getattr(node, name, None) for name in ("board", "base", "target")}
+            if node_id not in affected and refs & affected:
+                affected.add(node_id)
+                changed = True
+    return sorted(affected - {board_id})
+
+
+def _board_changes(before: Any, after: Any) -> dict[str, Any]:
+    old = before.mechanics if isinstance(before, BoardImport) else {}
+    new = after.mechanics if isinstance(after, BoardImport) else {}
+    old_holes = [hole for hole in old.get("holes", []) if hole.get("mounting")]
+    new_holes = [hole for hole in new.get("holes", []) if hole.get("mounting")]
+    return {
+        "mountingHoles": _delta_items(old_holes, new_holes, reference="reference"),
+        "footprints": _delta_items(old.get("footprints", []), new.get("footprints", [])),
+        "outlineChanged": old.get("outline") != new.get("outline"),
+    }
+
+
 def _edited(old: Any, node: Any) -> str:
     if isinstance(node, BoardImport):
         same = old.source_digest == node.source_digest
@@ -2138,10 +2198,18 @@ def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = result.graph.nodes[changed_id]
     old = before.nodes.get(changed_id)
-    return {
-        "featureId": changed_id,
-        "summary": _added(node, result) if old is None else _edited(old, node),
-    }
+    if isinstance(node, BoardImport) and isinstance(old, BoardImport) and node.source_digest != old.source_digest:
+        delta = _board_changes(old, node)
+        moved = [item for item in delta["mountingHoles"] + delta["footprints"] if item["distance"] is not None]
+        labels = [f"{item['reference']} moved {item['distance']:.1f} mm" for item in moved if item.get("reference")]
+        holes = sum(item["distance"] is not None for item in delta["mountingHoles"])
+        if holes:
+            labels.append(f"{holes} mounting hole{'s' if holes != 1 else ''} moved")
+        dependent = _dependent_features(result.graph, changed_id)
+        if dependent:
+            labels.append(" and ".join(dependent) + " updated")
+        return {"featureId": changed_id, "summary": "refreshed board: " + (", ".join(labels) if labels else "source changed")}
+    return {"featureId": changed_id, "summary": _added(node, result) if old is None else _edited(old, node)}
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
@@ -2514,6 +2582,14 @@ class DocumentService:
                     **deletion_fields,
                     **response_fields(graph, result, changed_id),
                 }
+                if isinstance(parsed, BoardImportOperation) and parsed.action is Action.REFRESH:
+                    response["boardChanges"] = _board_changes(
+                        self._document.graph.nodes.get(parsed.assetId), graph.nodes.get(parsed.assetId)
+                    )
+                    if any(response["boardChanges"][key] for key in ("mountingHoles", "footprints")) or response["boardChanges"]["outlineChanged"]:
+                        response["boardChanges"]["dependentFeatures"] = _dependent_features(graph, parsed.assetId)
+                    else:
+                        response["boardChanges"]["dependentFeatures"] = []
                 receipt = {
                     "requestId": request_id,
                     "requestHash": body_hash,

@@ -307,13 +307,19 @@ async def test_source_changes_are_inert_until_explicit_refresh(tmp_path):
             "expectedRevision": 1,
             "requestId": "refresh-1",
             "assetId": "controller_board",
-            "format": "kicad_pcb",
         },
     )
     assert refreshed["revision"] == 2
     assert refreshed["previousRevision"] == 1
     assert refreshed["boardImport"]["sourceDigest"] != original["sourceDigest"]
     assert refreshed["boardImport"]["mechanics"]["thickness"] == 1.6
+    mismatch = await call_server_tool(service, "import", {
+        "action": "refresh", "expectedRevision": 2, "requestId": "refresh-mismatch",
+        "assetId": "controller_board", "format": "gerber",
+    })
+    assert mismatch["error"]["code"] == "INVALID_PARAMETER"
+    assert "gerber" in mismatch["error"]["message"]
+    assert "kicad_pcb" in mismatch["error"]["message"]
 
 
 @pytest.mark.anyio

@@ -50,7 +50,10 @@ availability, warnings, and errors. It regenerates the exact board substrate as 
 geometry from line, arc, circle, cutout, and drill data. It does not access the network or
 resolve environment variables in model paths. Later source edits do not affect the document; use
 `import` refresh to read the persisted path, or supply an optional replacement absolute path, and
-commit a new snapshot explicitly. `all_mounting` standoff selections follow the refreshed board and
+commit a new snapshot explicitly. Refresh `format` is optional and inherits `kicad_pcb`; if supplied, it
+must match. Example: `{"action":"refresh","assetId":"board","expectedRevision":2,"requestId":"refresh-1"}`
+returns a deterministic `boardChanges` delta with moved holes, footprints, and dependent features.
+`all_mounting` standoff selections follow the refreshed board and
 report added or removed holes in `selectionChanges`; explicit hole ids stay fixed and the refresh
 fails without writing when any selected id is missing.
 Use `sketch` for rectangles or circles on XY, XZ, or YZ. Local axes are XY=(+X,+Y), XZ=(+X,+Z), YZ=(+Y,+Z). Plane offset moves along its normal.
