@@ -7,6 +7,7 @@ import math
 import os
 import random
 import re
+import struct
 import sys
 import time
 from collections import defaultdict
@@ -131,6 +132,50 @@ def test_child_exit_without_message_is_structured_and_reaped(monkeypatch):
     assert result.status is SolveStatus.DID_NOT_CONVERGE
     assert [error.code for error in result.errors] == ["SOLVER_FAILED"]
     assert child.stdin.closed
+
+
+def test_solver_stdout_noise_does_not_corrupt_protocol(tmp_path, monkeypatch):
+    fake = tmp_path / "fake-planegcs"
+    fake.mkdir()
+    (fake / "planegcs.py").write_text(
+        """
+import os
+from enum import Enum
+from types import SimpleNamespace
+
+print("python planegcs warning")
+os.write(1, b"native planegcs warning\\n")
+
+class SolveStatus(Enum):
+    Success = 1
+    Converged = 2
+
+class Sketch:
+    def diagnose(self):
+        return SimpleNamespace(redundant=(), partially_redundant=(), conflicting=(), dof=0)
+    def solve(self):
+        return SolveStatus.Success
+"""
+    )
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(fake), os.environ.get("PYTHONPATH", ""))))
+
+    result = solve_sketch(SolveRequest())
+
+    assert result.status is SolveStatus.FULLY_CONSTRAINED
+
+
+def test_oversized_child_frame_returns_structured_error_without_waiting(monkeypatch):
+    child = _ExitedChild()
+    child.stdout = io.BytesIO(struct.pack("!Q", 1 << 63))
+    monkeypatch.setattr(sketch_solver_module, "_start_solver_child", lambda: child)
+    monkeypatch.setattr(sketch_solver_module, "SOLVE_TIMEOUT_SECONDS", 0.5)
+
+    started = time.monotonic()
+    result = solve_sketch(SolveRequest())
+
+    assert time.monotonic() - started < 0.2
+    assert result.status is SolveStatus.DID_NOT_CONVERGE
+    assert [error.code for error in result.errors] == ["SOLVER_FAILED"]
 
 
 def test_rectangle_coordinates_dof_and_repeated_solves_are_deterministic():

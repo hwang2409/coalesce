@@ -315,6 +315,7 @@ class SolveResult:
 
 
 SOLVE_TIMEOUT_SECONDS = 1.0
+MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
 def _write_message(stream: Any, value: Any) -> None:
@@ -329,6 +330,8 @@ def _read_message(stream: Any) -> Any:
     if len(header) != 8:
         raise EOFError
     remaining = struct.unpack("!Q", header)[0]
+    if remaining > MAX_FRAME_BYTES:
+        raise ValueError(f"solver frame exceeds {MAX_FRAME_BYTES} bytes")
     chunks = bytearray()
     while remaining:
         chunk = stream.read(remaining)
@@ -351,7 +354,7 @@ def _receive_child_message(process: subprocess.Popen, messages: queue.Queue) -> 
     assert process.stdout is not None
     try:
         messages.put(_read_message(process.stdout))
-    except (EOFError, OSError, pickle.UnpicklingError) as error:
+    except (EOFError, OSError, ValueError, pickle.UnpicklingError) as error:
         messages.put(error)
 
 
