@@ -8,6 +8,7 @@ import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
 from test_mcp_vertical import call_server_tool, run_server
 
+from coalesce.graph import BoardImport, Graph
 from coalesce.refresh_delta import format_summary, refresh_delta
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
@@ -536,7 +537,7 @@ def test_refresh_added_mounting_hole_reports_standoffs(tmp_path):
         "outlineChanged": False,
         "dependentFeatures": ["standoffs"],
     }
-    assert _scene_summary(store, 4) == "refreshed board: 1 mounting hole added, standoffs updated"
+    assert _scene_summary(store, 4) == "refreshed board: H2 added at (10.0, 1.5), standoffs updated"
 
 
 def test_refresh_float_noise_below_tolerance_is_not_a_move(tmp_path):
@@ -892,14 +893,112 @@ def test_refresh_summary_counts_hole_changes_and_lists_dependents():
     )
 
 
+def _outline_delta(before: list[dict], after: list[dict]) -> dict:
+    def graph(outline: list[dict]) -> Graph:
+        result = Graph()
+        result.add(BoardImport("board", "", "", "", {"outline": outline}, {}))
+        return result
+
+    return refresh_delta(graph(before), graph(after), None, None, "board")
+
+
+def _circle(radius: float, x: float = 0.0) -> dict:
+    return {
+        "segments": [{
+            "kind": "circle",
+            "start": [x, 0.0],
+            "end": [x + radius, 0.0],
+            "mid": None,
+        }],
+    }
+
+
+def test_refresh_circle_outline_reports_exact_bounds():
+    delta = _outline_delta([_circle(5)], [_circle(6)])
+
+    assert delta["outlineBounds"] == {
+        "before": {"width": 10.0, "height": 10.0},
+        "after": {"width": 12.0, "height": 12.0},
+    }
+    assert format_summary(delta) == "refreshed board: outline bounds 10.0 × 10.0 → 12.0 × 12.0 mm"
+
+
+def test_refresh_arc_outline_includes_extremum_between_stored_points():
+    def arc(radius: float) -> dict:
+        return {
+            "segments": [{
+                "kind": "arc",
+                "start": [radius, 0.0],
+                "mid": [radius * math.cos(math.pi / 6), radius * math.sin(math.pi / 6)],
+                "end": [radius * math.cos(2 * math.pi / 3), radius * math.sin(2 * math.pi / 3)],
+            }],
+        }
+
+    delta = _outline_delta([arc(5)], [arc(6)])
+
+    assert delta["outlineBounds"]["before"] == pytest.approx({"width": 7.5, "height": 5.0})
+    assert delta["outlineBounds"]["after"] == pytest.approx({"width": 9.0, "height": 6.0})
+
+
+def test_refresh_outline_bounds_include_every_outer_loop():
+    delta = _outline_delta([_circle(2), _circle(2, 10)], [_circle(2), _circle(2, 12)])
+
+    assert delta["outlineBounds"] == {
+        "before": {"width": 14.0, "height": 4.0},
+        "after": {"width": 16.0, "height": 4.0},
+    }
+
+
+def test_refresh_outline_change_reports_exact_bounds(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "outline")
+    source.write_text(source.read_text().replace("(end 20 10)", "(end 22 10)"))
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    assert refreshed["boardChanges"]["outlineBounds"] == {
+        "before": {"width": 20.0, "height": 10.0},
+        "after": {"width": 22.0, "height": 10.0},
+    }
+    assert _scene_summary(store, 4) == (
+        "refreshed board: outline bounds 20.0 × 10.0 → 22.0 × 10.0 mm, "
+        "pcb base and standoffs updated"
+    )
+
+
+def test_refresh_summary_names_labeled_removed_hole():
+    delta = {
+        "footprints": [],
+        "mountingHoles": [{"change": "removed", "reference": "H1", "oldPosition": [2.0, 3.0]}],
+        "dependentFeatures": [],
+    }
+    assert format_summary(delta) == "refreshed board: H1 removed"
+
+
+def test_refresh_summary_truncates_named_holes():
+    delta = {
+        "footprints": [],
+        "mountingHoles": [
+            {"change": "added", "reference": f"M{i}", "newPosition": [float(i), 2.0]}
+            for i in range(10)
+        ],
+        "dependentFeatures": [],
+    }
+    summary = format_summary(delta)
+    assert "+N more" not in summary
+    assert "+5 more" in summary
+    assert len(summary) <= 160
+
+
 def test_refresh_thickness_change_reports_every_consumer(tmp_path):
-    service, source, _ = _refresh_enclosure(tmp_path, "thickness", port=True)
+    service, source, store = _refresh_enclosure(tmp_path, "thickness", port=True)
     source.write_text(source.read_text().replace("(thickness 1.2)", "(thickness 1.6)"))
 
     refreshed = _refresh_variant(service, source, revision=4)
 
     assert refreshed["ok"]
+    assert refreshed["boardChanges"]["thickness"] == {"before": 1.2, "after": 1.6}
     assert set(refreshed["boardChanges"]["dependentFeatures"]) == {"pcb base", "standoffs", "port cutout"}
+    assert _scene_summary(store, 5) == "refreshed board: board thickness 1.2 → 1.6 mm, pcb base, standoffs and port cutout updated"
 
 
 def test_refresh_port_follows_its_reference_after_the_footprint_id_changes(tmp_path):

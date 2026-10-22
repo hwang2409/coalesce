@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
+from .importers.kicad import outline_bounds
 
 LENGTH_TOLERANCE_MM = 1e-6
 
@@ -160,6 +161,16 @@ def _board_dimensions_changed(before_board: Any, after_board: Any) -> bool:
     return any(old.get(field) != new.get(field) for field in ("outline", "thickness"))
 
 
+def _outline_dimensions(board: Any) -> dict[str, float] | None:
+    bounds = outline_bounds((board.mechanics if board else {}).get("outline", []))
+    if bounds is None:
+        return None
+    return {
+        "width": bounds["max_x"] - bounds["min_x"],
+        "height": bounds["max_y"] - bounds["min_y"],
+    }
+
+
 def _feature_changed(
     before_graph: Any,
     after_graph: Any,
@@ -213,13 +224,22 @@ def refresh_delta(
         ):
             changed.add(node.id)
     dependent = [_kind_label(after_graph.nodes[feature_id]) for feature_id in sorted(changed)]
-    return {
+    old_mechanics = before_board.mechanics if before_board else {}
+    new_mechanics = after_board.mechanics if after_board else {}
+    delta = {
         "mountingHoles": mounting_holes,
         "footprints": footprints,
-        "outlineChanged": (before_board.mechanics if before_board else {}).get("outline")
-        != (after_board.mechanics if after_board else {}).get("outline"),
+        "outlineChanged": old_mechanics.get("outline") != new_mechanics.get("outline"),
         "dependentFeatures": dependent,
     }
+    if old_mechanics.get("thickness") != new_mechanics.get("thickness"):
+        delta["thickness"] = {"before": old_mechanics.get("thickness"), "after": new_mechanics.get("thickness")}
+    if delta["outlineChanged"]:
+        delta["outlineBounds"] = {
+            "before": _outline_dimensions(before_board),
+            "after": _outline_dimensions(after_board),
+        }
+    return delta
 
 
 def _footprint_labels(footprints: list[dict]) -> list[str]:
@@ -230,13 +250,33 @@ def _footprint_labels(footprints: list[dict]) -> list[str]:
     ]
 
 
+def _named_hole_label(item: dict) -> str:
+    label = f"{item['reference']} {item['change']}"
+    if item["change"] == "added":
+        x, y = item["newPosition"]
+        label += f" at ({x:.1f}, {y:.1f})"
+    return label
+
+
+def _hole_count_label(count: int, change: str) -> str:
+    return f"{count} mounting hole{'s' if count != 1 else ''} {change}"
+
+
+def _hole_change_labels(holes: list[dict], change: str) -> list[str]:
+    matching = [item for item in holes if item["change"] == change]
+    if change not in ("added", "removed"):
+        return [_hole_count_label(len(matching), change)] if matching else []
+    named = [_named_hole_label(item) for item in matching if item.get("reference")]
+    unnamed = sum(not item.get("reference") for item in matching)
+    return [*named, *([_hole_count_label(unnamed, change)] if unnamed else [])]
+
+
 def _hole_labels(holes: list[dict]) -> list[str]:
-    labels = []
-    for change in ("added", "removed", "changed", "moved"):
-        count = sum(item["change"] == change for item in holes)
-        if count:
-            labels.append(f"{count} mounting hole{'s' if count != 1 else ''} {change}")
-    return labels
+    return [
+        label
+        for change in ("added", "removed", "changed", "moved")
+        for label in _hole_change_labels(holes, change)
+    ]
 
 
 def _dependent_label(dependents: list[str]) -> list[str]:
@@ -246,10 +286,40 @@ def _dependent_label(dependents: list[str]) -> list[str]:
     return [joined + " updated"]
 
 
+def _dimension_labels(delta: dict[str, Any]) -> list[str]:
+    labels = []
+    if thickness := delta.get("thickness"):
+        labels.append(f"board thickness {thickness['before']:.1f} → {thickness['after']:.1f} mm")
+    if delta.get("outlineChanged"):
+        outline = delta.get("outlineBounds") or {}
+        before, after = outline.get("before"), outline.get("after")
+        labels.append(
+            f"outline bounds {before['width']:.1f} × {before['height']:.1f} → "
+            f"{after['width']:.1f} × {after['height']:.1f} mm"
+            if before and after else "board outline changed"
+        )
+    return labels
+
+
+def _bounded_summary(labels: list[str]) -> str:
+    prefix = "refreshed board: "
+    if not labels:
+        return prefix + "source changed"
+    for shown in range(len(labels), -1, -1):
+        items = labels[:shown]
+        if omitted := len(labels) - shown:
+            items = [*items, f"+{omitted} more"]
+        summary = prefix + ", ".join(items)
+        if len(summary) <= 160:
+            return summary
+    raise AssertionError("summary prefix exceeds limit")
+
+
 def format_summary(delta: dict[str, Any], board_id: str = "") -> str:
     labels = [
+        *_dimension_labels(delta),
         *_footprint_labels(delta["footprints"]),
         *_hole_labels(delta["mountingHoles"]),
         *_dependent_label(delta["dependentFeatures"]),
     ]
-    return "refreshed board: " + (", ".join(labels) if labels else "source changed")
+    return _bounded_summary(labels)
