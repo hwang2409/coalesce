@@ -407,7 +407,7 @@ def test_refresh_delta_reports_positions_distances_and_dependents(tmp_path):
     assert footprints["J1"]["distance"] == pytest.approx(2, abs=1e-6)
     assert len(delta["mountingHoles"]) == 3
     assert all(item["distance"] > 0 for item in delta["mountingHoles"])
-    assert delta["dependentFeatures"] == ["base", "mounts", "port"]
+    assert delta["dependentFeatures"] == ["standoffs", "port cutout"]
 
 
 def test_identical_refresh_has_empty_delta(tmp_path):
@@ -452,7 +452,7 @@ def test_refresh_moved_board_with_same_ids_has_no_selection_changes(tmp_path):
     assert delta["outlineChanged"] is False
     assert {item["id"] for item in delta["mountingHoles"]} == set(ALL_MOUNTING_HOLES)
     assert all(item["distance"] > 0 for item in delta["mountingHoles"])
-    assert delta["dependentFeatures"] == ["base", "mounts"]
+    assert delta["dependentFeatures"] == ["standoffs"]
     assert _pilot_hole_ids(service) == set(ALL_MOUNTING_HOLES)
 
 

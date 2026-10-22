@@ -58,6 +58,7 @@ from .references import (
     SketchSegmentSource,
     edge_role_catalog,
 )
+from .refresh_delta import format_summary, refresh_delta
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
 from .schemas import SUPPORTED_REQUIREMENT_KINDS
@@ -2100,72 +2101,6 @@ def _added(node: Any, result: RegenResult) -> str:
     return summary
 
 
-def _point(value: Any) -> list[float]:
-    return [float(value[0]), float(value[1])]
-
-
-def _delta_items(before: list[dict], after: list[dict], *, reference: str = "reference") -> list[dict]:
-    old = {item.get("id"): item for item in before}
-    new = {item.get("id"): item for item in after}
-    changes = []
-    for item_id in sorted(set(old) | set(new)):
-        was, now = old.get(item_id), new.get(item_id)
-        old_position = _point(was["position"]) if was and was.get("position") else None
-        new_position = _point(now["position"]) if now and now.get("position") else None
-        distance = None
-        if old_position is not None and new_position is not None:
-            distance = math.hypot(new_position[0] - old_position[0], new_position[1] - old_position[1])
-            if distance <= 1e-6:
-                continue
-        changes.append({
-            "id": item_id,
-            "reference": (now or was).get(reference),
-            "oldPosition": old_position,
-            "newPosition": new_position,
-            "distance": distance,
-        })
-    return changes
-
-
-def _dependent_features(graph: Any, board_id: str) -> list[str]:
-    affected = {board_id}
-    changed = True
-    while changed:
-        changed = False
-        for node_id, node in graph.nodes.items():
-            refs = {getattr(node, name, None) for name in ("board", "base", "target")}
-            if node_id not in affected and refs & affected:
-                affected.add(node_id)
-                changed = True
-    return sorted(affected - {board_id})
-
-
-def _board_changes(before: Any, after: Any) -> dict[str, Any]:
-    old = before.mechanics if isinstance(before, BoardImport) else {}
-    new = after.mechanics if isinstance(after, BoardImport) else {}
-    old_holes = [hole for hole in old.get("holes", []) if hole.get("mounting")]
-    new_holes = [hole for hole in new.get("holes", []) if hole.get("mounting")]
-    mounting_ids = {item["id"] for item in old_holes + new_holes}
-    mounting_references = {item.get("reference") for item in old_holes + new_holes}
-    if None in mounting_references:
-        mounting_references.add("REF**")
-    old_footprints = {
-        item["id"]: item
-        for item in old.get("footprints", [])
-        if item["id"] not in mounting_ids and item.get("reference") not in mounting_references
-    }
-    new_footprints = {
-        item["id"]: item
-        for item in new.get("footprints", [])
-        if item["id"] not in mounting_ids and item.get("reference") not in mounting_references
-    }
-    return {
-        "mountingHoles": _delta_items(old_holes, new_holes, reference="reference"),
-        "footprints": _delta_items(list(old_footprints.values()), list(new_footprints.values())),
-        "outlineChanged": old.get("outline") != new.get("outline"),
-    }
-
-
 def _edited(old: Any, node: Any) -> str:
     if isinstance(node, BoardImport):
         same = old.source_digest == node.source_digest
@@ -2208,36 +2143,19 @@ def _selection_changes(
     return changes
 
 
-def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]:
+def _change(
+    before: Any,
+    result: RegenResult,
+    changed_id: str,
+    before_result: RegenResult | None = None,
+    delta: dict[str, Any] | None = None,
+) -> dict[str, str]:
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = result.graph.nodes[changed_id]
     old = before.nodes.get(changed_id)
     if isinstance(node, BoardImport) and isinstance(old, BoardImport) and node.source_digest != old.source_digest:
-        delta = _board_changes(old, node)
-        moved = [item for item in delta["footprints"] if item["distance"] is not None]
-        labels = [f"{item['reference']} moved {item['distance']:.1f} mm" for item in moved if item.get("reference")]
-        holes = sum(item["distance"] is not None for item in delta["mountingHoles"])
-        if holes:
-            labels.append(f"{holes} mounting hole{'s' if holes != 1 else ''} moved")
-        dependent = [
-            node_id for node_id in _dependent_features(result.graph, changed_id)
-            if _kind(result.graph.nodes[node_id]) in {"standoffs", "port cutout"}
-        ]
-        if dependent:
-            names = {
-                node_id: _kind(result.graph.nodes[node_id])
-                for node_id in dependent
-            }
-            dependent_labels = [names[node_id] for node_id in dependent]
-            joined = (
-                dependent_labels[0]
-                if len(dependent_labels) == 1
-                else " and ".join(dependent_labels)
-                if len(dependent_labels) == 2
-                else ", ".join(dependent_labels[:-1]) + " and " + dependent_labels[-1]
-            )
-            labels.append(joined + " updated")
-        return {"featureId": changed_id, "summary": "refreshed board: " + (", ".join(labels) if labels else "source changed")}
+        delta = delta or refresh_delta(before, result.graph, before_result, result, changed_id)
+        return {"featureId": changed_id, "summary": format_summary(delta, changed_id)}
     return {"featureId": changed_id, "summary": _added(node, result) if old is None else _edited(old, node)}
 
 
@@ -2587,6 +2505,9 @@ class DocumentService:
 
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
+                if isinstance(parsed, BoardImportOperation) and parsed.action is Action.REFRESH:
+                    self._ensure_geometry()
+                committed_result = self._regen
                 previous_selections = _selection_snapshot(self._document.graph)
                 graph = loads(dumps(self._document.graph))
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
@@ -2594,8 +2515,15 @@ class DocumentService:
                 result = regenerate(graph)
                 self._assert_effect(parsed, result)
                 self._validate_treatment_parts(parsed, result, changed_id)
-                deletion_fields, change = _deletion_result_fields(deletion, result)
+                deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision
+                before = self._document.graph
+                delta = (
+                    refresh_delta(before, graph, committed_result, result, parsed.assetId)
+                    if isinstance(parsed, BoardImportOperation) and parsed.action is Action.REFRESH
+                    else None
+                )
+                change = deletion_change or _change(before, result, changed_id, committed_result, delta)
                 response = {
                     "ok": True,
                     "revision": previous + 1,
@@ -2611,14 +2539,8 @@ class DocumentService:
                     **deletion_fields,
                     **response_fields(graph, result, changed_id),
                 }
-                if isinstance(parsed, BoardImportOperation) and parsed.action is Action.REFRESH:
-                    response["boardChanges"] = _board_changes(
-                        self._document.graph.nodes.get(parsed.assetId), graph.nodes.get(parsed.assetId)
-                    )
-                    if any(response["boardChanges"][key] for key in ("mountingHoles", "footprints")) or response["boardChanges"]["outlineChanged"]:
-                        response["boardChanges"]["dependentFeatures"] = _dependent_features(graph, parsed.assetId)
-                    else:
-                        response["boardChanges"]["dependentFeatures"] = []
+                if delta is not None:
+                    response["boardChanges"] = delta
                 receipt = {
                     "requestId": request_id,
                     "requestHash": body_hash,
@@ -2635,7 +2557,6 @@ class DocumentService:
                     ][-MAX_REQUEST_HASHES:],
                 )
                 durable = self.store.save(document)
-                before = self._document.graph
                 self._document = document
                 self._regen = result
                 self._graph_error = None
