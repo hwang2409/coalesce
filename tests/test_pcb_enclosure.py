@@ -890,3 +890,41 @@ def test_refresh_summary_counts_hole_changes_and_lists_dependents():
         "refreshed board: 2 mounting holes added, 1 mounting hole removed, "
         "standoffs, port cutout and fillet updated"
     )
+
+
+def test_refresh_thickness_change_reports_every_consumer(tmp_path):
+    service, source, _ = _refresh_enclosure(tmp_path, "thickness", port=True)
+    source.write_text(source.read_text().replace("(thickness 1.2)", "(thickness 1.6)"))
+
+    refreshed = _refresh_variant(service, source, revision=4)
+
+    assert refreshed["ok"]
+    assert set(refreshed["boardChanges"]["dependentFeatures"]) == {"pcb base", "standoffs", "port cutout"}
+
+
+def test_refresh_port_follows_its_reference_after_the_footprint_id_changes(tmp_path):
+    service, source, _ = _refresh_enclosure(tmp_path, "new-id", port=True)
+    source.write_text(
+        source.read_text().replace('(uuid "front-id") (at 1 5)', '(uuid "front-id-new") (at 1 6)')
+    )
+
+    refreshed = _refresh_variant(service, source, revision=4)
+
+    assert refreshed["ok"], refreshed
+    assert "port cutout" in refreshed["boardChanges"]["dependentFeatures"]
+    assert service._document.graph.nodes["port"].footprint_id == "front-id-new"
+
+
+def test_refresh_fails_closed_when_the_port_footprint_is_removed(tmp_path):
+    service, source, _ = _refresh_enclosure(tmp_path, "removed", port=True)
+    source.write_text(
+        source.read_text()
+        .replace('(uuid "front-id")', '(uuid "other-id")')
+        .replace('(property "Reference" "J1")', '(property "Reference" "J9")')
+    )
+
+    refreshed = _refresh_variant(service, source, revision=4)
+
+    assert not refreshed["ok"]
+    assert refreshed["error"]["code"] == "MISSING"
+    assert service._document.revision == 4

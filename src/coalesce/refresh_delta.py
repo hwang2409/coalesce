@@ -169,14 +169,17 @@ def _feature_changed(
     changed: set[str],
 ) -> bool:
     node = after_graph.nodes[feature_id]
+    # every feature changes when a feature it consumes changed
+    if set(after_graph._dependencies(node)) & changed:
+        return True
     if isinstance(node, Standoffs):
         return _standoffs_changed(before_graph, after_graph, feature_id, hole_changes)
     if isinstance(node, PortCutout):
-        return _port_cutout_changed(before_graph, after_graph, feature_id)
+        # the cutout also reads the board thickness directly
+        return board_dimensions_changed or _port_cutout_changed(before_graph, after_graph, feature_id)
     if isinstance(node, (PcbBase, PcbLid)):
         return board_dimensions_changed
-    # any other feature changes only through a feature it consumes
-    return bool(set(after_graph._dependencies(node)) & changed)
+    return False
 
 
 def _kind_label(node: Any) -> str:
