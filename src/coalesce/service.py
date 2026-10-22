@@ -14,6 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from .availability import SketchFailure, SolveAvailability, UnavailableFeature
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
 from .constrained_sketch import from_payload as constrained_from_payload
@@ -145,8 +146,12 @@ _KERNEL_LOADER = _KernelLoader()
 
 
 def regenerate(graph: Any) -> RegenResult:
-    _solve_constrained_sketches(graph)
-    return regen_module.accept_regeneration(graph)
+    availability = _solve_constrained_sketches(graph)
+    if not availability.geometry_available:
+        return regen_module.RegenResult(graph, {}, {}, [], availability=availability)
+    result = regen_module.accept_regeneration(graph)
+    result.availability = availability
+    return result
 
 
 class RequestError(ValueError):
@@ -1378,9 +1383,27 @@ def _graph_error_response(
     )
 
 
-def _viewer_error(error: dict[str, Any]) -> dict[str, str]:
+def _viewer_error(error: dict[str, Any]) -> dict[str, Any]:
     """The fields the viewer shows; kernelMessage goes only under "Error details"."""
-    return {key: error[key] for key in ("code", "message", "hint", "kernelMessage") if key in error}
+    fields = (
+        "code",
+        "message",
+        "hint",
+        "kernelMessage",
+        "failedFeatureIds",
+        "unavailableFeatureIds",
+    )
+    return {key: error[key] for key in fields if key in error}
+
+
+def _availability_request_error(availability: SolveAvailability) -> RequestError:
+    failure = availability.failed[0]
+    return RequestError(
+        failure.code,
+        failure.message,
+        **failure.details,
+        **availability.failure_details(),
+    )
 
 
 def _reference(payload: dict[str, Any]) -> Reference:
@@ -1654,11 +1677,26 @@ def _constrained_sketch_failures(graph: Any) -> dict[str, RequestError]:
     return failures
 
 
-def _solve_constrained_sketches(graph: Any) -> None:
+def _solve_constrained_sketches(graph: Any) -> SolveAvailability:
     failures = _constrained_sketch_failures(graph)
-    if failures:
-        feature_id, error = next(iter(failures.items()))
-        raise GraphError(error.code, str(error), featureId=feature_id) from error
+    failed = tuple(
+        SketchFailure(feature_id, error.code, str(error), error.details)
+        for feature_id, error in failures.items()
+    )
+    unavailable = []
+    reported = set(failures)
+    for feature_id in failures:
+        for dependent in graph.transitive_dependents(feature_id, {}):
+            if dependent.id in reported:
+                continue
+            reported.add(dependent.id)
+            unavailable.append(UnavailableFeature(dependent.id, feature_id))
+    solved = tuple(
+        node.id
+        for node in graph.nodes.values()
+        if isinstance(node, Sketch) and node.constrained is not None and node.id not in failures
+    )
+    return SolveAvailability(solved, failed, tuple(unavailable))
 
 
 def _apply_sketch(
@@ -2437,10 +2475,30 @@ class DocumentService:
                     self._record_graph_error(error)
                     return
                 self._regen = result
-                if self._publisher is not None and self._document.revision > 0:
-                    self._publisher.publish(self._document.revision, result)
+                if self._document.revision > 0:
+                    self._publish_regeneration(result)
         except Exception:  # noqa: BLE001 - startup errors must not kill the server
             _LOG.exception("kernel startup failed")
+
+    def _publish_regeneration(self, result: RegenResult) -> None:
+        if self._publisher is None:
+            return
+        availability = result.availability
+        if availability.geometry_available:
+            self._publisher.publish(self._document.revision, result)
+            return
+        error = _availability_request_error(availability)
+        details = _safe_error(
+            self._document.revision,
+            None,
+            error.code,
+            str(error),
+            operation="regeneration",
+            **error.details,
+        )["error"]
+        self._publisher.publish_failure(
+            list(availability.failure_details()["failedFeatureIds"]), _viewer_error(details)
+        )
 
     def _record_graph_error(self, error: GraphError) -> None:
         self._graph_error = error
@@ -2472,15 +2530,19 @@ class DocumentService:
                 self._record_graph_error(error)
                 raise
             self._regen = result
-            if self._publisher is not None and self._document.revision > 0:
-                self._publisher.publish(self._document.revision, result)
+            if self._document.revision > 0:
+                self._publish_regeneration(result)
 
     def _geometry_failure(self, operation: str) -> dict[str, Any] | None:
         try:
             self._ensure_geometry()
         except GraphError as error:
             return _graph_error_response(self._document.revision, None, operation, error)
-        return None
+        assert self._regen is not None
+        if self._regen.availability.geometry_available:
+            return None
+        error = _availability_request_error(self._regen.availability)
+        return self.error_response(operation, {}, error.code, str(error), **error.details)
 
     @property
     def revision(self) -> int:
@@ -2550,15 +2612,16 @@ class DocumentService:
         **details: Any,
     ) -> dict[str, Any]:
         """Build the public error shape and add model context only when it is known."""
-        failure = _safe_error(
-            self._document.revision,
-            payload.get("requestId"),
-            code,
-            message,
-            operation=operation,
-            **details,
-        )
-        return self._with_error_context(payload, failure)
+        with self._lock:
+            failure = _safe_error(
+                self._document.revision,
+                payload.get("requestId"),
+                code,
+                message,
+                operation=operation,
+                **details,
+            )
+            return self._with_error_context(payload, failure)
 
     def _with_error_context(
         self, payload: dict[str, Any], failure: dict[str, Any]
@@ -2662,6 +2725,10 @@ class DocumentService:
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
                 changed_id, changed_ids, deletion = _applied_result(applied)
                 result = regenerate(graph)
+                if not result.availability.geometry_available and not isinstance(
+                    parsed, (SketchCreate, SketchUpdate, SketchDelete)
+                ):
+                    raise _availability_request_error(result.availability)
                 self._assert_effect(parsed, result)
                 self._validate_treatment_parts(parsed, result, changed_id)
                 deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
@@ -2680,7 +2747,10 @@ class DocumentService:
                     "requestId": request_id,
                     "units": "mm",
                     "changedFeatureIds": changed_ids,
-                    "regeneration": {"status": "OK", "valid": True},
+                    "regeneration": {
+                        "status": "OK" if result.availability.geometry_available else "UNAVAILABLE",
+                        "valid": result.availability.geometry_available,
+                    },
                     "warnings": [],
                     "selectionChanges": _selection_changes(
                         previous_selections, _selection_snapshot(graph)
@@ -2709,7 +2779,10 @@ class DocumentService:
                 self._regen = result
                 self._graph_error = None
                 if self._publisher is not None:
-                    self._publisher.publish(document.revision, result, before, changed_id, change)
+                    if result.availability.geometry_available:
+                        self._publisher.publish(document.revision, result, before, changed_id, change)
+                    else:
+                        self._publish_regeneration(result)
                 if not durable:
                     _LOG.warning(
                         "document rename committed but directory fsync failed; durability is unconfirmed"
@@ -3094,10 +3167,11 @@ class DocumentService:
         return {"ok": True, "revision": self._document.revision, "units": "mm", **result, **fields}
 
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_geometry()
         with self._lock:
             selected: list[Any] = []
             try:
+                if failure := self._geometry_failure("export"):
+                    return failure
                 self._check_export_revision(payload["expectedRevision"])
                 self._check_export_request(payload)
                 selected = self._select_export_parts(payload.get("partIds"))
@@ -3155,10 +3229,10 @@ class DocumentService:
             select = payload.get("select", {})
             base = {"ok": True, "revision": self._document.revision, "units": "mm"}
             if graph_query:
-                failures = _constrained_sketch_failures(self._document.graph)
+                self._ensure_geometry()
+                assert self._regen is not None
                 graph = json.loads(dumps(self._document.graph))
-                if failures:
-                    graph.update(self._unavailable_sketch_output(failures))
+                graph.update(self._unavailable_sketch_output(self._regen.availability))
                 return {**base, "graph": graph}
             if kind == "revision":
                 return base
@@ -3183,41 +3257,36 @@ class DocumentService:
             )
 
     def _unavailable_sketch_output(
-        self, failures: dict[str, RequestError]
+        self, availability: SolveAvailability
     ) -> dict[str, list[dict[str, Any]]]:
         errors = [
             _safe_error(
                 self._document.revision,
                 None,
-                error.code,
-                str(error),
+                failure.code,
+                failure.message,
                 operation="query",
-                featureId=feature_id,
+                featureId=failure.feature_id,
+                **failure.details,
             )["error"]
-            for feature_id, error in failures.items()
+            for failure in availability.failed
         ]
-        unavailable = []
-        reported = set(failures)
-        for feature_id in failures:
-            for dependent in self._document.graph.transitive_dependents(feature_id, {}):
-                if dependent.id in reported:
-                    continue
-                reported.add(dependent.id)
-                unavailable.append(
-                    {
-                        "featureId": dependent.id,
-                        "dependsOn": feature_id,
-                        "error": _safe_error(
-                            self._document.revision,
-                            None,
-                            "REFERENCE_FAILED",
-                            f"{dependent.id} depends on unavailable sketch {feature_id}",
-                            operation="query",
-                            featureId=dependent.id,
-                            target=feature_id,
-                        )["error"],
-                    }
-                )
+        unavailable = [
+            {
+                "featureId": feature.feature_id,
+                "dependsOn": feature.depends_on,
+                "error": _safe_error(
+                    self._document.revision,
+                    None,
+                    "REFERENCE_FAILED",
+                    f"{feature.feature_id} depends on unavailable sketch {feature.depends_on}",
+                    operation="query",
+                    featureId=feature.feature_id,
+                    target=feature.depends_on,
+                )["error"],
+            }
+            for feature in availability.unavailable
+        ]
         return {"errors": errors, "unavailable": unavailable}
 
     def _query_enclosure(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:

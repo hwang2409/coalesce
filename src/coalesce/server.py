@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+from functools import partial
 from typing import Any
 
 import anyio
@@ -375,6 +376,22 @@ def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return ACTION_SCHEMAS.get(name, {}).get(arguments.get("action"), TOOL_SCHEMAS[name])
 
 
+def _stateful_error(
+    service: DocumentService,
+    name: str,
+    arguments: dict[str, Any],
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+    *,
+    publish: bool = False,
+) -> dict[str, Any]:
+    failure = service.error_response(name, arguments, code, message, **(details or {}))
+    if publish:
+        service.publish_failure(arguments, failure)
+    return failure
+
+
 def create_server(service: DocumentService) -> Server:
     server = Server(
         "coalesce",
@@ -409,11 +426,17 @@ def create_server(service: DocumentService) -> Server:
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
         if name not in TOOL_SCHEMAS:
-            return _tool_result(
-                service.error_response(
-                    name, arguments, "INVALID_PARAMETER", f"unknown tool: {name}"
+            failure = await anyio.to_thread.run_sync(
+                partial(
+                    _stateful_error,
+                    service,
+                    name,
+                    arguments,
+                    "INVALID_PARAMETER",
+                    f"unknown tool: {name}",
                 )
             )
+            return _tool_result(failure)
         try:
             validate(
                 instance=arguments,
@@ -424,29 +447,35 @@ def create_server(service: DocumentService) -> Server:
             if name == "feature" and arguments.get("action") == "update":
                 error = _prefer_unknown_field(error)
             details = _schema_error_details(name, arguments, error)
-            failure = service.error_response(
-                name,
-                arguments,
-                "INVALID_PARAMETER",
-                schema_error_message(error),
-                **details,
+            failure = await anyio.to_thread.run_sync(
+                partial(
+                    _stateful_error,
+                    service,
+                    name,
+                    arguments,
+                    "INVALID_PARAMETER",
+                    schema_error_message(error),
+                    details,
+                    publish=name in ("sketch", "feature"),
+                )
             )
-            if name in ("sketch", "feature"):
-                service.publish_failure(arguments, failure)
             return _tool_result(failure)
         try:
             handler = service.import_board if name == "import" else getattr(service, name)
             return _tool_result(await anyio.to_thread.run_sync(handler, arguments))
         except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
             _LOG.exception("unexpected failure during %s", name)
-            return _tool_result(
-                service.error_response(
+            failure = await anyio.to_thread.run_sync(
+                partial(
+                    _stateful_error,
+                    service,
                     name,
                     arguments,
                     "KERNEL_OPERATION_FAILED",
                     "the operation failed unexpectedly",
                 )
             )
+            return _tool_result(failure)
 
     @server.list_resources()
     async def list_resources() -> list[types.Resource]:

@@ -14,7 +14,7 @@ from mcp.client.stdio import stdio_client
 
 from coalesce.constrained_sketch import ConstrainedSketch
 from coalesce.constrained_sketch import from_payload as constrained_from_payload
-from coalesce.graph import Extrude, Sketch
+from coalesce.graph import Extrude, Hole, Rectangle, Sketch
 from coalesce.service import DocumentService
 from coalesce.sketch_solver import SketchSolveError, SolveResult, SolveStatus
 
@@ -557,15 +557,18 @@ def test_graph_query_isolates_failed_sketch_and_marks_dependents_unavailable(
     assert result["ok"] is True
     nodes = {node["id"]: node for node in result["graph"]["nodes"]}
     assert nodes["healthy"]["constrained"]["solved"]["status"] == "fully_constrained"
-    assert result["graph"]["errors"] == [
-        {
-            "code": "SKETCH_SOLVE_TIMEOUT",
-            "message": "constrained sketch did not converge",
-            "operation": "query",
-            "retryable": False,
-            "featureId": "failed",
-        }
-    ]
+    error = result["graph"]["errors"][0]
+    assert {
+        key: error[key]
+        for key in ("code", "message", "operation", "retryable", "featureId")
+    } == {
+        "code": "SKETCH_SOLVE_TIMEOUT",
+        "message": "constrained sketch did not converge",
+        "operation": "query",
+        "retryable": False,
+        "featureId": "failed",
+    }
+    assert error["diagnostics"]["status"] == "did_not_converge"
     assert result["graph"]["unavailable"] == [
         {
             "featureId": "dependent",
@@ -580,6 +583,71 @@ def test_graph_query_isolates_failed_sketch_and_marks_dependents_unavailable(
             },
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_real_stdio_shares_all_solve_failures_and_repairs_them(tmp_path):
+    path = tmp_path / "availability.coalesce.json"
+    service = DocumentService(path, warmup=False)
+    for sketch_id in ("failed-a", "failed-b"):
+        service._document.graph.add(
+            Sketch(sketch_id, constrained=constrained_from_payload(rectangle_model()))
+        )
+    service._document.graph.add(
+        Sketch("healthy", entities=[Rectangle("outline", 10, 8)])
+    )
+    service._document.graph.add(Extrude("dependent-a", sketch="failed-a", height=5))
+    service._document.graph.add(Extrude("dependent-b", sketch="failed-b", height=5))
+    service._document.graph.add(Hole("downstream", target="dependent-a"))
+    service.store.save(service._document)
+    fake = fake_planegcs(tmp_path / "fake-failures", status="Failed")
+    repair_entities = primitive_request(
+        revision=0, request_id="repair", sketch_id="unused"
+    )["entities"]
+
+    def repair(sketch_id: str, revision: int) -> dict:
+        return {
+            "action": "update",
+            "expectedRevision": revision,
+            "requestId": f"repair-{sketch_id}",
+            "sketchId": sketch_id,
+            "set": {"entities": repair_entities},
+        }
+
+    calls = [
+        ("query", {"select": {"kind": "graph"}}),
+        ("query", {"select": {"kind": "feature", "id": "healthy"}}),
+        ("check", {"action": "evaluate", "revision": 0}),
+        (
+            "export",
+            {"action": "publish", "expectedRevision": 0, "path": str(tmp_path / "stale.step")},
+        ),
+        ("export", {"action": "preflight", "expectedRevision": 0}),
+        ("sketch", repair("failed-a", 0)),
+        ("sketch", repair("failed-b", 1)),
+        ("query", {"select": {"kind": "graph"}}),
+    ]
+    graph, feature, check, export, preflight, first_repair, second_repair, repaired = (
+        await run_server(path, calls, env={"PYTHONPATH": str(fake)})
+    )
+
+    assert [error["featureId"] for error in graph["graph"]["errors"]] == [
+        "failed-a",
+        "failed-b",
+    ]
+    unavailable = {item["featureId"] for item in graph["graph"]["unavailable"]}
+    assert unavailable == {"dependent-a", "dependent-b", "downstream"}
+    for result in (feature, check, export, preflight):
+        assert result["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+        assert result["error"]["failedFeatureIds"] == ["failed-a", "failed-b"]
+        assert set(result["error"]["unavailableFeatureIds"]) == unavailable
+    assert not (tmp_path / "stale.step").exists()
+    assert first_repair["ok"] is True
+    assert first_repair["regeneration"] == {"status": "UNAVAILABLE", "valid": False}
+    assert second_repair["ok"] is True
+    assert second_repair["regeneration"] == {"status": "OK", "valid": True}
+    assert repaired["graph"]["errors"] == []
+    assert repaired["graph"]["unavailable"] == []
 
 
 @pytest.mark.anyio

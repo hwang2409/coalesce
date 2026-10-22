@@ -10,6 +10,7 @@ from build123d import Edge, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
 
+from .availability import SolveAvailability
 from .boolean import FuseResult, cut_shape, fuse_shape, join_contact_failures
 from .cut import make_cut_tool
 from .edge_treatment import chamfer_shape, fillet_shape
@@ -68,6 +69,7 @@ class RegenResult:
     predecessors: dict[str, str] = field(default_factory=dict)
     states: dict[str, list[Candidate]] = field(default_factory=dict)
     body_terminals: dict[BodySource, str] = field(default_factory=dict)
+    availability: SolveAvailability = field(default_factory=SolveAvailability)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
