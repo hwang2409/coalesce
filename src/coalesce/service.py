@@ -17,7 +17,15 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .errors import ERROR_REGISTRY
-from .export import ExportFailure, _validate_part_for_step, export_parts
+from .export import (
+    ExportFailure,
+    _validate_part_for_step,
+    export_parts,
+    export_parts_separately,
+    parts_are_ready,
+    prepare_parts,
+    public_parts,
+)
 from .fit_summary import fit_summary, part_facts
 from .graph import (
     BoardImport,
@@ -2817,20 +2825,119 @@ class DocumentService:
             )
         return selected
 
+    @staticmethod
+    def _check_export_request(payload: dict[str, Any]) -> None:
+        action = payload.get("action", "publish")
+        mode = payload.get("mode", "compound")
+        if action == "preflight":
+            forbidden = [field for field in ("path", "mode") if field in payload]
+            if forbidden:
+                raise RequestError(
+                    "INVALID_PARAMETER",
+                    "export preflight does not accept path or mode",
+                    invalidFields=forbidden,
+                )
+            return
+        if "path" not in payload:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "export publication requires path",
+                requiredFields=["path"],
+            )
+        if mode == "compound":
+            forbidden = [field for field in ("base", "requirements") if field in payload]
+            if forbidden:
+                raise RequestError(
+                    "INVALID_PARAMETER",
+                    "compound export does not accept handoff requirements",
+                    invalidFields=forbidden,
+                )
+
+    def _handoff_requirements(self, payload: dict[str, Any]) -> dict[str, Any]:
+        checked = self.check(
+            {
+                "action": "evaluate",
+                "revision": self._document.revision,
+                **({"base": payload["base"]} if "base" in payload else {}),
+                **(
+                    {"requirements": payload["requirements"]}
+                    if "requirements" in payload
+                    else {}
+                ),
+            }
+        )
+        if not checked.get("ok"):
+            error = checked["error"]
+            raise RequestError(
+                error["code"],
+                error["message"],
+                **{
+                    key: value
+                    for key, value in error.items()
+                    if key not in {"code", "message", "operation", "retryable", "revision"}
+                },
+            )
+        return {"gate": checked["gate"], "results": checked["results"]}
+
+    def _handoff_sources(self) -> list[dict[str, str]]:
+        return sorted(
+            [
+                {"assetId": node.id, "sha256": node.source_digest}
+                for node in self._document.graph.nodes.values()
+                if isinstance(node, BoardImport)
+            ],
+            key=lambda item: item["assetId"],
+        )
+
+    def _handoff_result(
+        self, prepared: list[dict[str, Any]], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        parts = public_parts(prepared)
+        requirements = self._handoff_requirements(payload)
+        unknowns = [item for item in requirements["results"] if item["status"] == "UNKNOWN"]
+        return {
+            "parts": parts,
+            "requirements": requirements,
+            "unknowns": unknowns,
+            "ready": parts_are_ready(prepared) and requirements["gate"] == "PASS",
+        }
+
+    def _export_preflight(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._handoff_result(prepare_parts(selected), payload)
+        return {
+            "ok": True,
+            "revision": self._document.revision,
+            "units": "mm",
+            "partIds": [part.part_id for part in selected],
+            **result,
+        }
+
+    def _export_separate(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        prepared = prepare_parts(selected)
+        result = self._handoff_result(prepared, payload)
+        manifest = {
+            "revision": self._document.revision,
+            "units": "mm",
+            "sources": self._handoff_sources(),
+            **result,
+        }
+        fields = export_parts_separately(Path(payload["path"]), prepared, manifest)
+        return {"ok": True, "revision": self._document.revision, "units": "mm", **result, **fields}
+
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
         with self._lock:
             selected: list[Any] = []
             try:
                 self._check_export_revision(payload["expectedRevision"])
+                self._check_export_request(payload)
                 selected = self._select_export_parts(payload.get("partIds"))
-                fields = export_parts(Path(payload.get("path", "")), selected)
-                return {
-                    "ok": True,
-                    "revision": self._document.revision,
-                    "units": "mm",
-                    **fields,
-                }
+                if payload.get("action", "publish") == "preflight":
+                    return self._export_preflight(selected, payload)
+                if payload.get("mode", "compound") == "separate":
+                    return self._export_separate(selected, payload)
+                fields = export_parts(Path(payload["path"]), selected)
+                return {"ok": True, "revision": self._document.revision, "units": "mm", **fields}
             except ExportFailure as error:
                 return self.error_response(
                     "export",

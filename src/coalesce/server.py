@@ -31,7 +31,7 @@ _TOOL_DESCRIPTIONS = {
     "feature": "Create a normal new-body or target-join extrude, sketch cut, global +Z hole, constant-radius fillet, symmetric one-distance chamfer (two-distance is not supported), semantic pcb_base, semantic standoffs, a separate semantic pcb_lid, or semantic port_cutout. pcb_base derives its cavity from the selected board outline; standoffs with `all_mounting` follow the current board while explicit hole ids stay fixed and fail closed when missing; standoffs join the base; pcb_lid derives its rim and optional locating lip from a pcb_base without consuming it; port_cutout resolves a stable footprint id or unique reference and cuts its declared opening through one planar base wall. For port_cutout, left/right are -X/+X and front/back are -Y/+Y. auto is allowed only for one unique nearest wall. A courtyard supplies only the wall-plane width; height and bottomOffset from board top remain explicit. An explicit envelope supplies width, height, and bottomOffset. No connector height or opening size is inferred. Plane normals are XY +Z, XZ -Y, YZ +X. For finite cuts, flip=false cuts along the negative sketch normal and flip=true along the positive sketch normal; through-all cuts are bidirectional, and flip has no effect for through-all cuts. Holes accept one position or 1..64 named positions; names are stable caller identities and default to h1..hn. Responses report the global frame, operation direction, and tool bbox. Enclosure geometry conflicts include `minimum` and `maximum` only when one closed-form constraint makes the full interval valid and both ends plus five evenly spaced interior values pass normal commit acceptance; otherwise they include only verified point values such as `suggested`. `alternatives` contain directly applicable, accepted `set` values for another port wall or envelope position. Connector envelope width and height are never changed by a remedy. Updates change numeric enclosure parameters, extrude distance, or cut and hole targets. Use update to preserve a feature identity and change its parameters. Use delete to remove a feature; delete fails with every transitive dependent unless cascade is true.",
     "query": "Read one feature, the graph, revision, exact mm metrics, inspect a PCB enclosure, list selectable edge roles, or resolve a typed reference. Use select.kind edge_roles with id before choosing treatment edges. Call select.kind enclosure before reporting enclosure dimensions.",
     "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, board-edge clearance, mounting coverage, lid interference and fit, connector clearance, and clean manufacturing bodies. board_clearance accepts side left, right, front, back, or all and a minimum mm threshold. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
-    "export": "Write selected terminal manufacturing parts to STEP at an explicit absolute new path and current expectedRevision. Defaults to all manufacturing parts and never includes BoardImport reference geometry. It never overwrites. A fresh Python process validates STEP bytes in a private directory before direct publication. The final file is briefly visible while written; failed writes stay in place for manual recovery.",
+    "export": "Preflight or publish selected terminal manufacturing parts at the current expectedRevision. action=preflight is read-only and validates each part in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate builds one labeled STEP per part plus a deterministic manifest in a private sibling directory, then renames it once to an explicit absolute new path. BoardImport reference geometry is never included and no mode overwrites.",
 }
 
 TOOLS_GUIDE = """# coalesce tools
@@ -135,13 +135,17 @@ returns manufacturing parts by default; set `select.role: reference` to measure 
 reference geometry separately. Reference parts remain visible in the viewer but are excluded
 from manufacturing totals. Use `select.kind: feature` with `id` for one node. Use `check` with `valid_brep` before relying on the model, or declare enclosure requirements for measured acceptance. It checks terminal manufacturing parts only and
 excludes BoardImport reference geometry. Zero manufacturing solids return `UNKNOWN` with
-`solidCount: 0` and block readiness. Use `export` with the current `expectedRevision` and an explicit absolute new
-`path`; export is stateless and does not accept `requestId`. It defaults to all terminal
-manufacturing parts; select stable `partIds` from measurements when needed. A feature id is
+`solidCount: 0` and block readiness. Use `export` action `preflight` with the current
+`expectedRevision` to validate each selected part without publishing. Supply `base` and explicit
+`requirements` to include enclosure acceptance statuses. The response lists every `UNKNOWN`
+result and sets `ready: false` unless every requirement passes. Preflight writes no user-visible
+files. Publishing is stateless and does not accept `requestId`; it requires an explicit absolute
+new `path` and defaults to all terminal manufacturing parts. Select stable `partIds` from
+measurements when needed. A feature id is
 accepted only when it resolves to exactly one terminal manufacturing part; otherwise
 `UNKNOWN_ID` lists valid part ids and the feature that built each. BoardImport
-reference geometry is never included. STEP export never overwrites, renames, truncates, or
-removes a destination. It validates bytes in a private directory. A fresh Python process
+reference geometry is never included. The default compound STEP mode never overwrites, renames,
+truncates, or removes a destination. It validates bytes in a private directory. A fresh Python process
 reimports them and compares part and solid counts, bounding boxes, per-part and
 aggregate volume and area, and cylinder radii and axes. The private directory is removed
 after success, validation failure, or timeout. It then creates the final path directly and
@@ -152,7 +156,13 @@ An existing path, including a symlink, returns `EXPORT_PATH_EXISTS` and is untou
 creation returns `EXPORT_WRITE_FAILED` with `path`, `expectedSha256`, and `expectedBytes`:
 the file at path may be incomplete; coalesce leaves it in place; delete it yourself or export to a new path.
 There is no automatic retry or replay. Geometry and STEP
-product-label preservation are reported separately. Domain failures have `ok: false` and a
+product-label preservation are reported separately. With `mode: separate`, export validates each
+part independently, writes one label-derived `.step` file and deterministic `manifest.json` in a
+private sibling directory on the destination filesystem, then publishes the directory with one
+rename to a path that must not exist. Validation or write failure removes the sibling directory and
+publishes nothing. The manifest records revision, mm units, selected part ids, labels, files,
+SHA-256 hashes, imported-board source digests, requirement results, and unknowns. Separate export
+also sets `ready: false` for `UNKNOWN` or failed requirements. Domain failures have `ok: false` and a
 stable code.
 
 ## Claude Code
