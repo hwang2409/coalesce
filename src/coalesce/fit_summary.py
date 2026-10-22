@@ -119,7 +119,20 @@ def _lid_rows(inspection: dict[str, Any], graph: Any, revision: int) -> list[dic
                      result["reason"])]
     rows = []
     for lid in inspection["lids"]:
-        result = _rule({"id": "lid", "kind": "lid_interference"}, {**inspection, "lids": [lid]}, revision)
+        lid_inspection = {**inspection, "lids": [lid]}
+        outline = _rule({"id": "outline", "kind": "lid_outline_match"}, lid_inspection, revision)
+        if outline["status"] == "FAIL":
+            measured = lid["outline"]
+            rows.append(_row(
+                f"lid_outline:{lid['featureId']}",
+                "Lid outline",
+                "FAIL",
+                outline["reason"],
+                lid["partId"],
+                measured,
+                f"update the lid's outlineSource to {measured['legalSource']}",
+            ))
+        result = _rule({"id": "lid", "kind": "lid_interference"}, lid_inspection, revision)
         overlap = lid["interference"]
         value = "none" if overlap is None else f"{_mm(overlap['volume']['value'])} mm³"
         reason = "lid and base overlap" if result["status"] == "FAIL" else result.get("reason")

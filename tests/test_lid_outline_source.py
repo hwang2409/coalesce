@@ -159,7 +159,7 @@ def test_board_refresh_updates_lid_outline(tmp_path):
     assert _check_outline(service)["status"] == "PASS"
 
 
-def _lid_chamfer_request(*, revision: int) -> dict:
+def _lid_chamfer_request(*, revision: int, count: int = 4) -> dict:
     return {
         "action": "create",
         "expectedRevision": revision,
@@ -173,7 +173,7 @@ def _lid_chamfer_request(*, revision: int) -> dict:
                     "feature": "lid",
                     "role": "between(edge,top)",
                     "cardinality": "exactly",
-                    "count": 4,
+                    "count": count,
                 }
             ],
             "distance": quantity(0.5),
@@ -202,7 +202,9 @@ def _refresh_with_lid_chamfer(tmp_path, name: str, *, fillet: bool = False):
         revision += 1
     assert service.feature(lid_request(revision=revision, include_lip=False))["ok"]
     revision += 1
-    assert service.feature(_lid_chamfer_request(revision=revision))["ok"]
+    assert service.feature(
+        _lid_chamfer_request(revision=revision, count=8 if fillet else 4)
+    )["ok"]
     return service, source, revision + 1
 
 

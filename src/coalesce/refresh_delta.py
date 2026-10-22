@@ -8,6 +8,7 @@ from typing import Any
 
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
 from .importers.kicad import outline_bounds
+from .lid_outline import capture_lid_outline
 
 LENGTH_TOLERANCE_MM = 1e-6
 
@@ -171,6 +172,30 @@ def _outline_dimensions(board: Any) -> dict[str, float] | None:
     }
 
 
+def _lid_outline_changed(before_result: Any, after_result: Any, node: PcbLid) -> bool:
+    if node.outline_source is None:
+        return False
+    before = capture_lid_outline(node.outline_source, before_result.states[node.outline_source])
+    after = capture_lid_outline(node.outline_source, after_result.states[node.outline_source])
+    return before.segments != after.segments
+
+
+def _lid_changed(
+    graph: Any,
+    node: PcbLid,
+    changed: set[str],
+    board_dimensions_changed: bool,
+    before_result: Any,
+    after_result: Any,
+) -> bool:
+    inputs = set(graph._dependencies(node)) - {node.outline_source}
+    return (
+        board_dimensions_changed
+        or bool(inputs & changed)
+        or _lid_outline_changed(before_result, after_result, node)
+    )
+
+
 def _feature_changed(
     before_graph: Any,
     after_graph: Any,
@@ -178,9 +203,20 @@ def _feature_changed(
     hole_changes: list[dict],
     board_dimensions_changed: bool,
     changed: set[str],
+    before_result: Any,
+    after_result: Any,
 ) -> bool:
     node = after_graph.nodes[feature_id]
-    # every feature changes when a feature it consumes changed
+    if isinstance(node, PcbLid):
+        return _lid_changed(
+            after_graph,
+            node,
+            changed,
+            board_dimensions_changed,
+            before_result,
+            after_result,
+        )
+    # every other feature changes when a feature it consumes changed
     if set(after_graph._dependencies(node)) & changed:
         return True
     if isinstance(node, Standoffs):
@@ -188,7 +224,7 @@ def _feature_changed(
     if isinstance(node, PortCutout):
         # the cutout also reads the board thickness directly
         return board_dimensions_changed or _port_cutout_changed(before_graph, after_graph, feature_id)
-    if isinstance(node, (PcbBase, PcbLid)):
+    if isinstance(node, PcbBase):
         return board_dimensions_changed
     return False
 
@@ -200,8 +236,8 @@ def _kind_label(node: Any) -> str:
 def refresh_delta(
     before_graph: Any,
     after_graph: Any,
-    _before_result: Any,
-    _after_result: Any,
+    before_result: Any,
+    after_result: Any,
     board_id: str,
 ) -> dict[str, Any]:
     before_board = before_graph.nodes.get(board_id)
@@ -220,7 +256,14 @@ def refresh_delta(
     # inputs before consumers, so a consumer sees every changed input
     for node in after_graph.ordered():
         if node.id in affected and node.id in before_graph.nodes and _feature_changed(
-            before_graph, after_graph, node.id, mounting_holes, dimensions_changed, changed
+            before_graph,
+            after_graph,
+            node.id,
+            mounting_holes,
+            dimensions_changed,
+            changed,
+            before_result,
+            after_result,
         ):
             changed.add(node.id)
     dependent = [_kind_label(after_graph.nodes[feature_id]) for feature_id in sorted(changed)]

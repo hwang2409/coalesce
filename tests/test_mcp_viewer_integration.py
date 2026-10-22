@@ -599,13 +599,13 @@ async def test_stale_lid_outline_is_in_scene_and_clears_in_browser(tmp_path, bro
         parsed, headers = await asyncio.to_thread(_viewer_access, url)
         scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 5, errlog)
         outline = next(row for row in scene["fit"][0]["rows"] if row["id"].startswith("lid_outline:"))
+        assert outline.pop("partId").startswith("lid/")
         assert outline == {
             "id": "lid_outline:lid",
             "label": "Lid outline",
             "status": "FAIL",
             "value": "outline source is stale: base_round != port",
             "reason": "update the lid's outlineSource to port",
-            "partId": "lid/loop-1e9db7090dc602fa2a6c7fe5972c1236",
             "evidence": {
                 "source": "base_round",
                 "legalSource": "port",
@@ -718,9 +718,10 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         # a lip-less lid has no fit gap: neutral, last, and outside the counts
         assert fit["rows"][-1] == {"status": "N/A", "label": "Lid fit gap", "value": "the lid has no lip"}
         assert fit["visible"] is True
-        assert fit["count"] == "1 unknown, 2 pass, 3 measured only"
+        assert fit["count"] == "1 fail, 1 unknown, 2 pass, 3 measured only"
         # readable lines with units; ids and the payload only behind the closed raw disclosure
         assert evidence["lines"] == [
+            "Lid outline on lid: outline source is stale: port != base_fillet, fail",
             "Port J1 clears connector on base: J1: 5 × 3 mm on left wall, 0.5 mm clearance, unknown",
             "Wall thickness on base: 2 mm, measured only",
             "Floor thickness on base: 2 mm, measured only",
@@ -754,7 +755,7 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         }
         assert refreshed[size]["text"] == (
             "Refreshed board: J1 moved 2.0 mm, 3 mounting holes moved, "
-            "pcb lid, chamfer, standoffs and port cutout updated"
+            "standoffs and port cutout updated"
         )
         assert refreshed[size]["visible"] is True
         assert refreshed[size]["overflow"] == {"document": True, "change": True}

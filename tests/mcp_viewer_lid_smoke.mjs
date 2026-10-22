@@ -12,6 +12,7 @@ async function open(name, width, height) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
   page.on('console', (message) => message.type() === 'error' && errors.push(`${name}: ${message.text()}`));
   page.on('pageerror', (error) => errors.push(`${name}: ${error}`));
+  await page.addInitScript(() => { window.coalesceDebug = true; });
   await page.goto(url);
   return { name, page };
 }
