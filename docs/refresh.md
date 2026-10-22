@@ -9,7 +9,8 @@ A successful `import` refresh returns `boardChanges`. The object always contains
 
 Each mounting-hole or footprint record has `id`, `reference`, `oldPosition`,
 `newPosition`, `distance`, and `change`. A position is an `[x, y]` pair in mm.
-An absent endpoint is `null`. `distance` is the endpoint distance in mm when both
+`reference` is `null` when the footprint has no reference designator. An absent
+endpoint is `null`. `distance` is the endpoint distance in mm when both
 positions exist; otherwise it is `null`. `change` is `added`, `removed`, `moved`,
 or `changed`.
 
@@ -20,6 +21,7 @@ Changed board dimensions add these optional fields:
   exact aggregate bounds in mm across all outer outline loops. Either value is
   `null` if that snapshot has no outer outline.
 
-The refresh summary always starts with `refreshed board:`. It reports whole change
-items and is at most 160 characters. When not all items fit, `+N more` gives the
-exact number omitted.
+When the board source changed, the refresh summary starts with `refreshed board:`.
+It reports whole change items and is at most 160 characters. When not all items
+fit, `+N more` gives the exact number omitted. When the new source is identical,
+the summary is `refreshed board <id>, source unchanged`.
