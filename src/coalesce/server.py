@@ -392,6 +392,65 @@ def _stateful_error(
     return failure
 
 
+async def _schema_failure(
+    service: DocumentService, name: str, arguments: dict[str, Any], raised: ValidationError
+) -> types.CallToolResult:
+    error = _branch_error(raised)
+    if name == "feature" and arguments.get("action") == "update":
+        error = _prefer_unknown_field(error)
+    details = _schema_error_details(name, arguments, error)
+    failure = await anyio.to_thread.run_sync(
+        partial(
+            _stateful_error,
+            service,
+            name,
+            arguments,
+            "INVALID_PARAMETER",
+            schema_error_message(error),
+            details,
+            publish=name in ("sketch", "feature"),
+        )
+    )
+    return _tool_result(failure)
+
+
+async def _call_tool(
+    service: DocumentService, name: str, arguments: dict[str, Any]
+) -> types.CallToolResult:
+    if name not in TOOL_SCHEMAS:
+        failure = await anyio.to_thread.run_sync(
+            partial(
+                _stateful_error,
+                service,
+                name,
+                arguments,
+                "INVALID_PARAMETER",
+                f"unknown tool: {name}",
+            )
+        )
+        return _tool_result(failure)
+    try:
+        validate(instance=arguments, schema=_schema_for_action(name, arguments))
+    except ValidationError as raised:
+        return await _schema_failure(service, name, arguments, raised)
+    try:
+        handler = service.import_board if name == "import" else getattr(service, name)
+        return _tool_result(await anyio.to_thread.run_sync(handler, arguments))
+    except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
+        _LOG.exception("unexpected failure during %s", name)
+        failure = await anyio.to_thread.run_sync(
+            partial(
+                _stateful_error,
+                service,
+                name,
+                arguments,
+                "KERNEL_OPERATION_FAILED",
+                "the operation failed unexpectedly",
+            )
+        )
+        return _tool_result(failure)
+
+
 def create_server(service: DocumentService) -> Server:
     server = Server(
         "coalesce",
@@ -425,57 +484,7 @@ def create_server(service: DocumentService) -> Server:
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        if name not in TOOL_SCHEMAS:
-            failure = await anyio.to_thread.run_sync(
-                partial(
-                    _stateful_error,
-                    service,
-                    name,
-                    arguments,
-                    "INVALID_PARAMETER",
-                    f"unknown tool: {name}",
-                )
-            )
-            return _tool_result(failure)
-        try:
-            validate(
-                instance=arguments,
-                schema=_schema_for_action(name, arguments),
-            )
-        except ValidationError as raised:
-            error = _branch_error(raised)
-            if name == "feature" and arguments.get("action") == "update":
-                error = _prefer_unknown_field(error)
-            details = _schema_error_details(name, arguments, error)
-            failure = await anyio.to_thread.run_sync(
-                partial(
-                    _stateful_error,
-                    service,
-                    name,
-                    arguments,
-                    "INVALID_PARAMETER",
-                    schema_error_message(error),
-                    details,
-                    publish=name in ("sketch", "feature"),
-                )
-            )
-            return _tool_result(failure)
-        try:
-            handler = service.import_board if name == "import" else getattr(service, name)
-            return _tool_result(await anyio.to_thread.run_sync(handler, arguments))
-        except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
-            _LOG.exception("unexpected failure during %s", name)
-            failure = await anyio.to_thread.run_sync(
-                partial(
-                    _stateful_error,
-                    service,
-                    name,
-                    arguments,
-                    "KERNEL_OPERATION_FAILED",
-                    "the operation failed unexpectedly",
-                )
-            )
-            return _tool_result(failure)
+        return await _call_tool(service, name, arguments)
 
     @server.list_resources()
     async def list_resources() -> list[types.Resource]:

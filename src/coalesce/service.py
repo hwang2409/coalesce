@@ -833,9 +833,7 @@ def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
             ),
             entities=_entities(changes["entities"]) if "entities" in changes else None,
             constrained=(
-                _constrained_sketch(changes["constrained"])
-                if "constrained" in changes
-                else None
+                _constrained_sketch(changes["constrained"]) if "constrained" in changes else None
             ),
         ),
     )
@@ -1642,7 +1640,9 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
         "did_not_converge": ("SKETCH_DID_NOT_CONVERGE", "constrained sketch did not converge"),
         "branch_flip": ("SKETCH_BRANCH_FLIP", "constrained sketch changed branch"),
     }
-    message = messages.get(result.status.value, ("INVALID_PARAMETER", "invalid constrained sketch input"))[1]
+    message = messages.get(
+        result.status.value, ("INVALID_PARAMETER", "invalid constrained sketch input")
+    )[1]
     if result.status.value == "invalid_input":
         return RequestError("INVALID_PARAMETER", message, diagnostics=result_payload(model))
     if result.status.value == "redundant":
@@ -2666,6 +2666,175 @@ class DocumentService:
             _viewer_error(error),
         )
 
+    def _mutation_request(
+        self,
+        payload: dict[str, Any],
+        parse: Callable[[dict[str, Any]], MutationOperation],
+    ) -> tuple[MutationOperation, str, dict[str, Any] | None]:
+        request_id = payload.get("requestId")
+        if not isinstance(request_id, str) or not request_id:
+            raise RequestError("INVALID_PARAMETER", "requestId is required")
+        parsed = parse(payload)
+        body_hash = _hash(parsed)
+        receipt = next(
+            (item for item in self._document.receipts if item["requestId"] == request_id), None
+        )
+        if receipt is not None:
+            if receipt["requestHash"] == body_hash:
+                return parsed, body_hash, receipt["response"]
+            raise RequestError(
+                "REQUEST_ID_REUSED", "requestId was already used for a different request body"
+            )
+        request_hash = next(
+            (
+                item["requestHash"]
+                for item in self._document.request_hashes
+                if item["requestId"] == request_id
+            ),
+            None,
+        )
+        if request_hash is not None:
+            message = (
+                "requestId was already used for a different request body"
+                if request_hash != body_hash
+                else "requestId replay is outside the full receipt window"
+            )
+            raise RequestError("REQUEST_ID_REUSED", message)
+        if parsed.expectedRevision != self._document.revision:
+            raise RequestError(
+                "REVISION_CONFLICT",
+                f"expected revision {parsed.expectedRevision}; current revision is {self._document.revision}",
+                expected=parsed.expectedRevision,
+                actual=self._document.revision,
+            )
+        return parsed, body_hash, None
+
+    def _publish_mutation(
+        self,
+        result: RegenResult,
+        before: Any,
+        changed_id: str,
+        change: dict[str, str],
+    ) -> None:
+        if self._publisher is None:
+            return
+        if result.availability.geometry_available:
+            self._publisher.publish(self._document.revision, result, before, changed_id, change)
+        else:
+            self._publish_regeneration(result)
+
+    def _commit_mutation(
+        self,
+        payload: dict[str, Any],
+        parsed: MutationOperation,
+        body_hash: str,
+        apply: Callable[[Any, MutationOperation, RegenResult | None], str | _DeleteResult],
+        response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.start_kernel_warmup()
+        self._kernel_loader.wait()
+        _ensure_refresh_geometry(parsed, self._ensure_geometry)
+        committed_result = self._regen
+        previous_selections = _selection_snapshot(self._document.graph)
+        graph = loads(dumps(self._document.graph))
+        applied = apply(graph, parsed, self._committed_regeneration(parsed))
+        changed_id, changed_ids, deletion = _applied_result(applied)
+        result = regenerate(graph)
+        if not result.availability.geometry_available and not isinstance(
+            parsed, (SketchCreate, SketchUpdate, SketchDelete)
+        ):
+            raise _availability_request_error(result.availability)
+        self._assert_effect(parsed, result)
+        self._validate_treatment_parts(parsed, result, changed_id)
+        deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
+        previous = self._document.revision
+        before = self._document.graph
+        delta, refresh_fields = _refresh_fields(parsed, before, graph, committed_result, result)
+        change = _mutation_change(
+            deletion_change, before, result, changed_id, committed_result, delta
+        )
+        response = {
+            "ok": True,
+            "revision": previous + 1,
+            "previousRevision": previous,
+            "requestId": payload["requestId"],
+            "units": "mm",
+            "changedFeatureIds": changed_ids,
+            "regeneration": {
+                "status": "OK" if result.availability.geometry_available else "UNAVAILABLE",
+                "valid": result.availability.geometry_available,
+            },
+            "warnings": [],
+            "selectionChanges": _selection_changes(previous_selections, _selection_snapshot(graph)),
+            **deletion_fields,
+            **response_fields(graph, result, changed_id),
+            **refresh_fields,
+        }
+        receipt = {
+            "requestId": payload["requestId"],
+            "requestHash": body_hash,
+            "revision": previous + 1,
+            "response": response,
+        }
+        document = Document(
+            graph=graph,
+            revision=previous + 1,
+            receipts=[*self._document.receipts, receipt][-MAX_RECEIPTS:],
+            request_hashes=[
+                *self._document.request_hashes,
+                {"requestId": payload["requestId"], "requestHash": body_hash},
+            ][-MAX_REQUEST_HASHES:],
+        )
+        durable = self.store.save(document)
+        self._document = document
+        self._regen = result
+        self._graph_error = None
+        self._publish_mutation(result, before, changed_id, change)
+        if not durable:
+            _LOG.warning(
+                "document rename committed but directory fsync failed; durability is unconfirmed"
+            )
+        return response
+
+    def _mutation_failure(
+        self, operation: str, payload: dict[str, Any], error: BaseException
+    ) -> dict[str, Any]:
+        if isinstance(error, RequestError):
+            failure = self.error_response(
+                operation, payload, error.code, str(error), **error.details
+            )
+        elif isinstance(error, BoardImportError):
+            failure = self.error_response(
+                operation,
+                payload,
+                error.code,
+                str(error),
+                hint=(
+                    "use an explicit absolute path to a readable regular kicad_pcb file "
+                    "of 16 MiB or less with one closed, valid board outline"
+                ),
+            )
+        elif isinstance(error, GraphError):
+            graph_failure = _graph_error_response(
+                self._document.revision, payload.get("requestId"), operation, error
+            )
+            graph_details = dict(graph_failure["error"])
+            code = graph_details.pop("code")
+            message = graph_details.pop("message")
+            graph_details.pop("retryable")
+            graph_details.pop("operation")
+            failure = self.error_response(operation, payload, code, message, **graph_details)
+        else:
+            _LOG.exception("kernel failure during %s", operation, exc_info=error)
+            failure = self.error_response(
+                operation,
+                payload,
+                "KERNEL_OPERATION_FAILED",
+                "the modeling operation could not produce valid geometry",
+            )
+        self.publish_failure(payload, failure)
+        return failure
+
     def _mutate(
         self,
         operation: str,
@@ -2674,171 +2843,14 @@ class DocumentService:
         apply: Callable[[Any, MutationOperation, RegenResult | None], str | _DeleteResult],
         response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
     ) -> dict[str, Any]:
-        request_id = payload.get("requestId")
         with self._lock:
             try:
-                if not isinstance(request_id, str) or not request_id:
-                    raise RequestError("INVALID_PARAMETER", "requestId is required")
-                parsed = parse(payload)
-                body_hash = _hash(parsed)
-                receipt = next(
-                    (item for item in self._document.receipts if item["requestId"] == request_id),
-                    None,
-                )
-                if receipt is not None:
-                    if receipt["requestHash"] == body_hash:
-                        return receipt["response"]
-                    raise RequestError(
-                        "REQUEST_ID_REUSED",
-                        "requestId was already used for a different request body",
-                    )
-                request_hash = next(
-                    (
-                        item["requestHash"]
-                        for item in self._document.request_hashes
-                        if item["requestId"] == request_id
-                    ),
-                    None,
-                )
-                if request_hash is not None:
-                    message = (
-                        "requestId was already used for a different request body"
-                        if request_hash != body_hash
-                        else "requestId replay is outside the full receipt window"
-                    )
-                    raise RequestError("REQUEST_ID_REUSED", message)
-                expected = parsed.expectedRevision
-                if expected != self._document.revision:
-                    raise RequestError(
-                        "REVISION_CONFLICT",
-                        f"expected revision {expected}; current revision is {self._document.revision}",
-                        expected=expected,
-                        actual=self._document.revision,
-                    )
-
-                self.start_kernel_warmup()
-                self._kernel_loader.wait()
-                _ensure_refresh_geometry(parsed, self._ensure_geometry)
-                committed_result = self._regen
-                previous_selections = _selection_snapshot(self._document.graph)
-                graph = loads(dumps(self._document.graph))
-                applied = apply(graph, parsed, self._committed_regeneration(parsed))
-                changed_id, changed_ids, deletion = _applied_result(applied)
-                result = regenerate(graph)
-                if not result.availability.geometry_available and not isinstance(
-                    parsed, (SketchCreate, SketchUpdate, SketchDelete)
-                ):
-                    raise _availability_request_error(result.availability)
-                self._assert_effect(parsed, result)
-                self._validate_treatment_parts(parsed, result, changed_id)
-                deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
-                previous = self._document.revision
-                before = self._document.graph
-                delta, refresh_fields = _refresh_fields(
-                    parsed, before, graph, committed_result, result
-                )
-                change = _mutation_change(
-                    deletion_change, before, result, changed_id, committed_result, delta
-                )
-                response = {
-                    "ok": True,
-                    "revision": previous + 1,
-                    "previousRevision": previous,
-                    "requestId": request_id,
-                    "units": "mm",
-                    "changedFeatureIds": changed_ids,
-                    "regeneration": {
-                        "status": "OK" if result.availability.geometry_available else "UNAVAILABLE",
-                        "valid": result.availability.geometry_available,
-                    },
-                    "warnings": [],
-                    "selectionChanges": _selection_changes(
-                        previous_selections, _selection_snapshot(graph)
-                    ),
-                    **deletion_fields,
-                    **response_fields(graph, result, changed_id),
-                    **refresh_fields,
-                }
-                receipt = {
-                    "requestId": request_id,
-                    "requestHash": body_hash,
-                    "revision": previous + 1,
-                    "response": response,
-                }
-                document = Document(
-                    graph=graph,
-                    revision=previous + 1,
-                    receipts=[*self._document.receipts, receipt][-MAX_RECEIPTS:],
-                    request_hashes=[
-                        *self._document.request_hashes,
-                        {"requestId": request_id, "requestHash": body_hash},
-                    ][-MAX_REQUEST_HASHES:],
-                )
-                durable = self.store.save(document)
-                self._document = document
-                self._regen = result
-                self._graph_error = None
-                if self._publisher is not None:
-                    if result.availability.geometry_available:
-                        self._publisher.publish(document.revision, result, before, changed_id, change)
-                    else:
-                        self._publish_regeneration(result)
-                if not durable:
-                    _LOG.warning(
-                        "document rename committed but directory fsync failed; durability is unconfirmed"
-                    )
-                return response
-            except RequestError as error:
-                failure = self.error_response(
-                    operation,
-                    payload,
-                    error.code,
-                    str(error),
-                    **error.details,
-                )
-                self.publish_failure(payload, failure)
-                return failure
-            except BoardImportError as error:
-                failure = self.error_response(
-                    operation,
-                    payload,
-                    error.code,
-                    str(error),
-                    hint=(
-                        "use an explicit absolute path to a readable regular kicad_pcb file "
-                        "of 16 MiB or less with one closed, valid board outline"
-                    ),
-                )
-                self.publish_failure(payload, failure)
-                return failure
-            except GraphError as error:
-                graph_failure = _graph_error_response(
-                    self._document.revision, request_id, operation, error
-                )
-                graph_details = dict(graph_failure["error"])
-                code = graph_details.pop("code")
-                message = graph_details.pop("message")
-                graph_details.pop("retryable")
-                graph_details.pop("operation")
-                failure = self.error_response(
-                    operation,
-                    payload,
-                    code,
-                    message,
-                    **graph_details,
-                )
-                self.publish_failure(payload, failure)
-                return failure
-            except Exception:  # noqa: BLE001 - translate all kernel failures at this seam.
-                _LOG.exception("kernel failure during %s", operation)
-                failure = self.error_response(
-                    operation,
-                    payload,
-                    "KERNEL_OPERATION_FAILED",
-                    "the modeling operation could not produce valid geometry",
-                )
-                self.publish_failure(payload, failure)
-                return failure
+                parsed, body_hash, replay = self._mutation_request(payload, parse)
+                if replay is not None:
+                    return replay
+                return self._commit_mutation(payload, parsed, body_hash, apply, response_fields)
+            except Exception as error:  # noqa: BLE001 - translate failures at this seam
+                return self._mutation_failure(operation, payload, error)
 
     @staticmethod
     def _frame(sketch: Sketch) -> dict[str, list[float]]:
@@ -3213,9 +3225,11 @@ class DocumentService:
         with self._lock:
             kind = payload.get("select", {}).get("kind")
             graph_query = kind in {"document", "graph", "timeline"}
-            if not graph_query and kind in {
-                "measurements", "feature", "reference", "edge_roles", "enclosure"
-            } and (failure := self._geometry_failure("query")):
+            if (
+                not graph_query
+                and kind in {"measurements", "feature", "reference", "edge_roles", "enclosure"}
+                and (failure := self._geometry_failure("query"))
+            ):
                 return failure
             requested_revision = payload.get("revision", self._document.revision)
             if requested_revision != self._document.revision:
