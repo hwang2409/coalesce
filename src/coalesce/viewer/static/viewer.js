@@ -962,6 +962,7 @@ function showRevision(sceneData) {
   // what the agent's commit did, apart from the number; none for a document opened from disk
   $('change').hidden = !sceneData.change;
   $('change').textContent = sceneData.change ? capitalize(sceneData.change.summary) : '';
+  $('change').title = sceneData.change ? capitalize(sceneData.change.summary) : '';
 }
 
 // what to do next, in words; the stable code and raw message stay under "Error details"

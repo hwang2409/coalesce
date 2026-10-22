@@ -371,8 +371,12 @@ def build_pcb_lid(node: PcbLid, base: PcbBase, board: BoardImport) -> EnclosureR
 def _resolve_footprint(node: PortCutout, board: BoardImport) -> dict:
     footprints = board.mechanics.get("footprints", [])
     lookup = node.footprint_id or node.footprint
-    by_id = [item for item in footprints if item["id"] == lookup]
-    matches = by_id or [item for item in footprints if item["reference"] == lookup]
+    # the stored id first; if the board replaced that id, the original reference again
+    matches = (
+        [item for item in footprints if item["id"] == node.footprint_id]
+        or [item for item in footprints if item["id"] == node.footprint]
+        or [item for item in footprints if item["reference"] == node.footprint]
+    )
     if not matches:
         raise GraphError(
             "MISSING",

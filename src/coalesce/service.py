@@ -58,6 +58,7 @@ from .references import (
     SketchSegmentSource,
     edge_role_catalog,
 )
+from .refresh_delta import format_summary, refresh_delta
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
 from .schemas import SUPPORTED_REQUIREMENT_KINDS
@@ -228,7 +229,7 @@ class BoardImportOperation(_Operation):
     expectedRevision: float
     requestId: str
     assetId: str
-    format: str
+    format: str | None = None
     path: str | None = None
 
 
@@ -1433,14 +1434,22 @@ def _apply_import(
     if isinstance(operation, ImportDelete):
         assert committed is not None
         return _apply_delete(graph, operation, committed)
-    if operation.format != "kicad_pcb":
-        raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
     current = graph.nodes.get(operation.assetId)
     if operation.action is Action.REFRESH:
         if not isinstance(current, BoardImport):
             raise RequestError("UNKNOWN_ID", f"unknown board import: {operation.assetId}")
+        expected_format = "kicad_pcb"
+        if operation.format is not None and operation.format != expected_format:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                f"refresh format {operation.format!r} differs from asset format {expected_format!r}",
+                expected=expected_format,
+                actual=operation.format,
+            )
         source_path = operation.path or current.source_path
     else:
+        if operation.format != "kicad_pcb":
+            raise RequestError("INVALID_PARAMETER", "only kicad_pcb imports are supported")
         if current is not None:
             raise RequestError("DUPLICATE_ID", f"duplicate id: {operation.assetId}")
         assert operation.path is not None
@@ -2134,14 +2143,55 @@ def _selection_changes(
     return changes
 
 
-def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]:
+def _is_board_refresh(operation: MutationOperation) -> bool:
+    return isinstance(operation, BoardImportOperation) and operation.action is Action.REFRESH
+
+
+def _ensure_refresh_geometry(
+    operation: MutationOperation, ensure_geometry: Callable[[], None]
+) -> None:
+    if _is_board_refresh(operation):
+        ensure_geometry()
+
+
+def _refresh_fields(
+    operation: MutationOperation,
+    before: Any,
+    after: Any,
+    before_result: RegenResult | None,
+    after_result: RegenResult,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    if not _is_board_refresh(operation):
+        return None, {}
+    delta = refresh_delta(before, after, before_result, after_result, operation.assetId)
+    return delta, {"boardChanges": delta}
+
+
+def _change(
+    before: Any,
+    result: RegenResult,
+    changed_id: str,
+    before_result: RegenResult | None = None,
+    delta: dict[str, Any] | None = None,
+) -> dict[str, str]:
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = result.graph.nodes[changed_id]
     old = before.nodes.get(changed_id)
-    return {
-        "featureId": changed_id,
-        "summary": _added(node, result) if old is None else _edited(old, node),
-    }
+    if isinstance(node, BoardImport) and isinstance(old, BoardImport) and node.source_digest != old.source_digest:
+        delta = delta or refresh_delta(before, result.graph, before_result, result, changed_id)
+        return {"featureId": changed_id, "summary": format_summary(delta, changed_id)}
+    return {"featureId": changed_id, "summary": _added(node, result) if old is None else _edited(old, node)}
+
+
+def _mutation_change(
+    deletion_change: dict[str, str] | None,
+    before: Any,
+    result: RegenResult,
+    changed_id: str,
+    before_result: RegenResult | None,
+    delta: dict[str, Any] | None,
+) -> dict[str, str]:
+    return deletion_change or _change(before, result, changed_id, before_result, delta)
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
@@ -2490,6 +2540,8 @@ class DocumentService:
 
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
+                _ensure_refresh_geometry(parsed, self._ensure_geometry)
+                committed_result = self._regen
                 previous_selections = _selection_snapshot(self._document.graph)
                 graph = loads(dumps(self._document.graph))
                 applied = apply(graph, parsed, self._committed_regeneration(parsed))
@@ -2497,8 +2549,15 @@ class DocumentService:
                 result = regenerate(graph)
                 self._assert_effect(parsed, result)
                 self._validate_treatment_parts(parsed, result, changed_id)
-                deletion_fields, change = _deletion_result_fields(deletion, result)
+                deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision
+                before = self._document.graph
+                delta, refresh_fields = _refresh_fields(
+                    parsed, before, graph, committed_result, result
+                )
+                change = _mutation_change(
+                    deletion_change, before, result, changed_id, committed_result, delta
+                )
                 response = {
                     "ok": True,
                     "revision": previous + 1,
@@ -2513,6 +2572,7 @@ class DocumentService:
                     ),
                     **deletion_fields,
                     **response_fields(graph, result, changed_id),
+                    **refresh_fields,
                 }
                 receipt = {
                     "requestId": request_id,
@@ -2530,7 +2590,6 @@ class DocumentService:
                     ][-MAX_REQUEST_HASHES:],
                 )
                 durable = self.store.save(document)
-                before = self._document.graph
                 self._document = document
                 self._regen = result
                 self._graph_error = None

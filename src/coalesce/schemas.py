@@ -699,13 +699,15 @@ IMPORT_REFRESH_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "refresh"},
-        **IMPORT_PROPERTIES,
+        **MUTATION_PROPERTIES,
+        "assetId": IMPORT_PROPERTIES["assetId"],
+        "format": {"type": "string", "minLength": 1, "description": "Optional; inherits the imported asset format and must match it."},
         "path": {
             **IMPORT_CREATE_SCHEMA["properties"]["path"],
             "description": "Optional explicit absolute path to the replacement local regular file, at most 16 MiB.",
         },
     },
-    "required": ["action", *IMPORT_PROPERTIES],
+    "required": ["action", *MUTATION_PROPERTIES, "assetId"],
     "additionalProperties": False,
 }
 IMPORT_SCHEMA = {

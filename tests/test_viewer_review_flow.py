@@ -156,7 +156,7 @@ def test_change_names_sketch_edits_and_board_import_and_refresh(tmp_path):
          "edited sketch plate_sketch profiles: 1 \u2192 2"),
         ("import", import_request(source), "imported board board.kicad_pcb"),
         ("import", refresh("same"), "refreshed board controller_board, source unchanged"),
-        ("import", refresh("changed"), "refreshed board controller_board, source changed"),
+        ("import", refresh("changed"), "refreshed board: source changed"),
     ]
     summaries = []
     for revision, (tool, arguments, _) in enumerate(mutations, start=1):
