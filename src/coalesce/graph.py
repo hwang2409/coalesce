@@ -56,6 +56,7 @@ class Sketch:
     id: str
     plane: Plane = field(default_factory=Plane)
     entities: list[Rectangle | Circle] = field(default_factory=list)
+    constrained: Any | None = None
     position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
 

@@ -2,6 +2,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
+from .constrained_sketch import from_payload as constrained_from_payload
 from .graph import (
     BoardImport,
     Chamfer,
@@ -58,9 +59,7 @@ def _reference(payload: dict[str, Any]) -> Reference:
     value["source"] = _source_from_dict(value.get("source"))
     body = value.get("body")
     if isinstance(body, dict) and body.get("kind") == "body_source":
-        value["body"] = BodySource(
-            **{key: field for key, field in body.items() if key != "kind"}
-        )
+        value["body"] = BodySource(**{key: field for key, field in body.items() if key != "kind"})
     value["filters"] = [
         _FILTERS[item["kind"]](
             **{
@@ -76,6 +75,8 @@ def _reference(payload: dict[str, Any]) -> Reference:
 
 def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
     payload["plane"] = Plane(**payload.get("plane", {}))
+    if payload.get("constrained") is not None:
+        payload["constrained"] = constrained_from_payload(payload["constrained"])
     payload["position"] = tuple(payload.get("position", (0, 0, 0)))
     payload["rotation"] = tuple(payload.get("rotation", (0, 0, 0)))
     entities = []
@@ -109,6 +110,31 @@ def _sketch_payload(node: Sketch, payload: dict[str, Any]) -> dict[str, Any]:
     payload["entities"] = [
         {"type": entity.__class__.__name__, **asdict(entity)} for entity in node.entities
     ]
+    if node.constrained is not None:
+        model = node.constrained
+        payload["constrained"] = {
+            key: [asdict(item) for item in getattr(model, key)]
+            for key in (
+                "points",
+                "lines",
+                "arcs",
+                "circles",
+                "dimensions",
+                "constraints",
+                "landmarks",
+            )
+        }
+        payload["constrained"]["initial"] = model.initial
+        if model.solved is not None:
+            payload["constrained"]["solved"] = {
+                "status": model.solved.status.value,
+                "dof": model.solved.degrees_of_freedom,
+                "entities": {
+                    key: {"kind": type(item).__name__, **asdict(item)}
+                    for key, item in model.solved.entities.items()
+                },
+                "landmarks": dict(model.solved.landmarks),
+            }
     return payload
 
 
@@ -153,9 +179,9 @@ def _node_payload(node: Any) -> dict[str, Any]:
     serializer = _SERIALIZERS.get(type(node))
     if serializer is not None:
         payload = serializer(node, payload)
-    return payload if isinstance(node, BoardImport) else {
-        "type": node.__class__.__name__, **payload
-    }
+    return (
+        payload if isinstance(node, BoardImport) else {"type": node.__class__.__name__, **payload}
+    )
 
 
 def dumps(graph: Graph) -> str:
@@ -192,8 +218,7 @@ def _load_lid(payload: dict[str, Any]) -> dict[str, Any]:
 def _load_hole(payload: dict[str, Any]) -> dict[str, Any]:
     payload["position"] = tuple(payload.get("position", (0, 0)))
     payload["positions"] = tuple(
-        HolePosition(item["name"], tuple(item["point"]))
-        for item in payload.get("positions", [])
+        HolePosition(item["name"], tuple(item["point"])) for item in payload.get("positions", [])
     )
     return payload
 

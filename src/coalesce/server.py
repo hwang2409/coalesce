@@ -344,7 +344,10 @@ def _schema_error_details(
                 supportedKinds=list(SUPPORTED_REQUIREMENT_KINDS),
             )
     if error.validator == "additionalProperties":
-        details["allowedFields"] = sorted(error.schema.get("properties", {}))
+        allowed = set(error.schema.get("properties", {}))
+        if name == "sketch":
+            allowed.discard("constrained")
+        details["allowedFields"] = sorted(allowed)
     return details
 
 

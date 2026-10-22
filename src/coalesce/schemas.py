@@ -66,6 +66,14 @@ CIRCLE = {
     "additionalProperties": False,
 }
 SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE]}
+CONSTRAINED_SKETCH = {
+    "type": "object", "properties": {
+        "kind": {"const": "constrained"}, "points": {"type": "array"},
+        "lines": {"type": "array"}, "arcs": {"type": "array"}, "circles": {"type": "array"},
+        "dimensions": {"type": "array"}, "constraints": {"type": "array"},
+        "initial": {"type": "object"}, "landmarks": {"type": "array"},
+    }, "required": ["kind"], "additionalProperties": False,
+}
 DIRECTION = {
     "type": "array",
     "items": {"type": "number"},
@@ -179,8 +187,9 @@ SKETCH_CREATE_SCHEMA = {
             "additionalProperties": False,
         },
         "entities": {"type": "array", "items": SKETCH_ENTITY, "minItems": 1},
+        "constrained": CONSTRAINED_SKETCH,
     },
-    "required": ["action", *SKETCH_PROPERTIES, "plane", "entities"],
+    "required": ["action", *SKETCH_PROPERTIES, "plane"],
     "additionalProperties": False,
 }
 SKETCH_DELETE_SCHEMA = {
@@ -203,6 +212,7 @@ SKETCH_UPDATE_SCHEMA = {
             "properties": {
                 "position": POINT_3D,
                 "entities": {"type": "array", "items": SKETCH_ENTITY, "minItems": 1},
+                "constrained": CONSTRAINED_SKETCH,
             },
             "additionalProperties": False,
             "minProperties": 1,
@@ -227,6 +237,7 @@ SKETCH_SCHEMA = {
             **SKETCH_CREATE_SCHEMA["properties"]["entities"],
             "description": "Required for create; not allowed for update.",
         },
+        "constrained": CONSTRAINED_SKETCH,
         "set": {
             **SKETCH_UPDATE_SCHEMA["properties"]["set"],
             "description": "Required for update; not allowed for create or delete.",

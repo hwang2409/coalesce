@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
+from .constrained_sketch import ConstrainedSketch, result_payload
+from .constrained_sketch import from_payload as constrained_from_payload
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .errors import ERROR_REGISTRY
 from .export import (
@@ -176,9 +178,7 @@ def _quantity(value: Any, unit: str, field: str) -> float:
             actual=value["unit"],
         )
     if not isinstance(value["value"], (int, float)):
-        raise RequestError(
-            "INVALID_PARAMETER", "quantity value must be a number", field=field
-        )
+        raise RequestError("INVALID_PARAMETER", "quantity value must be a number", field=field)
     return _finite_number(value["value"], field)
 
 
@@ -271,6 +271,7 @@ class SketchPlane:
 class SketchChanges:
     position: tuple[float, float, float] | None
     entities: tuple[Rectangle | Circle, ...] | None
+    constrained: ConstrainedSketch | None = None
 
 
 @dataclass(frozen=True)
@@ -431,6 +432,7 @@ class SketchCreate(_Operation):
     sketchId: str
     plane: SketchPlane
     entities: tuple[Rectangle | Circle, ...]
+    constrained: ConstrainedSketch | None = None
 
 
 @dataclass(frozen=True)
@@ -777,6 +779,17 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | Sket
         "requestId": payload.get("requestId"),
         "sketchId": payload.get("sketchId"),
     }
+    constrained_payload = payload.get("constrained")
+    constrained = None
+    if constrained_payload is not None:
+        if (
+            not isinstance(constrained_payload, dict)
+            or constrained_payload.get("kind") != "constrained"
+        ):
+            raise RequestError(
+                "INVALID_PARAMETER", "constrained sketch form must have kind constrained"
+            )
+        constrained = constrained_from_payload(constrained_payload)
     if common["action"] is Action.CREATE:
         plane = payload.get("plane", {})
         return SketchCreate(
@@ -786,7 +799,15 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | Sket
                 plane.get("name"),
                 _quantity(plane.get("offset", {"value": 0, "unit": "mm"}), "mm", "offset"),
             ),
-            entities=_entities(payload.get("entities")),
+            entities=_entities(
+                payload.get(
+                    "entities",
+                    [{"id": "placeholder", "kind": "circle", "radius": {"value": 1, "unit": "mm"}}],
+                )
+            )
+            if constrained is None
+            else (),
+            constrained=constrained,
         )
     changes = payload.get("set")
     if not isinstance(changes, dict) or not changes:
@@ -801,6 +822,11 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | Sket
                 else None
             ),
             entities=_entities(changes["entities"]) if "entities" in changes else None,
+            constrained=(
+                constrained_from_payload(changes["constrained"])
+                if isinstance(changes.get("constrained"), dict)
+                else None
+            ),
         ),
     )
 
@@ -814,7 +840,9 @@ def _feature_common(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parse_extrude(payload: dict[str, Any], common: dict[str, Any]) -> ExtrudeCreate | ExtrudeUpdate:
+def _parse_extrude(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> ExtrudeCreate | ExtrudeUpdate:
     if common["action"] is Action.UPDATE:
         changes = payload.get("set")
         if not isinstance(changes, dict) or set(changes) != {"distance"}:
@@ -884,8 +912,7 @@ def _hole_positions(parameters: dict[str, Any]) -> tuple[HolePosition, ...]:
         HolePosition(
             item.get("name", f"h{index}"),
             tuple(
-                _finite_number(value, f"positions[{index - 1}].point")
-                for value in item["point"]
+                _finite_number(value, f"positions[{index - 1}].point") for value in item["point"]
             ),
         )
         for index, item in enumerate(raw_positions, start=1)
@@ -906,9 +933,7 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate |
             target=FeatureTarget(parameters.get("target", {}).get("featureId")),
             diameter=_positive_quantity(parameters.get("diameter"), "diameter"),
             depth=(
-                _positive_quantity(parameters["depth"], "depth")
-                if "depth" in parameters
-                else None
+                _positive_quantity(parameters["depth"], "depth") if "depth" in parameters else None
             ),
             positions=_hole_positions(parameters),
         ),
@@ -926,14 +951,10 @@ def _parse_edge_treatment(
     if common["action"] is Action.UPDATE:
         changes = payload.get("set")
         if not isinstance(changes, dict) or set(changes) != {parameter}:
-            raise RequestError(
-                "INVALID_PARAMETER", f"{kind} update requires set.{parameter}"
-            )
+            raise RequestError("INVALID_PARAMETER", f"{kind} update requires set.{parameter}")
         return update(
             **common,
-            set=EdgeTreatmentChanges(
-                size=_positive_quantity(changes[parameter], parameter)
-            ),
+            set=EdgeTreatmentChanges(size=_positive_quantity(changes[parameter], parameter)),
         )
     parameters = payload.get("parameters", {})
     return create(
@@ -963,10 +984,7 @@ def _parse_positive_changes(
             "INVALID_PARAMETER",
             f"{kind} update requires one or more numeric parameters",
         )
-    return {
-        name: _feature_quantity(value, name, feature)
-        for name, value in changes.items()
-    }
+    return {name: _feature_quantity(value, name, feature) for name, value in changes.items()}
 
 
 def _parse_pcb_base(
@@ -982,7 +1000,9 @@ def _parse_pcb_base(
     if common["action"] is Action.UPDATE:
         return PcbBaseUpdate(
             **common,
-            set=PcbBaseChanges(**_parse_positive_changes(payload, names, "pcb_base", common["featureId"])),
+            set=PcbBaseChanges(
+                **_parse_positive_changes(payload, names, "pcb_base", common["featureId"])
+            ),
         )
     parameters = payload.get("parameters", {})
     return PcbBaseCreate(
@@ -990,9 +1010,7 @@ def _parse_pcb_base(
         parameters=PcbBaseParameters(
             board=FeatureTarget(parameters.get("board", {}).get("featureId")),
             **{
-                name: _feature_quantity(
-                    parameters.get(name), name, common["featureId"]
-                )
+                name: _feature_quantity(parameters.get(name), name, common["featureId"])
                 for name in names
             },
         ),
@@ -1004,8 +1022,10 @@ def _standoff_selection(parameters: dict[str, Any], feature: str) -> StandoffSel
     mode = selection.get("mode")
     if mode == "explicit":
         hole_ids = selection.get("holeIds")
-        if not isinstance(hole_ids, list) or not hole_ids or not all(
-            isinstance(item, str) and item for item in hole_ids
+        if (
+            not isinstance(hole_ids, list)
+            or not hole_ids
+            or not all(isinstance(item, str) and item for item in hole_ids)
         ):
             raise RequestError("INVALID_PARAMETER", "explicit selection requires holeIds")
         if len(hole_ids) != len(set(hole_ids)):
@@ -1065,17 +1085,20 @@ def _parse_lid_lip(value: Any, feature: str) -> LidLip:
     )
 
 
-def _parse_pcb_lid(
-    payload: dict[str, Any], common: dict[str, Any]
-) -> PcbLidCreate | PcbLidUpdate:
+def _parse_pcb_lid(payload: dict[str, Any], common: dict[str, Any]) -> PcbLidCreate | PcbLidUpdate:
     values = payload.get("set" if common["action"] is Action.UPDATE else "parameters", {})
     if common["action"] is Action.UPDATE:
-        if not isinstance(values, dict) or not values or not set(values) <= {
-            "thickness",
-            "fitGap",
-            "lip",
-            "outlineSource",
-        }:
+        if (
+            not isinstance(values, dict)
+            or not values
+            or not set(values)
+            <= {
+                "thickness",
+                "fitGap",
+                "lip",
+                "outlineSource",
+            }
+        ):
             raise RequestError(
                 "INVALID_PARAMETER",
                 "pcb_lid update requires thickness, fitGap, lip, or outlineSource",
@@ -1094,9 +1117,7 @@ def _parse_pcb_lid(
                     else None
                 ),
                 lip=(
-                    _parse_lid_lip(values["lip"], common["featureId"])
-                    if "lip" in values
-                    else None
+                    _parse_lid_lip(values["lip"], common["featureId"]) if "lip" in values else None
                 ),
                 outlineSource=(
                     FeatureTarget(values["outlineSource"].get("featureId"))
@@ -1109,17 +1130,9 @@ def _parse_pcb_lid(
         **common,
         parameters=PcbLidParameters(
             base=FeatureTarget(values.get("base", {}).get("featureId")),
-            thickness=_feature_quantity(
-                values.get("thickness"), "thickness", common["featureId"]
-            ),
-            fitGap=_feature_quantity(
-                values.get("fitGap"), "fitGap", common["featureId"]
-            ),
-            lip=(
-                _parse_lid_lip(values["lip"], common["featureId"])
-                if "lip" in values
-                else None
-            ),
+            thickness=_feature_quantity(values.get("thickness"), "thickness", common["featureId"]),
+            fitGap=_feature_quantity(values.get("fitGap"), "fitGap", common["featureId"]),
+            lip=(_parse_lid_lip(values["lip"], common["featureId"]) if "lip" in values else None),
         ),
     )
 
@@ -1337,11 +1350,7 @@ def _graph_error_response(
     internal_code = error.error["code"]
     registered = internal_code in ERROR_REGISTRY
     code = internal_code if registered else "KERNEL_OPERATION_FAILED"
-    details = {
-        key: value
-        for key, value in error.error.items()
-        if key not in {"code", "message"}
-    }
+    details = {key: value for key, value in error.error.items() if key not in {"code", "message"}}
     if code == "JOIN_NO_CONTACT":
         details["hint"] = "move or extend the listed profiles to contact the target"
     return _safe_error(
@@ -1362,13 +1371,9 @@ def _viewer_error(error: dict[str, Any]) -> dict[str, str]:
 def _reference(payload: dict[str, Any]) -> Reference:
     source = payload.get("source")
     if isinstance(source, dict) and source.get("kind") == "sketch_segment":
-        source = SketchSegmentSource(
-            source["sketch"], source["entity"], source["segment"]
-        )
+        source = SketchSegmentSource(source["sketch"], source["entity"], source["segment"])
     elif isinstance(source, dict) and source.get("kind") == "hole_surface":
-        source = HoleSurfaceSource(
-            source["feature"], source["surface"], source["name"]
-        )
+        source = HoleSurfaceSource(source["feature"], source["surface"], source["name"])
     body = payload.get("body")
     if isinstance(body, dict) and body.get("kind") == "body_source":
         body = BodySource(body["feature"], body["entity"])
@@ -1524,9 +1529,7 @@ def _delete_target_kind(operation: DeleteOperation) -> tuple[type, str]:
     return Feature, "feature"
 
 
-def _apply_delete(
-    graph: Any, operation: DeleteOperation, committed: RegenResult
-) -> _DeleteResult:
+def _apply_delete(graph: Any, operation: DeleteOperation, committed: RegenResult) -> _DeleteResult:
     target = _delete_target(operation)
     expected, noun = _delete_target_kind(operation)
     if not isinstance(graph.nodes.get(target), expected):
@@ -1537,9 +1540,7 @@ def _apply_delete(
         item.id for item in graph.transitive_dependents(target, committed.predecessors)
     }
     dependents = [
-        {"id": item.id, "kind": _node_kind(item)}
-        for item in ordered
-        if item.id in dependent_ids
+        {"id": item.id, "kind": _node_kind(item)} for item in ordered if item.id in dependent_ids
     ]
     if dependents and not operation.cascade:
         raise RequestError(
@@ -1584,7 +1585,9 @@ def _deletion_result_fields(
     summary = f"deleted {_named(target['kind'].replace('_', ' '), target['id'])}"
     dependents = [item["id"] for item in deletion.deleted if item is not target]
     if dependents:
-        summary += f" with {'dependent' if len(dependents) == 1 else 'dependents'} {', '.join(dependents)}"
+        summary += (
+            f" with {'dependent' if len(dependents) == 1 else 'dependents'} {', '.join(dependents)}"
+        )
     fields = {
         "deleted": list(deletion.deleted),
         "summary": summary,
@@ -1592,6 +1595,25 @@ def _deletion_result_fields(
         "partsChanged": changed_parts,
     }
     return fields, {"featureId": deletion.target_id, "summary": summary}
+
+
+def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
+    messages = {
+        "redundant": ("SKETCH_REDUNDANT", "constrained sketch was rejected: redundant"),
+        "conflicting": ("SKETCH_CONFLICTING", "constrained sketch was rejected: conflicting"),
+        "did_not_converge": ("SKETCH_DID_NOT_CONVERGE", "constrained sketch did not converge"),
+        "branch_flip": ("SKETCH_BRANCH_FLIP", "constrained sketch changed branch"),
+    }
+    message = messages.get(result.status.value, ("INVALID_PARAMETER", "invalid constrained sketch input"))[1]
+    if result.status.value == "invalid_input":
+        return RequestError("INVALID_PARAMETER", message, diagnostics=result_payload(model))
+    if result.status.value == "redundant":
+        return RequestError("SKETCH_REDUNDANT", message, diagnostics=result_payload(model))
+    if result.status.value == "conflicting":
+        return RequestError("SKETCH_CONFLICTING", message, diagnostics=result_payload(model))
+    if result.status.value == "did_not_converge":
+        return RequestError("SKETCH_DID_NOT_CONVERGE", message, diagnostics=result_payload(model))
+    return RequestError("SKETCH_BRANCH_FLIP", message, diagnostics=result_payload(model))
 
 
 def _apply_sketch(
@@ -1603,6 +1625,13 @@ def _apply_sketch(
         assert committed is not None
         return _apply_delete(graph, operation, committed)
     if isinstance(operation, SketchCreate):
+        if operation.constrained is not None:
+            try:
+                result = operation.constrained.solve()
+            except ImportError as error:
+                raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
+            if result.status.value not in {"under_constrained", "fully_constrained"}:
+                raise _sketch_rejection(result, operation.constrained)
         if operation.plane.kind != "origin":
             raise RequestError("INVALID_PARAMETER", "only origin planes are supported")
         graph.add(
@@ -1610,6 +1639,7 @@ def _apply_sketch(
                 operation.sketchId,
                 plane=Plane(operation.plane.name, operation.plane.offset),
                 entities=list(operation.entities),
+                constrained=operation.constrained,
             )
         )
     else:
@@ -1620,6 +1650,14 @@ def _apply_sketch(
             node.position = operation.set.position
         if operation.set.entities is not None:
             node.entities = list(operation.set.entities)
+        if operation.set.constrained is not None:
+            try:
+                result = operation.set.constrained.solve()
+            except ImportError as error:
+                raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
+            if result.status.value not in {"under_constrained", "fully_constrained"}:
+                raise _sketch_rejection(result, operation.set.constrained)
+            node.constrained = operation.set.constrained
     return operation.sketchId
 
 
@@ -1640,7 +1678,9 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
 
     parameters = operation.parameters
     if parameters.operation not in {"new_body", "join"} or parameters.direction != "normal":
-        raise RequestError("INVALID_PARAMETER", "only normal new_body and join extrudes are supported")
+        raise RequestError(
+            "INVALID_PARAMETER", "only normal new_body and join extrudes are supported"
+        )
     target = parameters.target.featureId if parameters.target is not None else None
     if parameters.operation == "join":
         _validate_body_target(graph, target, "join")
@@ -1689,9 +1729,7 @@ def _apply_edge_treatment(
     if isinstance(operation, (FilletUpdate, ChamferUpdate)):
         node = graph.nodes.get(operation.featureId)
         if not isinstance(node, feature_type):
-            raise RequestError(
-                "UNKNOWN_ID", f"unknown {operation.kind}: {operation.featureId}"
-            )
+            raise RequestError("UNKNOWN_ID", f"unknown {operation.kind}: {operation.featureId}")
         setattr(node, parameter, operation.set.size)
         return operation.featureId
 
@@ -1799,9 +1837,7 @@ def _validate_standoff_diameters(feature: str, boss: float, pilot: float) -> Non
         )
 
 
-def _apply_standoffs(
-    graph: Any, operation: StandoffsCreate | StandoffsUpdate
-) -> str:
+def _apply_standoffs(graph: Any, operation: StandoffsCreate | StandoffsUpdate) -> str:
     if isinstance(operation, StandoffsUpdate):
         node = graph.nodes.get(operation.featureId)
         if not isinstance(node, Standoffs):
@@ -1849,9 +1885,7 @@ def _apply_standoffs(
 
 def _terminal_base_source(committed: RegenResult, base: str) -> str:
     terminals = {
-        terminal
-        for body, terminal in committed.body_terminals.items()
-        if body.feature == base
+        terminal for body, terminal in committed.body_terminals.items() if body.feature == base
     }
     if len(terminals) != 1:
         raise RequestError(
@@ -1862,9 +1896,7 @@ def _terminal_base_source(committed: RegenResult, base: str) -> str:
     return next(iter(terminals))
 
 
-def _set_lid_outline_source(
-    node: PcbLid, requested: str | None, committed: RegenResult
-) -> None:
+def _set_lid_outline_source(node: PcbLid, requested: str | None, committed: RegenResult) -> None:
     source = _terminal_base_source(committed, node.base)
     if requested is not None and requested != source:
         raise RequestError(
@@ -1967,9 +1999,7 @@ def _create_port_cutout(graph: Any, operation: PortCutoutCreate) -> str:
     return operation.featureId
 
 
-def _apply_port_cutout(
-    graph: Any, operation: PortCutoutCreate | PortCutoutUpdate
-) -> str:
+def _apply_port_cutout(graph: Any, operation: PortCutoutCreate | PortCutoutUpdate) -> str:
     if isinstance(operation, PortCutoutUpdate):
         return _update_port_cutout(graph, operation)
     return _create_port_cutout(graph, operation)
@@ -2010,9 +2040,7 @@ def _apply_feature(
 def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
     return {
         entity["id"]: (
-            ["bottom", "right", "top", "left"]
-            if entity["kind"] == "rectangle"
-            else ["circle"]
+            ["bottom", "right", "top", "left"] if entity["kind"] == "rectangle" else ["circle"]
         )
         for entity in entities
     }
@@ -2053,9 +2081,7 @@ def _resolve_export_part(
     matches = [
         part
         for part in available
-        if requested_id in {
-            feature["id"] for feature in _lineage(result, part.terminal_feature)
-        }
+        if requested_id in {feature["id"] for feature in _lineage(result, part.terminal_feature)}
     ]
     return matches[0] if len(matches) == 1 else None
 
@@ -2100,7 +2126,7 @@ _EDITED_FIELDS: dict[str, tuple[str, Callable[[Any, Any], str]]] = {
 
 
 def _named(word: str, node_id: str) -> str:
-    """"pcb lid lid" says the id twice; keep the id only when it adds a word."""
+    """ "pcb lid lid" says the id twice; keep the id only when it adds a word."""
     return word if set(node_id.split("_")) <= set(word.split()) else f"{word} {node_id}"
 
 
@@ -2181,12 +2207,14 @@ def _selection_changes(
         added = sorted(set(after[feature_id]) - set(before[feature_id]))
         removed = sorted(set(before[feature_id]) - set(after[feature_id]))
         if added or removed:
-            changes.append({
-                "featureId": feature_id,
-                "selector": "all_mounting",
-                "holesAdded": added,
-                "holesRemoved": removed,
-            })
+            changes.append(
+                {
+                    "featureId": feature_id,
+                    "selector": "all_mounting",
+                    "holesAdded": added,
+                    "holesRemoved": removed,
+                }
+            )
     return changes
 
 
@@ -2224,10 +2252,17 @@ def _change(
     """One line that tells the human what a commit did: added what, or which values changed."""
     node = result.graph.nodes[changed_id]
     old = before.nodes.get(changed_id)
-    if isinstance(node, BoardImport) and isinstance(old, BoardImport) and node.source_digest != old.source_digest:
+    if (
+        isinstance(node, BoardImport)
+        and isinstance(old, BoardImport)
+        and node.source_digest != old.source_digest
+    ):
         delta = delta or refresh_delta(before, result.graph, before_result, result, changed_id)
         return {"featureId": changed_id, "summary": format_summary(delta, changed_id)}
-    return {"featureId": changed_id, "summary": _added(node, result) if old is None else _edited(old, node)}
+    return {
+        "featureId": changed_id,
+        "summary": _added(node, result) if old is None else _edited(old, node),
+    }
 
 
 def _mutation_change(
@@ -2292,7 +2327,9 @@ class _ScenePublisher:
                     revision, result, before, changed_id, change = arguments
                     if change is None and changed_id:
                         change = _change(before, result, changed_id)
-                    self._store.publish(revision, _scene_parts(result), change, fit_summary(result, revision))
+                    self._store.publish(
+                        revision, _scene_parts(result), change, fit_summary(result, revision)
+                    )
                 else:
                     self._store.publish_failure(*arguments)
             except Exception:  # noqa: BLE001 - viewer work must not affect document calls.
@@ -2301,9 +2338,7 @@ class _ScenePublisher:
 
 def _valid_brep_result(regen: Any, requirement: dict[str, Any], revision: int) -> dict[str, Any]:
     parts = terminal_parts(regen)
-    valid = bool(parts) and all(
-        BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in parts
-    )
+    valid = bool(parts) and all(BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in parts)
     status = "PASS" if valid else "FAIL" if parts else "UNKNOWN"
     result = {
         "id": requirement.get("id"),
@@ -2350,7 +2385,9 @@ class DocumentService:
             if self._warmup_started:
                 return
             self._warmup_started = True
-            threading.Thread(target=self._finish_startup, name="coalesce-kernel", daemon=True).start()
+            threading.Thread(
+                target=self._finish_startup, name="coalesce-kernel", daemon=True
+            ).start()
 
     def _finish_startup(self) -> None:
         try:
@@ -2514,8 +2551,7 @@ class DocumentService:
             affected = [
                 part.part_id
                 for part in terminal_parts(self._regen)
-                if related
-                & {item["id"] for item in _lineage(self._regen, part.terminal_feature)}
+                if related & {item["id"] for item in _lineage(self._regen, part.terminal_feature)}
             ]
             if affected:
                 error["affectedParts"] = affected
@@ -2537,9 +2573,7 @@ class DocumentService:
         operation: str,
         payload: dict[str, Any],
         parse: Callable[[dict[str, Any]], MutationOperation],
-        apply: Callable[
-            [Any, MutationOperation, RegenResult | None], str | _DeleteResult
-        ],
+        apply: Callable[[Any, MutationOperation, RegenResult | None], str | _DeleteResult],
         response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
     ) -> dict[str, Any]:
         request_id = payload.get("requestId")
@@ -2550,11 +2584,7 @@ class DocumentService:
                 parsed = parse(payload)
                 body_hash = _hash(parsed)
                 receipt = next(
-                    (
-                        item
-                        for item in self._document.receipts
-                        if item["requestId"] == request_id
-                    ),
+                    (item for item in self._document.receipts if item["requestId"] == request_id),
                     None,
                 )
                 if receipt is not None:
@@ -2731,18 +2761,14 @@ class DocumentService:
             "toolBBox": self._bbox([tool]),
         }
 
-    def _cut_metadata(
-        self, graph: Any, result: RegenResult, node: Cut
-    ) -> dict[str, Any]:
+    def _cut_metadata(self, graph: Any, result: RegenResult, node: Cut) -> dict[str, Any]:
         from .cut import make_cut_tool
 
         sketch = graph.nodes[node.tool]
         tool = make_cut_tool(node, sketch, result.shapes[node.target]).shape
         normal = self._frame(sketch)["normal"]
         direction = (
-            normal
-            if node.depth is None
-            else [value if node.flip else -value for value in normal]
+            normal if node.depth is None else [value if node.flip else -value for value in normal]
         )
         return {
             "frame": self._frame(sketch),
@@ -2765,9 +2791,7 @@ class DocumentService:
             ],
         }
 
-    def _node_metadata(
-        self, graph: Any, result: RegenResult, node_id: str
-    ) -> dict[str, Any]:
+    def _node_metadata(self, graph: Any, result: RegenResult, node_id: str) -> dict[str, Any]:
         node = graph.nodes[node_id]
         if isinstance(node, Sketch):
             return {"frame": self._frame(node)}
@@ -2802,9 +2826,7 @@ class DocumentService:
             if changed_id not in graph.nodes:
                 return {"assetId": changed_id}
             node = next(
-                item
-                for item in json.loads(dumps(graph))["nodes"]
-                if item["id"] == changed_id
+                item for item in json.loads(dumps(graph))["nodes"] if item["id"] == changed_id
             )
             return {"assetId": changed_id, "boardImport": node}
 
@@ -2823,6 +2845,9 @@ class DocumentService:
             fields = {"sketchId": changed_id}
             if changed_id in graph.nodes:
                 fields.update(self._node_metadata(graph, result, changed_id))
+                node = graph.nodes[changed_id]
+                if isinstance(node, Sketch) and node.constrained is not None:
+                    fields["solve"] = result_payload(node.constrained)
             if entities:
                 fields["entitySegments"] = _entity_segments(entities)
             return fields
@@ -2846,17 +2871,24 @@ class DocumentService:
         if not isinstance(node, Feature):
             noun = payload.get("kind") or "feature"
             return payload, _safe_error(
-                revision, request_id, "UNKNOWN_ID",
-                f"unknown {noun}: {payload.get('featureId')}", operation="feature",
+                revision,
+                request_id,
+                "UNKNOWN_ID",
+                f"unknown {noun}: {payload.get('featureId')}",
+                operation="feature",
                 featureId=payload.get("featureId"),
             )
         expected_kind, actual_kind = _infer_update_kind(payload, node)
         if actual_kind is not None and actual_kind != expected_kind:
             return payload, _safe_error(
-                revision, request_id, "INVALID_PARAMETER",
+                revision,
+                request_id,
+                "INVALID_PARAMETER",
                 f"feature {node.id} is {expected_kind}, not {actual_kind}",
-                operation="feature", featureId=node.id,
-                expectedKind=expected_kind, actualKind=actual_kind,
+                operation="feature",
+                featureId=node.id,
+                expectedKind=expected_kind,
+                actualKind=actual_kind,
             )
         return {**payload, "kind": expected_kind}, None
 
@@ -2887,8 +2919,7 @@ class DocumentService:
             return
         raise RequestError(
             "STALE_REVISION",
-            f"expected revision {expected_revision}; current revision is "
-            f"{self._document.revision}",
+            f"expected revision {expected_revision}; current revision is {self._document.revision}",
             expected=expected_revision,
             actual=self._document.revision,
             hint="query the current revision and review the changed model before exporting",
@@ -2898,9 +2929,7 @@ class DocumentService:
         available = [
             part
             for part in terminal_parts(self._regen)
-            if not isinstance(
-                self._document.graph.nodes.get(part.source_body.feature), BoardImport
-            )
+            if not isinstance(self._document.graph.nodes.get(part.source_body.feature), BoardImport)
         ]
         if requested is None:
             selected = available
@@ -2968,11 +2997,7 @@ class DocumentService:
                 "action": "evaluate",
                 "revision": self._document.revision,
                 **({"base": payload["base"]} if "base" in payload else {}),
-                **(
-                    {"requirements": payload["requirements"]}
-                    if "requirements" in payload
-                    else {}
-                ),
+                **({"requirements": payload["requirements"]} if "requirements" in payload else {}),
             }
         )
         if not checked.get("ok"):
@@ -3117,9 +3142,7 @@ class DocumentService:
                 operation="query",
             )
 
-    def _query_enclosure(
-        self, select: dict[str, Any], base: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _query_enclosure(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
         base_id = select.get("base")
         if not isinstance(self._document.graph.nodes.get(base_id), PcbBase):
             return _safe_error(
@@ -3146,9 +3169,7 @@ class DocumentService:
                 operation="query.enclosure",
             )
 
-    def _query_feature(
-        self, select: dict[str, Any], base: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _query_feature(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
         if "id" not in select:
             return _safe_error(
                 self._document.revision,
@@ -3174,9 +3195,7 @@ class DocumentService:
             **self._node_metadata(self._document.graph, self._regen, feature_id),
         }
 
-    def _query_edge_roles(
-        self, select: dict[str, Any], base: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _query_edge_roles(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
         feature = select.get("id")
         if feature not in self._document.graph.nodes:
             return _safe_error(
@@ -3186,11 +3205,13 @@ class DocumentService:
                 f"unknown feature: {feature}",
                 operation="query.edge_roles",
             )
-        return {**base, "featureId": feature, "roles": edge_role_catalog(self._regen.provenance, feature)}
+        return {
+            **base,
+            "featureId": feature,
+            "roles": edge_role_catalog(self._regen.provenance, feature),
+        }
 
-    def _query_reference(
-        self, select: dict[str, Any], base: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _query_reference(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
         try:
             reference = _reference(select.get("reference", {}))
             resolution = self._regen.resolve(reference)
@@ -3214,7 +3235,8 @@ class DocumentService:
                 "error": resolution.error,
             }
             result["resolution"] = {
-                key: result[key] for key in ("status", "keys", "fingerprints", "candidates", "error")
+                key: result[key]
+                for key in ("status", "keys", "fingerprints", "candidates", "error")
             }
             return result
         except (KeyError, TypeError, ValueError, RequestError):
@@ -3306,12 +3328,11 @@ class DocumentService:
                     "requirements must contain at least one item",
                     operation="check",
                 )
-            requirements = payload.get(
-                "requirements", [{"id": "valid", "kind": "valid_brep"}]
-            )
+            requirements = payload.get("requirements", [{"id": "valid", "kind": "valid_brep"}])
             supported_requirement_kinds = set(SUPPORTED_REQUIREMENT_KINDS)
             unknown_kinds = [
-                item.get("kind") for item in requirements
+                item.get("kind")
+                for item in requirements
                 if item.get("kind") not in supported_requirement_kinds
             ]
             if unknown_kinds:
