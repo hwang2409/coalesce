@@ -3,6 +3,7 @@ from dataclasses import asdict
 from typing import Any
 
 from .constrained_sketch import from_payload as constrained_from_payload
+from .constrained_sketch import result_payload as constrained_result_payload
 from .graph import (
     BoardImport,
     Chamfer,
@@ -129,15 +130,7 @@ def _sketch_payload(node: Sketch, payload: dict[str, Any]) -> dict[str, Any]:
         }
         payload["constrained"]["initial"] = model.initial
         if model.solved is not None:
-            payload["constrained"]["solved"] = {
-                "status": model.solved.status.value,
-                "dof": model.solved.degrees_of_freedom,
-                "entities": {
-                    key: {"kind": type(item).__name__, **asdict(item)}
-                    for key, item in model.solved.entities.items()
-                },
-                "landmarks": dict(model.solved.landmarks),
-            }
+            payload["constrained"]["solved"] = constrained_result_payload(model)
     return payload
 
 

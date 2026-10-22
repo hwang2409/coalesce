@@ -190,6 +190,12 @@ async def test_fully_constrained_create_reload_and_query_matches_dimensions(tmp_
     assert reloaded["revision"] == 1
     assert solved["status"] == "fully_constrained"
     assert solved["dof"] == 0
+    assert solved["diagnostics"] == {
+        "iterationsOrDetail": {},
+        "redundantConstraints": [],
+        "conflictingConstraints": [],
+        "errors": [],
+    }
     assert abs((solved["entities"]["p1"]["x"] - solved["entities"]["p0"]["x"]) - 30.0) <= 1e-9
     assert abs((solved["entities"]["p3"]["y"] - solved["entities"]["p2"]["y"]) - 20.0) <= 1e-9
 
