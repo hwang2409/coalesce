@@ -212,6 +212,7 @@ PASS_THROUGH_CODES = {
     ("src/coalesce/service.py", "dict", "code"),
     ("src/coalesce/service.py", "error_response", "code"),
     ("src/coalesce/service.py", "error_response", "error.code"),
+    ("src/coalesce/service.py", "GraphError", "error.code"),
 }
 
 
