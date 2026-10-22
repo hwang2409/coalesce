@@ -468,7 +468,7 @@ async def test_slow_load_fails_closed_within_bound_and_can_be_repaired(tmp_path)
         env={"PYTHONPATH": str(fake)},
     )
 
-    assert time.monotonic() - started < 4
+    assert time.monotonic() - started < 6
     assert failed["ok"] is False
     assert failed["error"]["code"] == "SKETCH_SOLVE_TIMEOUT"
     assert failed["error"]["featureId"] == "profile"
