@@ -113,16 +113,19 @@ def _sketch_payload(node: Sketch, payload: dict[str, Any]) -> dict[str, Any]:
     if node.constrained is not None:
         model = node.constrained
         payload["constrained"] = {
-            key: [asdict(item) for item in getattr(model, key)]
-            for key in (
-                "points",
-                "lines",
-                "arcs",
-                "circles",
-                "dimensions",
-                "constraints",
-                "landmarks",
-            )
+            "kind": "constrained",
+            **{
+                key: [asdict(item) for item in getattr(model, key)]
+                for key in (
+                    "points",
+                    "lines",
+                    "arcs",
+                    "circles",
+                    "dimensions",
+                    "constraints",
+                    "landmarks",
+                )
+            },
         }
         payload["constrained"]["initial"] = model.initial
         if model.solved is not None:

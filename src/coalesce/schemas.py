@@ -190,6 +190,7 @@ SKETCH_CREATE_SCHEMA = {
         "constrained": CONSTRAINED_SKETCH,
     },
     "required": ["action", *SKETCH_PROPERTIES, "plane"],
+    "oneOf": [{"required": ["entities"]}, {"required": ["constrained"]}],
     "additionalProperties": False,
 }
 SKETCH_DELETE_SCHEMA = {
@@ -216,6 +217,7 @@ SKETCH_UPDATE_SCHEMA = {
             },
             "additionalProperties": False,
             "minProperties": 1,
+            "not": {"required": ["entities", "constrained"]},
         },
     },
     "required": ["action", *SKETCH_PROPERTIES, "set"],

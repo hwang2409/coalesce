@@ -145,6 +145,7 @@ _KERNEL_LOADER = _KernelLoader()
 
 
 def regenerate(graph: Any) -> RegenResult:
+    _solve_constrained_sketches(graph)
     return regen_module.accept_regeneration(graph)
 
 
@@ -1616,6 +1617,25 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
     return RequestError("SKETCH_BRANCH_FLIP", message, diagnostics=result_payload(model))
 
 
+def _accept_constrained_sketch(model: ConstrainedSketch) -> None:
+    try:
+        result = model.solve()
+    except ImportError as error:
+        raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
+    if result.status.value not in {"under_constrained", "fully_constrained"}:
+        raise _sketch_rejection(result, model)
+
+
+def _solve_constrained_sketches(graph: Any) -> None:
+    for node in graph.nodes.values():
+        if not isinstance(node, Sketch) or node.constrained is None:
+            continue
+        try:
+            _accept_constrained_sketch(node.constrained)
+        except RequestError as error:
+            raise GraphError(error.code, str(error), featureId=node.id) from error
+
+
 def _apply_sketch(
     graph: Any,
     operation: SketchCreate | SketchUpdate | SketchDelete,
@@ -1626,12 +1646,7 @@ def _apply_sketch(
         return _apply_delete(graph, operation, committed)
     if isinstance(operation, SketchCreate):
         if operation.constrained is not None:
-            try:
-                result = operation.constrained.solve()
-            except ImportError as error:
-                raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
-            if result.status.value not in {"under_constrained", "fully_constrained"}:
-                raise _sketch_rejection(result, operation.constrained)
+            _accept_constrained_sketch(operation.constrained)
         if operation.plane.kind != "origin":
             raise RequestError("INVALID_PARAMETER", "only origin planes are supported")
         graph.add(
@@ -1651,12 +1666,7 @@ def _apply_sketch(
         if operation.set.entities is not None:
             node.entities = list(operation.set.entities)
         if operation.set.constrained is not None:
-            try:
-                result = operation.set.constrained.solve()
-            except ImportError as error:
-                raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
-            if result.status.value not in {"under_constrained", "fully_constrained"}:
-                raise _sketch_rejection(result, operation.set.constrained)
+            _accept_constrained_sketch(operation.set.constrained)
             node.constrained = operation.set.constrained
     return operation.sketchId
 
@@ -3102,7 +3112,13 @@ class DocumentService:
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("select", {}).get("kind")
-        if kind in {"measurements", "feature", "reference", "edge_roles", "enclosure"} and (
+        constrained_query = kind in {"document", "graph", "timeline"} and any(
+            isinstance(node, Sketch) and node.constrained is not None
+            for node in self._document.graph.nodes.values()
+        )
+        if (constrained_query or kind in {
+            "measurements", "feature", "reference", "edge_roles", "enclosure"
+        }) and (
             failure := self._geometry_failure("query")
         ):
             return failure

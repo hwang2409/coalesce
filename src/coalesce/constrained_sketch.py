@@ -54,29 +54,32 @@ class ConstrainedSketch:
         return result
 
 
-def from_payload(value: dict[str, Any]) -> ConstrainedSketch:
-    def items(name: str, cls: Any) -> tuple[Any, ...]:
-        parsed = []
-        for item in value.get(name, []):
-            item = dict(item)
-            if cls is Dimension:
-                from .sketch_solver import DimensionKind
-                item["kind"] = DimensionKind(item["kind"])
-            elif cls is Constraint:
-                from .sketch_solver import ConstraintKind
-                item["kind"] = ConstraintKind(item["kind"])
-            parsed.append(cls(**item))
-        return tuple(parsed)
+def _items(value: dict[str, Any], name: str, cls: Any) -> tuple[Any, ...]:
+    parsed = []
+    for raw in value.get(name, []):
+        item = dict(raw)
+        if cls is Dimension:
+            from .sketch_solver import DimensionKind
 
+            item["kind"] = DimensionKind(item["kind"])
+        elif cls is Constraint:
+            from .sketch_solver import ConstraintKind
+
+            item["kind"] = ConstraintKind(item["kind"])
+        parsed.append(cls(**item))
+    return tuple(parsed)
+
+
+def from_payload(value: dict[str, Any]) -> ConstrainedSketch:
     model = ConstrainedSketch(
-        points=items("points", Point),
-        lines=items("lines", Line),
-        arcs=items("arcs", Arc),
-        circles=items("circles", Circle),
-        dimensions=items("dimensions", Dimension),
-        constraints=items("constraints", Constraint),
+        points=_items(value, "points", Point),
+        lines=_items(value, "lines", Line),
+        arcs=_items(value, "arcs", Arc),
+        circles=_items(value, "circles", Circle),
+        dimensions=_items(value, "dimensions", Dimension),
+        constraints=_items(value, "constraints", Constraint),
         initial={key: tuple(raw) for key, raw in value.get("initial", {}).items()},
-        landmarks=items("landmarks", BranchLandmark),
+        landmarks=_items(value, "landmarks", BranchLandmark),
     )
     saved = value.get("solved")
     if isinstance(saved, dict):
