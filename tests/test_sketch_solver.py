@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import ast
 import builtins
+import io
 import math
-import multiprocessing
 import os
 import random
 import re
@@ -108,19 +108,29 @@ def test_missing_solver_extra_has_actionable_install_error(monkeypatch: pytest.M
         assert "brew install eigen boost" in str(error.value)
 
 
-def _exit_without_result(_request, _connection):
-    os._exit(23)
+class _ExitedChild:
+    stdin = io.BytesIO()
+    stdout = io.BytesIO()
+
+    def poll(self):
+        return 23
+
+    def terminate(self):
+        raise AssertionError("an exited child must not be terminated")
+
+    def wait(self):
+        return 23
 
 
 def test_child_exit_without_message_is_structured_and_reaped(monkeypatch):
-    before = {child.pid for child in multiprocessing.active_children()}
-    monkeypatch.setattr(sketch_solver_module, "_solve_in_child", _exit_without_result)
+    child = _ExitedChild()
+    monkeypatch.setattr(sketch_solver_module, "_start_solver_child", lambda: child)
 
     result = solve_sketch(SolveRequest())
 
     assert result.status is SolveStatus.DID_NOT_CONVERGE
     assert [error.code for error in result.errors] == ["SOLVER_FAILED"]
-    assert {child.pid for child in multiprocessing.active_children()} == before
+    assert child.stdin.closed
 
 
 def test_rectangle_coordinates_dof_and_repeated_solves_are_deterministic():

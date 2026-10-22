@@ -85,12 +85,18 @@ async def test_slow_tool_call_does_not_block_other_mcp_requests(tmp_path, monkey
             )
         )
 
-    before = time.monotonic()
-    async with anyio.create_task_group() as tasks:
-        tasks.start_soon(call_slow_tool)
-        assert await anyio.to_thread.run_sync(started.wait, 1.0)
-        await list_handler(types.ListToolsRequest())
-        assert time.monotonic() - before < 0.3
+    slow_completed = anyio.Event()
+
+    async def call_slow_tool_and_record_completion():
+        await call_slow_tool()
+        slow_completed.set()
+
+    with anyio.fail_after(3):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(call_slow_tool_and_record_completion)
+            assert await anyio.to_thread.run_sync(started.wait, 1.0)
+            await list_handler(types.ListToolsRequest())
+            assert not slow_completed.is_set()
 
 
 async def call_server_tool(service, name, arguments):

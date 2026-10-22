@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-import multiprocessing
+import pickle
+import queue
+import struct
+import subprocess
+import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -312,28 +317,57 @@ class SolveResult:
 SOLVE_TIMEOUT_SECONDS = 1.0
 
 
-def _solve_in_child(request: SolveRequest, connection: Any) -> None:
+def _write_message(stream: Any, value: Any) -> None:
+    payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    stream.write(struct.pack("!Q", len(payload)))
+    stream.write(payload)
+    stream.flush()
+
+
+def _read_message(stream: Any) -> Any:
+    header = stream.read(8)
+    if len(header) != 8:
+        raise EOFError
+    remaining = struct.unpack("!Q", header)[0]
+    chunks = bytearray()
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            raise EOFError
+        chunks.extend(chunk)
+        remaining -= len(chunk)
+    return pickle.loads(chunks)
+
+
+def _start_solver_child() -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-m", "coalesce._solver_child"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+
+
+def _receive_child_message(process: subprocess.Popen, messages: queue.Queue) -> None:
+    assert process.stdout is not None
     try:
-        connection.send(("result", _solve_sketch_native(request)))
-    except ImportError as error:
-        connection.send(("import_error", str(error)))
-    except BaseException as error:  # noqa: BLE001 - report a native child failure to its parent
-        connection.send(("solver_error", repr(error)))
-    finally:
-        connection.close()
+        messages.put(_read_message(process.stdout))
+    except (EOFError, OSError, pickle.UnpicklingError) as error:
+        messages.put(error)
 
 
 def solve_sketch(request: SolveRequest) -> SolveResult:
-    """Solve in a killable process so native code cannot block the document."""
-    context = multiprocessing.get_context("spawn")
-    parent, child = context.Pipe(duplex=False)
-    process = context.Process(target=_solve_in_child, args=(request, child), daemon=True)
-    started = False
+    """Solve in a child whose stdin closes automatically when this process dies."""
+    process = _start_solver_child()
+    messages: queue.Queue[Any] = queue.Queue(maxsize=1)
     try:
-        process.start()
-        started = True
-        child.close()
-        if not parent.poll(SOLVE_TIMEOUT_SECONDS):
+        assert process.stdin is not None
+        _write_message(process.stdin, request)
+        threading.Thread(
+            target=_receive_child_message, args=(process, messages), daemon=True
+        ).start()
+        try:
+            message = messages.get(timeout=SOLVE_TIMEOUT_SECONDS)
+        except queue.Empty:
             return _error_result(
                 SolveStatus.DID_NOT_CONVERGE,
                 SketchSolveError(
@@ -342,13 +376,12 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
                     recoverable=True,
                 ),
             )
-        try:
-            kind, value = parent.recv()
-        except EOFError:
+        if isinstance(message, BaseException):
             return _error_result(
                 SolveStatus.DID_NOT_CONVERGE,
                 SketchSolveError("SOLVER_FAILED", "the sketch solver process exited unexpectedly"),
             )
+        kind, value = message
         if kind == "result":
             return value
         if kind == "import_error":
@@ -360,14 +393,12 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
             ),
         )
     finally:
-        with suppress(OSError):
-            parent.close()
-        with suppress(OSError):
-            child.close()
-        if started:
-            if process.is_alive():
-                process.terminate()
-            process.join()
+        if process.stdin is not None:
+            with suppress(OSError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
 
 
 def _success_status(redundant: tuple[str, ...], dof: int) -> SolveStatus:

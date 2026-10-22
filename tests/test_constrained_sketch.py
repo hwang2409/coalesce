@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -170,14 +172,22 @@ def primitive_update(*, revision: int, request_id: str) -> dict:
     }
 
 
-def fake_planegcs(path: Path, *, status: str, delay: float = 0) -> Path:
+def fake_planegcs(
+    path: Path, *, status: str, delay: float = 0, pid_file: Path | None = None
+) -> Path:
     path.mkdir()
     module = path / "planegcs.py"
     module.write_text(
         f"""
+import os
 import time
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
+
+pid_file = {str(pid_file) if pid_file else ''!r}
+if pid_file:
+    Path(pid_file).write_text(str(os.getpid()))
 
 class SolveStatus(Enum):
     Success = 1
@@ -200,6 +210,66 @@ class Sketch:
 """
     )
     return path
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_until(predicate, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGKILL])
+def test_solver_child_dies_when_stdio_server_is_killed(tmp_path, stop_signal):
+    path = tmp_path / "server-death.coalesce.json"
+    service = DocumentService(path, warmup=False)
+    service._document.graph.add(
+        Sketch("slow", constrained=constrained_from_payload(rectangle_model()))
+    )
+    service.store.save(service._document)
+    pid_file = tmp_path / "solver.pid"
+    fake = fake_planegcs(
+        tmp_path / "fake-slow-server", status="Success", delay=30, pid_file=pid_file
+    )
+    server = subprocess.Popen(
+        [shutil.which("coalesce") or "coalesce", "--document", str(path), "--no-viewer"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "PYTHONPATH": str(fake), "PYTHONUNBUFFERED": "1"},
+    )
+    child_pid = None
+    try:
+        assert server.stdin is not None
+        server.stdin.write(
+            b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+            b'{"protocolVersion":"2025-06-18","capabilities":{},'
+            b'"clientInfo":{"name":"lifetime-test","version":"1"}}}\n'
+            b'{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+            b'{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+        )
+        server.stdin.flush()
+        assert _wait_until(pid_file.exists), "solver child did not start"
+        child_pid = int(pid_file.read_text())
+        os.kill(server.pid, stop_signal)
+        server.wait(timeout=3)
+        assert _wait_until(lambda: not _pid_exists(child_pid)), "solver child survived server death"
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait(timeout=3)
+        if child_pid is not None and _pid_exists(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
 
 
 def result_json(result) -> dict:
