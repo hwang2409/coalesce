@@ -604,7 +604,7 @@ async def test_stale_lid_outline_is_in_scene_and_clears_in_browser(tmp_path, bro
             "id": "lid_outline:lid",
             "label": "Lid outline",
             "status": "FAIL",
-            "value": "outline source is stale: base_round != port",
+            "value": "the lid follows base_round, but port was added to the base after it",
             "reason": "update the lid's outlineSource to port",
             "evidence": {
                 "source": "base_round",
@@ -650,7 +650,7 @@ async def test_stale_lid_outline_is_in_scene_and_clears_in_browser(tmp_path, bro
         assert stale[size] == {
             "status": "FAIL",
             "label": "Lid outline",
-            "value": "outline source is stale: base_round != port",
+            "value": "the lid follows base_round, but port was added to the base after it",
             "reason": "update the lid's outlineSource to port",
             "focused": True,
             "readable": True,
@@ -721,7 +721,7 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         assert fit["count"] == "1 fail, 1 unknown, 2 pass, 3 measured only"
         # readable lines with units; ids and the payload only behind the closed raw disclosure
         assert evidence["lines"] == [
-            "Lid outline on lid: outline source is stale: port != base_fillet, fail",
+            "Lid outline on lid: the lid follows port, but base_fillet was added to the base after it, fail",
             "Port J1 clears connector on base: J1: 5 × 3 mm on left wall, 0.5 mm clearance, unknown",
             "Wall thickness on base: 2 mm, measured only",
             "Floor thickness on base: 2 mm, measured only",

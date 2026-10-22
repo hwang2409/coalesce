@@ -75,7 +75,7 @@ def test_fit_rows_for_a_measured_enclosure(tmp_path):
         "standoffs": ("PASS", "3 of 3 mounting holes", None),
         "lid_outline:lid": (
             "FAIL",
-            "outline source is stale: mounts != port",
+            "the lid follows mounts, but port was added to the base after it",
             "update the lid's outlineSource to port",
         ),
         "lid_interference:lid": ("PASS", "none", None),

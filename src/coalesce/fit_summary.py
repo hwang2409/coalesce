@@ -123,14 +123,20 @@ def _lid_outline_row(
     if result["status"] != "FAIL":
         return None
     measured = lid["outline"]
+    source, legal_source = measured.get("source"), measured["legalSource"]
+    value = (
+        f"the lid follows {source}, but {legal_source} was added to the base after it"
+        if source is not None and source != legal_source
+        else result["reason"]
+    )
     return _row(
         f"lid_outline:{lid['featureId']}",
         "Lid outline",
         "FAIL",
-        result["reason"],
+        value,
         lid["partId"],
         measured,
-        f"update the lid's outlineSource to {measured['legalSource']}",
+        f"update the lid's outlineSource to {legal_source}",
     )
 
 

@@ -215,6 +215,44 @@ def _refresh_board(service: DocumentService, source, revision: int, request_id: 
     })
 
 
+def _notched_outline(left: int, right: int) -> str:
+    return (
+        "(gr_poly (pts (xy 0 0) (xy 20 0) (xy 20 10) "
+        f"(xy {right} 10) (xy {right} 8) (xy {left} 8) (xy {left} 10) (xy 0 10)) "
+        '(stroke (width 0.05) (type default)) (fill none) (layer "Edge.Cuts") '
+        '(uuid "outline"))'
+    )
+
+
+def test_equal_bounds_moved_notch_reports_lid_and_chamfer(tmp_path):
+    source = tmp_path / "notched.kicad_pcb"
+    original = _notched_outline(6, 14)
+    source.write_text(
+        (FIXTURES / "features.kicad_pcb").read_text().replace(
+            '(gr_rect (start 0 0) (end 20 10) (layer "Edge.Cuts") (uuid "rect"))',
+            original,
+        )
+    )
+    service = DocumentService(tmp_path / "notched.coalesce.json")
+    assert service.import_board(import_request(source))["ok"]
+    assert service.feature(base_request())["ok"]
+    assert service.feature(lid_request(revision=2, include_lip=False))["ok"]
+    assert service.feature(_lid_chamfer_request(revision=3, count=8))["ok"]
+    source.write_text(source.read_text().replace(original, _notched_outline(7, 15)))
+
+    refreshed = _refresh_board(service, source, 4, "move-notch")
+
+    assert refreshed["boardChanges"]["outlineBounds"] == {
+        "before": {"width": 20.0, "height": 10.0},
+        "after": {"width": 20.0, "height": 10.0},
+    }
+    assert refreshed["boardChanges"]["dependentFeatures"] == [
+        "pcb base",
+        "pcb lid",
+        "chamfer",
+    ]
+
+
 def test_refresh_reports_lid_and_chamfer_only_when_lid_outline_changes(tmp_path):
     service, source, revision = _refresh_with_lid_chamfer(tmp_path, "j1")
     source.write_text(source.read_text().replace("(at 1 5)", "(at 1 6)"))
