@@ -480,6 +480,10 @@ def _requirement_gate(check, context):
     return _result(check, "pass" if passed else "fail", actual=results)
 
 
+# task targets name a semantic part; each maps to exactly one serialized graph type
+TARGET_GRAPH_TYPES = {"pcb_base": "PcbBase", "pcb_lid": "PcbLid"}
+
+
 def _edge_treatment(check, context):
     graph = context.service.query({"select": {"kind": "graph"}})
     if graph.get("ok") is not True:
@@ -488,6 +492,26 @@ def _edge_treatment(check, context):
     expected = check.get("treatments", [check])
     if any(not item.get("edgeRole") for item in expected):
         return _result(check, "fail", reason="expected edge role is missing")
+
+    nodes = graph.get("graph", {}).get("nodes", [])
+
+    targets = {}
+    for item in expected:
+        target = item["target"]
+        graph_type = TARGET_GRAPH_TYPES.get(target)
+        if graph_type is None:
+            return _result(check, "fail", reason=f"unknown semantic target {target!r}", target=target)
+        matches = [node.get("id") for node in nodes if node.get("type") == graph_type]
+        if len(matches) != 1:
+            count = "no" if not matches else str(len(matches))
+            return _result(
+                check,
+                "fail",
+                reason=f"semantic target {target!r} resolved to {count} features; expected exactly one",
+                target=target,
+                matches=matches,
+            )
+        targets[target] = matches[0]
 
     def normalize(node):
         kind = node.get("type", "").lower()
@@ -498,10 +522,10 @@ def _edge_treatment(check, context):
         }))
         return kind, node.get("target"), amount, roles
 
-    actual = [normalize(node) for node in graph.get("graph", {}).get("nodes", [])
+    actual = [normalize(node) for node in nodes
               if node.get("type", "").lower() in {"fillet", "chamfer"}]
     wanted = [
-        (item["feature"], item["target"], item["amount"], (item["edgeRole"],))
+        (item["feature"], targets[item["target"]], item["amount"], (item["edgeRole"],))
         for item in expected
     ]
     exact = len(actual) == len(wanted) and all(

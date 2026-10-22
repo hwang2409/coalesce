@@ -804,17 +804,63 @@ def test_edge_treatment_check_fails_closed(tmp_path, monkeypatch, node, expected
         def _ensure_geometry(self):
             pass
         def query(self, query):
-            return {"ok": True, "graph": {"nodes": [node]}}
+            return {"ok": True, "graph": {"nodes": [
+                {"type": "PcbBase", "id": "base"},
+                node,
+            ]}}
 
     monkeypatch.setattr(coalesce.service, "DocumentService", Service)
     steps = tmp_path / "steps"
     steps.mkdir()
     export_step(Box(10, 10, 2), steps / "part.step")
     result = check_task(
-        {"checks": [{"kind": "edge_treatment", "feature": "fillet", "target": "base", "amount": expected, "edgeRole": "between(outer_wall,rim)"}]},
+        {"checks": [{"kind": "edge_treatment", "feature": "fillet", "target": "pcb_base", "amount": expected, "edgeRole": "between(outer_wall,rim)"}]},
         _document(tmp_path / "model.coalesce.json"), steps,
     )[0]
     assert result["status"] == status
+
+
+def _semantic_edge_result(tmp_path, monkeypatch, nodes, check):
+    from build123d import Box, export_step
+
+    import coalesce.service
+    class Service:
+        revision = 1
+        def __init__(self, *_args, **_kwargs): pass
+        def _ensure_geometry(self): pass
+        def query(self, query): return {"ok": True, "graph": {"nodes": nodes}}
+    monkeypatch.setattr(coalesce.service, "DocumentService", Service)
+    steps = tmp_path / "steps"; steps.mkdir()
+    export_step(Box(10, 10, 2), steps / "part.step")
+    return check_task({"checks": [check]}, _document(tmp_path / "model.coalesce.json"), steps)[0]
+
+
+def test_edge_treatment_resolves_semantic_target_ids(tmp_path, monkeypatch):
+    result = _semantic_edge_result(tmp_path, monkeypatch, [
+        {"type": "PcbBase", "id": "base1"}, {"type": "PcbLid", "id": "pcb_lid"},
+        {"type": "Fillet", "target": "base1", "radius": 3, "edges": [{"role": "outer_vertical"}]},
+        {"type": "Chamfer", "target": "pcb_lid", "distance": 1, "edges": [{"role": "between(edge,top)"}]},
+    ], {"kind": "edge_treatment", "treatments": [
+        {"feature": "fillet", "target": "pcb_base", "amount": 3, "edgeRole": "outer_vertical"},
+        {"feature": "chamfer", "target": "pcb_lid", "amount": 1, "edgeRole": "between(edge,top)"},
+    ]})
+    assert result["status"] == "pass"
+
+
+def test_edge_treatment_duplicate_semantic_target_fails_closed(tmp_path, monkeypatch):
+    result = _semantic_edge_result(tmp_path, monkeypatch, [
+        {"type": "PcbBase", "id": "base1"}, {"type": "PcbBase", "id": "base2"},
+    ], {"kind": "edge_treatment", "feature": "fillet", "target": "pcb_base", "amount": 3, "edgeRole": "outer_vertical"})
+    assert result["status"] == "fail"
+    assert "expected exactly one" in result["reason"]
+
+
+def test_edge_treatment_wrong_semantic_part_fails(tmp_path, monkeypatch):
+    result = _semantic_edge_result(tmp_path, monkeypatch, [
+        {"type": "PcbBase", "id": "base1"}, {"type": "PcbLid", "id": "lid1"},
+        {"type": "Fillet", "target": "lid1", "radius": 3, "edges": [{"role": "outer_vertical"}]},
+    ], {"kind": "edge_treatment", "feature": "fillet", "target": "pcb_base", "amount": 3, "edgeRole": "outer_vertical"})
+    assert result["status"] == "fail"
 
 
 @pytest.mark.parametrize("statuses, expected", [(["PASS"], "pass"), (["FAIL"], "fail"), (["UNKNOWN"], "fail")])
@@ -1009,8 +1055,8 @@ def _treatment(kind, target, amount, role):
 
 
 EXPECTED_TREATMENTS = [
-    {"feature": "fillet", "target": "base", "amount": 3, "edgeRole": "outer-vertical"},
-    {"feature": "chamfer", "target": "lid", "amount": 1, "edgeRole": "between(edge,top)"},
+    {"feature": "fillet", "target": "pcb_base", "amount": 3, "edgeRole": "outer-vertical"},
+    {"feature": "chamfer", "target": "pcb_lid", "amount": 1, "edgeRole": "between(edge,top)"},
 ]
 
 
@@ -1037,7 +1083,9 @@ def test_edge_treatment_set_is_exact(tmp_path, monkeypatch, nodes, status):
 
         def query(self, request):
             assert request == {"select": {"kind": "graph"}}
-            return {"ok": True, "graph": {"nodes": nodes}}
+            return {"ok": True, "graph": {"nodes": [
+                {"type": "PcbBase", "id": "base"}, {"type": "PcbLid", "id": "lid"}, *nodes,
+            ]}}
 
     monkeypatch.setattr(coalesce.service, "DocumentService", FakeService)
     steps = tmp_path / "steps"
@@ -1076,3 +1124,23 @@ def test_edge_treatment_without_expected_role_fails_closed(tmp_path, monkeypatch
         _document(tmp_path / "model.coalesce.json"), steps,
     )[0]
     assert result["status"] == "fail"
+
+
+def test_edge_treatment_missing_semantic_target_fails_closed(tmp_path, monkeypatch):
+    result = _semantic_edge_result(tmp_path, monkeypatch, [{"type": "PcbLid", "id": "lid"}], {
+        "kind": "edge_treatment", "feature": "fillet", "target": "pcb_base", "amount": 3,
+        "edgeRole": "outer_vertical",
+    })
+    assert result["status"] == "fail"
+    assert result["matches"] == []
+    assert "resolved to no features" in result["reason"]
+
+
+def test_edge_treatment_target_matches_graph_type_exactly(tmp_path, monkeypatch):
+    # a near-miss type spelling is not the base part
+    result = _semantic_edge_result(tmp_path, monkeypatch, [{"type": "pcb_base", "id": "base"}], {
+        "kind": "edge_treatment", "feature": "fillet", "target": "pcb_base", "amount": 3,
+        "edgeRole": "outer_vertical",
+    })
+    assert result["status"] == "fail"
+    assert result["matches"] == []
