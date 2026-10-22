@@ -6,7 +6,6 @@ import math
 import re
 from typing import Any
 
-from .enclosure import selected_holes
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
 
 LENGTH_TOLERANCE_MM = 1e-6
@@ -107,6 +106,8 @@ def _node_board(graph: Any, node: Any) -> BoardImport | None:
 
 
 def _selected_hole_ids(graph: Any, node: Standoffs) -> set[str]:
+    from .enclosure import selected_holes
+
     board = _node_board(graph, node)
     return {hole["id"] for hole in selected_holes(node, board)} if board else set()
 
