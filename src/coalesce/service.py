@@ -2146,15 +2146,16 @@ def _board_changes(before: Any, after: Any) -> dict[str, Any]:
     old_holes = [hole for hole in old.get("holes", []) if hole.get("mounting")]
     new_holes = [hole for hole in new.get("holes", []) if hole.get("mounting")]
     mounting_ids = {item["id"] for item in old_holes + new_holes}
+    mounting_references = {item.get("reference") for item in old_holes + new_holes}
     old_footprints = {
         item["id"]: item
         for item in old.get("footprints", [])
-        if item["id"] not in mounting_ids
+        if item["id"] not in mounting_ids and item.get("reference") not in mounting_references
     }
     new_footprints = {
         item["id"]: item
         for item in new.get("footprints", [])
-        if item["id"] not in mounting_ids
+        if item["id"] not in mounting_ids and item.get("reference") not in mounting_references
     }
     return {
         "mountingHoles": _delta_items(old_holes, new_holes, reference="reference"),
