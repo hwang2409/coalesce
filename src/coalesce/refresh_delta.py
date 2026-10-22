@@ -8,7 +8,6 @@ from typing import Any
 
 from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
 from .importers.kicad import outline_bounds
-from .lid_outline import capture_lid_outline
 
 LENGTH_TOLERANCE_MM = 1e-6
 
@@ -173,6 +172,8 @@ def _outline_dimensions(board: Any) -> dict[str, float] | None:
 
 
 def _lid_outline_changed(before_result: Any, after_result: Any, node: PcbLid) -> bool:
+    from .lid_outline import capture_lid_outline
+
     if node.outline_source is None:
         return False
     before = capture_lid_outline(node.outline_source, before_result.states[node.outline_source])
