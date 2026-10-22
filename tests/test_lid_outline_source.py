@@ -16,6 +16,7 @@ from coalesce.lid_outline_compare import (
     compare_lid_outlines,
 )
 from coalesce.service import DocumentService
+from coalesce.viewer import ViewerSceneStore
 
 
 def _fillet_request(*, revision: int, radius: float = 1) -> dict:
@@ -156,6 +157,92 @@ def test_board_refresh_updates_lid_outline(tmp_path):
     _, bbox, _ = _outline_measurements(service)
     assert bbox == pytest.approx((-3, -3, 25, 13), abs=1e-6)
     assert _check_outline(service)["status"] == "PASS"
+
+
+def _lid_chamfer_request(*, revision: int) -> dict:
+    return {
+        "action": "create",
+        "expectedRevision": revision,
+        "requestId": "chamfer-lid",
+        "featureId": "lid_chamfer",
+        "kind": "chamfer",
+        "parameters": {
+            "target": {"featureId": "lid"},
+            "edges": [
+                {
+                    "feature": "lid",
+                    "role": "between(edge,top)",
+                    "cardinality": "exactly",
+                    "count": 4,
+                }
+            ],
+            "distance": quantity(0.5),
+        },
+    }
+
+
+def _refresh_with_lid_chamfer(tmp_path, name: str, *, fillet: bool = False):
+    source = tmp_path / f"{name}.kicad_pcb"
+    source.write_text((FIXTURES / "features.kicad_pcb").read_text())
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / f"{name}.coalesce.json", scene_store=store)
+    assert service.import_board(import_request(source))["ok"]
+    assert service.feature(base_request())["ok"]
+    revision = 2
+    if fillet:
+        assert service.feature(_fillet_request(revision=revision))["ok"]
+        revision += 1
+    else:
+        assert service.feature(
+            port_request(
+                revision=revision,
+                envelope=explicit_envelope(width=4, height=1, bottom=0),
+            )
+        )["ok"]
+        revision += 1
+    assert service.feature(lid_request(revision=revision, include_lip=False))["ok"]
+    revision += 1
+    assert service.feature(_lid_chamfer_request(revision=revision))["ok"]
+    return service, source, revision + 1
+
+
+def _refresh_board(service: DocumentService, source, revision: int, request_id: str) -> dict:
+    return service.import_board({
+        **import_request(source, revision=revision, request_id=request_id, action="refresh"),
+        "path": str(source.resolve()),
+    })
+
+
+def test_refresh_reports_lid_and_chamfer_only_when_lid_outline_changes(tmp_path):
+    service, source, revision = _refresh_with_lid_chamfer(tmp_path, "j1")
+    source.write_text(source.read_text().replace("(at 1 5)", "(at 1 6)"))
+
+    j1 = _refresh_board(service, source, revision, "move-j1")
+
+    assert j1["boardChanges"]["dependentFeatures"] == ["port cutout"]
+
+    wider_service, wider_source, wider_revision = _refresh_with_lid_chamfer(tmp_path, "wider")
+    wider_source.write_text(wider_source.read_text().replace("(end 20 10)", "(end 22 10)"))
+
+    wider = _refresh_board(wider_service, wider_source, wider_revision, "widen-board")
+
+    assert "pcb lid" in wider["boardChanges"]["dependentFeatures"]
+    assert "chamfer" in wider["boardChanges"]["dependentFeatures"]
+
+    rounded, rounded_source, rounded_revision = _refresh_with_lid_chamfer(
+        tmp_path, "rounded", fillet=True
+    )
+    rounded_source.write_text(
+        rounded_source.read_text().replace("(end 20 10)", "(end 22 10)")
+    )
+
+    changed_outline = _refresh_board(
+        rounded, rounded_source, rounded_revision, "change-rounded-outline"
+    )
+
+    assert "fillet" in changed_outline["boardChanges"]["dependentFeatures"]
+    assert "pcb lid" in changed_outline["boardChanges"]["dependentFeatures"]
+    assert "chamfer" in changed_outline["boardChanges"]["dependentFeatures"]
 
 
 def test_outline_source_survives_reload_and_separate_export(tmp_path):
