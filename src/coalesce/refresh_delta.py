@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
+from .enclosure import selected_holes
+from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
+
 LENGTH_TOLERANCE_MM = 1e-6
-AREA_TOLERANCE_MM2 = 1e-6
-VOLUME_TOLERANCE_MM3 = 1e-6
 
 
 def _point(value: Any) -> list[float]:
@@ -18,28 +20,52 @@ def _position(item: dict | None) -> list[float] | None:
     return _point(item["position"]) if item and item.get("position") else None
 
 
-def _item_change(item_id: str, was: dict | None, now: dict | None, reference: str) -> dict | None:
+def _item_change(
+    item_id: str,
+    was: dict | None,
+    now: dict | None,
+    reference: str,
+    compared_fields: tuple[str, ...],
+) -> dict | None:
     old_position, new_position = _position(was), _position(now)
     distance = None
     if old_position is not None and new_position is not None:
         distance = math.dist(old_position, new_position)
-        if distance <= LENGTH_TOLERANCE_MM:
-            return None
+    if was is None or now is None:
+        change = "added" if was is None else "removed"
+    elif distance is not None and distance > LENGTH_TOLERANCE_MM:
+        change = "moved"
+    elif any(was.get(field) != now.get(field) for field in compared_fields):
+        change = "changed"
+    else:
+        return None
     return {
         "id": item_id,
         "reference": (now or was).get(reference),
         "oldPosition": old_position,
         "newPosition": new_position,
         "distance": distance,
-        "change": "added" if was is None else "removed" if now is None else "moved",
+        "change": change,
     }
 
 
-def _items(before: list[dict], after: list[dict], *, reference: str = "reference") -> list[dict]:
+def _items(
+    before: list[dict],
+    after: list[dict],
+    *,
+    compared_fields: tuple[str, ...],
+    reference: str = "reference",
+) -> list[dict]:
     old = {item.get("id"): item for item in before}
     new = {item.get("id"): item for item in after}
     changes = (
-        _item_change(item_id, old.get(item_id), new.get(item_id), reference)
+        _item_change(
+            item_id,
+            old.get(item_id),
+            new.get(item_id),
+            reference,
+            compared_fields,
+        )
         for item_id in sorted(set(old) | set(new))
     )
     return [change for change in changes if change is not None]
@@ -47,49 +73,13 @@ def _items(before: list[dict], after: list[dict], *, reference: str = "reference
 
 def _dependents(graph: Any, board_id: str) -> list[str]:
     affected = {board_id}
-    changed = True
-    while changed:
-        changed = False
-        for node_id, node in graph.nodes.items():
-            refs = {getattr(node, name, None) for name in ("board", "base", "target")}
-            if node_id not in affected and refs & affected:
-                affected.add(node_id)
-                changed = True
+    while additions := {
+        node_id
+        for node_id, node in graph.nodes.items()
+        if node_id not in affected and set(graph._dependencies(node)) & affected
+    }:
+        affected.update(additions)
     return sorted(affected - {board_id})
-
-
-def _coordinates(vector: Any) -> tuple[float, float, float]:
-    return (float(vector.X), float(vector.Y), float(vector.Z))
-
-
-def _shape_fingerprint(shape: Any) -> dict[str, Any]:
-    bounds = shape.bounding_box()
-    return {
-        "volume": (float(shape.volume),),
-        "area": (float(shape.area),),
-        "bounds": (*_coordinates(bounds.min), *_coordinates(bounds.max)),
-        "center": _coordinates(shape.center()),
-        "counts": (len(shape.solids()), len(shape.faces())),
-    }
-
-
-def _values_equal(before: tuple[float, ...], after: tuple[float, ...], tolerance: float) -> bool:
-    return all(math.isclose(old, new, rel_tol=0, abs_tol=tolerance) for old, new in zip(before, after))
-
-
-def _changed(before: Any, after: Any, feature_id: str) -> bool:
-    old = before.shapes.get(feature_id)
-    new = after.shapes.get(feature_id)
-    if old is None or new is None:
-        return old is not new
-    old_fingerprint, new_fingerprint = _shape_fingerprint(old), _shape_fingerprint(new)
-    return (
-        old_fingerprint["counts"] != new_fingerprint["counts"]
-        or not _values_equal(old_fingerprint["volume"], new_fingerprint["volume"], VOLUME_TOLERANCE_MM3)
-        or not _values_equal(old_fingerprint["area"], new_fingerprint["area"], AREA_TOLERANCE_MM2)
-        or not _values_equal(old_fingerprint["bounds"], new_fingerprint["bounds"], LENGTH_TOLERANCE_MM)
-        or not _values_equal(old_fingerprint["center"], new_fingerprint["center"], LENGTH_TOLERANCE_MM)
-    )
 
 
 def _board_parts(board: Any) -> tuple[list[dict], list[dict]]:
@@ -100,36 +90,125 @@ def _board_parts(board: Any) -> tuple[list[dict], list[dict]]:
     if None in references:
         references.add("REF**")
     footprints = [
-        item for item in mechanics.get("footprints", [])
+        item
+        for item in mechanics.get("footprints", [])
         if item["id"] not in ids and item.get("reference") not in references
     ]
     return holes, footprints
 
 
+def _node_board(graph: Any, node: Any) -> BoardImport | None:
+    board_id = getattr(node, "board", None)
+    if isinstance(node, (PcbLid, PortCutout)):
+        base = graph.nodes.get(node.base)
+        board_id = base.board if isinstance(base, PcbBase) else None
+    board = graph.nodes.get(board_id)
+    return board if isinstance(board, BoardImport) else None
+
+
+def _selected_hole_ids(graph: Any, node: Standoffs) -> set[str]:
+    board = _node_board(graph, node)
+    return {hole["id"] for hole in selected_holes(node, board)} if board else set()
+
+
+def _standoffs_changed(
+    before_graph: Any,
+    after_graph: Any,
+    feature_id: str,
+    hole_changes: list[dict],
+) -> bool:
+    old_node = before_graph.nodes[feature_id]
+    new_node = after_graph.nodes[feature_id]
+    consumed = _selected_hole_ids(before_graph, old_node) | _selected_hole_ids(after_graph, new_node)
+    return any(change["id"] in consumed for change in hole_changes)
+
+
+def _footprint(graph: Any, node: PortCutout) -> dict | None:
+    board = _node_board(graph, node)
+    if board is None:
+        return None
+    footprint_id = node.footprint_id or node.footprint
+    return next(
+        (
+            item
+            for item in board.mechanics.get("footprints", [])
+            if item["id"] == footprint_id or item.get("reference") == footprint_id
+        ),
+        None,
+    )
+
+
+def _port_cutout_changed(before_graph: Any, after_graph: Any, feature_id: str) -> bool:
+    old_node = before_graph.nodes[feature_id]
+    new_node = after_graph.nodes[feature_id]
+    old = _footprint(before_graph, old_node)
+    new = _footprint(after_graph, new_node)
+    if old is None or new is None:
+        return True
+    distance = math.dist(_position(old), _position(new))
+    if distance > LENGTH_TOLERANCE_MM or old.get("rotation") != new.get("rotation"):
+        return True
+    if new_node.envelope_source == "courtyard":
+        return old.get("courtyard") != new.get("courtyard")
+    return old_node.envelope_source != new_node.envelope_source
+
+
+def _board_dimensions_changed(before_board: Any, after_board: Any) -> bool:
+    old = before_board.mechanics if before_board else {}
+    new = after_board.mechanics if after_board else {}
+    return any(old.get(field) != new.get(field) for field in ("outline", "thickness"))
+
+
+def _feature_changed(
+    before_graph: Any,
+    after_graph: Any,
+    feature_id: str,
+    hole_changes: list[dict],
+    board_dimensions_changed: bool,
+) -> bool:
+    node = after_graph.nodes[feature_id]
+    if isinstance(node, Standoffs):
+        return _standoffs_changed(before_graph, after_graph, feature_id, hole_changes)
+    if isinstance(node, PortCutout):
+        return _port_cutout_changed(before_graph, after_graph, feature_id)
+    if isinstance(node, (PcbBase, PcbLid)):
+        return board_dimensions_changed
+    return True
+
+
+def _kind_label(node: Any) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", " ", node.__class__.__name__).lower()
+
+
 def refresh_delta(
     before_graph: Any,
     after_graph: Any,
-    before_result: Any,
-    after_result: Any,
+    _before_result: Any,
+    _after_result: Any,
     board_id: str,
 ) -> dict[str, Any]:
     before_board = before_graph.nodes.get(board_id)
     after_board = after_graph.nodes.get(board_id)
     old_holes, old_footprints = _board_parts(before_board)
     new_holes, new_footprints = _board_parts(after_board)
-    mounting_holes = _items(old_holes, new_holes)
-    footprints = _items(old_footprints, new_footprints)
+    mounting_holes = _items(old_holes, new_holes, compared_fields=("drill",))
+    footprints = _items(
+        old_footprints,
+        new_footprints,
+        compared_fields=("rotation", "courtyard", "courtyard_availability"),
+    )
+    dimensions_changed = _board_dimensions_changed(before_board, after_board)
     dependent = [
-        feature_id
+        _kind_label(after_graph.nodes[feature_id])
         for feature_id in _dependents(after_graph, board_id)
-        if feature_id in after_graph.nodes
-        and feature_id in before_graph.nodes
-        and _changed(before_result, after_result, feature_id)
-        and after_graph.nodes[feature_id].__class__.__name__ in {"Standoffs", "PortCutout"}
-    ]
-    dependent = [
-        {"Standoffs": "standoffs", "PortCutout": "port cutout"}[after_graph.nodes[feature_id].__class__.__name__]
-        for feature_id in dependent
+        if feature_id in before_graph.nodes
+        and _feature_changed(
+            before_graph,
+            after_graph,
+            feature_id,
+            mounting_holes,
+            dimensions_changed,
+        )
     ]
     return {
         "mountingHoles": mounting_holes,
@@ -152,7 +231,7 @@ def _hole_labels(holes: list[dict]) -> list[str]:
     labels = [
         f"1 mounting hole {item['change']}"
         for item in holes
-        if item["change"] in {"added", "removed"}
+        if item["change"] in {"added", "removed", "changed"}
     ]
     moved = sum(item["change"] == "moved" for item in holes)
     if moved:

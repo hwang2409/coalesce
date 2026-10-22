@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import shutil
@@ -7,6 +8,7 @@ import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
 from test_mcp_vertical import call_server_tool, run_server
 
+from coalesce.refresh_delta import refresh_delta
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
@@ -312,12 +314,20 @@ def _scene_summary(store: ViewerSceneStore, revision: int) -> str:
     return store.scene(revision)["change"]["summary"]
 
 
-def _refresh_enclosure(tmp_path: Path, name: str, *, port: bool = False):
+def _refresh_enclosure(
+    tmp_path: Path, name: str, *, port: bool = False, stable_pad_ids: bool = False
+):
     source = tmp_path / f"{name}.kicad_pcb"
-    source.write_text((FIXTURES / "features.kicad_pcb").read_text())
+    board_text = (FIXTURES / "features.kicad_pcb").read_text()
+    if stable_pad_ids:
+        board_text = board_text.replace(
+            '(pad "" thru_hole circle (at 0 0) (drill 2.2)',
+            '(pad "" thru_hole circle (at 0 0) (uuid "m2-pad") (drill 2.2)',
+        )
+    source.write_text(board_text)
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / f"{name}.coalesce.json", scene_store=store)
-    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.import_board(import_request(source))["ok"]
     assert service.feature(base_request())["ok"]
     assert service.feature(standoffs_request(selection={"mode": "all_mounting"}))["ok"]
     if port:
@@ -542,6 +552,80 @@ def test_refresh_float_noise_below_tolerance_is_not_a_move(tmp_path):
         "dependentFeatures": [],
     }
     assert _scene_summary(store, 4) == "refreshed board: source changed"
+
+
+def test_refresh_symmetric_hole_move_reports_standoffs(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "symmetric")
+    changed = source.read_text().replace("(at 2 3)", "(at 3 3)")
+    source.write_text(changed.replace("(at 18 3)", "(at 17 3)"))
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    assert refreshed["boardChanges"]["dependentFeatures"] == ["standoffs"]
+    assert _scene_summary(store, 4) == "refreshed board: 2 mounting holes moved, standoffs updated"
+
+
+def test_refresh_drill_change_reports_hole_and_standoffs(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "drill", stable_pad_ids=True)
+    changed_id = next(
+        hole["id"]
+        for hole in service._document.graph.nodes["controller_board"].mechanics["holes"]
+        if hole["drill"]["width"] == 2.2
+    )
+    source.write_text(source.read_text().replace("(drill 2.2)", "(drill oval 2.4 2.2)"))
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    delta = refreshed["boardChanges"]
+    assert [(item["id"], item["change"]) for item in delta["mountingHoles"]] == [
+        (changed_id, "changed")
+    ]
+    assert delta["dependentFeatures"] == ["standoffs"]
+    assert _scene_summary(store, 4) == "refreshed board: 1 mounting hole changed, standoffs updated"
+
+
+def test_refresh_courtyard_change_reports_footprint_and_port_cutout(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "courtyard", port=True)
+    source.write_text(
+        source.read_text().replace(
+            '(fp_rect (start -1 -2) (end 1 2)',
+            '(fp_rect (start -1 -2) (end 1.5 2)',
+        )
+    )
+
+    refreshed = _refresh_variant(service, source, revision=4)
+
+    delta = refreshed["boardChanges"]
+    assert [(item["id"], item["change"]) for item in delta["footprints"]] == [
+        ("front-id", "changed")
+    ]
+    assert delta["dependentFeatures"] == ["port cutout"]
+    assert _scene_summary(store, 5) == "refreshed board: port cutout updated"
+
+
+def test_refresh_unrelated_footprint_move_reports_no_dependent(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "unrelated", port=True)
+    before_graph = copy.deepcopy(service._document.graph)
+    source.write_text(source.read_text().replace("(at 10 5)", "(at 11 5)"))
+
+    refreshed = _refresh_variant(service, source, revision=4)
+
+    assert refreshed["boardChanges"]["dependentFeatures"] == []
+    assert _scene_summary(store, 5) == "refreshed board: J3 moved 1.0 mm"
+
+    class GeometryMustNotBeRead:
+        @property
+        def shapes(self):
+            raise AssertionError("dependent geometry must not be inspected")
+
+    delta = refresh_delta(
+        before_graph,
+        service._document.graph,
+        GeometryMustNotBeRead(),
+        GeometryMustNotBeRead(),
+        "controller_board",
+    )
+    assert delta["dependentFeatures"] == []
 
 
 def test_refresh_moved_board_with_same_ids_has_no_selection_changes(tmp_path):
