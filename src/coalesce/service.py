@@ -41,12 +41,15 @@ from .graph import (
     GraphError,
     Hole,
     HolePosition,
+    PathSegment,
     PcbBase,
     PcbLid,
     Plane,
     PortCutout,
     Rectangle,
     Sketch,
+    SketchEntity,
+    SketchPath,
     Standoffs,
 )
 from .parts import terminal_parts
@@ -276,7 +279,7 @@ class SketchPlane:
 @dataclass(frozen=True)
 class SketchChanges:
     position: tuple[float, float, float] | None
-    entities: tuple[Rectangle | Circle, ...] | None
+    entities: tuple[SketchEntity, ...] | None
     constrained: ConstrainedSketch | None = None
 
 
@@ -437,7 +440,7 @@ class SketchCreate(_Operation):
     requestId: str
     sketchId: str
     plane: SketchPlane
-    entities: tuple[Rectangle | Circle, ...]
+    entities: tuple[SketchEntity, ...]
     constrained: ConstrainedSketch | None = None
 
 
@@ -738,17 +741,54 @@ def _parse_import(payload: dict[str, Any]) -> BoardImportOperation | ImportDelet
     )
 
 
-def _entities(payload: Any) -> tuple[Rectangle | Circle, ...]:
+def _point_2d(value: Any, name: str) -> tuple[float, float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise RequestError("INVALID_PARAMETER", f"{name} must be an [x, y] point in mm", field=name)
+    return (_finite_number(value[0], name), _finite_number(value[1], name))
+
+
+def _path(entity: dict[str, Any]) -> SketchPath:
+    segments = entity.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise RequestError("INVALID_PARAMETER", "path segments must not be empty", field="segments")
+    parsed = []
+    for segment in segments:
+        if not isinstance(segment, dict) or segment.get("kind") not in {"line", "arc"}:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "unknown path segment kind",
+                allowedKinds=["line", "arc"],
+            )
+        through = segment.get("through")
+        parsed.append(
+            PathSegment(
+                id=segment.get("id"),
+                kind=segment["kind"],
+                to=_point_2d(segment.get("to"), "to"),
+                through=None if through is None else _point_2d(through, "through"),
+            )
+        )
+    return SketchPath(
+        id=entity["id"],
+        start=_point_2d(entity.get("start"), "start"),
+        segments=parsed,
+    )
+
+
+def _entities(payload: Any) -> tuple[SketchEntity, ...]:
     if not isinstance(payload, list) or not payload:
         raise RequestError("INVALID_PARAMETER", "entities must not be empty")
     parsed = []
     for entity in payload:
-        if not isinstance(entity, dict) or entity.get("kind") not in {"rectangle", "circle"}:
+        if not isinstance(entity, dict) or entity.get("kind") not in {"rectangle", "circle", "path"}:
             raise RequestError(
                 "INVALID_PARAMETER",
                 "unknown sketch entity kind",
-                allowedKinds=["rectangle", "circle"],
+                allowedKinds=["rectangle", "circle", "path"],
             )
+        if entity["kind"] == "path":
+            parsed.append(_path(entity))
+            continue
         center = entity.get("center", [0, 0])
         common = {
             "id": entity["id"],
@@ -2111,12 +2151,14 @@ def _apply_feature(
 
 
 def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
-    return {
-        entity["id"]: (
-            ["bottom", "right", "top", "left"] if entity["kind"] == "rectangle" else ["circle"]
-        )
-        for entity in entities
-    }
+    def names(entity: dict[str, Any]) -> list[str]:
+        if entity["kind"] == "rectangle":
+            return ["bottom", "right", "top", "left"]
+        if entity["kind"] == "path":
+            return [segment["id"] for segment in entity["segments"]]
+        return ["circle"]
+
+    return {entity["id"]: names(entity) for entity in entities}
 
 
 def _kind(node: Any) -> str:

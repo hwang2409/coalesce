@@ -58,6 +58,15 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `UNKNOWN_PLANE` | request | a sketch names an unsupported origin plane | use `XY`, `XZ`, or `YZ` |
 | `NON_FINITE_VALUE` | request | a numeric value is NaN or infinite | send a finite number |
 | `INVALID_CIRCLE_RADIUS` | request | a sketch circle radius is not positive | send a positive radius |
+| `PATH_TOO_SHORT` | request | a sketch path has fewer than two segments | add segments until the path encloses an area |
+| `INVALID_SEGMENT_ID` | request | a path segment id is empty | give each segment a non-empty id |
+| `DUPLICATE_SEGMENT_ID` | request | one path repeats a segment id | give each segment in the path a unique id |
+| `UNKNOWN_SEGMENT_KIND` | request | a path segment kind is not `line` or `arc` | use `line` or `arc` |
+| `ZERO_LENGTH_SEGMENT` | request | a path segment ends where it starts | remove the segment or move its `to` point |
+| `MISSING_ARC_THROUGH` | request | a path arc has no `through` point | add a `through` point on the arc between its ends |
+| `COLLINEAR_ARC` | request | a path arc's start, `through`, and `to` points lie on one line | use a line segment or move `through` off the line |
+| `UNEXPECTED_THROUGH` | request | a path line carries a `through` point | remove `through` or make the segment an arc |
+| `OPEN_PATH` | request | a path's last segment does not end at its `start` | end the last segment at `start`; `gap` reports the distance |
 | `SKETCH_SOLVER_UNAVAILABLE` | request | the optional constrained sketch solver is not installed | install `coalesce[sketch]` |
 | `SKETCH_SOLVER_FAILED` | request | the constrained sketch solver child exits or sends a malformed or oversized frame | retry once, then report the failing sketch and solver environment |
 | `SKETCH_REDUNDANT` | request | constrained sketch constraints are redundant | remove the redundant constraint |
@@ -87,6 +96,8 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `KERNEL_OPERATION_FAILED` | geometry | an unexpected or unmapped modeling failure occurred | inspect the structured context and change the edit; report reproducible cases |
 | `TOUCHING_PROFILES` | geometry | two sketch profile boundaries only touch | separate them or make the intended overlap/nesting explicit |
 | `OVERLAPPING_PROFILES` | geometry | profiles overlap without valid nesting | remove the overlap or make one profile fully nested |
+| `DISCONNECTED_PATH` | geometry | a path segment cannot be joined to the previous segment | check the named segment's endpoints |
+| `SELF_INTERSECTING_PATH` | geometry | a path crosses itself away from shared endpoints | reorder or move points so segments meet only at their ends |
 | `INVALID_EXTRUDE_OPERATION` | geometry | an extrude operation is not supported | use `new_body` or a valid target join |
 | `INVALID_CUT_DEPTH` | geometry | a finite cut depth is invalid | send a positive depth or use through-all |
 | `INVALID_CUT_TOOL` | geometry | a cut tool sketch cannot make the requested cutter | correct the tool sketch and direction |

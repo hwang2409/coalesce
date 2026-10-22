@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
-from math import isfinite
+from math import dist, isfinite
 from typing import Any
 
 from .references import (
@@ -52,8 +52,35 @@ class Circle:
 
 
 @dataclass
+class PathSegment:
+    """One segment of a closed path, from the previous point to ``to``.
+
+    Lines need only ``to``. Arcs pass through ``through`` on the way to ``to``.
+    """
+
+    id: str
+    kind: str
+    to: tuple[float, float]
+    through: tuple[float, float] | None = None
+
+
+@dataclass
+class SketchPath:
+    """A closed loop of named line and arc segments in sketch-local coordinates."""
+
+    id: str
+    start: tuple[float, float]
+    segments: list[PathSegment] = field(default_factory=list)
+    position: tuple[float, float] = (0.0, 0.0)
+    rotation: float = 0.0
+
+
+SketchEntity = Rectangle | Circle | SketchPath
+
+
+@dataclass
 class PrimitiveSketchState:
-    entities: list[Rectangle | Circle] = field(default_factory=list)
+    entities: list[SketchEntity] = field(default_factory=list)
 
 
 @dataclass
@@ -73,7 +100,7 @@ class Sketch:
         self,
         id: str,
         plane: Plane | None = None,
-        entities: list[Rectangle | Circle] | None = None,
+        entities: list[SketchEntity] | None = None,
         constrained: Any | None = None,
         position: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -93,14 +120,14 @@ class Sketch:
         self.rotation = rotation
 
     @property
-    def entities(self) -> list[Rectangle | Circle]:
+    def entities(self) -> list[SketchEntity]:
         return self.state.entities if isinstance(self.state, PrimitiveSketchState) else []
 
     @property
     def constrained(self) -> Any | None:
         return self.state.constrained if isinstance(self.state, ConstrainedSketchState) else None
 
-    def replace_entities(self, entities: list[Rectangle | Circle]) -> None:
+    def replace_entities(self, entities: list[SketchEntity]) -> None:
         self.state = PrimitiveSketchState(entities)
 
     def replace_constrained(self, constrained: Any) -> None:
@@ -254,6 +281,104 @@ def validate_sketch(sketch: Sketch) -> None:
                     entity=entity.id,
                     radius=entity.radius,
                 )
+        if isinstance(entity, SketchPath):
+            validate_path(sketch, entity)
+
+
+# Path points closer than this are the same point; it also bounds the closing gap.
+PATH_POINT_TOLERANCE = 1e-6
+
+
+def _path_context(sketch: Sketch, path: SketchPath) -> dict[str, str]:
+    return {"sketch": sketch.id, "entity": path.id}
+
+
+def validate_path(sketch: Sketch, path: SketchPath) -> None:
+    _require_finite(sketch, f"entity.{path.id}.start", path.start)
+    if len(path.segments) < 2:
+        raise GraphError(
+            "PATH_TOO_SHORT",
+            f"path {path.id} needs at least two segments to enclose an area",
+            **_path_context(sketch, path),
+            segmentCount=len(path.segments),
+        )
+    seen: set[str] = set()
+    previous = tuple(path.start)
+    for segment in path.segments:
+        if not isinstance(segment.id, str) or not segment.id:
+            raise GraphError(
+                "INVALID_SEGMENT_ID",
+                f"path {path.id} segment ids must be non-empty",
+                **_path_context(sketch, path),
+            )
+        if segment.id in seen:
+            raise GraphError(
+                "DUPLICATE_SEGMENT_ID",
+                f"path {path.id} reuses segment id {segment.id}",
+                **_path_context(sketch, path),
+                segment=segment.id,
+            )
+        seen.add(segment.id)
+        if segment.kind not in {"line", "arc"}:
+            raise GraphError(
+                "UNKNOWN_SEGMENT_KIND",
+                f"path {path.id} segment {segment.id} has unknown kind {segment.kind!r}",
+                **_path_context(sketch, path),
+                segment=segment.id,
+                allowedKinds=["line", "arc"],
+            )
+        _require_finite(sketch, f"entity.{path.id}.segment.{segment.id}.to", segment.to)
+        end = tuple(segment.to)
+        if dist(previous, end) <= PATH_POINT_TOLERANCE:
+            raise GraphError(
+                "ZERO_LENGTH_SEGMENT",
+                f"path {path.id} segment {segment.id} starts and ends at the same point",
+                **_path_context(sketch, path),
+                segment=segment.id,
+                point=list(end),
+            )
+        if segment.kind == "arc":
+            if segment.through is None:
+                raise GraphError(
+                    "MISSING_ARC_THROUGH",
+                    f"path {path.id} arc {segment.id} needs a through point",
+                    **_path_context(sketch, path),
+                    segment=segment.id,
+                )
+            _require_finite(sketch, f"entity.{path.id}.segment.{segment.id}.through", segment.through)
+            through = tuple(segment.through)
+            cross = (through[0] - previous[0]) * (end[1] - previous[1]) - (
+                through[1] - previous[1]
+            ) * (end[0] - previous[0])
+            if abs(cross) <= PATH_POINT_TOLERANCE * dist(previous, end):
+                raise GraphError(
+                    "COLLINEAR_ARC",
+                    f"path {path.id} arc {segment.id} points lie on one line; use a line segment",
+                    **_path_context(sketch, path),
+                    segment=segment.id,
+                    start=list(previous),
+                    through=list(through),
+                    to=list(end),
+                )
+        elif segment.through is not None:
+            raise GraphError(
+                "UNEXPECTED_THROUGH",
+                f"path {path.id} line {segment.id} does not take a through point",
+                **_path_context(sketch, path),
+                segment=segment.id,
+            )
+        previous = end
+    gap = dist(previous, tuple(path.start))
+    if gap > PATH_POINT_TOLERANCE:
+        raise GraphError(
+            "OPEN_PATH",
+            f"path {path.id} ends {gap:g} mm from its start; the last segment must end at start",
+            **_path_context(sketch, path),
+            segment=path.segments[-1].id,
+            start=list(path.start),
+            end=list(previous),
+            gap={"value": gap, "unit": "mm"},
+        )
 
 
 class Graph:
