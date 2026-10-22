@@ -37,9 +37,11 @@ from .graph import (
     Standoffs,
 )
 from .hole import make_hole_tool
+from .lid_outline import outline_profile
 from .lineage import BodyLineage
 from .pcb import build_pcb
 from .references import (
+    BodySource,
     Candidate,
     ElementKey,
     Reference,
@@ -64,6 +66,8 @@ class RegenResult:
     opening_tools: dict[str, Shape] = field(default_factory=dict)
     superseded: set[str] = field(default_factory=set)
     predecessors: dict[str, str] = field(default_factory=dict)
+    states: dict[str, list[Candidate]] = field(default_factory=dict)
+    body_terminals: dict[BodySource, str] = field(default_factory=dict)
 
     def resolve(self, ref: Reference, *, before_feature: str | None = None) -> Resolution:
         resolution = resolve(
@@ -430,7 +434,12 @@ class _EnclosureRegenerator:
 
     def _regenerate_pcb_lid(self, node: PcbLid) -> None:
         base, board = self._base_context(node.base, node.id)
-        lid = build_pcb_lid(node, base, board)
+        outline = (
+            outline_profile(node.outline_geometry)
+            if node.outline_geometry is not None
+            else None
+        )
+        lid = build_pcb_lid(node, base, board, outline)
         self.shapes[node.id] = lid.shape
         self.states[node.id] = lid.candidates
         self.provenance[node.id] = lid.candidates
@@ -889,6 +898,8 @@ def _regenerate(graph: Graph) -> RegenResult:
         opening_tools=enclosure.opening_tools,
         superseded=lineage.superseded,
         predecessors=lineage.predecessors,
+        states=states,
+        body_terminals=dict(lineage.terminals),
     )
 
 

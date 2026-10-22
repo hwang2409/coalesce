@@ -230,6 +230,24 @@ def _lid_parts(inspection: dict[str, Any]) -> tuple[list[dict[str, Any]], list[s
     return lids, [inspection["base"]["partId"], *[lid["partId"] for lid in lids]]
 
 
+def _lid_outline_match(
+    requirement: dict[str, Any], inspection: dict[str, Any], revision: int
+) -> dict[str, Any]:
+    lids, involved = _lid_parts(inspection)
+    if not lids:
+        return _unknown(requirement, "no lid exists for this measurement", involved, revision)
+    measured = [lid["outline"] for lid in lids]
+    return _finish(
+        requirement,
+        measured[0] if len(measured) == 1 else measured,
+        {"areaTolerance": {"value": 1e-6, "unit": "mm^2"},
+         "bboxTolerance": {"value": 1e-6, "unit": "mm"}},
+        involved,
+        revision,
+        "PASS" if all(item["matches"] for item in measured) else "FAIL",
+    )
+
+
 def _lid_interference(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
@@ -376,6 +394,7 @@ REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "mounting_holes": _mounting,
     "standoff_coverage": _mounting,
     "lid_interference": _lid_interference,
+    "lid_outline_match": _lid_outline_match,
     "fit_gap": _fit_gap,
     "lid_fit_gap": _fit_gap,
     "engagement_depth": _engagement,

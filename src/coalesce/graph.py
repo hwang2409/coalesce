@@ -106,6 +106,20 @@ class Standoffs(Feature):
     pilot_diameter: float = 2
 
 
+@dataclass(frozen=True)
+class LidOutlineSegment:
+    kind: str
+    start: tuple[float, float, float]
+    midpoint: tuple[float, float, float]
+    end: tuple[float, float, float]
+    source: str
+
+
+@dataclass(frozen=True)
+class LidOutlineGeometry:
+    segments: tuple[LidOutlineSegment, ...]
+
+
 @dataclass
 class PcbLid(Feature):
     base: str = ""
@@ -113,6 +127,8 @@ class PcbLid(Feature):
     fit_gap: float = 0.25
     lip_depth: float | None = None
     lip_width: float | None = None
+    outline_source: str | None = None
+    outline_geometry: LidOutlineGeometry | None = None
 
 
 @dataclass
@@ -251,7 +267,12 @@ class Graph:
     def _dependencies(node: Any) -> list[str]:
         dependencies = list(getattr(node, "depends_on", []))
         for dependency in (
-            *(getattr(node, dependency_field, None) for dependency_field in ("sketch", "target", "tool", "board", "base")),
+            *(
+                getattr(node, dependency_field, None)
+                for dependency_field in (
+                    "sketch", "target", "tool", "board", "base", "outline_source"
+                )
+            ),
             *Graph._typed_reference_dependencies(node),
         ):
             if dependency and dependency not in dependencies:

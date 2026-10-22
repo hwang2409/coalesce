@@ -1,0 +1,218 @@
+import json
+import math
+
+import pytest
+from build123d import Face, GeomType
+from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity
+from test_pcb_lid import lid_request
+from test_port_cutout import explicit_envelope, port_request
+
+from coalesce.service import DocumentService
+
+
+def _fillet_request(*, revision: int, radius: float = 1) -> dict:
+    return {
+        "action": "create",
+        "expectedRevision": revision,
+        "requestId": "round-base",
+        "featureId": "base_round",
+        "kind": "fillet",
+        "parameters": {
+            "target": {"featureId": "base"},
+            "edges": [
+                {
+                    "feature": "base",
+                    "role": "outer_vertical",
+                    "cardinality": "exactly",
+                    "count": 4,
+                }
+            ],
+            "radius": quantity(radius),
+        },
+    }
+
+
+def _update_fillet(*, revision: int, radius: float) -> dict:
+    return {
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": f"round-base-{radius}",
+        "featureId": "base_round",
+        "kind": "fillet",
+        "set": {"radius": quantity(radius)},
+    }
+
+
+def _update_lid_source(*, revision: int, source: str = "base_round") -> dict:
+    return {
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": f"lid-source-{revision}",
+        "featureId": "lid",
+        "kind": "pcb_lid",
+        "set": {"outlineSource": {"featureId": source}},
+    }
+
+
+def _service(tmp_path, name="outline") -> DocumentService:
+    service = DocumentService(tmp_path / f"{name}.coalesce.json")
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    return service
+
+
+def _outline_measurements(service: DocumentService) -> tuple[float, tuple[float, ...], list]:
+    if service._regen is None:
+        service.query({"select": {"kind": "graph"}})
+    [top] = [
+        item.entity
+        for item in service._regen.provenance["lid"]
+        if item.key.role == "top" and isinstance(item.entity, Face)
+    ]
+    box = top.bounding_box()
+    cylinders = [
+        item.entity.radius
+        for item in service._regen.provenance["lid"]
+        if item.key.role == "edge"
+        and isinstance(item.entity, Face)
+        and item.entity.geom_type is GeomType.CYLINDER
+    ]
+    return top.area, (box.min.X, box.min.Y, box.max.X, box.max.Y), cylinders
+
+
+def _check_outline(service: DocumentService) -> dict:
+    response = service.check(
+        {
+            "action": "evaluate",
+            "requirements": [{"id": "outline", "kind": "lid_outline_match"}],
+        }
+    )
+    assert response["ok"] is True
+    return response["results"][0]
+
+
+def test_lid_uses_filleted_terminal_outline_with_analytic_arcs(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(_fillet_request(revision=2))["ok"]
+    assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
+
+    area, bbox, cylinders = _outline_measurements(service)
+    result = _check_outline(service)
+
+    assert result["status"] == "PASS"
+    assert result["measured"]["areaDifference"]["value"] == pytest.approx(0, abs=1e-6)
+    assert result["measured"]["bboxDifference"]["value"] == pytest.approx(0, abs=1e-6)
+    assert area == pytest.approx(412 + math.pi, abs=1e-6)
+    assert bbox == pytest.approx((-3, -3, 23, 13), abs=1e-6)
+    assert len(cylinders) == 4
+    assert cylinders == pytest.approx([1, 1, 1, 1], abs=1e-6)
+    assert service._document.graph.nodes["lid"].outline_source == "base_round"
+
+
+def test_changed_source_stays_stale_until_explicit_lid_update(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(_fillet_request(revision=2))["ok"]
+    assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
+    before = _outline_measurements(service)
+
+    assert service.feature(_update_fillet(revision=4, radius=2))["ok"]
+    inspection = service.query({"select": {"kind": "enclosure", "base": "base"}})
+
+    after = _outline_measurements(service)
+    assert after[:2] == before[:2]
+    assert after[2] == pytest.approx(before[2], abs=1e-6)
+    assert {
+        (item["code"], item["currentSource"], item["legalSource"])
+        for item in inspection["warnings"]
+    } >= {("LID_OUTLINE_STALE", "base_round", "base_round")}
+    assert _check_outline(service)["status"] == "FAIL"
+
+    assert service.feature(_update_lid_source(revision=5))["ok"]
+    _, _, cylinders = _outline_measurements(service)
+    assert _check_outline(service)["status"] == "PASS"
+    assert cylinders == pytest.approx([2, 2, 2, 2], abs=1e-6)
+
+
+def test_outline_source_survives_reload_and_separate_export(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(_fillet_request(revision=2))["ok"]
+    assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
+    document = service.store.path
+
+    restarted = DocumentService(document)
+    assert restarted._document.graph.nodes["lid"].outline_source == "base_round"
+    assert _check_outline(restarted)["status"] == "PASS"
+
+    destination = tmp_path / "delivery"
+    exported = restarted.export(
+        {
+            "action": "publish",
+            "mode": "separate",
+            "expectedRevision": 4,
+            "path": str(destination),
+            "base": "base",
+            "requirements": [{"id": "outline", "kind": "lid_outline_match"}],
+        }
+    )
+    assert exported["ok"] is True
+    assert exported["ready"] is True
+    assert sorted(path.name for path in destination.glob("*.step")) == ["base.step", "lid.step"]
+    serialized = json.loads(document.read_text())
+    lid = next(node for node in serialized["graph"]["nodes"] if node["id"] == "lid")
+    assert lid["outlineSource"]["featureId"] == "base_round"
+
+
+def test_treatment_after_lid_reports_stale_until_update(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(lid_request(revision=2, include_lip=False))["ok"]
+    assert service.feature(_fillet_request(revision=3))["ok"]
+
+    inspection = service.query({"select": {"kind": "enclosure", "base": "base"}})
+    assert any(item["code"] == "LID_OUTLINE_STALE" for item in inspection["warnings"])
+    assert _check_outline(service)["status"] == "FAIL"
+
+    assert service.feature(_update_lid_source(revision=4))["ok"]
+    assert not any(
+        item["code"] == "LID_OUTLINE_STALE"
+        for item in service.query({"select": {"kind": "enclosure", "base": "base"}})["warnings"]
+    )
+    assert _check_outline(service)["status"] == "PASS"
+
+
+def test_broken_rim_source_fails_atomically(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(
+        port_request(
+            revision=2,
+            envelope=explicit_envelope(width=4, height=4, bottom=2),
+        )
+    )["ok"]
+    revision = service.revision
+    before = service.store.path.read_bytes()
+
+    failed = service.feature(lid_request(revision=revision, include_lip=False))
+
+    assert failed["ok"] is False
+    assert failed["error"]["code"] in {"EMPTY", "SPLIT", "AMBIGUOUS"}
+    assert service.revision == revision
+    assert service.store.path.read_bytes() == before
+
+
+def test_legacy_lid_without_outline_source_keeps_board_outline(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(lid_request(revision=2, include_lip=False))["ok"]
+    original = _outline_measurements(service)
+    payload = json.loads(service.store.path.read_text())
+    lid = next(node for node in payload["graph"]["nodes"] if node["id"] == "lid")
+    lid.pop("outlineSource", None)
+    lid.pop("outlineGeometry", None)
+    service.store.path.write_text(json.dumps(payload))
+
+    restarted = DocumentService(service.store.path)
+
+    assert restarted._document.graph.nodes["lid"].outline_source is None
+    assert _outline_measurements(restarted) == original
+    assert not any(
+        warning["code"] == "LID_OUTLINE_STALE"
+        for warning in restarted.query({"select": {"kind": "enclosure", "base": "base"}})["warnings"]
+    )

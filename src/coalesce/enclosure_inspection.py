@@ -9,7 +9,17 @@ from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.Standard import Standard_Failure
 
 from .board_import import mounting_holes
-from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
+from .graph import (
+    BoardImport,
+    Chamfer,
+    Fillet,
+    GraphError,
+    PcbBase,
+    PcbLid,
+    PortCutout,
+    Standoffs,
+)
+from .lid_outline import capture_lid_outline, outline_difference, outline_profile
 from .parts import TerminalPart, terminal_parts
 from .pcb import board_loop_wire
 
@@ -356,8 +366,29 @@ def _inner_size(board_size: float, first: float | None, second: float | None) ->
     return _quantity(board_size + first + second)
 
 
+def _silhouette_difference(source: Any, lid_top: Face) -> dict[str, float]:
+    source_face = Face(outline_profile(source).wire)
+    source_box = source_face.bounding_box()
+    lid_box = lid_top.bounding_box()
+    return {
+        "area": abs(source_face.area - lid_top.area),
+        "bbox": max(
+            abs(left - right)
+            for left, right in zip(
+                (source_box.min.X, source_box.min.Y, source_box.max.X, source_box.max.Y),
+                (lid_box.min.X, lid_box.min.Y, lid_box.max.X, lid_box.max.Y),
+                strict=True,
+            )
+        ),
+    }
+
+
 def _lid_measurement(
-    result: Any, parts: list[TerminalPart], node: PcbLid, base_part: TerminalPart
+    result: Any,
+    parts: list[TerminalPart],
+    node: PcbLid,
+    base_part: TerminalPart,
+    current_outline: Any | None,
 ) -> dict[str, Any]:
     part = _part_for(parts, node.id)
     undersides = _faces(result, node.id, "underside")
@@ -367,6 +398,12 @@ def _lid_measurement(
     if interference is not None:
         gaps = [0.0]
     lip_box = Compound(children=lips).bounding_box() if lips else None
+    [top] = _faces(result, node.id, "top")
+    difference = (
+        _silhouette_difference(current_outline, top)
+        if current_outline is not None
+        else {"area": float("inf"), "bbox": float("inf")}
+    )
     return {
         "featureId": node.id,
         "partId": part.part_id,
@@ -379,17 +416,81 @@ def _lid_measurement(
         ),
         "interference": interference,
         "lipDepth": _quantity(lip_box.max.Z - lip_box.min.Z) if lip_box is not None else None,
+        "outline": {
+            "source": node.outline_source or node.base,
+            "legalSource": base_part.terminal_feature,
+            "areaDifference": {"value": difference["area"], "unit": "mm^2"},
+            "bboxDifference": _quantity(difference["bbox"]),
+            "matches": difference["area"] <= 1e-6 and difference["bbox"] <= 1e-6,
+        },
     }
+
+
+def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> bool:
+    feature = terminal
+    while feature != base:
+        if isinstance(graph.nodes[feature], (Fillet, Chamfer)):
+            return True
+        feature = result.predecessors.get(feature, base)
+    return False
+
+
+def _current_outline(result: Any, terminal: str) -> Any | None:
+    try:
+        return capture_lid_outline(terminal, result.states[terminal])
+    except GraphError:
+        return None
+
+
+def _outline_is_stale(
+    node: PcbLid, current: Any | None, terminal: str, has_outer_treatment: bool
+) -> bool:
+    if node.outline_geometry is None:
+        return has_outer_treatment
+    return (
+        node.outline_source != terminal
+        or current is None
+        or max(outline_difference(node.outline_geometry, current).values()) > 1e-6
+    )
+
+
+def _legacy_match(measurement: dict[str, Any]) -> None:
+    measurement["outline"].update({
+        "areaDifference": {"value": 0.0, "unit": "mm^2"},
+        "bboxDifference": _quantity(0.0),
+        "matches": True,
+    })
 
 
 def _lids(
     graph: Any, result: Any, parts: list[TerminalPart], base: PcbBase, base_part: TerminalPart
-) -> list[dict[str, Any]]:
-    return [
-        _lid_measurement(result, parts, node, base_part)
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    nodes = [
+        node
         for node in graph.ordered()
         if isinstance(node, PcbLid) and node.base == base.id
     ]
+    if not nodes:
+        return [], []
+    terminal = base_part.terminal_feature
+    has_outer_treatment = _has_outer_treatment(graph, result, base.id, terminal)
+    current = _current_outline(result, terminal)
+    lids = []
+    warnings = []
+    for node in nodes:
+        comparison = current if node.outline_geometry is not None or has_outer_treatment else None
+        measurement = _lid_measurement(result, parts, node, base_part, comparison)
+        if comparison is None and not has_outer_treatment:
+            _legacy_match(measurement)
+        lids.append(measurement)
+        if _outline_is_stale(node, current, terminal, has_outer_treatment):
+            warnings.append({
+                "code": "LID_OUTLINE_STALE",
+                "featureId": node.id,
+                "currentSource": node.outline_source or node.base,
+                "legalSource": terminal,
+            })
+    return lids, warnings
 
 
 def _opening_rectangle(tool: Shape, wall: str) -> dict[str, Any]:
@@ -609,6 +710,8 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     )
     ports = _ports(graph, result, base, board, board_shape, base_part.shape, assembled)
     warnings = _warnings(graph, board, parts, enclosure_parts, ports)
+    lids, lid_warnings = _lids(graph, result, parts, base, base_part)
+    warnings.extend(lid_warnings)
 
     return {
         "baseId": base.id,
@@ -644,7 +747,7 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
             "boardInterference": board_interference,
         },
         "standoffs": _standoffs(graph, result, base, board_shape, base_part.shape),
-        "lids": _lids(graph, result, parts, base, base_part),
+        "lids": lids,
         "ports": ports,
         "assembled": {"bbox": _bbox(assembled), "size": _size(assembled)},
         "terminalParts": [

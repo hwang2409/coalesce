@@ -46,6 +46,7 @@ from .graph import (
     Sketch,
     Standoffs,
 )
+from .lid_outline import capture_lid_outline
 from .parts import terminal_parts
 from .references import (
     BodySource,
@@ -402,6 +403,7 @@ class PcbLidChanges:
     thickness: float | None = None
     fitGap: float | None = None
     lip: LidLip | None = None
+    outlineSource: FeatureTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -1073,10 +1075,11 @@ def _parse_pcb_lid(
             "thickness",
             "fitGap",
             "lip",
+            "outlineSource",
         }:
             raise RequestError(
                 "INVALID_PARAMETER",
-                "pcb_lid update requires thickness, fitGap, or lip",
+                "pcb_lid update requires thickness, fitGap, lip, or outlineSource",
             )
         return PcbLidUpdate(
             **common,
@@ -1094,6 +1097,11 @@ def _parse_pcb_lid(
                 lip=(
                     _parse_lid_lip(values["lip"], common["featureId"])
                     if "lip" in values
+                    else None
+                ),
+                outlineSource=(
+                    FeatureTarget(values["outlineSource"].get("featureId"))
+                    if isinstance(values.get("outlineSource"), dict)
                     else None
                 ),
             ),
@@ -1840,7 +1848,43 @@ def _apply_standoffs(
     return operation.featureId
 
 
-def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
+def _terminal_base_source(committed: RegenResult, base: str) -> str:
+    terminals = {
+        terminal
+        for body, terminal in committed.body_terminals.items()
+        if body.feature == base
+    }
+    if len(terminals) != 1:
+        raise RequestError(
+            "BODY_LINEAGE_DIVERGED",
+            f"pcb_base {base} does not have one terminal outline source",
+            feature=base,
+        )
+    return next(iter(terminals))
+
+
+def _set_lid_outline(
+    node: PcbLid, requested: str | None, committed: RegenResult
+) -> None:
+    source = _terminal_base_source(committed, node.base)
+    if requested is not None and requested != source:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "outlineSource must reference the current terminal base feature",
+            feature=node.id,
+            parameter="outlineSource",
+            currentSource=node.outline_source,
+            legalSource=source,
+        )
+    node.outline_source = source
+    node.outline_geometry = capture_lid_outline(source, committed.states[source])
+
+
+def _apply_pcb_lid(
+    graph: Any,
+    operation: PcbLidCreate | PcbLidUpdate,
+    committed: RegenResult,
+) -> str:
     if isinstance(operation, PcbLidUpdate):
         node = graph.nodes.get(operation.featureId)
         if not isinstance(node, PcbLid):
@@ -1852,6 +1896,8 @@ def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
         if operation.set.lip is not None:
             node.lip_depth = operation.set.lip.depth
             node.lip_width = operation.set.lip.width
+        if operation.set.outlineSource is not None:
+            _set_lid_outline(node, operation.set.outlineSource.featureId, committed)
         return operation.featureId
 
     parameters = operation.parameters
@@ -1863,16 +1909,16 @@ def _apply_pcb_lid(graph: Any, operation: PcbLidCreate | PcbLidUpdate) -> str:
             feature=operation.featureId,
             parameter="base",
         )
-    graph.add(
-        PcbLid(
-            operation.featureId,
-            base=base.id,
-            thickness=parameters.thickness,
-            fit_gap=parameters.fitGap,
-            lip_depth=parameters.lip.depth if parameters.lip else None,
-            lip_width=parameters.lip.width if parameters.lip else None,
-        )
+    node = PcbLid(
+        operation.featureId,
+        base=base.id,
+        thickness=parameters.thickness,
+        fit_gap=parameters.fitGap,
+        lip_depth=parameters.lip.depth if parameters.lip else None,
+        lip_width=parameters.lip.width if parameters.lip else None,
     )
+    _set_lid_outline(node, None, committed)
+    graph.add(node)
     return operation.featureId
 
 
@@ -1957,6 +2003,9 @@ def _apply_feature(
         PortCutoutCreate: _apply_port_cutout,
         PortCutoutUpdate: _apply_port_cutout,
     }[type(operation)]
+    if isinstance(operation, (PcbLidCreate, PcbLidUpdate)):
+        assert committed is not None
+        return applier(graph, operation, committed)
     return applier(graph, operation)
 
 
@@ -2390,7 +2439,10 @@ class DocumentService:
         raise RequestError("HOLE_NO_EFFECT", message, **details)
 
     def _committed_regeneration(self, operation: MutationOperation) -> RegenResult | None:
-        if not isinstance(operation, (ImportDelete, SketchDelete, FeatureDelete)):
+        if not isinstance(
+            operation,
+            (ImportDelete, SketchDelete, FeatureDelete, PcbLidCreate, PcbLidUpdate),
+        ):
             return None
         self._ensure_geometry()
         assert self._regen is not None

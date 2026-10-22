@@ -15,6 +15,7 @@ from OCP.gp import gp_Vec
 from .board_import import mounting_holes
 from .boolean import cut_shape, fuse_shape, join_contact_failures
 from .graph import BoardImport, GraphError, PcbBase, PcbLid, PortCutout, Standoffs
+from .lid_outline import OutlineProfile
 from .pcb import board_loop_wire
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate
@@ -32,10 +33,7 @@ class PortCutoutResult(EnclosureResult):
     opening_tool: Shape
 
 
-@dataclass(frozen=True)
-class _ProfileWire:
-    wire: Wire
-    edges: list[tuple[str, Shape]]
+_ProfileWire = OutlineProfile
 
 
 _REMEDY_STEP = 0.01
@@ -205,7 +203,8 @@ def _prism(
     side_role: str,
 ) -> EnclosureResult:
     location = Location((0, 0, z))
-    face = Face(profile.wire).moved(location)
+    profile_face = Face(profile.wire)
+    face = profile_face.moved(location)
     prism = BRepPrimAPI_MakePrism(face.wrapped, gp_Vec(0, 0, height))
     prism.Build()
     if not prism.IsDone():
@@ -215,7 +214,14 @@ def _prism(
         candidate(feature, bottom_role, source, Shape.cast(prism.FirstShape()), body=body),
         candidate(feature, top_role, source, Shape.cast(prism.LastShape()), body=body),
     ]
-    for source_id, source_edge in profile.edges:
+    profile_edges = profile_face.outer_wire().edges()
+    if len(profile_edges) != len(profile.edges):
+        raise GraphError(
+            "HISTORY_MISSING",
+            f"feature {feature} profile edge history is ambiguous",
+            feature=feature,
+        )
+    for (source_id, _), source_edge in zip(profile.edges, profile_edges, strict=True):
         edge = source_edge.moved(location)
         generated = [Shape.cast(item) for item in prism.Generated(edge.wrapped)]
         if len(generated) != 1:
@@ -294,8 +300,14 @@ def build_pcb_base(node: PcbBase, board: BoardImport) -> EnclosureResult:
     return EnclosureResult(result.shape, result.candidates)
 
 
-def build_pcb_lid(node: PcbLid, base: PcbBase, board: BoardImport) -> EnclosureResult:
-    loop_id, inner, outer = _base_wires(base, board)
+def build_pcb_lid(
+    node: PcbLid,
+    base: PcbBase,
+    board: BoardImport,
+    outline: OutlineProfile | None = None,
+) -> EnclosureResult:
+    loop_id, inner, board_outer = _base_wires(base, board)
+    outer = outline or board_outer
     rim_z = board.mechanics["thickness"] + base.wall_height_above_board
     body = BodySource(node.id, loop_id)
     slab = _prism(
