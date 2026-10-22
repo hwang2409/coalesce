@@ -5,33 +5,44 @@ from __future__ import annotations
 import math
 from typing import Any
 
+LENGTH_TOLERANCE_MM = 1e-6
+AREA_TOLERANCE_MM2 = 1e-6
+VOLUME_TOLERANCE_MM3 = 1e-6
+
 
 def _point(value: Any) -> list[float]:
     return [float(value[0]), float(value[1])]
 
 
+def _position(item: dict | None) -> list[float] | None:
+    return _point(item["position"]) if item and item.get("position") else None
+
+
+def _item_change(item_id: str, was: dict | None, now: dict | None, reference: str) -> dict | None:
+    old_position, new_position = _position(was), _position(now)
+    distance = None
+    if old_position is not None and new_position is not None:
+        distance = math.dist(old_position, new_position)
+        if distance <= LENGTH_TOLERANCE_MM:
+            return None
+    return {
+        "id": item_id,
+        "reference": (now or was).get(reference),
+        "oldPosition": old_position,
+        "newPosition": new_position,
+        "distance": distance,
+        "change": "added" if was is None else "removed" if now is None else "moved",
+    }
+
+
 def _items(before: list[dict], after: list[dict], *, reference: str = "reference") -> list[dict]:
     old = {item.get("id"): item for item in before}
     new = {item.get("id"): item for item in after}
-    changes = []
-    for item_id in sorted(set(old) | set(new)):
-        was, now = old.get(item_id), new.get(item_id)
-        old_position = _point(was["position"]) if was and was.get("position") else None
-        new_position = _point(now["position"]) if now and now.get("position") else None
-        distance = None
-        if old_position is not None and new_position is not None:
-            distance = math.hypot(new_position[0] - old_position[0], new_position[1] - old_position[1])
-            if distance <= 1e-6:
-                continue
-        changes.append({
-            "id": item_id,
-            "reference": (now or was).get(reference),
-            "oldPosition": old_position,
-            "newPosition": new_position,
-            "distance": distance,
-            "change": "added" if was is None else "removed" if now is None else "moved",
-        })
-    return changes
+    changes = (
+        _item_change(item_id, old.get(item_id), new.get(item_id), reference)
+        for item_id in sorted(set(old) | set(new))
+    )
+    return [change for change in changes if change is not None]
 
 
 def _dependents(graph: Any, board_id: str) -> list[str]:
@@ -47,12 +58,38 @@ def _dependents(graph: Any, board_id: str) -> list[str]:
     return sorted(affected - {board_id})
 
 
+def _coordinates(vector: Any) -> tuple[float, float, float]:
+    return (float(vector.X), float(vector.Y), float(vector.Z))
+
+
+def _shape_fingerprint(shape: Any) -> dict[str, Any]:
+    bounds = shape.bounding_box()
+    return {
+        "volume": (float(shape.volume),),
+        "area": (float(shape.area),),
+        "bounds": (*_coordinates(bounds.min), *_coordinates(bounds.max)),
+        "center": _coordinates(shape.center()),
+        "counts": (len(shape.solids()), len(shape.faces())),
+    }
+
+
+def _values_equal(before: tuple[float, ...], after: tuple[float, ...], tolerance: float) -> bool:
+    return all(math.isclose(old, new, rel_tol=0, abs_tol=tolerance) for old, new in zip(before, after))
+
+
 def _changed(before: Any, after: Any, feature_id: str) -> bool:
     old = before.shapes.get(feature_id)
     new = after.shapes.get(feature_id)
     if old is None or new is None:
         return old is not new
-    return not old.is_equal(new)
+    old_fingerprint, new_fingerprint = _shape_fingerprint(old), _shape_fingerprint(new)
+    return (
+        old_fingerprint["counts"] != new_fingerprint["counts"]
+        or not _values_equal(old_fingerprint["volume"], new_fingerprint["volume"], VOLUME_TOLERANCE_MM3)
+        or not _values_equal(old_fingerprint["area"], new_fingerprint["area"], AREA_TOLERANCE_MM2)
+        or not _values_equal(old_fingerprint["bounds"], new_fingerprint["bounds"], LENGTH_TOLERANCE_MM)
+        or not _values_equal(old_fingerprint["center"], new_fingerprint["center"], LENGTH_TOLERANCE_MM)
+    )
 
 
 def _board_parts(board: Any) -> tuple[list[dict], list[dict]]:
@@ -103,20 +140,37 @@ def refresh_delta(
     }
 
 
+def _footprint_labels(footprints: list[dict]) -> list[str]:
+    return [
+        f"{item['reference']} moved {item['distance']:.1f} mm"
+        for item in footprints
+        if item["change"] == "moved" and item.get("reference")
+    ]
+
+
+def _hole_labels(holes: list[dict]) -> list[str]:
+    labels = [
+        f"1 mounting hole {item['change']}"
+        for item in holes
+        if item["change"] in {"added", "removed"}
+    ]
+    moved = sum(item["change"] == "moved" for item in holes)
+    if moved:
+        labels.append(f"{moved} mounting hole{'s' if moved != 1 else ''} moved")
+    return labels
+
+
+def _dependent_label(dependents: list[str]) -> list[str]:
+    if not dependents:
+        return []
+    joined = dependents[0] if len(dependents) == 1 else " and ".join(dependents)
+    return [joined + " updated"]
+
+
 def format_summary(delta: dict[str, Any], board_id: str = "") -> str:
-    labels = []
-    for item in delta["footprints"]:
-        if item["change"] == "moved" and item.get("reference"):
-            labels.append(f"{item['reference']} moved {item['distance']:.1f} mm")
-    for item in delta["mountingHoles"]:
-        if item["change"] in {"added", "removed"}:
-            labels.append(f"1 mounting hole {item['change']}")
-    moved_holes = sum(item["change"] == "moved" for item in delta["mountingHoles"])
-    if moved_holes:
-        labels.append(f"{moved_holes} mounting hole{'s' if moved_holes != 1 else ''} moved")
-    names = {"standoffs": "standoffs", "port cutout": "port cutout"}
-    dependent = [names.get(item, item) for item in delta["dependentFeatures"]]
-    if dependent:
-        joined = dependent[0] if len(dependent) == 1 else " and ".join(dependent)
-        labels.append(joined + " updated")
+    labels = [
+        *_footprint_labels(delta["footprints"]),
+        *_hole_labels(delta["mountingHoles"]),
+        *_dependent_label(delta["dependentFeatures"]),
+    ]
     return "refreshed board: " + (", ".join(labels) if labels else "source changed")

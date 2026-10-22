@@ -2143,6 +2143,30 @@ def _selection_changes(
     return changes
 
 
+def _is_board_refresh(operation: MutationOperation) -> bool:
+    return isinstance(operation, BoardImportOperation) and operation.action is Action.REFRESH
+
+
+def _ensure_refresh_geometry(
+    operation: MutationOperation, ensure_geometry: Callable[[], None]
+) -> None:
+    if _is_board_refresh(operation):
+        ensure_geometry()
+
+
+def _refresh_fields(
+    operation: MutationOperation,
+    before: Any,
+    after: Any,
+    before_result: RegenResult | None,
+    after_result: RegenResult,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    if not _is_board_refresh(operation):
+        return None, {}
+    delta = refresh_delta(before, after, before_result, after_result, operation.assetId)
+    return delta, {"boardChanges": delta}
+
+
 def _change(
     before: Any,
     result: RegenResult,
@@ -2157,6 +2181,17 @@ def _change(
         delta = delta or refresh_delta(before, result.graph, before_result, result, changed_id)
         return {"featureId": changed_id, "summary": format_summary(delta, changed_id)}
     return {"featureId": changed_id, "summary": _added(node, result) if old is None else _edited(old, node)}
+
+
+def _mutation_change(
+    deletion_change: dict[str, str] | None,
+    before: Any,
+    result: RegenResult,
+    changed_id: str,
+    before_result: RegenResult | None,
+    delta: dict[str, Any] | None,
+) -> dict[str, str]:
+    return deletion_change or _change(before, result, changed_id, before_result, delta)
 
 
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
@@ -2505,8 +2540,7 @@ class DocumentService:
 
                 self.start_kernel_warmup()
                 self._kernel_loader.wait()
-                if isinstance(parsed, BoardImportOperation) and parsed.action is Action.REFRESH:
-                    self._ensure_geometry()
+                _ensure_refresh_geometry(parsed, self._ensure_geometry)
                 committed_result = self._regen
                 previous_selections = _selection_snapshot(self._document.graph)
                 graph = loads(dumps(self._document.graph))
@@ -2518,12 +2552,12 @@ class DocumentService:
                 deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
                 previous = self._document.revision
                 before = self._document.graph
-                delta = (
-                    refresh_delta(before, graph, committed_result, result, parsed.assetId)
-                    if isinstance(parsed, BoardImportOperation) and parsed.action is Action.REFRESH
-                    else None
+                delta, refresh_fields = _refresh_fields(
+                    parsed, before, graph, committed_result, result
                 )
-                change = deletion_change or _change(before, result, changed_id, committed_result, delta)
+                change = _mutation_change(
+                    deletion_change, before, result, changed_id, committed_result, delta
+                )
                 response = {
                     "ok": True,
                     "revision": previous + 1,
@@ -2538,9 +2572,8 @@ class DocumentService:
                     ),
                     **deletion_fields,
                     **response_fields(graph, result, changed_id),
+                    **refresh_fields,
                 }
-                if delta is not None:
-                    response["boardChanges"] = delta
                 receipt = {
                     "requestId": request_id,
                     "requestHash": body_hash,

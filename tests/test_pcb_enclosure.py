@@ -305,6 +305,50 @@ def _pilot_hole_ids(service: DocumentService) -> set[str]:
     }
 
 
+def _scene_summary(store: ViewerSceneStore, revision: int) -> str:
+    while store.current_revision != revision:
+        version, _, _ = store.snapshot()
+        assert store.wait_for_change(version, 10)
+    return store.scene(revision)["change"]["summary"]
+
+
+def _refresh_enclosure(tmp_path: Path, name: str, *, port: bool = False):
+    source = tmp_path / f"{name}.kicad_pcb"
+    source.write_text((FIXTURES / "features.kicad_pcb").read_text())
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / f"{name}.coalesce.json", scene_store=store)
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    assert service.feature(standoffs_request(selection={"mode": "all_mounting"}))["ok"]
+    if port:
+        assert service.feature({
+            "action": "create",
+            "expectedRevision": 3,
+            "requestId": "port",
+            "featureId": "port",
+            "kind": "port_cutout",
+            "parameters": {
+                "base": {"featureId": "base"},
+                "footprint": "J1",
+                "wall": "left",
+                "clearance": quantity(0.5),
+                "envelope": {
+                    "source": "courtyard",
+                    "height": quantity(2),
+                    "bottomOffset": quantity(1),
+                },
+            },
+        })["ok"]
+    return service, source, store
+
+
+def _refresh_variant(service: DocumentService, source: Path, revision: int) -> dict:
+    return service.import_board({
+        **import_request(source, revision=revision, request_id="refresh", action="refresh"),
+        "path": str(source.resolve()),
+    })
+
+
 def test_refresh_can_replace_source_path_and_keep_import_ids(tmp_path):
     document = tmp_path / "refresh-path.coalesce.json"
     service = DocumentService(document)
@@ -419,18 +463,85 @@ def test_identical_refresh_has_empty_delta(tmp_path):
     }
 
 
+def test_refresh_j1_only_reports_port_cutout(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "j1-only", port=True)
+    source.write_text(source.read_text().replace("(at 1 5)", "(at 1 6)"))
+
+    refreshed = _refresh_variant(service, source, revision=4)
+
+    assert refreshed["boardChanges"] == {
+        "mountingHoles": [],
+        "footprints": [{
+            "id": "front-id",
+            "reference": "J1",
+            "oldPosition": [1.0, 5.0],
+            "newPosition": [1.0, 6.0],
+            "distance": 1.0,
+            "change": "moved",
+        }],
+        "outlineChanged": False,
+        "dependentFeatures": ["port cutout"],
+    }
+    assert _scene_summary(store, 5) == "refreshed board: J1 moved 1.0 mm, port cutout updated"
+
+
+def test_refresh_removed_anonymous_hole_reports_standoffs(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "removed-hole")
+    _remove_mounting_footprint(source, "MountingHole:M2")
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    assert refreshed["boardChanges"] == {
+        "mountingHoles": [{
+            "id": FEATURE_HOLES[0],
+            "reference": None,
+            "oldPosition": [2.0, 3.0],
+            "newPosition": None,
+            "distance": None,
+            "change": "removed",
+        }],
+        "footprints": [],
+        "outlineChanged": False,
+        "dependentFeatures": ["standoffs"],
+    }
+    assert _scene_summary(store, 4) == "refreshed board: 1 mounting hole removed, standoffs updated"
+
+
+def test_refresh_added_mounting_hole_reports_standoffs(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "added-hole")
+    _add_mounting_footprint(source)
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    assert refreshed["boardChanges"] == {
+        "mountingHoles": [{
+            "id": "hole-db8e1452adbd1eeb02fb49c6",
+            "reference": "H2",
+            "oldPosition": None,
+            "newPosition": [10.0, 1.5],
+            "distance": None,
+            "change": "added",
+        }],
+        "footprints": [],
+        "outlineChanged": False,
+        "dependentFeatures": ["standoffs"],
+    }
+    assert _scene_summary(store, 4) == "refreshed board: 1 mounting hole added, standoffs updated"
+
+
 def test_refresh_float_noise_below_tolerance_is_not_a_move(tmp_path):
-    source = tmp_path / "noise.kicad_pcb"
-    source.write_bytes((FIXTURES / "features.kicad_pcb").read_bytes().replace(b"(at 2 3)", b"(at 2.0000004 3.0000004)"))
-    service = DocumentService(tmp_path / "noise.coalesce.json")
-    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
-    refreshed = service.import_board({
-        **import_request(source, revision=1, request_id="noise", action="refresh"),
-        "path": str(source.resolve()),
-    })
-    assert refreshed["boardChanges"]["mountingHoles"] == []
-    assert refreshed["boardChanges"]["footprints"] == []
-    assert refreshed["boardChanges"]["outlineChanged"] is False
+    service, source, store = _refresh_enclosure(tmp_path, "noise")
+    source.write_text(source.read_text().replace("(at 2 3)", "(at 2.0000004 3)"))
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    assert refreshed["boardChanges"] == {
+        "mountingHoles": [],
+        "footprints": [],
+        "outlineChanged": False,
+        "dependentFeatures": [],
+    }
+    assert _scene_summary(store, 4) == "refreshed board: source changed"
 
 
 def test_refresh_moved_board_with_same_ids_has_no_selection_changes(tmp_path):
