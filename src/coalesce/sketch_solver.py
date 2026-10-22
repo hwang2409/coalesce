@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from math import isfinite, tau
@@ -327,31 +328,46 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
     process = context.Process(target=_solve_in_child, args=(request, child), daemon=True)
-    process.start()
-    child.close()
-    if not parent.poll(SOLVE_TIMEOUT_SECONDS):
-        process.terminate()
-        process.join()
-        parent.close()
+    started = False
+    try:
+        process.start()
+        started = True
+        child.close()
+        if not parent.poll(SOLVE_TIMEOUT_SECONDS):
+            return _error_result(
+                SolveStatus.DID_NOT_CONVERGE,
+                SketchSolveError(
+                    "SOLVE_TIMEOUT",
+                    f"the sketch solver exceeded {SOLVE_TIMEOUT_SECONDS:g} seconds",
+                    recoverable=True,
+                ),
+            )
+        try:
+            kind, value = parent.recv()
+        except EOFError:
+            return _error_result(
+                SolveStatus.DID_NOT_CONVERGE,
+                SketchSolveError("SOLVER_FAILED", "the sketch solver process exited unexpectedly"),
+            )
+        if kind == "result":
+            return value
+        if kind == "import_error":
+            raise ImportError(value)
         return _error_result(
             SolveStatus.DID_NOT_CONVERGE,
             SketchSolveError(
-                "SOLVE_TIMEOUT",
-                f"the sketch solver exceeded {SOLVE_TIMEOUT_SECONDS:g} seconds",
-                recoverable=True,
+                "SOLVER_FAILED", "the sketch solver process failed", details={"error": value}
             ),
         )
-    kind, value = parent.recv()
-    parent.close()
-    process.join()
-    if kind == "result":
-        return value
-    if kind == "import_error":
-        raise ImportError(value)
-    return _error_result(
-        SolveStatus.DID_NOT_CONVERGE,
-        SketchSolveError("SOLVER_FAILED", "the sketch solver process failed", details={"error": value}),
-    )
+    finally:
+        with suppress(OSError):
+            parent.close()
+        with suppress(OSError):
+            child.close()
+        if started:
+            if process.is_alive():
+                process.terminate()
+            process.join()
 
 
 def _success_status(redundant: tuple[str, ...], dof: int) -> SolveStatus:
