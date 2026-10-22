@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -134,12 +135,12 @@ def update_request(model: dict, revision: int, request_id: str) -> dict:
     }
 
 
-def primitive_request(*, revision: int, request_id: str) -> dict:
+def primitive_request(*, revision: int, request_id: str, sketch_id: str = "primitive") -> dict:
     return {
         "action": "create",
         "expectedRevision": revision,
         "requestId": request_id,
-        "sketchId": "primitive",
+        "sketchId": sketch_id,
         "plane": {"kind": "origin", "name": "XY"},
         "entities": [
             {
@@ -150,6 +151,49 @@ def primitive_request(*, revision: int, request_id: str) -> dict:
             }
         ],
     }
+
+
+def primitive_update(*, revision: int, request_id: str) -> dict:
+    request = primitive_request(revision=revision, request_id=request_id, sketch_id="profile")
+    return {
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": request_id,
+        "sketchId": "profile",
+        "set": {"entities": request["entities"]},
+    }
+
+
+def fake_planegcs(path: Path, *, status: str, delay: float = 0) -> Path:
+    path.mkdir()
+    module = path / "planegcs.py"
+    module.write_text(
+        f"""
+import time
+from enum import Enum
+from types import SimpleNamespace
+
+class SolveStatus(Enum):
+    Success = 1
+    Converged = 2
+    Failed = 3
+
+class Sketch:
+    def __init__(self):
+        self.next_tag = 0
+    def __getattr__(self, _name):
+        def operation(*_args, **_kwargs):
+            self.next_tag += 1
+            return self.next_tag
+        return operation
+    def diagnose(self):
+        return SimpleNamespace(redundant=(), partially_redundant=(), conflicting=(), dof=0)
+    def solve(self):
+        time.sleep({delay!r})
+        return SolveStatus.{status}
+"""
+    )
+    return path
 
 
 def result_json(result) -> dict:
@@ -323,3 +367,112 @@ async def test_update_and_reload_resolve_instead_of_trusting_cached_output(tmp_p
     assert solved["dof"] == 0
     assert solved["entities"]["p1"]["x"] == pytest.approx(43.0, abs=1e-9)
     assert solved["entities"]["p1"]["x"] != -999.0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("start_constrained", [False, True])
+async def test_variant_switch_replaces_old_state_and_survives_reload(tmp_path, start_constrained):
+    path = tmp_path / f"switch-{start_constrained}.coalesce.json"
+    create = (
+        create_request(rectangle_model())
+        if start_constrained
+        else primitive_request(revision=0, request_id="create", sketch_id="profile")
+    )
+    update = (
+        primitive_update(revision=1, request_id="switch")
+        if start_constrained
+        else update_request(rectangle_model(), 1, "switch")
+    )
+    created, switched, queried = await run_server(
+        path,
+        [("sketch", create), ("sketch", update), ("query", {"select": {"kind": "graph"}})],
+    )
+    reloaded = (await run_server(path, [("query", {"select": {"kind": "graph"}})]))[0]
+
+    assert created["ok"] is True
+    assert switched["ok"] is True
+    for response in (queried, reloaded):
+        sketch = graph_sketch(response)
+        assert ("constrained" in sketch) is not start_constrained
+        assert ("entities" in sketch) is start_constrained
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        ({"points": [{}]}, "constrained.points[0].id"),
+        ({"constraints": [{"id": "bad", "kind": "unknown", "entities": ["p0"]}]}, "constrained.constraints[0].kind"),
+        ({"lines": [{"id": "edge", "start": "missing", "end": "p0"}]}, "constrained.lines[0].start"),
+        ({"points": [{"id": "p0", "x": float("inf"), "y": 0}]}, "constrained.points[0].x"),
+    ],
+)
+async def test_malformed_constrained_payload_is_invalid_parameter(tmp_path, change, field):
+    model = rectangle_model()
+    model.update(change)
+
+    result = (await run_server(tmp_path / "invalid.coalesce.json", [("sketch", create_request(model))]))[0]
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["field"] == field
+
+
+@pytest.mark.anyio
+async def test_documented_payload_is_accepted_and_fully_constrained(tmp_path):
+    docs = Path("docs/sketch.md").read_text()
+    payload = json.loads(docs.split("```json\n", 1)[1].split("\n```", 1)[0])
+
+    result = (await run_server(tmp_path / "documented.coalesce.json", [("sketch", payload)]))[0]
+
+    assert result["ok"] is True
+    assert result["solve"]["status"] == "fully_constrained"
+
+
+@pytest.mark.anyio
+async def test_did_not_converge_update_is_atomic(tmp_path):
+    path = tmp_path / "non-converge.coalesce.json"
+    created = (await run_server(path, [("sketch", create_request(rectangle_model()))]))[0]
+    saved = path.read_bytes()
+    fake = fake_planegcs(tmp_path / "fake-non-converge", status="Failed")
+
+    rejected = (
+        await run_server(
+            path,
+            [("sketch", update_request(rectangle_model(width=42), 1, "non-converge"))],
+            env={"PYTHONPATH": str(fake)},
+        )
+    )[0]
+
+    assert created["revision"] == 1
+    assert rejected["ok"] is False
+    assert rejected["revision"] == 1
+    assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+    assert path.read_bytes() == saved
+
+
+@pytest.mark.anyio
+async def test_slow_load_fails_closed_within_bound_and_can_be_repaired(tmp_path):
+    path = tmp_path / "slow-load.coalesce.json"
+    (await run_server(path, [("sketch", create_request(rectangle_model()))]))[0]
+    fake = fake_planegcs(tmp_path / "fake-slow", status="Success", delay=10)
+    started = time.monotonic()
+
+    failed, repaired, queried = await run_server(
+        path,
+        [
+            ("query", {"select": {"kind": "graph"}}),
+            ("sketch", primitive_update(revision=1, request_id="repair")),
+            ("query", {"select": {"kind": "graph"}}),
+        ],
+        env={"PYTHONPATH": str(fake)},
+    )
+
+    assert time.monotonic() - started < 4
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "SKETCH_SOLVE_TIMEOUT"
+    assert failed["error"]["featureId"] == "profile"
+    assert repaired["ok"] is True
+    assert repaired["revision"] == 2
+    assert "constrained" not in graph_sketch(queried)
+    assert "entities" in graph_sketch(queried)
