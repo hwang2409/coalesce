@@ -326,7 +326,13 @@ def _prefer_unknown_field(error: ValidationError) -> ValidationError:
 def _schema_error_details(
     name: str, arguments: dict[str, Any], error: ValidationError
 ) -> dict[str, Any]:
-    details: dict[str, Any] = {}
+    field = "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" for part in error.absolute_path
+    ).lstrip(".")
+    if error.validator == "required" and isinstance(error.instance, dict):
+        missing = next(name for name in error.validator_value if name not in error.instance)
+        field = f"{field}.{missing}" if field else missing
+    details: dict[str, Any] = {"field": field}
     if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
         details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
     if name == "check" and error.validator == "enum":

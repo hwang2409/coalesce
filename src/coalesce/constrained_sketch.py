@@ -1,8 +1,10 @@
-"""Persisted constrained-sketch model and solver boundary."""
+"""Constrained-sketch payload, persistence, and bounded solver interface."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from enum import StrEnum
+from math import isfinite
 from typing import Any
 
 from .sketch_solver import (
@@ -10,7 +12,9 @@ from .sketch_solver import (
     BranchLandmark,
     Circle,
     Constraint,
+    ConstraintKind,
     Dimension,
+    DimensionKind,
     Line,
     Point,
     SolvedArc,
@@ -22,6 +26,104 @@ from .sketch_solver import (
     SolveStatus,
     solve_sketch,
 )
+
+_ID = {"type": "string", "minLength": 1}
+_FINITE_NUMBER = {"type": "number"}
+_ENTITY_IDS = {"type": "array", "items": _ID, "minItems": 1}
+
+
+def _object(properties: dict[str, Any], required: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
+POINT_SCHEMA = _object(
+    {"id": _ID, "x": _FINITE_NUMBER, "y": _FINITE_NUMBER, "construction": {"type": "boolean"}},
+    ("id", "x", "y"),
+)
+LINE_SCHEMA = _object(
+    {"id": _ID, "start": _ID, "end": _ID, "construction": {"type": "boolean"}},
+    ("id", "start", "end"),
+)
+ARC_SCHEMA = _object(
+    {
+        "id": _ID,
+        "center": _ID,
+        "start": _ID,
+        "end": _ID,
+        "radius": _FINITE_NUMBER,
+        "start_angle": _FINITE_NUMBER,
+        "end_angle": _FINITE_NUMBER,
+        "construction": {"type": "boolean"},
+    },
+    ("id", "center", "start", "end", "radius", "start_angle", "end_angle"),
+)
+CIRCLE_SCHEMA = _object(
+    {"id": _ID, "center": _ID, "radius": _FINITE_NUMBER, "construction": {"type": "boolean"}},
+    ("id", "center", "radius"),
+)
+DIMENSION_SCHEMA = _object(
+    {
+        "id": _ID,
+        "kind": {"enum": [kind.value for kind in DimensionKind]},
+        "entities": _ENTITY_IDS,
+        "value": _FINITE_NUMBER,
+        "driving": {"type": "boolean"},
+    },
+    ("id", "kind", "entities", "value"),
+)
+CONSTRAINT_SCHEMA = _object(
+    {
+        "id": _ID,
+        "kind": {"enum": [kind.value for kind in ConstraintKind]},
+        "entities": _ENTITY_IDS,
+        "driving": {"type": "boolean"},
+    },
+    ("id", "kind", "entities"),
+)
+LANDMARK_SCHEMA = _object(
+    {
+        "id": _ID,
+        "base_start": _ID,
+        "base_end": _ID,
+        "point": _ID,
+        "expected_sign": {"enum": [-1, 1]},
+        "constraint_ids": {"type": "array", "items": _ID},
+    },
+    ("id", "base_start", "base_end", "point", "expected_sign"),
+)
+CONSTRAINED_SKETCH_SCHEMA = _object(
+    {
+        "kind": {"const": "constrained"},
+        "points": {"type": "array", "items": POINT_SCHEMA},
+        "lines": {"type": "array", "items": LINE_SCHEMA},
+        "arcs": {"type": "array", "items": ARC_SCHEMA},
+        "circles": {"type": "array", "items": CIRCLE_SCHEMA},
+        "dimensions": {"type": "array", "items": DIMENSION_SCHEMA},
+        "constraints": {"type": "array", "items": CONSTRAINT_SCHEMA},
+        "initial": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": _FINITE_NUMBER,
+                "minItems": 1,
+                "maxItems": 3,
+            },
+        },
+        "landmarks": {"type": "array", "items": LANDMARK_SCHEMA},
+    },
+    ("kind",),
+)
+
+
+class ConstrainedSketchPayloadError(ValueError):
+    def __init__(self, field: str, message: str):
+        self.field = field
+        super().__init__(f"{field} {message}")
 
 
 @dataclass
@@ -54,56 +156,172 @@ class ConstrainedSketch:
         return result
 
 
-def _items(value: dict[str, Any], name: str, cls: Any) -> tuple[Any, ...]:
+_ITEM_TYPES = {
+    "points": (Point, None),
+    "lines": (Line, None),
+    "arcs": (Arc, None),
+    "circles": (Circle, None),
+    "dimensions": (Dimension, DimensionKind),
+    "constraints": (Constraint, ConstraintKind),
+    "landmarks": (BranchLandmark, None),
+}
+_REQUIRED_FIELDS = {
+    "points": ("id", "x", "y"),
+    "lines": ("id", "start", "end"),
+    "arcs": ("id", "center", "start", "end", "radius", "start_angle", "end_angle"),
+    "circles": ("id", "center", "radius"),
+    "dimensions": ("id", "kind", "entities", "value"),
+    "constraints": ("id", "kind", "entities"),
+    "landmarks": ("id", "base_start", "base_end", "point", "expected_sign"),
+}
+_NUMERIC_FIELDS = {
+    "points": ("x", "y"),
+    "arcs": ("radius", "start_angle", "end_angle"),
+    "circles": ("radius",),
+    "dimensions": ("value",),
+}
+_REFERENCE_FIELDS = {
+    "lines": ("start", "end"),
+    "arcs": ("center", "start", "end"),
+    "circles": ("center",),
+    "landmarks": ("base_start", "base_end", "point"),
+}
+
+
+def _payload_error(field: str, message: str) -> None:
+    raise ConstrainedSketchPayloadError(field, message)
+
+
+def _parse_items(value: dict[str, Any], name: str) -> tuple[Any, ...]:
+    raw_items = value.get(name, [])
+    if not isinstance(raw_items, list):
+        _payload_error(f"constrained.{name}", "must be an array")
+    cls, enum = _ITEM_TYPES[name]
     parsed = []
-    for raw in value.get(name, []):
+    for index, raw in enumerate(raw_items):
+        path = f"constrained.{name}[{index}]"
+        if not isinstance(raw, dict):
+            _payload_error(path, "must be an object")
         item = dict(raw)
-        if cls is Dimension:
-            from .sketch_solver import DimensionKind
-
-            item["kind"] = DimensionKind(item["kind"])
-        elif cls is Constraint:
-            from .sketch_solver import ConstraintKind
-
-            item["kind"] = ConstraintKind(item["kind"])
-        parsed.append(cls(**item))
+        for required in _REQUIRED_FIELDS[name]:
+            if required not in item:
+                _payload_error(f"{path}.{required}", "is required")
+        if not isinstance(item["id"], str) or not item["id"]:
+            _payload_error(f"{path}.id", "must be a non-empty string")
+        if enum is not None:
+            try:
+                item["kind"] = enum(item["kind"])
+            except (TypeError, ValueError):
+                _payload_error(f"{path}.kind", "has an unknown value")
+        for numeric in _NUMERIC_FIELDS.get(name, ()):
+            number = item[numeric]
+            if not isinstance(number, (int, float)) or not isfinite(number):
+                _payload_error(f"{path}.{numeric}", "must be a finite number")
+        for sequence in ("entities", "constraint_ids"):
+            if sequence in item:
+                if not isinstance(item[sequence], list) or not all(
+                    isinstance(entry, str) and entry for entry in item[sequence]
+                ):
+                    _payload_error(f"{path}.{sequence}", "must contain non-empty ids")
+                item[sequence] = tuple(item[sequence])
+        try:
+            parsed.append(cls(**item))
+        except TypeError as error:
+            _payload_error(path, f"has invalid fields: {error}")
     return tuple(parsed)
 
 
+def _validate_references(model: ConstrainedSketch) -> None:
+    point_ids = {point.id for point in model.points}
+    entity_ids = point_ids | {item.id for item in (*model.lines, *model.arcs, *model.circles)}
+    constraint_ids = {item.id for item in (*model.dimensions, *model.constraints)}
+    for name, fields in _REFERENCE_FIELDS.items():
+        for index, item in enumerate(getattr(model, name)):
+            for field_name in fields:
+                if getattr(item, field_name) not in point_ids:
+                    _payload_error(
+                        f"constrained.{name}[{index}].{field_name}", "references an unknown point id"
+                    )
+    for name in ("dimensions", "constraints"):
+        for index, item in enumerate(getattr(model, name)):
+            for entity_id in item.entities:
+                if entity_id not in entity_ids:
+                    _payload_error(
+                        f"constrained.{name}[{index}].entities", "references an unknown entity id"
+                    )
+    for index, landmark in enumerate(model.landmarks):
+        for constraint_id in landmark.constraint_ids:
+            if constraint_id not in constraint_ids:
+                _payload_error(
+                    f"constrained.landmarks[{index}].constraint_ids",
+                    "references an unknown constraint id",
+                )
+
+
 def from_payload(value: dict[str, Any]) -> ConstrainedSketch:
-    model = ConstrainedSketch(
-        points=_items(value, "points", Point),
-        lines=_items(value, "lines", Line),
-        arcs=_items(value, "arcs", Arc),
-        circles=_items(value, "circles", Circle),
-        dimensions=_items(value, "dimensions", Dimension),
-        constraints=_items(value, "constraints", Constraint),
-        initial={key: tuple(raw) for key, raw in value.get("initial", {}).items()},
-        landmarks=_items(value, "landmarks", BranchLandmark),
-    )
+    if not isinstance(value, dict) or value.get("kind") != "constrained":
+        _payload_error("constrained.kind", "must equal constrained")
+    items = {name: _parse_items(value, name) for name in _ITEM_TYPES}
+    raw_initial = value.get("initial", {})
+    if not isinstance(raw_initial, dict):
+        _payload_error("constrained.initial", "must be an object")
+    initial = {}
+    for entity_id, raw in raw_initial.items():
+        field_path = f"constrained.initial.{entity_id}"
+        if not isinstance(raw, list) or not raw or not all(
+            isinstance(number, (int, float)) and isfinite(number) for number in raw
+        ):
+            _payload_error(field_path, "must contain finite numbers")
+        initial[entity_id] = tuple(raw)
+    model = ConstrainedSketch(initial=initial, **items)
+    _validate_references(model)
     saved = value.get("solved")
     if isinstance(saved, dict):
-        entities = {}
-        types = {
-            "SolvedPoint": SolvedPoint,
-            "SolvedLine": SolvedLine,
-            "SolvedArc": SolvedArc,
-            "SolvedCircle": SolvedCircle,
-        }
-        for key, raw in saved.get("entities", {}).items():
-            raw = dict(raw)
-            cls = types[raw.pop("kind")]
-            for field_name in ("start", "end", "center"):
-                if field_name in raw:
-                    raw[field_name] = tuple(raw[field_name])
-            entities[key] = cls(**raw)
-        model.solved = SolveResult(
-            SolveStatus(saved["status"]),
-            entities,
-            saved.get("dof"),
-            landmarks=saved.get("landmarks", {}),
-        )
+        model.solved = _result_from_payload(saved)
     return model
+
+
+def _result_from_payload(saved: dict[str, Any]) -> SolveResult:
+    entities = {}
+    types = {
+        "SolvedPoint": SolvedPoint,
+        "SolvedLine": SolvedLine,
+        "SolvedArc": SolvedArc,
+        "SolvedCircle": SolvedCircle,
+    }
+    for key, value in saved.get("entities", {}).items():
+        raw = dict(value)
+        cls = types[raw.pop("kind")]
+        for field_name in ("start", "end", "center"):
+            if field_name in raw:
+                raw[field_name] = tuple(raw[field_name])
+        entities[key] = cls(**raw)
+    return SolveResult(
+        SolveStatus(saved["status"]),
+        entities,
+        saved.get("dof"),
+        landmarks=saved.get("landmarks", {}),
+    )
+
+
+def to_payload(model: ConstrainedSketch) -> dict[str, Any]:
+    payload = {
+        "kind": "constrained",
+        **{
+            name: [
+                {
+                    key: value.value if isinstance(value, StrEnum) else value
+                    for key, value in asdict(item).items()
+                }
+                for item in getattr(model, name)
+            ]
+            for name in _ITEM_TYPES
+        },
+        "initial": model.initial,
+    }
+    if model.solved is not None:
+        payload["solved"] = result_payload(model)
+    return payload
 
 
 def result_payload(model: ConstrainedSketch) -> dict[str, Any]:

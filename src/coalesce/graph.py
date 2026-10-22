@@ -52,13 +52,57 @@ class Circle:
 
 
 @dataclass
+class PrimitiveSketchState:
+    entities: list[Rectangle | Circle] = field(default_factory=list)
+
+
+@dataclass
+class ConstrainedSketchState:
+    constrained: Any
+
+
+@dataclass(init=False)
 class Sketch:
     id: str
-    plane: Plane = field(default_factory=Plane)
-    entities: list[Rectangle | Circle] = field(default_factory=list)
-    constrained: Any | None = None
-    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    plane: Plane
+    state: PrimitiveSketchState | ConstrainedSketchState
+    position: tuple[float, float, float]
+    rotation: tuple[float, float, float]
+
+    def __init__(
+        self,
+        id: str,
+        plane: Plane | None = None,
+        entities: list[Rectangle | Circle] | None = None,
+        constrained: Any | None = None,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ):
+        if entities and constrained is not None:
+            raise ValueError("a sketch cannot be primitive and constrained")
+        self.id = id
+        self.plane = plane or Plane()
+        self.state = (
+            ConstrainedSketchState(constrained)
+            if constrained is not None
+            else PrimitiveSketchState(entities or [])
+        )
+        self.position = position
+        self.rotation = rotation
+
+    @property
+    def entities(self) -> list[Rectangle | Circle]:
+        return self.state.entities if isinstance(self.state, PrimitiveSketchState) else []
+
+    @property
+    def constrained(self) -> Any | None:
+        return self.state.constrained if isinstance(self.state, ConstrainedSketchState) else None
+
+    def replace_entities(self, entities: list[Rectangle | Circle]) -> None:
+        self.state = PrimitiveSketchState(entities)
+
+    def replace_constrained(self, constrained: Any) -> None:
+        self.state = ConstrainedSketchState(constrained)
 
 
 @dataclass

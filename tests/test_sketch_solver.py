@@ -38,6 +38,7 @@ from coalesce.sketch_solver import (
     SolveRequest,
     SolveResult,
     SolveStatus,
+    _solve_sketch_native,
     solve_sketch,
 )
 
@@ -100,7 +101,7 @@ def test_missing_solver_extra_has_actionable_install_error(monkeypatch: pytest.M
     monkeypatch.setattr(builtins, "__import__", import_without_planegcs)
 
     with pytest.raises(ImportError, match=r"pip install 'coalesce\[sketch\]'") as error:
-        solve_sketch(SolveRequest())
+        _solve_sketch_native(SolveRequest())
     if sys.platform == "darwin":
         assert "brew install eigen boost" in str(error.value)
 
@@ -580,4 +581,4 @@ def test_solver_failures_are_not_reported_as_caller_input_errors(monkeypatch, er
 
     monkeypatch.setattr(planegcs.Sketch, "solve", broken)
     with pytest.raises(error_type, match="solver defect"):
-        solve_sketch(rectangle_request(fixed_corner=True))
+        _solve_sketch_native(rectangle_request(fixed_corner=True))

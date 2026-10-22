@@ -77,7 +77,7 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
   "points":[{"id":"a","x":0,"y":0},{"id":"b","x":10,"y":0}],
   "lines":[{"id":"edge","start":"a","end":"b"}],
   "dimensions":[{"id":"length","kind":"distance","entities":["a","b"],"value":10}],
-  "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"fix-b","kind":"fix","entities":["b"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
+  "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
 ```
 
 ## replace the solver

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -307,7 +308,53 @@ class SolveResult:
     errors: tuple[SketchSolveError, ...] = ()
 
 
+SOLVE_TIMEOUT_SECONDS = 1.0
+
+
+def _solve_in_child(request: SolveRequest, connection: Any) -> None:
+    try:
+        connection.send(("result", _solve_sketch_native(request)))
+    except ImportError as error:
+        connection.send(("import_error", str(error)))
+    except BaseException as error:  # noqa: BLE001 - report a native child failure to its parent
+        connection.send(("solver_error", repr(error)))
+    finally:
+        connection.close()
+
+
 def solve_sketch(request: SolveRequest) -> SolveResult:
+    """Solve in a killable process so native code cannot block the document."""
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe(duplex=False)
+    process = context.Process(target=_solve_in_child, args=(request, child), daemon=True)
+    process.start()
+    child.close()
+    if not parent.poll(SOLVE_TIMEOUT_SECONDS):
+        process.terminate()
+        process.join()
+        parent.close()
+        return _error_result(
+            SolveStatus.DID_NOT_CONVERGE,
+            SketchSolveError(
+                "SOLVE_TIMEOUT",
+                f"the sketch solver exceeded {SOLVE_TIMEOUT_SECONDS:g} seconds",
+                recoverable=True,
+            ),
+        )
+    kind, value = parent.recv()
+    parent.close()
+    process.join()
+    if kind == "result":
+        return value
+    if kind == "import_error":
+        raise ImportError(value)
+    return _error_result(
+        SolveStatus.DID_NOT_CONVERGE,
+        SketchSolveError("SOLVER_FAILED", "the sketch solver process failed", details={"error": value}),
+    )
+
+
+def _solve_sketch_native(request: SolveRequest) -> SolveResult:
     """Solve one sketch without exposing PlaneGCS handles or mutating the request."""
     try:
         validation_error = _validate(request)

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
-from .constrained_sketch import ConstrainedSketch, result_payload
+from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
 from .constrained_sketch import from_payload as constrained_from_payload
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .errors import ERROR_REGISTRY
@@ -771,51 +771,55 @@ def _entities(payload: Any) -> tuple[Rectangle | Circle, ...]:
     return tuple(parsed)
 
 
-def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | SketchDelete:
-    if payload.get("action") == "delete":
-        return _parse_delete(payload, SketchDelete, "sketchId")
-    common = {
+def _constrained_sketch(payload: Any) -> ConstrainedSketch:
+    try:
+        return constrained_from_payload(payload)
+    except ConstrainedSketchPayloadError as error:
+        raise RequestError("INVALID_PARAMETER", str(error), field=error.field) from error
+
+
+def _sketch_common(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
         "action": Action(payload.get("action")),
         "expectedRevision": _finite_number(payload.get("expectedRevision"), "expectedRevision"),
         "requestId": payload.get("requestId"),
         "sketchId": payload.get("sketchId"),
     }
-    constrained_payload = payload.get("constrained")
-    constrained = None
-    if constrained_payload is not None:
-        if (
-            not isinstance(constrained_payload, dict)
-            or constrained_payload.get("kind") != "constrained"
-        ):
-            raise RequestError(
-                "INVALID_PARAMETER", "constrained sketch form must have kind constrained"
-            )
-        constrained = constrained_from_payload(constrained_payload)
-    if common["action"] is Action.CREATE:
-        plane = payload.get("plane", {})
-        return SketchCreate(
-            **common,
-            plane=SketchPlane(
-                plane.get("kind"),
-                plane.get("name"),
-                _quantity(plane.get("offset", {"value": 0, "unit": "mm"}), "mm", "offset"),
-            ),
-            entities=_entities(
-                payload.get(
-                    "entities",
-                    [{"id": "placeholder", "kind": "circle", "radius": {"value": 1, "unit": "mm"}}],
-                )
-            )
-            if constrained is None
-            else (),
-            constrained=constrained,
-        )
+
+
+def _sketch_plane(payload: dict[str, Any]) -> SketchPlane:
+    plane = payload.get("plane", {})
+    return SketchPlane(
+        plane.get("kind"),
+        plane.get("name"),
+        _quantity(plane.get("offset", {"value": 0, "unit": "mm"}), "mm", "offset"),
+    )
+
+
+def _parse_primitive_sketch_create(payload: dict[str, Any]) -> SketchCreate:
+    return SketchCreate(
+        **_sketch_common(payload),
+        plane=_sketch_plane(payload),
+        entities=_entities(payload.get("entities")),
+    )
+
+
+def _parse_constrained_sketch_create(payload: dict[str, Any]) -> SketchCreate:
+    return SketchCreate(
+        **_sketch_common(payload),
+        plane=_sketch_plane(payload),
+        entities=(),
+        constrained=_constrained_sketch(payload.get("constrained")),
+    )
+
+
+def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
     changes = payload.get("set")
     if not isinstance(changes, dict) or not changes:
         raise RequestError("INVALID_PARAMETER", "update set must not be empty")
     position = changes.get("position")
     return SketchUpdate(
-        **common,
+        **_sketch_common(payload),
         set=SketchChanges(
             position=(
                 tuple(_finite_number(value, "position") for value in position)
@@ -824,12 +828,22 @@ def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | Sket
             ),
             entities=_entities(changes["entities"]) if "entities" in changes else None,
             constrained=(
-                constrained_from_payload(changes["constrained"])
-                if isinstance(changes.get("constrained"), dict)
+                _constrained_sketch(changes["constrained"])
+                if "constrained" in changes
                 else None
             ),
         ),
     )
+
+
+def _parse_sketch(payload: dict[str, Any]) -> SketchCreate | SketchUpdate | SketchDelete:
+    if payload.get("action") == "delete":
+        return _parse_delete(payload, SketchDelete, "sketchId")
+    if payload.get("action") == "update":
+        return _parse_sketch_update(payload)
+    if "constrained" in payload:
+        return _parse_constrained_sketch_create(payload)
+    return _parse_primitive_sketch_create(payload)
 
 
 def _feature_common(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1613,7 +1627,9 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
     if result.status.value == "conflicting":
         return RequestError("SKETCH_CONFLICTING", message, diagnostics=result_payload(model))
     if result.status.value == "did_not_converge":
-        return RequestError("SKETCH_DID_NOT_CONVERGE", message, diagnostics=result_payload(model))
+        timed_out = any(error.code == "SOLVE_TIMEOUT" for error in result.errors)
+        code = "SKETCH_SOLVE_TIMEOUT" if timed_out else "SKETCH_DID_NOT_CONVERGE"
+        return RequestError(code, message, diagnostics=result_payload(model))
     return RequestError("SKETCH_BRANCH_FLIP", message, diagnostics=result_payload(model))
 
 
@@ -1664,10 +1680,10 @@ def _apply_sketch(
         if operation.set.position is not None:
             node.position = operation.set.position
         if operation.set.entities is not None:
-            node.entities = list(operation.set.entities)
+            node.replace_entities(list(operation.set.entities))
         if operation.set.constrained is not None:
             _accept_constrained_sketch(operation.set.constrained)
-            node.constrained = operation.set.constrained
+            node.replace_constrained(operation.set.constrained)
     return operation.sketchId
 
 

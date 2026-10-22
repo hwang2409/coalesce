@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .constrained_sketch import CONSTRAINED_SKETCH_SCHEMA
 from .requirements import SUPPORTED_REQUIREMENT_KINDS as EVALUATED_REQUIREMENT_KINDS
 
 SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT_KINDS)))
@@ -66,14 +67,7 @@ CIRCLE = {
     "additionalProperties": False,
 }
 SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE]}
-CONSTRAINED_SKETCH = {
-    "type": "object", "properties": {
-        "kind": {"const": "constrained"}, "points": {"type": "array"},
-        "lines": {"type": "array"}, "arcs": {"type": "array"}, "circles": {"type": "array"},
-        "dimensions": {"type": "array"}, "constraints": {"type": "array"},
-        "initial": {"type": "object"}, "landmarks": {"type": "array"},
-    }, "required": ["kind"], "additionalProperties": False,
-}
+CONSTRAINED_SKETCH = CONSTRAINED_SKETCH_SCHEMA
 DIRECTION = {
     "type": "array",
     "items": {"type": "number"},
