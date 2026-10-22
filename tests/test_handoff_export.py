@@ -222,6 +222,83 @@ def test_validation_failure_publishes_nothing_and_leaves_no_sibling_temp(tmp_pat
     assert not list(tmp_path.glob(".delivery.tmp-*"))
 
 
+def test_one_time_lid_validation_failure_blocks_separate_export(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    original = export_module._validated_part_bytes
+    failed = False
+
+    def fail_lid_once(parts, **kwargs):
+        nonlocal failed
+        if parts[0].label == "lid" and not failed:
+            failed = True
+            raise export_module.ExportFailure(
+                "EXPORT_VALIDATION_FAILED", "injected", mismatchedMetric="volume"
+            )
+        return original(parts, **kwargs)
+
+    monkeypatch.setattr(export_module, "_validated_part_bytes", fail_lid_once)
+    response = service.export(_separate(destination))
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "EXPORT_VALIDATION_FAILED"
+    failed_parts = [part for part in response["error"]["parts"] if part["status"] == "failed"]
+    assert [part["label"] for part in failed_parts] == ["lid"]
+    assert response["error"]["failedParts"] == [failed_parts[0]["partId"]]
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+@pytest.mark.parametrize("action", ["preflight", "separate"])
+def test_handoff_validates_each_part_once(tmp_path, monkeypatch, action):
+    service = _service(tmp_path)
+    original = export_module._validated_part_bytes
+    calls = []
+
+    def count(parts, **kwargs):
+        calls.append(parts[0].label)
+        return original(parts, **kwargs)
+
+    monkeypatch.setattr(export_module, "_validated_part_bytes", count)
+    request = _preflight() if action == "preflight" else _separate(tmp_path / "delivery")
+
+    assert service.export(request)["ok"] is True
+    assert calls == ["base", "lid"]
+
+
+def test_manifest_part_statuses_and_ready_match_response(tmp_path, monkeypatch):
+    service = _service(tmp_path, include_lip=False)
+    destination = tmp_path / "delivery"
+    original = export_module._validated_part_bytes
+    calls = []
+
+    def count(parts, **kwargs):
+        calls.append(parts[0].label)
+        return original(parts, **kwargs)
+
+    monkeypatch.setattr(export_module, "_validated_part_bytes", count)
+    response = service.export(
+        _separate(
+            destination,
+            requirements=[{
+                "id": "fit",
+                "kind": "fit_gap",
+                "threshold": {
+                    "min": {"value": 0.1, "unit": "mm"},
+                    "max": {"value": 0.5, "unit": "mm"},
+                },
+            }],
+        )
+    )
+    manifest = json.loads((destination / "manifest.json").read_bytes())
+
+    assert manifest["ready"] == response["ready"]
+    assert [part["status"] for part in manifest["parts"]] == [
+        part["status"] for part in response["parts"]
+    ]
+    assert calls == ["base", "lid"]
+
+
 def test_destination_created_at_rename_is_structured_and_empty(tmp_path, monkeypatch):
     service = _service(tmp_path)
     destination = tmp_path / "delivery"

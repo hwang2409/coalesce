@@ -23,7 +23,8 @@ from .export import (
     export_parts,
     export_parts_separately,
     parts_are_ready,
-    preflight_parts,
+    prepare_parts,
+    public_parts,
 )
 from .fit_summary import fit_summary, part_facts
 from .graph import (
@@ -2888,19 +2889,21 @@ class DocumentService:
             key=lambda item: item["assetId"],
         )
 
-    def _handoff_result(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
-        parts = preflight_parts(selected)
+    def _handoff_result(
+        self, prepared: list[dict[str, Any]], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        parts = public_parts(prepared)
         requirements = self._handoff_requirements(payload)
         unknowns = [item for item in requirements["results"] if item["status"] == "UNKNOWN"]
         return {
             "parts": parts,
             "requirements": requirements,
             "unknowns": unknowns,
-            "ready": parts_are_ready(parts) and requirements["gate"] == "PASS",
+            "ready": parts_are_ready(prepared) and requirements["gate"] == "PASS",
         }
 
     def _export_preflight(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._handoff_result(selected, payload)
+        result = self._handoff_result(prepare_parts(selected), payload)
         return {
             "ok": True,
             "revision": self._document.revision,
@@ -2910,16 +2913,15 @@ class DocumentService:
         }
 
     def _export_separate(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._handoff_result(selected, payload)
+        prepared = prepare_parts(selected)
+        result = self._handoff_result(prepared, payload)
         manifest = {
             "revision": self._document.revision,
             "units": "mm",
-            "ready": result["ready"],
             "sources": self._handoff_sources(),
-            "requirements": result["requirements"],
-            "unknowns": result["unknowns"],
+            **result,
         }
-        fields = export_parts_separately(Path(payload["path"]), selected, manifest)
+        fields = export_parts_separately(Path(payload["path"]), prepared, manifest)
         return {"ok": True, "revision": self._document.revision, "units": "mm", **result, **fields}
 
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:

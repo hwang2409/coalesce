@@ -407,39 +407,34 @@ def _normalized_step_bytes(content: bytes) -> bytes:
     return text.encode("utf-8")
 
 
-def _prepared_parts(parts: list[Any]) -> list[dict[str, Any]]:
-    prepared = []
-    for part, file_name in zip(parts, _part_file_names(parts), strict=True):
-        content, digest, actual = _validated_part_bytes([part], normalize=True)
-        actual_label = actual["parts"][0].get("label", "")
-        if actual_label != part.label:
-            raise ExportFailure(
-                "EXPORT_VALIDATION_FAILED",
-                "fresh-process STEP label does not match the source part",
-                partId=part.part_id,
-                expectedLabel=part.label,
-                actualLabel=actual_label,
-            )
-        prepared.append(
-            {
-                "partId": part.part_id,
-                "label": part.label,
-                "file": file_name,
-                "sha256": digest,
-                "status": "passed",
-                "validation": {
-                    "status": "passed",
-                    "freshProcess": True,
-                    "label": actual_label,
-                    "reimport": actual,
-                },
-                "_content": content,
-            }
+def _prepare_part(part: Any, file_name: str) -> dict[str, Any]:
+    content, digest, actual = _validated_part_bytes([part], normalize=True)
+    actual_label = actual["parts"][0].get("label", "")
+    if actual_label != part.label:
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "fresh-process STEP label does not match the source part",
+            partId=part.part_id,
+            expectedLabel=part.label,
+            actualLabel=actual_label,
         )
-    return prepared
+    return {
+        "partId": part.part_id,
+        "label": part.label,
+        "file": file_name,
+        "sha256": digest,
+        "status": "passed",
+        "validation": {
+            "status": "passed",
+            "freshProcess": True,
+            "label": actual_label,
+            "reimport": actual,
+        },
+        "_content": content,
+    }
 
 
-def _failed_part(part: Any, error: ExportFailure) -> dict[str, Any]:
+def _failed_part(part: Any, file_name: str, error: ExportFailure) -> dict[str, Any]:
     validation = {
         "status": "failed",
         "freshProcess": True,
@@ -450,25 +445,29 @@ def _failed_part(part: Any, error: ExportFailure) -> dict[str, Any]:
     return {
         "partId": part.part_id,
         "label": part.label,
+        "file": file_name,
         "status": "failed",
         "validation": validation,
+        "_content": None,
     }
 
 
-def preflight_parts(parts: list[Any]) -> list[dict[str, Any]]:
-    """Validate every selected part independently without publishing any bytes."""
-    results = []
-    for part in parts:
+def prepare_parts(parts: list[Any]) -> list[dict[str, Any]]:
+    """Prepare and validate every selected part exactly once without writing it."""
+    prepared = []
+    for part, file_name in zip(parts, _part_file_names(parts), strict=True):
         try:
-            results.extend(
-                {
-                    key: value for key, value in item.items() if not key.startswith("_")
-                }
-                for item in _prepared_parts([part])
-            )
+            prepared.append(_prepare_part(part, file_name))
         except ExportFailure as error:
-            results.append(_failed_part(part, error))
-    return results
+            prepared.append(_failed_part(part, file_name, error))
+    return prepared
+
+
+def public_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: value for key, value in part.items() if not key.startswith("_")}
+        for part in parts
+    ]
 
 
 def parts_are_ready(parts: list[dict[str, Any]]) -> bool:
@@ -516,26 +515,10 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
     raise OSError(error_number, os.strerror(error_number), destination)
 
 
-def export_parts_separately(
-    path: Path, parts: list[Any], manifest_fields: dict[str, Any]
-) -> dict[str, Any]:
-    """Validate each part, then publish one complete sibling-built directory."""
-    validation = preflight_parts(parts)
-    if not parts_are_ready(validation):
-        raise ExportFailure(
-            "EXPORT_VALIDATION_FAILED",
-            "one or more parts failed fresh-process validation",
-            parts=validation,
-        )
-    prepared = _prepared_parts(parts)
-    public_parts = [
-        {key: value for key, value in item.items() if not key.startswith("_")}
-        for item in prepared
-    ]
-    manifest = {**manifest_fields, "parts": public_parts}
-    manifest_bytes = (
-        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    ).encode()
+def _publish_prepared_parts(
+    path: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
+) -> Path:
+    """Publish already-prepared bytes as one complete sibling-built directory."""
     destination = _new_directory_path(path)
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
@@ -586,10 +569,28 @@ def export_parts_separately(
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
+    return destination
+
+
+def export_parts_separately(
+    path: Path, prepared: list[dict[str, Any]], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Gate and publish one directory from records prepared exactly once."""
+    failed_parts = [part["partId"] for part in prepared if part["status"] == "failed"]
+    if failed_parts:
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "one or more parts failed fresh-process validation",
+            failedParts=failed_parts,
+            parts=public_parts(prepared),
+        )
+    manifest_bytes = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode()
+    destination = _publish_prepared_parts(path, prepared, manifest_bytes)
     return {
         "path": str(destination),
-        "partIds": [part.part_id for part in parts],
-        "parts": public_parts,
+        "partIds": [part["partId"] for part in prepared],
         "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
     }
 
