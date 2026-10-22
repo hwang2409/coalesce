@@ -880,28 +880,6 @@ EXPORT_SCHEMA = {
     },
     "required": ["expectedRevision"],
     "additionalProperties": False,
-    "oneOf": [
-        {
-            "properties": {"action": {"const": "preflight"}},
-            "required": ["action"],
-            "not": {"anyOf": [{"required": ["path"]}, {"required": ["mode"]}]},
-        },
-        {
-            "properties": {
-                "action": {"const": "publish"},
-                "mode": {"const": "separate"},
-            },
-            "required": ["mode", "path"],
-        },
-        {
-            "properties": {
-                "action": {"const": "publish"},
-                "mode": {"const": "compound"},
-            },
-            "required": ["path"],
-            "not": {"anyOf": [{"required": ["base"]}, {"required": ["requirements"]}]},
-        },
-    ],
 }
 
 CHECK_SCHEMA = {

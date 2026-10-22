@@ -2823,6 +2823,34 @@ class DocumentService:
             )
         return selected
 
+    @staticmethod
+    def _check_export_request(payload: dict[str, Any]) -> None:
+        action = payload.get("action", "publish")
+        mode = payload.get("mode", "compound")
+        if action == "preflight":
+            forbidden = [field for field in ("path", "mode") if field in payload]
+            if forbidden:
+                raise RequestError(
+                    "INVALID_PARAMETER",
+                    "export preflight does not accept path or mode",
+                    invalidFields=forbidden,
+                )
+            return
+        if "path" not in payload:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "export publication requires path",
+                requiredFields=["path"],
+            )
+        if mode == "compound":
+            forbidden = [field for field in ("base", "requirements") if field in payload]
+            if forbidden:
+                raise RequestError(
+                    "INVALID_PARAMETER",
+                    "compound export does not accept handoff requirements",
+                    invalidFields=forbidden,
+                )
+
     def _handoff_requirements(self, payload: dict[str, Any]) -> dict[str, Any]:
         checked = self.check(
             {
@@ -2865,6 +2893,7 @@ class DocumentService:
             selected: list[Any] = []
             try:
                 self._check_export_revision(payload["expectedRevision"])
+                self._check_export_request(payload)
                 selected = self._select_export_parts(payload.get("partIds"))
                 action = payload.get("action", "publish")
                 mode = payload.get("mode", "compound")
