@@ -6,31 +6,8 @@ from dataclasses import dataclass
 from build123d import AngularDirection, Edge, Face, GeomType, Plane, Shape, Vector, Wire
 
 from .graph import GraphError
+from .lid_outline_compare import LidOutlineGeometry, LidOutlineSegment
 from .references import Candidate
-
-
-@dataclass(frozen=True)
-class LidOutlineSegment:
-    kind: str
-    start: tuple[float, float, float]
-    midpoint: tuple[float, float, float]
-    end: tuple[float, float, float]
-    source: str
-    center: tuple[float, float, float] | None = None
-    radius: float | None = None
-
-
-@dataclass(frozen=True)
-class LidOutlineGeometry:
-    segments: tuple[LidOutlineSegment, ...]
-
-
-@dataclass(frozen=True)
-class LidOutlineComparison:
-    matches: bool
-    reason: str | None
-    area_difference: float
-    bbox_difference: float
 
 
 @dataclass(frozen=True)
@@ -137,7 +114,7 @@ def capture_lid_outline(feature: str, candidates: list[Candidate]) -> LidOutline
     edges = rim.outer_wire().edges()
     segments = tuple(_segment(edge, _source(edge, candidates, feature), feature) for edge in edges)
     try:
-        Face(Wire([_edge(segment) for segment in segments]))
+        return _geometry(segments)
     except (RuntimeError, ValueError) as error:
         raise GraphError(
             "AMBIGUOUS",
@@ -145,7 +122,6 @@ def capture_lid_outline(feature: str, candidates: list[Candidate]) -> LidOutline
             feature=feature,
             parameter="outlineSource",
         ) from error
-    return LidOutlineGeometry(segments)
 
 
 def _angle(point: tuple[float, float, float], center: tuple[float, float, float]) -> float:
@@ -184,83 +160,16 @@ def outline_profile(geometry: LidOutlineGeometry) -> OutlineProfile:
     return OutlineProfile(face_wire, edges)
 
 
-def outline_geometry(face: Face) -> LidOutlineGeometry:
+def _geometry(segments: tuple[LidOutlineSegment, ...]) -> LidOutlineGeometry:
+    face = Face(Face(Wire([_edge(segment) for segment in segments])).outer_wire())
+    box = face.bounding_box()
     return LidOutlineGeometry(
-        tuple(_segment(edge, "", "lid") for edge in face.outer_wire().edges())
+        segments,
+        face.area,
+        (box.min.X, box.min.Y, box.max.X, box.max.Y),
     )
 
 
-def _outline_differences(
-    first: LidOutlineGeometry | None, second: LidOutlineGeometry | None
-) -> tuple[float, float]:
-    if first is None or second is None:
-        return float("inf"), float("inf")
-    first_face = Face(outline_profile(first).wire)
-    second_face = Face(outline_profile(second).wire)
-    first_box = first_face.bounding_box()
-    second_box = second_face.bounding_box()
-    bbox_difference = max(
-        abs(left - right)
-        for left, right in zip(
-            (first_box.min.X, first_box.min.Y, first_box.max.X, first_box.max.Y),
-            (second_box.min.X, second_box.min.Y, second_box.max.X, second_box.max.Y),
-            strict=True,
-        )
-    )
-    return abs(first_face.area - second_face.area), bbox_difference
-
-
-def _topology_difference(
-    first: LidOutlineGeometry, second: LidOutlineGeometry
-) -> str | None:
-    if len(first.segments) != len(second.segments):
-        return f"segment count differs: {len(first.segments)} != {len(second.segments)}"
-    for index, (left, right) in enumerate(zip(first.segments, second.segments, strict=True)):
-        if left.kind not in {"line", "arc"} or right.kind not in {"line", "arc"}:
-            return f"segment {index} has unsupported type"
-        if left.kind != right.kind:
-            return f"segment {index} type differs: {left.kind} != {right.kind}"
-        if left.kind == "arc" and (
-            left.radius is None
-            or right.radius is None
-            or abs(left.radius - right.radius) > 1e-6
-        ):
-            return f"segment {index} arc radius differs"
-    return None
-
-
-def _comparison(
-    matches: bool,
-    reason: str | None,
-    first: LidOutlineGeometry | None,
-    second: LidOutlineGeometry | None,
-) -> LidOutlineComparison:
-    area, bbox = _outline_differences(first, second)
-    return LidOutlineComparison(matches, reason, area, bbox)
-
-
-def compare_lid_outlines(
-    outline_source: str | None,
-    current_source: str,
-    source: LidOutlineGeometry | None,
-    current: LidOutlineGeometry | None,
-    *,
-    legacy_stale: bool = False,
-) -> LidOutlineComparison:
-    if outline_source is None and not legacy_stale:
-        return LidOutlineComparison(True, None, 0.0, 0.0)
-    if outline_source is not None and outline_source != current_source:
-        reason = f"outline source is stale: {outline_source} != {current_source}"
-        return _comparison(False, reason, source, current)
-    if source is None:
-        return _comparison(False, "outline source does not resolve", source, current)
-    if current is None:
-        return _comparison(False, "current outline source does not resolve", source, current)
-    if difference := _topology_difference(source, current):
-        return _comparison(False, difference, source, current)
-    area, bbox = _outline_differences(source, current)
-    if area > 1e-6:
-        return LidOutlineComparison(False, "outline area differs", area, bbox)
-    if bbox > 1e-6:
-        return LidOutlineComparison(False, "outline bounding box differs", area, bbox)
-    return LidOutlineComparison(True, None, area, bbox)
+def outline_geometry(face: Face) -> LidOutlineGeometry:
+    segments = tuple(_segment(edge, "", "lid") for edge in face.outer_wire().edges())
+    return _geometry(segments)

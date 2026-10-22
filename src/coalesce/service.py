@@ -3134,12 +3134,7 @@ class DocumentService:
 
             return {
                 **base,
-                **inspect_enclosure(
-                    self._document.graph,
-                    self._regen,
-                    base_id,
-                    include_outline_geometry=False,
-                ),
+                **inspect_enclosure(self._document.graph, self._regen, base_id),
             }
         except (TypeError, ValueError):
             _LOG.exception("enclosure inspection failed")

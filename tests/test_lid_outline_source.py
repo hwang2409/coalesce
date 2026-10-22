@@ -1,5 +1,8 @@
 import json
 import math
+import subprocess
+import sys
+from dataclasses import replace
 
 import pytest
 from build123d import Face, GeomType
@@ -7,7 +10,7 @@ from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity
 from test_pcb_lid import lid_request
 from test_port_cutout import explicit_envelope, port_request
 
-from coalesce.lid_outline import (
+from coalesce.lid_outline_compare import (
     LidOutlineGeometry,
     LidOutlineSegment,
     compare_lid_outlines,
@@ -216,7 +219,9 @@ def _rectangle(*, split_top: bool = False) -> LidOutlineGeometry:
     if split_top:
         points.insert(3, (1, 1))
     return LidOutlineGeometry(
-        tuple(_line(start, points[(index + 1) % len(points)]) for index, start in enumerate(points))
+        tuple(_line(start, points[(index + 1) % len(points)]) for index, start in enumerate(points)),
+        area=2,
+        bbox=(0, 0, 2, 1),
     )
 
 
@@ -229,11 +234,53 @@ def test_outline_comparison_rejects_equal_area_bbox_with_different_topology():
     assert result.bbox_difference == pytest.approx(0, abs=1e-6)
 
 
+def test_outline_comparison_rejects_different_segment_kind():
+    source = _rectangle()
+    first = replace(source.segments[0], center=(1, 0, 0), radius=1)
+    source = replace(source, segments=(first, *source.segments[1:]))
+    current = replace(source, segments=(replace(first, kind="arc"), *source.segments[1:]))
+
+    result = compare_lid_outlines("base", "base", source, current)
+
+    assert result.matches is False
+    assert result.reason == "segment kind differs"
+
+
+def test_outline_comparison_rejects_different_arc_radius():
+    source = _rectangle()
+    arc = replace(source.segments[0], kind="arc", center=(1, 0, 0), radius=1)
+    source = replace(source, segments=(arc, *source.segments[1:]))
+    current = replace(source, segments=(replace(arc, radius=2), *source.segments[1:]))
+
+    result = compare_lid_outlines("base", "base", source, current)
+
+    assert result.matches is False
+    assert result.reason == "arc radius differs"
+
+
 def test_outline_comparison_accepts_matching_geometry():
     result = compare_lid_outlines("base", "base", _rectangle(), _rectangle())
 
     assert result.matches is True
     assert result.reason is None
+
+
+def test_importing_outline_comparison_does_not_import_build123d():
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import coalesce.lid_outline_compare; "
+                "assert 'build123d' not in sys.modules"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert probe.returncode == 0, probe.stderr
 
 
 def test_treatment_after_lid_reports_stale_until_update(tmp_path):

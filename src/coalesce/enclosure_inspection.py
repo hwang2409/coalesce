@@ -19,12 +19,8 @@ from .graph import (
     PortCutout,
     Standoffs,
 )
-from .lid_outline import (
-    LidOutlineComparison,
-    capture_lid_outline,
-    compare_lid_outlines,
-    outline_geometry,
-)
+from .lid_outline import capture_lid_outline, outline_geometry
+from .lid_outline_compare import LidOutlineComparison, compare_lid_outlines
 from .parts import TerminalPart, terminal_parts
 from .pcb import board_loop_wire
 
@@ -377,7 +373,6 @@ def _lid_measurement(
     node: PcbLid,
     base_part: TerminalPart,
     comparison: LidOutlineComparison,
-    comparison_input: dict[str, Any] | None,
 ) -> dict[str, Any]:
     part = _part_for(parts, node.id)
     undersides = _faces(result, node.id, "underside")
@@ -409,8 +404,6 @@ def _lid_measurement(
     }
     if comparison.reason is not None:
         measurement["outline"]["reason"] = comparison.reason
-    if comparison_input is not None:
-        measurement["_outlineComparison"] = comparison_input
     return measurement
 
 
@@ -441,13 +434,43 @@ def _outline_is_stale(
     return node.outline_source != terminal or current is None
 
 
+def _lid_outline_comparison(
+    result: Any,
+    node: PcbLid,
+    terminal: str,
+    current: Any | None,
+    has_outer_treatment: bool,
+) -> LidOutlineComparison:
+    [top] = _faces(result, node.id, "top")
+    source = (
+        _current_outline(result, node.outline_source)
+        if node.outline_source is not None
+        else outline_geometry(top)
+    )
+    return compare_lid_outlines(
+        node.outline_source,
+        terminal,
+        source,
+        current,
+        legacy_stale=has_outer_treatment,
+    )
+
+
+def _lid_warning(node: PcbLid, terminal: str) -> dict[str, Any]:
+    return {
+        "code": "LID_OUTLINE_STALE",
+        "featureId": node.id,
+        "currentSource": node.outline_source or node.base,
+        "legalSource": terminal,
+    }
+
+
 def _lids(
     graph: Any,
     result: Any,
     parts: list[TerminalPart],
     base: PcbBase,
     base_part: TerminalPart,
-    include_outline_geometry: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     nodes = [
         node
@@ -462,36 +485,12 @@ def _lids(
     lids = []
     warnings = []
     for node in nodes:
-        [top] = _faces(result, node.id, "top")
-        source = (
-            _current_outline(result, node.outline_source)
-            if node.outline_source is not None
-            else outline_geometry(top)
+        comparison = _lid_outline_comparison(
+            result, node, terminal, current, has_outer_treatment
         )
-        comparison_input = {
-            "outline_source": node.outline_source,
-            "current_source": terminal,
-            "source": source,
-            "current": current,
-            "legacy_stale": has_outer_treatment,
-        }
-        comparison = compare_lid_outlines(**comparison_input)
-        measurement = _lid_measurement(
-            result,
-            parts,
-            node,
-            base_part,
-            comparison,
-            comparison_input if include_outline_geometry else None,
-        )
-        lids.append(measurement)
+        lids.append(_lid_measurement(result, parts, node, base_part, comparison))
         if _outline_is_stale(node, current, terminal, has_outer_treatment):
-            warnings.append({
-                "code": "LID_OUTLINE_STALE",
-                "featureId": node.id,
-                "currentSource": node.outline_source or node.base,
-                "legalSource": terminal,
-            })
+            warnings.append(_lid_warning(node, terminal))
     return lids, warnings
 
 
@@ -689,9 +688,7 @@ def _warnings(
     return warnings
 
 
-def inspect_enclosure(
-    graph: Any, result: Any, base_id: str, *, include_outline_geometry: bool = True
-) -> dict[str, Any]:
+def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     base = graph.nodes.get(base_id)
     if not isinstance(base, PcbBase):
         raise TypeError(f"unknown pcb_base: {base_id}")
@@ -714,9 +711,7 @@ def inspect_enclosure(
     )
     ports = _ports(graph, result, base, board, board_shape, base_part.shape, assembled)
     warnings = _warnings(graph, board, parts, enclosure_parts, ports)
-    lids, lid_warnings = _lids(
-        graph, result, parts, base, base_part, include_outline_geometry
-    )
+    lids, lid_warnings = _lids(graph, result, parts, base, base_part)
     warnings.extend(lid_warnings)
 
     return {
