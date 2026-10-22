@@ -9,8 +9,19 @@ from build123d import Plane as BuildPlane
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
+from OCP.ShapeAnalysis import ShapeAnalysis_Wire
+from OCP.TopoDS import TopoDS
 
-from .graph import Circle, Extrude, GraphError, Rectangle, Sketch, validate_sketch
+from .graph import (
+    Circle,
+    Extrude,
+    GraphError,
+    Rectangle,
+    Sketch,
+    SketchEntity,
+    SketchPath,
+    validate_sketch,
+)
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
 
@@ -55,7 +66,7 @@ class _ProfileRelation(Enum):
 
 @dataclass
 class _Profile:
-    entity: Rectangle | Circle
+    entity: SketchEntity
     face: Face
     wire: Wire
     segments: dict[str, Edge]
@@ -81,7 +92,53 @@ def _rectangle_profile(entity: Rectangle, location: Location) -> tuple[Face, Wir
     return Face(wire), wire, constructed
 
 
-def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
+def _path_profile(
+    sketch: Sketch, entity: SketchPath, location: Location
+) -> tuple[Face, Wire, dict[str, Edge]]:
+    previous = (*entity.start, 0)
+    edges = []
+    for index, segment in enumerate(entity.segments):
+        # Validation bounds the closing gap; land the last segment exactly on start.
+        last = index == len(entity.segments) - 1
+        end = (*entity.start, 0) if last else (*segment.to, 0)
+        if segment.kind == "arc":
+            edge = Edge.make_three_point_arc(previous, (*segment.through, 0), end)
+        else:
+            edge = Edge.make_line(previous, end)
+        edges.append(edge.moved(location))
+        previous = end
+    builder = BRepBuilderAPI_MakeWire()
+    constructed: dict[str, Edge] = {}
+    for segment, edge in zip(entity.segments, edges, strict=True):
+        builder.Add(edge.wrapped)
+        if not builder.IsDone():
+            raise GraphError(
+                "DISCONNECTED_PATH",
+                f"path {entity.id} segment {segment.id} does not connect to the previous segment",
+                sketch=sketch.id,
+                entity=entity.id,
+                segment=segment.id,
+            )
+        constructed[segment.id] = Edge(builder.Edge())
+    wire = Wire(builder.Wire())
+    face = Face(wire)
+    analysis = ShapeAnalysis_Wire(wire.wrapped, face.wrapped, _LINEAR_BOUNDARY_TOLERANCE)
+    if analysis.CheckSelfIntersection() or not face.is_valid:
+        raise GraphError(
+            "SELF_INTERSECTING_PATH",
+            f"path {entity.id} crosses itself; segments may only meet at shared endpoints",
+            sketch=sketch.id,
+            entity=entity.id,
+        )
+    # Clockwise input would give a face facing against the sketch normal; flip it so
+    # every profile matches the rectangle and circle orientation.
+    if face.normal_at().dot(BuildPlane(location).z_dir) < 0:
+        wire = Wire(TopoDS.Wire(wire.wrapped.Reversed()))
+        face = Face(wire)
+    return face, wire, constructed
+
+
+def _profile(sketch: Sketch, entity: SketchEntity, sketch_location: Location) -> _Profile:
     entity_location = Location(
         (entity.position[0], entity.position[1], 0),
         (0, 0, entity.rotation),
@@ -89,6 +146,9 @@ def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
     location = sketch_location * entity_location
     if isinstance(entity, Rectangle):
         face, wire, segments = _rectangle_profile(entity, location)
+        return _Profile(entity, face, wire, segments)
+    if isinstance(entity, SketchPath):
+        face, wire, segments = _path_profile(sketch, entity, location)
         return _Profile(entity, face, wire, segments)
     if isinstance(entity, Circle):
         wire = Wire.make_circle(entity.radius).moved(location)
@@ -149,7 +209,7 @@ def _pair_error(sketch: Sketch, left: _Profile, right: _Profile, relation: _Prof
 
 
 def _organize_profiles(sketch: Sketch, location: Location) -> list[_Profile]:
-    profiles = [_profile(entity, location) for entity in sketch.entities]
+    profiles = [_profile(sketch, entity, location) for entity in sketch.entities]
     containers: list[list[int]] = [[] for _ in profiles]
     for left_index, left in enumerate(profiles):
         for right_index in range(left_index + 1, len(profiles)):

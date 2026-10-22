@@ -66,7 +66,48 @@ CIRCLE = {
     "required": ["id", "kind", "radius"],
     "additionalProperties": False,
 }
-SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE]}
+PATH_SEGMENT = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "line"},
+                "to": POINT_2D,
+            },
+            "required": ["id", "kind", "to"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "arc"},
+                "through": POINT_2D,
+                "to": POINT_2D,
+            },
+            "required": ["id", "kind", "through", "to"],
+            "additionalProperties": False,
+        },
+    ]
+}
+PATH = {
+    "type": "object",
+    "description": (
+        "Closed loop of named line and arc segments in plane-local mm. Each segment runs "
+        "from the previous point to `to`; arcs also pass through `through`. The last "
+        "segment must end at `start`. Segment ids become side(<id>) face roles."
+    ),
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"const": "path"},
+        "start": POINT_2D,
+        "segments": {"type": "array", "items": PATH_SEGMENT, "minItems": 2},
+    },
+    "required": ["id", "kind", "start", "segments"],
+    "additionalProperties": False,
+}
+SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE, PATH]}
 CONSTRAINED_SKETCH = CONSTRAINED_SKETCH_SCHEMA
 DIRECTION = {
     "type": "array",

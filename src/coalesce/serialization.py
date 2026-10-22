@@ -15,12 +15,14 @@ from .graph import (
     GraphError,
     Hole,
     HolePosition,
+    PathSegment,
     PcbBase,
     PcbLid,
     Plane,
     PortCutout,
     Rectangle,
     Sketch,
+    SketchPath,
     Standoffs,
 )
 from .references import (
@@ -40,6 +42,7 @@ _TYPES = {
         Sketch,
         Rectangle,
         Circle,
+        SketchPath,
         Extrude,
         PcbBase,
         PcbLid,
@@ -87,9 +90,20 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
     for raw_entity in payload.get("entities", []):
         entity = dict(raw_entity)
         entity_type = _TYPES.get(entity.pop("type", None))
-        if entity_type not in (Rectangle, Circle):
-            raise ValueError("sketch entity must be a Rectangle or Circle")
+        if entity_type not in (Rectangle, Circle, SketchPath):
+            raise ValueError("sketch entity must be a Rectangle, Circle, or SketchPath")
         entity["position"] = tuple(entity.get("position", (0, 0)))
+        if entity_type is SketchPath:
+            entity["start"] = tuple(entity["start"])
+            entity["segments"] = [
+                PathSegment(
+                    id=segment["id"],
+                    kind=segment["kind"],
+                    to=tuple(segment["to"]),
+                    through=None if segment.get("through") is None else tuple(segment["through"]),
+                )
+                for segment in entity.get("segments", [])
+            ]
         entities.append(entity_type(**entity))
     payload["entities"] = entities
     return payload

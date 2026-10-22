@@ -14,11 +14,13 @@ if TYPE_CHECKING:
         GraphError,
         Hole,
         Parameter,
+        PathSegment,
         PcbBase,
         PcbLid,
         Plane,
         Rectangle,
         Sketch,
+        SketchPath,
         Standoffs,
     )
     from .references import (
@@ -39,13 +41,13 @@ if TYPE_CHECKING:
 __all__ = [
     "BodySource", "Cardinality", "Chamfer", "Circle", "Cut", "Extrude", "Fillet", "Graph",
     "GraphError", "Hole", "HoleSurfaceSource", "MaxAlong", "Normal", "Parameter",
-    "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
-    "Sketch", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
+    "PathSegment", "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference",
+    "RegenResult", "Resolution", "Sketch", "SketchPath", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
 ]
 
 _GRAPH_NAMES = {
     "Chamfer", "Circle", "Cut", "Extrude", "Fillet", "Graph", "GraphError", "Hole", "Parameter",
-    "PcbBase", "PcbLid", "Plane", "Rectangle", "Sketch", "Standoffs",
+    "PathSegment", "PcbBase", "PcbLid", "Plane", "Rectangle", "Sketch", "SketchPath", "Standoffs",
 }
 _REFERENCE_NAMES = {
     "BodySource", "Cardinality", "HoleSurfaceSource", "MaxAlong", "Normal", "Position",
