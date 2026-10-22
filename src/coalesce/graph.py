@@ -77,12 +77,14 @@ class Sketch:
         constrained: Any | None = None,
         position: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        state: PrimitiveSketchState | ConstrainedSketchState | None = None,
     ):
-        if entities and constrained is not None:
-            raise ValueError("a sketch cannot be primitive and constrained")
+        supplied_variants = sum((bool(entities), constrained is not None, state is not None))
+        if supplied_variants > 1:
+            raise ValueError("a sketch must have exactly one state variant")
         self.id = id
         self.plane = plane or Plane()
-        self.state = (
+        self.state = state or (
             ConstrainedSketchState(constrained)
             if constrained is not None
             else PrimitiveSketchState(entities or [])
