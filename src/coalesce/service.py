@@ -2145,15 +2145,16 @@ def _board_changes(before: Any, after: Any) -> dict[str, Any]:
     new = after.mechanics if isinstance(after, BoardImport) else {}
     old_holes = [hole for hole in old.get("holes", []) if hole.get("mounting")]
     new_holes = [hole for hole in new.get("holes", []) if hole.get("mounting")]
+    mounting_ids = {item["id"] for item in old_holes + new_holes}
     old_footprints = {
         item["id"]: item
         for item in old.get("footprints", [])
-        if not item.get("libraryId", "").startswith("MountingHole:")
+        if item["id"] not in mounting_ids
     }
     new_footprints = {
         item["id"]: item
         for item in new.get("footprints", [])
-        if not item.get("libraryId", "").startswith("MountingHole:")
+        if item["id"] not in mounting_ids
     }
     return {
         "mountingHoles": _delta_items(old_holes, new_holes, reference="reference"),
@@ -2210,7 +2211,7 @@ def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]
     old = before.nodes.get(changed_id)
     if isinstance(node, BoardImport) and isinstance(old, BoardImport) and node.source_digest != old.source_digest:
         delta = _board_changes(old, node)
-        moved = [item for item in delta["mountingHoles"] + delta["footprints"] if item["distance"] is not None]
+        moved = [item for item in delta["footprints"] if item["distance"] is not None]
         labels = [f"{item['reference']} moved {item['distance']:.1f} mm" for item in moved if item.get("reference")]
         holes = sum(item["distance"] is not None for item in delta["mountingHoles"])
         if holes:

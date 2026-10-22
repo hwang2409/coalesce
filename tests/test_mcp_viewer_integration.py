@@ -649,7 +649,7 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         }
         assert refreshed[size]["text"] == (
             "Refreshed board: J1 moved 2.0 mm, 3 mounting holes moved, "
-            "pcb base, standoffs and port cutout updated"
+            "standoffs and port cutout updated"
         )
         assert refreshed[size]["visible"] is True
         assert refreshed[size]["overflow"] == {"document": True, "change": True}
