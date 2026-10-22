@@ -160,6 +160,65 @@ async def test_schema_error_uses_one_locked_snapshot_off_event_loop(tmp_path, mo
     assert context_threads and context_threads[0] != event_loop_thread
 
 
+def test_update_kind_error_uses_one_locked_snapshot(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "atomic-kind-error.coalesce.json", warmup=False)
+    assert service.sketch(SKETCH)["revision"] == 1
+    assert service.feature(FEATURE)["revision"] == 2
+    resolved = threading.Event()
+    mutation_attempted = threading.Event()
+    committed = threading.Event()
+    resolve_update_kind = service._resolve_update_kind
+
+    def wait_for_mutation():
+        resolved.set()
+        assert mutation_attempted.wait(1)
+        if not service._lock._is_owned():
+            assert committed.wait(3)
+
+    def pause_after_resolution(payload):
+        try:
+            result = resolve_update_kind(payload)
+        except Exception:
+            wait_for_mutation()
+            raise
+        wait_for_mutation()
+        return result
+
+    monkeypatch.setattr(service, "_resolve_update_kind", pause_after_resolution)
+
+    def mutate():
+        assert resolved.wait(1)
+        mutation_attempted.set()
+        assert service.feature(
+            {
+                "action": "delete",
+                "expectedRevision": 2,
+                "requestId": "delete-feature",
+                "featureId": "plate_extrude",
+            }
+        )["revision"] == 3
+        committed.set()
+
+    mutation = threading.Thread(target=mutate)
+    mutation.start()
+    result = service.feature(
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "wrong-kind",
+            "featureId": "plate_extrude",
+            "kind": "hole",
+            "set": {"diameter": {"value": 2, "unit": "mm"}},
+        }
+    )
+    mutation.join(timeout=3)
+
+    assert not mutation.is_alive()
+    assert result["revision"] == 2
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["affectedParts"] == ["plate_extrude/outline"]
+
+
 def result_json(result):
     if result.structuredContent is not None:
         return result.structuredContent

@@ -17,6 +17,7 @@ ERROR_REGISTRY = {
     "NON_FINITE_VALUE": ErrorDefinition("request"),
     "INVALID_CIRCLE_RADIUS": ErrorDefinition("request"),
     "SKETCH_SOLVER_UNAVAILABLE": ErrorDefinition("request"),
+    "SKETCH_SOLVER_FAILED": ErrorDefinition("request"),
     "SKETCH_REDUNDANT": ErrorDefinition("request"),
     "SKETCH_CONFLICTING": ErrorDefinition("request"),
     "SKETCH_DID_NOT_CONVERGE": ErrorDefinition("request"),

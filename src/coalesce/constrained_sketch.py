@@ -156,6 +156,18 @@ class ConstrainedSketch:
         return result
 
 
+_PUBLIC_SOLVE_ERROR_CODES = {
+    "SOLVE_TIMEOUT": "SKETCH_SOLVE_TIMEOUT",
+    "SOLVER_FAILED": "SKETCH_SOLVER_FAILED",
+}
+_PUBLIC_SOLVE_STATUS_CODES = {
+    SolveStatus.INVALID_INPUT: "INVALID_PARAMETER",
+    SolveStatus.REDUNDANT: "SKETCH_REDUNDANT",
+    SolveStatus.CONFLICTING: "SKETCH_CONFLICTING",
+    SolveStatus.DID_NOT_CONVERGE: "SKETCH_DID_NOT_CONVERGE",
+    SolveStatus.BRANCH_FLIP: "SKETCH_BRANCH_FLIP",
+}
+
 _ITEM_TYPES = {
     "points": (Point, None),
     "lines": (Line, None),
@@ -364,6 +376,14 @@ def result_payload(model: ConstrainedSketch) -> dict[str, Any]:
             "iterationsOrDetail": dict(result.iterations_or_detail),
             "redundantConstraints": list(result.redundant_constraints),
             "conflictingConstraints": list(result.conflicting_constraints),
-            "errors": [error.__dict__ for error in result.errors],
+            "errors": [
+                dict(
+                    error.__dict__,
+                    code=_PUBLIC_SOLVE_ERROR_CODES.get(
+                        error.code, _PUBLIC_SOLVE_STATUS_CODES[result.status]
+                    ),
+                )
+                for error in result.errors
+            ],
         },
     }

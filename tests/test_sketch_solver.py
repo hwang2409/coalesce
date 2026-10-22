@@ -41,6 +41,7 @@ from coalesce.sketch_solver import (
     SolveRequest,
     SolveResult,
     SolveStatus,
+    _read_message,
     _solve_sketch_native,
     solve_sketch,
 )
@@ -165,18 +166,11 @@ class Sketch:
     assert result.status is SolveStatus.FULLY_CONSTRAINED
 
 
-def test_oversized_child_frame_returns_structured_error_without_waiting(monkeypatch):
-    child = _ExitedChild()
-    child.stdout = io.BytesIO(struct.pack("!Q", 1 << 63))
-    monkeypatch.setattr(sketch_solver_module, "_start_solver_child", lambda: child)
-    monkeypatch.setattr(sketch_solver_module, "SOLVE_TIMEOUT_SECONDS", 0.5)
+def test_read_message_rejects_oversized_frame_header():
+    stream = io.BytesIO(struct.pack("!Q", sketch_solver_module.MAX_FRAME_BYTES + 1))
 
-    started = time.monotonic()
-    result = solve_sketch(SolveRequest())
-
-    assert time.monotonic() - started < 0.2
-    assert result.status is SolveStatus.DID_NOT_CONVERGE
-    assert [error.code for error in result.errors] == ["SOLVER_FAILED"]
+    with pytest.raises(ValueError, match="solver frame exceeds"):
+        _read_message(stream)
 
 
 def test_rectangle_coordinates_dof_and_repeated_solves_are_deterministic():

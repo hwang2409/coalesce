@@ -2980,49 +2980,37 @@ class DocumentService:
             response,
         )
 
-    def _resolve_update_kind(
-        self, payload: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def _resolve_update_kind(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Fill an update's kind from the stored feature; a different given kind is an error."""
-        with self._lock:
-            node = self._document.graph.nodes.get(payload.get("featureId"))
-            revision = self.revision
-        request_id = payload.get("requestId")
+        node = self._document.graph.nodes.get(payload.get("featureId"))
         if not isinstance(node, Feature):
             noun = payload.get("kind") or "feature"
-            return payload, _safe_error(
-                revision,
-                request_id,
+            raise RequestError(
                 "UNKNOWN_ID",
                 f"unknown {noun}: {payload.get('featureId')}",
-                operation="feature",
                 featureId=payload.get("featureId"),
             )
         expected_kind, actual_kind = _infer_update_kind(payload, node)
         if actual_kind is not None and actual_kind != expected_kind:
-            return payload, _safe_error(
-                revision,
-                request_id,
+            raise RequestError(
                 "INVALID_PARAMETER",
                 f"feature {node.id} is {expected_kind}, not {actual_kind}",
-                operation="feature",
                 featureId=node.id,
                 expectedKind=expected_kind,
                 actualKind=actual_kind,
             )
-        return {**payload, "kind": expected_kind}, None
+        return {**payload, "kind": expected_kind}
 
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if payload.get("action") == "update":
-            payload, failure = self._resolve_update_kind(payload)
-            if failure is not None:
-                failure = self._with_error_context(payload, failure)
-                self.publish_failure(payload, failure)
-                return failure
+        def parse(candidate: dict[str, Any]) -> MutationOperation:
+            if candidate.get("action") == "update":
+                candidate = self._resolve_update_kind(candidate)
+            return _parse_feature(candidate)
+
         return self._mutate(
             "feature",
             payload,
-            _parse_feature,
+            parse,
             _apply_feature,
             lambda graph, result, changed_id: {
                 "featureId": changed_id,

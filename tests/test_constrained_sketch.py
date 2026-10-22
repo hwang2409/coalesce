@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
 import signal
+import struct
 import subprocess
 import threading
 import time
@@ -13,11 +15,14 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+import coalesce.sketch_solver as sketch_solver_module
 from coalesce.constrained_sketch import ConstrainedSketch
 from coalesce.constrained_sketch import from_payload as constrained_from_payload
+from coalesce.errors import ERROR_REGISTRY
 from coalesce.graph import Extrude, Hole, Rectangle, Sketch
 from coalesce.service import DocumentService
 from coalesce.sketch_solver import SketchSolveError, SolveResult, SolveStatus
+from coalesce.viewer import ViewerSceneStore
 
 
 def rectangle_model(*, width: float = 30.0, fixed_corner: bool = True) -> dict:
@@ -506,6 +511,47 @@ async def test_documented_payload_is_accepted_and_fully_constrained(tmp_path):
     assert result["solve"]["status"] == "fully_constrained"
 
 
+@pytest.mark.parametrize(
+    "frame",
+    [
+        b"",
+        struct.pack("!Q", 4) + b"nope",
+        struct.pack("!Q", sketch_solver_module.MAX_FRAME_BYTES + 1),
+    ],
+    ids=("child-exit", "malformed-frame", "oversized-frame"),
+)
+def test_solver_process_failures_only_expose_registered_codes(tmp_path, monkeypatch, frame):
+    class FailedChild:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(frame)
+
+        def poll(self):
+            return 23
+
+        def terminate(self):
+            raise AssertionError("an exited child must not be terminated")
+
+        def wait(self):
+            return 23
+
+    monkeypatch.setattr(sketch_solver_module, "_start_solver_child", FailedChild)
+    service = DocumentService(tmp_path / "solver-failure.coalesce.json", warmup=False)
+
+    result = service.sketch(create_request(rectangle_model()))
+
+    def codes(value):
+        if isinstance(value, dict):
+            return ([value["code"]] if "code" in value else []) + [
+                code for nested in value.values() for code in codes(nested)
+            ]
+        if isinstance(value, list):
+            return [code for nested in value for code in codes(nested)]
+        return []
+
+    assert set(codes(result)) <= set(ERROR_REGISTRY)
+
+
 @pytest.mark.anyio
 async def test_did_not_converge_update_is_atomic(tmp_path):
     path = tmp_path / "non-converge.coalesce.json"
@@ -582,7 +628,10 @@ def test_check_uses_one_locked_snapshot_while_repair_commits(tmp_path, monkeypat
 def test_graph_query_isolates_failed_sketch_and_marks_dependents_unavailable(
     tmp_path, monkeypatch
 ):
-    service = DocumentService(tmp_path / "partial-graph.coalesce.json", warmup=False)
+    store = ViewerSceneStore()
+    service = DocumentService(
+        tmp_path / "partial-graph.coalesce.json", scene_store=store, warmup=False
+    )
     service._document.graph.add(
         Sketch("failed", constrained=constrained_from_payload(rectangle_model(width=30)))
     )
@@ -635,6 +684,11 @@ def test_graph_query_isolates_failed_sketch_and_marks_dependents_unavailable(
             },
         }
     ]
+    service._publish_regeneration(service._regen)
+    assert store.wait_for_change(0, 3)
+    viewer_error = store.snapshot()[2]["error"]
+    assert viewer_error["failedFeatureIds"] == ["failed"]
+    assert viewer_error["unavailableFeatureIds"] == ["dependent"]
 
 
 @pytest.mark.anyio
