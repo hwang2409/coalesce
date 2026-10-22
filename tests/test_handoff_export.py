@@ -148,6 +148,7 @@ def test_unknown_requirement_is_recorded_and_never_ready(tmp_path):
     assert response["requirements"]["gate"] == "UNKNOWN"
     assert response["unknowns"] == [response["requirements"]["results"][0]]
     manifest = json.loads((destination / "manifest.json").read_bytes())
+    assert manifest["ready"] is False
     assert manifest["requirements"] == response["requirements"]
     assert manifest["unknowns"] == response["unknowns"]
 
@@ -194,6 +195,58 @@ def test_validation_failure_publishes_nothing_and_leaves_no_sibling_temp(tmp_pat
     response = service.export(_separate(destination))
 
     assert response["error"]["code"] == "EXPORT_VALIDATION_FAILED"
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+def test_destination_created_at_rename_is_structured_and_empty(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    original = export_module._rename_new_directory
+
+    def race(source, target):
+        target.mkdir()
+        original(source, target)
+
+    monkeypatch.setattr(export_module, "_rename_new_directory", race)
+    response = service.export(_separate(destination))
+
+    assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
+    assert list(destination.iterdir()) == []
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+def test_staging_directory_fsync_failure_publishes_nothing(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    original = export_module.os.fsync
+    calls = 0
+
+    def fail_staging(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise OSError("injected staging fsync failure")
+        return original(descriptor)
+
+    monkeypatch.setattr(export_module.os, "fsync", fail_staging)
+    response = service.export(_separate(destination))
+
+    assert response["error"]["code"] == "EXPORT_WRITE_FAILED"
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+def test_rename_failure_publishes_nothing(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    def fail_rename(*_args):
+        raise OSError("injected rename failure")
+
+    monkeypatch.setattr(export_module, "_rename_new_directory", fail_rename)
+    response = service.export(_separate(destination))
+
+    assert response["error"]["code"] == "EXPORT_WRITE_FAILED"
     assert not destination.exists()
     assert not list(tmp_path.glob(".delivery.tmp-*"))
 

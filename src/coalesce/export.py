@@ -439,12 +439,40 @@ def _prepared_parts(parts: list[Any]) -> list[dict[str, Any]]:
     return prepared
 
 
+def _failed_part(part: Any, error: ExportFailure) -> dict[str, Any]:
+    validation = {
+        "status": "failed",
+        "freshProcess": True,
+        "message": error.message,
+        **error.details,
+    }
+    validation["code"] = error.code
+    return {
+        "partId": part.part_id,
+        "label": part.label,
+        "status": "failed",
+        "validation": validation,
+    }
+
+
 def preflight_parts(parts: list[Any]) -> list[dict[str, Any]]:
-    """Validate each selected part independently without publishing any bytes."""
-    return [
-        {key: value for key, value in item.items() if not key.startswith("_")}
-        for item in _prepared_parts(parts)
-    ]
+    """Validate every selected part independently without publishing any bytes."""
+    results = []
+    for part in parts:
+        try:
+            results.extend(
+                {
+                    key: value for key, value in item.items() if not key.startswith("_")
+                }
+                for item in _prepared_parts([part])
+            )
+        except ExportFailure as error:
+            results.append(_failed_part(part, error))
+    return results
+
+
+def parts_are_ready(parts: list[dict[str, Any]]) -> bool:
+    return all(part["status"] == "passed" for part in parts)
 
 
 def _write_private_file(path: Path, content: bytes) -> None:
@@ -492,6 +520,13 @@ def export_parts_separately(
     path: Path, parts: list[Any], manifest_fields: dict[str, Any]
 ) -> dict[str, Any]:
     """Validate each part, then publish one complete sibling-built directory."""
+    validation = preflight_parts(parts)
+    if not parts_are_ready(validation):
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "one or more parts failed fresh-process validation",
+            parts=validation,
+        )
     prepared = _prepared_parts(parts)
     public_parts = [
         {key: value for key, value in item.items() if not key.startswith("_")}

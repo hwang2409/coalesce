@@ -22,6 +22,7 @@ from .export import (
     _validate_part_for_step,
     export_parts,
     export_parts_separately,
+    parts_are_ready,
     preflight_parts,
 )
 from .fit_summary import fit_summary, part_facts
@@ -2887,6 +2888,40 @@ class DocumentService:
             key=lambda item: item["assetId"],
         )
 
+    def _handoff_result(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        parts = preflight_parts(selected)
+        requirements = self._handoff_requirements(payload)
+        unknowns = [item for item in requirements["results"] if item["status"] == "UNKNOWN"]
+        return {
+            "parts": parts,
+            "requirements": requirements,
+            "unknowns": unknowns,
+            "ready": parts_are_ready(parts) and requirements["gate"] == "PASS",
+        }
+
+    def _export_preflight(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._handoff_result(selected, payload)
+        return {
+            "ok": True,
+            "revision": self._document.revision,
+            "units": "mm",
+            "partIds": [part.part_id for part in selected],
+            **result,
+        }
+
+    def _export_separate(self, selected: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._handoff_result(selected, payload)
+        manifest = {
+            "revision": self._document.revision,
+            "units": "mm",
+            "ready": result["ready"],
+            "sources": self._handoff_sources(),
+            "requirements": result["requirements"],
+            "unknowns": result["unknowns"],
+        }
+        fields = export_parts_separately(Path(payload["path"]), selected, manifest)
+        return {"ok": True, "revision": self._document.revision, "units": "mm", **result, **fields}
+
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_geometry()
         with self._lock:
@@ -2895,55 +2930,12 @@ class DocumentService:
                 self._check_export_revision(payload["expectedRevision"])
                 self._check_export_request(payload)
                 selected = self._select_export_parts(payload.get("partIds"))
-                action = payload.get("action", "publish")
-                mode = payload.get("mode", "compound")
-                if action == "preflight":
-                    parts = preflight_parts(selected)
-                    requirements = self._handoff_requirements(payload)
-                    unknowns = [
-                        item for item in requirements["results"] if item["status"] == "UNKNOWN"
-                    ]
-                    return {
-                        "ok": True,
-                        "revision": self._document.revision,
-                        "units": "mm",
-                        "ready": requirements["gate"] == "PASS",
-                        "partIds": [part.part_id for part in selected],
-                        "parts": parts,
-                        "requirements": requirements,
-                        "unknowns": unknowns,
-                    }
-                if mode == "separate":
-                    requirements = self._handoff_requirements(payload)
-                    unknowns = [
-                        item for item in requirements["results"] if item["status"] == "UNKNOWN"
-                    ]
-                    manifest = {
-                        "revision": self._document.revision,
-                        "units": "mm",
-                        "sources": self._handoff_sources(),
-                        "requirements": requirements,
-                        "unknowns": unknowns,
-                    }
-                    fields = export_parts_separately(
-                        Path(payload.get("path", "")), selected, manifest
-                    )
-                    return {
-                        "ok": True,
-                        "revision": self._document.revision,
-                        "units": "mm",
-                        "ready": requirements["gate"] == "PASS",
-                        "requirements": requirements,
-                        "unknowns": unknowns,
-                        **fields,
-                    }
-                fields = export_parts(Path(payload.get("path", "")), selected)
-                return {
-                    "ok": True,
-                    "revision": self._document.revision,
-                    "units": "mm",
-                    **fields,
-                }
+                if payload.get("action", "publish") == "preflight":
+                    return self._export_preflight(selected, payload)
+                if payload.get("mode", "compound") == "separate":
+                    return self._export_separate(selected, payload)
+                fields = export_parts(Path(payload["path"]), selected)
+                return {"ok": True, "revision": self._document.revision, "units": "mm", **fields}
             except ExportFailure as error:
                 return self.error_response(
                     "export",
