@@ -3461,6 +3461,46 @@ class DocumentService:
             "bodies": catalog,
         }
 
+    def _evaluate_enclosure_requirements(
+        self, payload: dict[str, Any], requirements: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        enclosure_requirements = [
+            item for item in requirements if item.get("kind") != "valid_brep"
+        ]
+        if not enclosure_requirements:
+            return [], None
+        try:
+            from .enclosure_inspection import inspect_enclosure
+
+            inspection = inspect_enclosure(
+                self._document.graph, self._regen, payload.get("base", "base")
+            )
+            return (
+                evaluate_requirements(
+                    enclosure_requirements, inspection, self._document.revision
+                )["results"],
+                None,
+            )
+        except InvalidHoleIds as error:
+            return [], _safe_error(
+                self._document.revision,
+                None,
+                "INVALID_PARAMETER",
+                str(error),
+                operation="check",
+                invalidHoleIds=error.invalid_hole_ids,
+                validHoles=error.valid_holes,
+            )
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            return [], _safe_error(
+                self._document.revision,
+                None,
+                "INSPECTION_FAILED",
+                "enclosure inspection could not be completed",
+                operation="check",
+                kernelMessage=str(error),
+            )
+
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             if failure := self._geometry_failure("check"):
@@ -3506,41 +3546,9 @@ class DocumentService:
                     kind=unknown_kinds[0],
                     supportedKinds=sorted(supported_requirement_kinds),
                 )
-            results = []
-            enclosure_requirements = [
-                item for item in requirements if item.get("kind") != "valid_brep"
-            ]
-            if enclosure_requirements:
-                try:
-                    from .enclosure_inspection import inspect_enclosure
-
-                    inspection = inspect_enclosure(
-                        self._document.graph, self._regen, payload.get("base", "base")
-                    )
-                    results.extend(
-                        evaluate_requirements(
-                            enclosure_requirements, inspection, self._document.revision
-                        )["results"]
-                    )
-                except InvalidHoleIds as error:
-                    return _safe_error(
-                        self._document.revision,
-                        None,
-                        "INVALID_PARAMETER",
-                        str(error),
-                        operation="check",
-                        invalidHoleIds=error.invalid_hole_ids,
-                        validHoles=error.valid_holes,
-                    )
-                except (KeyError, TypeError, ValueError, RuntimeError) as error:
-                    return _safe_error(
-                        self._document.revision,
-                        None,
-                        "INSPECTION_FAILED",
-                        "enclosure inspection could not be completed",
-                        operation="check",
-                        kernelMessage=str(error),
-                    )
+            results, failure = self._evaluate_enclosure_requirements(payload, requirements)
+            if failure is not None:
+                return failure
             results.extend(
                 _valid_brep_result(self._regen, item, self._document.revision)
                 for item in requirements
