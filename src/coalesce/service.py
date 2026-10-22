@@ -1627,9 +1627,9 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
     if result.status.value == "conflicting":
         return RequestError("SKETCH_CONFLICTING", message, diagnostics=result_payload(model))
     if result.status.value == "did_not_converge":
-        timed_out = any(error.code == "SOLVE_TIMEOUT" for error in result.errors)
-        code = "SKETCH_SOLVE_TIMEOUT" if timed_out else "SKETCH_DID_NOT_CONVERGE"
-        return RequestError(code, message, diagnostics=result_payload(model))
+        if any(error.code == "SOLVE_TIMEOUT" for error in result.errors):
+            return RequestError("SKETCH_SOLVE_TIMEOUT", message, diagnostics=result_payload(model))
+        return RequestError("SKETCH_DID_NOT_CONVERGE", message, diagnostics=result_payload(model))
     return RequestError("SKETCH_BRANCH_FLIP", message, diagnostics=result_payload(model))
 
 
