@@ -19,7 +19,12 @@ from .graph import (
     PortCutout,
     Standoffs,
 )
-from .lid_outline import capture_lid_outline, outline_profile
+from .lid_outline import (
+    LidOutlineComparison,
+    capture_lid_outline,
+    compare_lid_outlines,
+    outline_geometry,
+)
 from .parts import TerminalPart, terminal_parts
 from .pcb import board_loop_wire
 
@@ -366,29 +371,13 @@ def _inner_size(board_size: float, first: float | None, second: float | None) ->
     return _quantity(board_size + first + second)
 
 
-def _silhouette_difference(source: Any, lid_top: Face) -> dict[str, float]:
-    source_face = Face(outline_profile(source).wire)
-    source_box = source_face.bounding_box()
-    lid_box = lid_top.bounding_box()
-    return {
-        "area": abs(source_face.area - lid_top.area),
-        "bbox": max(
-            abs(left - right)
-            for left, right in zip(
-                (source_box.min.X, source_box.min.Y, source_box.max.X, source_box.max.Y),
-                (lid_box.min.X, lid_box.min.Y, lid_box.max.X, lid_box.max.Y),
-                strict=True,
-            )
-        ),
-    }
-
-
 def _lid_measurement(
     result: Any,
     parts: list[TerminalPart],
     node: PcbLid,
     base_part: TerminalPart,
-    current_outline: Any | None,
+    comparison: LidOutlineComparison,
+    comparison_input: dict[str, Any] | None,
 ) -> dict[str, Any]:
     part = _part_for(parts, node.id)
     undersides = _faces(result, node.id, "underside")
@@ -398,13 +387,7 @@ def _lid_measurement(
     if interference is not None:
         gaps = [0.0]
     lip_box = Compound(children=lips).bounding_box() if lips else None
-    [top] = _faces(result, node.id, "top")
-    difference = (
-        _silhouette_difference(current_outline, top)
-        if current_outline is not None
-        else {"area": float("inf"), "bbox": float("inf")}
-    )
-    return {
+    measurement = {
         "featureId": node.id,
         "partId": part.part_id,
         "outerBBox": _bbox(part.shape),
@@ -419,11 +402,16 @@ def _lid_measurement(
         "outline": {
             "source": node.outline_source or node.base,
             "legalSource": base_part.terminal_feature,
-            "areaDifference": {"value": difference["area"], "unit": "mm^2"},
-            "bboxDifference": _quantity(difference["bbox"]),
-            "matches": difference["area"] <= 1e-6 and difference["bbox"] <= 1e-6,
+            "areaDifference": {"value": comparison.area_difference, "unit": "mm^2"},
+            "bboxDifference": _quantity(comparison.bbox_difference),
+            "matches": comparison.matches,
         },
     }
+    if comparison.reason is not None:
+        measurement["outline"]["reason"] = comparison.reason
+    if comparison_input is not None:
+        measurement["_outlineComparison"] = comparison_input
+    return measurement
 
 
 def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> bool:
@@ -441,7 +429,7 @@ def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> b
 def _current_outline(result: Any, terminal: str) -> Any | None:
     try:
         return capture_lid_outline(terminal, result.states[terminal])
-    except GraphError:
+    except (GraphError, KeyError):
         return None
 
 
@@ -453,16 +441,13 @@ def _outline_is_stale(
     return node.outline_source != terminal or current is None
 
 
-def _legacy_match(measurement: dict[str, Any]) -> None:
-    measurement["outline"].update({
-        "areaDifference": {"value": 0.0, "unit": "mm^2"},
-        "bboxDifference": _quantity(0.0),
-        "matches": True,
-    })
-
-
 def _lids(
-    graph: Any, result: Any, parts: list[TerminalPart], base: PcbBase, base_part: TerminalPart
+    graph: Any,
+    result: Any,
+    parts: list[TerminalPart],
+    base: PcbBase,
+    base_part: TerminalPart,
+    include_outline_geometry: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     nodes = [
         node
@@ -477,10 +462,28 @@ def _lids(
     lids = []
     warnings = []
     for node in nodes:
-        comparison = current if node.outline_source is not None or has_outer_treatment else None
-        measurement = _lid_measurement(result, parts, node, base_part, comparison)
-        if comparison is None and not has_outer_treatment:
-            _legacy_match(measurement)
+        [top] = _faces(result, node.id, "top")
+        source = (
+            _current_outline(result, node.outline_source)
+            if node.outline_source is not None
+            else outline_geometry(top)
+        )
+        comparison_input = {
+            "outline_source": node.outline_source,
+            "current_source": terminal,
+            "source": source,
+            "current": current,
+            "legacy_stale": has_outer_treatment,
+        }
+        comparison = compare_lid_outlines(**comparison_input)
+        measurement = _lid_measurement(
+            result,
+            parts,
+            node,
+            base_part,
+            comparison,
+            comparison_input if include_outline_geometry else None,
+        )
         lids.append(measurement)
         if _outline_is_stale(node, current, terminal, has_outer_treatment):
             warnings.append({
@@ -686,7 +689,9 @@ def _warnings(
     return warnings
 
 
-def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
+def inspect_enclosure(
+    graph: Any, result: Any, base_id: str, *, include_outline_geometry: bool = True
+) -> dict[str, Any]:
     base = graph.nodes.get(base_id)
     if not isinstance(base, PcbBase):
         raise TypeError(f"unknown pcb_base: {base_id}")
@@ -709,7 +714,9 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     )
     ports = _ports(graph, result, base, board, board_shape, base_part.shape, assembled)
     warnings = _warnings(graph, board, parts, enclosure_parts, ports)
-    lids, lid_warnings = _lids(graph, result, parts, base, base_part)
+    lids, lid_warnings = _lids(
+        graph, result, parts, base, base_part, include_outline_geometry
+    )
     warnings.extend(lid_warnings)
 
     return {

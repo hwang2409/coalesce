@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .lid_outline import compare_lid_outlines
+
 
 class InvalidHoleIds(ValueError):
     """A mounting requirement selected values outside the stable hole-id namespace."""
@@ -230,6 +232,23 @@ def _lid_parts(inspection: dict[str, Any]) -> tuple[list[dict[str, Any]], list[s
     return lids, [inspection["base"]["partId"], *[lid["partId"] for lid in lids]]
 
 
+def _outline_results(lids: list[dict[str, Any]]) -> tuple[list[bool], str | None]:
+    comparisons = [
+        compare_lid_outlines(**lid["_outlineComparison"])
+        for lid in lids
+        if "_outlineComparison" in lid
+    ]
+    if len(comparisons) == len(lids):
+        matches = [comparison.matches for comparison in comparisons]
+        reason = next((item.reason for item in comparisons if not item.matches), None)
+        return matches, reason
+    outlines = [lid["outline"] for lid in lids]
+    return (
+        [item["matches"] for item in outlines],
+        next((item.get("reason") for item in outlines if not item["matches"]), None),
+    )
+
+
 def _lid_outline_match(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
@@ -237,14 +256,20 @@ def _lid_outline_match(
     if not lids:
         return _unknown(requirement, "no lid exists for this measurement", involved, revision)
     measured = [lid["outline"] for lid in lids]
+    matches, reason = _outline_results(lids)
     return _finish(
         requirement,
         measured[0] if len(measured) == 1 else measured,
-        {"areaTolerance": {"value": 1e-6, "unit": "mm^2"},
-         "bboxTolerance": {"value": 1e-6, "unit": "mm"}},
+        {
+            "areaTolerance": {"value": 1e-6, "unit": "mm^2"},
+            "bboxTolerance": {"value": 1e-6, "unit": "mm"},
+            "arcRadiusTolerance": {"value": 1e-6, "unit": "mm"},
+            "orderedSegmentTopology": "exact",
+        },
         involved,
         revision,
-        "PASS" if all(item["matches"] for item in measured) else "FAIL",
+        "PASS" if all(matches) else "FAIL",
+        reason,
     )
 
 

@@ -7,6 +7,11 @@ from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity
 from test_pcb_lid import lid_request
 from test_port_cutout import explicit_envelope, port_request
 
+from coalesce.lid_outline import (
+    LidOutlineGeometry,
+    LidOutlineSegment,
+    compare_lid_outlines,
+)
 from coalesce.service import DocumentService
 
 
@@ -180,6 +185,57 @@ def test_outline_source_survives_reload_and_separate_export(tmp_path):
     assert "outlineGeometry" not in lid
 
 
+def test_low_port_after_lid_fails_outline_match_as_stale(tmp_path):
+    service = _service(tmp_path)
+    assert service.feature(lid_request(revision=2, include_lip=False))["ok"]
+    assert service.feature(
+        port_request(
+            revision=3,
+            envelope=explicit_envelope(width=4, height=1, bottom=0),
+        )
+    )["ok"]
+
+    result = _check_outline(service)
+
+    assert result["status"] == "FAIL"
+    assert "stale" in result["reason"]
+
+
+def _line(start: tuple[float, float], end: tuple[float, float]) -> LidOutlineSegment:
+    return LidOutlineSegment(
+        kind="line",
+        start=(*start, 0),
+        midpoint=((start[0] + end[0]) / 2, (start[1] + end[1]) / 2, 0),
+        end=(*end, 0),
+        source="test",
+    )
+
+
+def _rectangle(*, split_top: bool = False) -> LidOutlineGeometry:
+    points = [(0, 0), (2, 0), (2, 1), (0, 1)]
+    if split_top:
+        points.insert(3, (1, 1))
+    return LidOutlineGeometry(
+        tuple(_line(start, points[(index + 1) % len(points)]) for index, start in enumerate(points))
+    )
+
+
+def test_outline_comparison_rejects_equal_area_bbox_with_different_topology():
+    result = compare_lid_outlines("base", "base", _rectangle(), _rectangle(split_top=True))
+
+    assert result.matches is False
+    assert result.reason == "segment count differs: 4 != 5"
+    assert result.area_difference == pytest.approx(0, abs=1e-6)
+    assert result.bbox_difference == pytest.approx(0, abs=1e-6)
+
+
+def test_outline_comparison_accepts_matching_geometry():
+    result = compare_lid_outlines("base", "base", _rectangle(), _rectangle())
+
+    assert result.matches is True
+    assert result.reason is None
+
+
 def test_treatment_after_lid_reports_stale_until_update(tmp_path):
     service = _service(tmp_path)
     assert service.feature(lid_request(revision=2, include_lip=False))["ok"]
@@ -229,6 +285,12 @@ def test_legacy_lid_without_outline_source_keeps_board_outline(tmp_path):
 
     assert restarted._document.graph.nodes["lid"].outline_source is None
     assert _outline_measurements(restarted) == original
+    check = _check_outline(restarted)
+    assert check["status"] == "PASS"
+    assert check["measured"]["matches"] is True
+    assert check["measured"]["areaDifference"]["value"] == 0
+    assert check["measured"]["bboxDifference"]["value"] == 0
+    assert "reason" not in check
     assert not any(
         warning["code"] == "LID_OUTLINE_STALE"
         for warning in restarted.query({"select": {"kind": "enclosure", "base": "base"}})["warnings"]

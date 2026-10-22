@@ -106,22 +106,6 @@ class Standoffs(Feature):
     pilot_diameter: float = 2
 
 
-@dataclass(frozen=True)
-class LidOutlineSegment:
-    kind: str
-    start: tuple[float, float, float]
-    midpoint: tuple[float, float, float]
-    end: tuple[float, float, float]
-    source: str
-    center: tuple[float, float, float] | None = None
-    radius: float | None = None
-
-
-@dataclass(frozen=True)
-class LidOutlineGeometry:
-    segments: tuple[LidOutlineSegment, ...]
-
-
 @dataclass
 class PcbLid(Feature):
     base: str = ""
