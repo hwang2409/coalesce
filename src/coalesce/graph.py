@@ -113,6 +113,7 @@ class PcbLid(Feature):
     fit_gap: float = 0.25
     lip_depth: float | None = None
     lip_width: float | None = None
+    outline_source: str | None = None
 
 
 @dataclass
@@ -251,7 +252,12 @@ class Graph:
     def _dependencies(node: Any) -> list[str]:
         dependencies = list(getattr(node, "depends_on", []))
         for dependency in (
-            *(getattr(node, dependency_field, None) for dependency_field in ("sketch", "target", "tool", "board", "base")),
+            *(
+                getattr(node, dependency_field, None)
+                for dependency_field in (
+                    "sketch", "target", "tool", "board", "base", "outline_source"
+                )
+            ),
             *Graph._typed_reference_dependencies(node),
         ):
             if dependency and dependency not in dependencies:

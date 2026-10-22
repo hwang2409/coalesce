@@ -70,6 +70,8 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `JOIN_TARGET_REQUIRED` | dependency | a join extrude has no target | provide one terminal target feature |
 | `JOIN_TARGET_BODY` | dependency | join output cannot be assigned to the target body | change the profile or target so the join has one target body |
 | `REFERENCE_FAILED` | reference | an edge reference resolves with a non-OK status | inspect `resolution.status` and choose from `resolution.availableRoles` |
+| `EMPTY` | reference | a persisted lid outline source has no provenance-backed outer rim loop | choose a current terminal source with one intact rim loop |
+| `SPLIT` | reference | a persisted lid outline source resolves to a split or broken outer rim loop | repair the rim or choose another legal terminal source; no board-outline fallback occurs |
 | `EMPTY_EDGE_SELECTION` | reference | a fillet or chamfer has no resolved edges | choose a role from `resolution.availableRoles` |
 | `INVALID_EDGE_REFERENCE` | reference | a treatment reference resolves to a non-edge | select an edge provenance role |
 | `HISTORY_MISSING` | reference | occt did not provide required provenance history | change the operation; do not guess a replacement face |
@@ -117,3 +119,4 @@ a successful enclosure inspection can include `warnings`. a warning does not fai
 | `OTHER_MANUFACTURING_BODY` | a manufactured body that is not part of the enclosure exists; it is named by `featureId` and `partId`. | delete it, or confirm it is intended before export. |
 | `CONNECTOR_HEIGHT_UNRESOLVED` | the board declares no 3D models, so connector heights for `footprintIds` are not measured. | treat port height clearance as unknown; ask for connector heights or add margin. |
 | `UNCLASSIFIED_BOARD_HOLES` | board holes in `holeIds` are not mounting holes, so no standoff is expected for them. | check that these holes need no standoff. |
+| `LID_OUTLINE_STALE` | a lid still uses its persisted outline while the base lineage has a different legal terminal source. | explicitly update the lid `outlineSource` to the reported `legalSource`, then run `lid_outline_match`. |

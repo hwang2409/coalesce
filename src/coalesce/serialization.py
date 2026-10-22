@@ -90,42 +90,128 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _node_payload(node: Any) -> dict[str, Any]:
-    payload = asdict(node)
-    if isinstance(node, BoardImport):
-        return {
-            "type": "BoardImport",
-            "id": node.id,
-            "format": "kicad_pcb",
-            "sourcePath": node.source_path,
-            "sourceDigest": node.source_digest,
-            "parserVersion": node.parser_version,
-            "mechanics": node.mechanics,
-            "availability": node.availability,
-            "warnings": node.warnings,
-            "errors": node.errors,
-        }
-    if isinstance(node, Sketch):
-        payload["entities"] = [
-            {"type": entity.__class__.__name__, **asdict(entity)}
-            for entity in node.entities
-        ]
-    elif isinstance(node, Extrude) and node.operation == "new_body":
+def _board_payload(node: BoardImport, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "BoardImport",
+        "id": node.id,
+        "format": "kicad_pcb",
+        "sourcePath": node.source_path,
+        "sourceDigest": node.source_digest,
+        "parserVersion": node.parser_version,
+        "mechanics": node.mechanics,
+        "availability": node.availability,
+        "warnings": node.warnings,
+        "errors": node.errors,
+    }
+
+
+def _sketch_payload(node: Sketch, payload: dict[str, Any]) -> dict[str, Any]:
+    payload["entities"] = [
+        {"type": entity.__class__.__name__, **asdict(entity)} for entity in node.entities
+    ]
+    return payload
+
+
+def _extrude_payload(node: Extrude, payload: dict[str, Any]) -> dict[str, Any]:
+    if node.operation == "new_body":
         payload.pop("operation")
         if node.target is None:
             payload.pop("target")
-    elif isinstance(node, Hole):
-        if node.positions:
-            payload.pop("position")
-        else:
-            payload.pop("positions")
-    elif isinstance(node, (Fillet, Chamfer)):
-        payload["edges"] = [reference.to_dict() for reference in node.edges]
-    return {"type": node.__class__.__name__, **payload}
+    return payload
+
+
+def _lid_payload(node: PcbLid, payload: dict[str, Any]) -> dict[str, Any]:
+    payload.pop("outline_source")
+    if node.outline_source is not None:
+        payload["outlineSource"] = {"featureId": node.outline_source}
+    return payload
+
+
+def _hole_payload(node: Hole, payload: dict[str, Any]) -> dict[str, Any]:
+    payload.pop("position" if node.positions else "positions")
+    return payload
+
+
+def _treatment_payload(node: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    payload["edges"] = [reference.to_dict() for reference in node.edges]
+    return payload
+
+
+_SERIALIZERS = {
+    BoardImport: _board_payload,
+    Sketch: _sketch_payload,
+    Extrude: _extrude_payload,
+    PcbLid: _lid_payload,
+    Hole: _hole_payload,
+    Fillet: _treatment_payload,
+    Chamfer: _treatment_payload,
+}
+
+
+def _node_payload(node: Any) -> dict[str, Any]:
+    payload = asdict(node)
+    serializer = _SERIALIZERS.get(type(node))
+    if serializer is not None:
+        payload = serializer(node, payload)
+    return payload if isinstance(node, BoardImport) else {
+        "type": node.__class__.__name__, **payload
+    }
 
 
 def dumps(graph: Graph) -> str:
     return json.dumps({"nodes": [_node_payload(node) for node in graph.nodes.values()]})
+
+
+def _load_board(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.pop("format", None) != "kicad_pcb":
+        raise ValueError("BoardImport format must be kicad_pcb")
+    payload["source_path"] = payload.pop("sourcePath")
+    payload["source_digest"] = payload.pop("sourceDigest")
+    payload["parser_version"] = payload.pop("parserVersion")
+    return payload
+
+
+def _load_standoffs(payload: dict[str, Any]) -> dict[str, Any]:
+    if "minimum_diameter" in payload or "minimumDiameter" in payload:
+        raise GraphError(
+            "INVALID_DOCUMENT",
+            "minimumDiameter was removed; use selection mode all_mounting, which selects every MountingHole:* footprint hole.",
+            feature=payload.get("id"),
+            field="minimumDiameter",
+        )
+    payload["hole_ids"] = tuple(payload.get("hole_ids", ()))
+    return payload
+
+
+def _load_lid(payload: dict[str, Any]) -> dict[str, Any]:
+    source = payload.pop("outlineSource", None)
+    payload["outline_source"] = source.get("featureId") if source else None
+    return payload
+
+
+def _load_hole(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["position"] = tuple(payload.get("position", (0, 0)))
+    payload["positions"] = tuple(
+        HolePosition(item["name"], tuple(item["point"]))
+        for item in payload.get("positions", [])
+    )
+    return payload
+
+
+def _load_treatment(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["edges"] = [_reference(item) for item in payload.get("edges", [])]
+    return payload
+
+
+_LOADERS = {
+    BoardImport: _load_board,
+    Sketch: _sketch,
+    Standoffs: _load_standoffs,
+    PcbLid: _load_lid,
+    Hole: _load_hole,
+    Fillet: _load_treatment,
+    Chamfer: _load_treatment,
+}
 
 
 def loads(value: str) -> Graph:
@@ -137,30 +223,6 @@ def loads(value: str) -> Graph:
         cls = _TYPES.get(kind)
         if cls is None:
             raise ValueError(f"unknown node type: {kind}")
-        if cls is BoardImport:
-            if payload.pop("format", None) != "kicad_pcb":
-                raise ValueError("BoardImport format must be kicad_pcb")
-            payload["source_path"] = payload.pop("sourcePath")
-            payload["source_digest"] = payload.pop("sourceDigest")
-            payload["parser_version"] = payload.pop("parserVersion")
-        elif cls is Sketch:
-            payload = _sketch(payload)
-        elif cls is Standoffs:
-            if "minimum_diameter" in payload or "minimumDiameter" in payload:
-                raise GraphError(
-                    "INVALID_DOCUMENT",
-                    "minimumDiameter was removed; use selection mode all_mounting, which selects every MountingHole:* footprint hole.",
-                    feature=payload.get("id"),
-                    field="minimumDiameter",
-                )
-            payload["hole_ids"] = tuple(payload.get("hole_ids", ()))
-        elif cls is Hole:
-            payload["position"] = tuple(payload.get("position", (0, 0)))
-            payload["positions"] = tuple(
-                HolePosition(item["name"], tuple(item["point"]))
-                for item in payload.get("positions", [])
-            )
-        elif cls in (Fillet, Chamfer):
-            payload["edges"] = [_reference(item) for item in payload.get("edges", [])]
-        graph.add(cls(**payload))
+        loader = _LOADERS.get(cls)
+        graph.add(cls(**(loader(payload) if loader is not None else payload)))
     return graph

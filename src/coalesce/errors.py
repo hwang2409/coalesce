@@ -28,6 +28,8 @@ ERROR_REGISTRY = {
     "JOIN_TARGET_REQUIRED": ErrorDefinition("dependency"),
     "JOIN_TARGET_BODY": ErrorDefinition("dependency"),
     "REFERENCE_FAILED": ErrorDefinition("reference"),
+    "EMPTY": ErrorDefinition("reference"),
+    "SPLIT": ErrorDefinition("reference"),
     "EMPTY_EDGE_SELECTION": ErrorDefinition("reference"),
     "INVALID_EDGE_REFERENCE": ErrorDefinition("reference"),
     "HISTORY_MISSING": ErrorDefinition("reference"),
@@ -72,4 +74,5 @@ WARNING_CODES = frozenset({
     "OTHER_MANUFACTURING_BODY",
     "CONNECTOR_HEIGHT_UNRESOLVED",
     "UNCLASSIFIED_BOARD_HOLES",
+    "LID_OUTLINE_STALE",
 })

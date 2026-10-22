@@ -566,6 +566,7 @@ PCB_LID_UPDATE_SET = {
         "thickness": POSITIVE_QUANTITY,
         "fitGap": POSITIVE_QUANTITY,
         "lip": PCB_LIP,
+        "outlineSource": FEATURE_TARGET,
     },
     "minProperties": 1,
     "additionalProperties": False,
@@ -809,6 +810,7 @@ CHECK_REQUIREMENT = {
                     "enum": [
                         "valid_brep",
                         "lid_interference",
+                        "lid_outline_match",
                         "clean_deliverables",
                         "clean_manufacturing_bodies",
                     ]
