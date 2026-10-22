@@ -489,6 +489,27 @@ def _edge_treatment(check, context):
     if any(not item.get("edgeRole") for item in expected):
         return _result(check, "fail", reason="expected edge role is missing")
 
+    nodes = graph.get("graph", {}).get("nodes", [])
+
+    def semantic_kind(value):
+        return "".join(character for character in value.lower() if character.isalnum())
+
+    targets = {}
+    for item in expected:
+        target = item["target"]
+        matches = [node.get("id") for node in nodes
+                   if semantic_kind(node.get("type", "")) == semantic_kind(target)]
+        if len(matches) != 1:
+            count = "no" if not matches else str(len(matches))
+            return _result(
+                check,
+                "fail",
+                reason=f"semantic target {target!r} resolved to {count} features; expected exactly one",
+                target=target,
+                matches=matches,
+            )
+        targets[target] = matches[0]
+
     def normalize(node):
         kind = node.get("type", "").lower()
         amount = _quantity(node.get("radius" if kind == "fillet" else "distance"))
@@ -498,10 +519,10 @@ def _edge_treatment(check, context):
         }))
         return kind, node.get("target"), amount, roles
 
-    actual = [normalize(node) for node in graph.get("graph", {}).get("nodes", [])
+    actual = [normalize(node) for node in nodes
               if node.get("type", "").lower() in {"fillet", "chamfer"}]
     wanted = [
-        (item["feature"], item["target"], item["amount"], (item["edgeRole"],))
+        (item["feature"], targets[item["target"]], item["amount"], (item["edgeRole"],))
         for item in expected
     ]
     exact = len(actual) == len(wanted) and all(
