@@ -2207,7 +2207,19 @@ def _change(before: Any, result: RegenResult, changed_id: str) -> dict[str, str]
             labels.append(f"{holes} mounting hole{'s' if holes != 1 else ''} moved")
         dependent = _dependent_features(result.graph, changed_id)
         if dependent:
-            labels.append(" and ".join(dependent) + " updated")
+            names = {
+                node_id: getattr(result.graph.nodes[node_id], "kind", node_id).replace("_", " ")
+                for node_id in dependent
+            }
+            dependent_labels = [names[node_id] for node_id in dependent]
+            joined = (
+                dependent_labels[0]
+                if len(dependent_labels) == 1
+                else " and ".join(dependent_labels)
+                if len(dependent_labels) == 2
+                else ", ".join(dependent_labels[:-1]) + " and " + dependent_labels[-1]
+            )
+            labels.append(joined + " updated")
         return {"featureId": changed_id, "summary": "refreshed board: " + (", ".join(labels) if labels else "source changed")}
     return {"featureId": changed_id, "summary": _added(node, result) if old is None else _edited(old, node)}
 

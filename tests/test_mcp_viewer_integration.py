@@ -32,6 +32,7 @@ from coalesce.viewer.scene import REFERENCE_COLOR
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
 ENCLOSURE_SMOKE = Path(__file__).with_name("mcp_viewer_enclosure_smoke.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
+KICAD_MOVED_FIXTURE = Path(__file__).parent / "fixtures/kicad/features-moved.kicad_pcb"
 
 
 def _viewer_access(url: str):
@@ -593,13 +594,19 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
             fixed = _edge_treatment("update", 7, "repair-fillet", "base_fillet", "fillet", 1)
             assert result_json(await session.call_tool("feature", fixed))["revision"] == 8
             repaired = await step("repaired")
+            refresh = {
+                **import_request(KICAD_MOVED_FIXTURE, revision=8, request_id="refresh-delta", action="refresh"),
+                "path": str(KICAD_MOVED_FIXTURE.resolve()),
+            }
+            assert result_json(await session.call_tool("import", refresh))["revision"] == 9
+            refreshed = await step("refreshSummary")
             driver.stdin.write_eof()
             assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
         finally:
             if driver.returncode is None:
                 driver.kill()
                 await driver.wait()
-    for answer in (built, rows, failed, repaired):
+    for answer in (built, rows, failed, repaired, refreshed):
         assert answer.pop("errors") == []
     for size in ("1280x800", "390x844"):
         fit, evidence = built[size]["fit"], built[size]["evidence"]
@@ -640,6 +647,12 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
             "change": "Edited fillet base_fillet, no value changed",
             "visible": True,
         }
+        assert refreshed[size]["text"] == (
+            "Refreshed board: J1 moved 2.0 mm, 3 mounting holes moved, "
+            "pcb base, standoffs and port cutout updated"
+        )
+        assert refreshed[size]["visible"] is True
+        assert refreshed[size]["overflow"] == {"document": True, "change": True}
 
 
 class FailingSlowStore:

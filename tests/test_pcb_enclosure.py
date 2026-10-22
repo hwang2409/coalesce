@@ -8,6 +8,7 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from test_mcp_vertical import call_server_tool, run_server
 
 from coalesce.service import DocumentService
+from coalesce.viewer import ViewerSceneStore
 
 FIXTURES = Path(__file__).parent / "fixtures/kicad"
 FEATURE_HOLES = [
@@ -370,6 +371,66 @@ def test_refresh_adds_dynamic_mounting_hole_and_reports_selection_change(tmp_pat
         "holesAdded": [added],
         "holesRemoved": [],
     }]
+
+
+def test_refresh_delta_reports_positions_distances_and_dependents(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "delta.coalesce.json", scene_store=store)
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request())["ok"]
+    assert service.feature(standoffs_request(selection={"mode": "all_mounting"}))["ok"]
+    port = {
+        "action": "create",
+        "expectedRevision": 3,
+        "requestId": "port",
+        "featureId": "port",
+        "kind": "port_cutout",
+        "parameters": {
+            "base": {"featureId": "base"},
+            "footprint": "J1",
+            "wall": "left",
+            "clearance": quantity(0.5),
+            "envelope": {"source": "courtyard", "height": quantity(2), "bottomOffset": quantity(1)},
+        },
+    }
+    assert service.feature(port)["ok"] is True
+    refreshed = service.import_board({
+        **import_request(FIXTURES / "features-moved.kicad_pcb", revision=4, request_id="delta", action="refresh"),
+        "path": str((FIXTURES / "features-moved.kicad_pcb").resolve()),
+    })
+
+    assert refreshed["ok"] is True
+    delta = refreshed["boardChanges"]
+    footprints = {item["reference"]: item for item in delta["footprints"]}
+    assert footprints["J1"]["oldPosition"] == pytest.approx([1, 5], abs=1e-6)
+    assert footprints["J1"]["newPosition"] == pytest.approx([3, 5], abs=1e-6)
+    assert footprints["J1"]["distance"] == pytest.approx(2, abs=1e-6)
+    assert len(delta["mountingHoles"]) == 3
+    assert all(item["distance"] > 0 for item in delta["mountingHoles"])
+    assert delta["dependentFeatures"] == ["base", "mounts", "port"]
+
+
+def test_identical_refresh_has_empty_delta(tmp_path):
+    service = DocumentService(tmp_path / "identical.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    refreshed = service.import_board(import_request(FIXTURES / "features.kicad_pcb", revision=1, request_id="same", action="refresh"))
+    assert refreshed["boardChanges"] == {
+        "mountingHoles": [], "footprints": [], "outlineChanged": False, "dependentFeatures": []
+    }
+
+
+def test_refresh_float_noise_below_tolerance_is_not_a_move(tmp_path):
+    source = tmp_path / "noise.kicad_pcb"
+    source.write_bytes((FIXTURES / "features.kicad_pcb").read_bytes().replace(b"(at 2 3)", b"(at 2.0000004 3.0000004)"))
+    service = DocumentService(tmp_path / "noise.coalesce.json")
+    service.import_board(import_request(FIXTURES / "features.kicad_pcb"))
+    refreshed = service.import_board({
+        **import_request(source, revision=1, request_id="noise", action="refresh"),
+        "path": str(source.resolve()),
+    })
+    assert refreshed["boardChanges"]["mountingHoles"] == []
+    assert refreshed["boardChanges"]["footprints"] == []
+    assert refreshed["boardChanges"]["outlineChanged"] is False
 
 
 def test_refresh_moved_board_with_same_ids_has_no_selection_changes(tmp_path):

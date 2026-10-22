@@ -123,6 +123,19 @@ async function failure({ name, page }) {
   return { code: await page.locator('#failure-code').textContent() };
 }
 
+async function refreshSummary({ name, page }) {
+  await settled(page, 9);
+  const change = page.locator('#change');
+  await change.scrollIntoViewIfNeeded();
+  const text = await change.textContent();
+  const overflow = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth <= window.innerWidth,
+    change: document.querySelector('#change').scrollWidth <= document.querySelector('#change').clientWidth,
+  }));
+  await page.screenshot({ path: path.join(screenshots, `${name}-refresh-summary.png`) });
+  return { text, visible: await inView(change), overflow };
+}
+
 async function repaired({ name, page }) {
   await settled(page, 8);
   await page.locator('#failure').waitFor({ state: 'hidden' });
@@ -141,6 +154,7 @@ const steps = {
   }),
   failure,
   repaired,
+  refreshSummary,
 };
 
 for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {

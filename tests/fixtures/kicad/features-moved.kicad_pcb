@@ -10,7 +10,7 @@
  (footprint "MountingHole:NPTH" (layer "F.Cu") (uuid "npth-id") (at 10 6)
   (property "Reference" "H1") (property "Value" "NPTH")
   (pad "" np_thru_hole circle (at 0 0) (drill 1.5) (layers "*.Cu" "*.Mask")))
- (footprint "Connector:Front" (layer "F.Cu") (uuid "front-id") (at 1 5)
+ (footprint "Connector:Front" (layer "F.Cu") (uuid "front-id") (at 3 5)
   (property "Reference" "J1") (property "Value" "front")
   (fp_rect (start -1 -2) (end 1 2) (stroke (width 0.05) (type default))
    (fill none) (layer "F.CrtYd"))
