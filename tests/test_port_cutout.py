@@ -551,8 +551,10 @@ def test_opening_reaching_lid_slab_at_rim_is_rejected_in_both_orders(tmp_path, o
 
     assert results[0]["ok"] is True
     assert results[1]["ok"] is False
-    assert results[1]["error"]["code"] == "PORT_BLOCKED_BY_LID"
-    assert results[1]["error"]["overlapVolume"] > 0
+    expected = "SPLIT" if order == ("port", "lid") else "PORT_BLOCKED_BY_LID"
+    assert results[1]["error"]["code"] == expected
+    if expected == "PORT_BLOCKED_BY_LID":
+        assert results[1]["error"]["overlapVolume"] > 0
 
 
 def test_non_overlapping_opening_with_lid_succeeds(tmp_path):

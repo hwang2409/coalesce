@@ -611,7 +611,7 @@ def test_change_line_says_what_each_enclosure_feature_did(tmp_path):
     """One concise line per enclosure step, from data the commit already has; ids only when they add words."""
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / "box.coalesce.json", scene_store=store)
-    top = {**lid_request(revision=5, request_id="top"), "featureId": "top_cover"}
+    top = {**lid_request(revision=4, request_id="top"), "featureId": "top_cover"}
     steps = [
         ("import", enclosure_import(ENCLOSURE_FIXTURES / "features.kicad_pcb"),
          "imported board features.kicad_pcb"),
@@ -619,8 +619,8 @@ def test_change_line_says_what_each_enclosure_feature_did(tmp_path):
          "added pcb base for controller_board: 2 mm walls, 1 mm board clearance"),
         ("feature", standoffs_request(), "added standoffs mounts at 2 mounting holes"),
         ("feature", lid_request(revision=3), "added pcb lid: 2 mm thick, 0.25 mm fit gap, 3 mm deep lip"),
-        ("feature", port_request(revision=4), "added port cutout for J1: 5 \u00d7 3 mm on left wall"),
         ("feature", top, "added pcb lid top_cover: 2 mm thick, 0.25 mm fit gap, 3 mm deep lip"),
+        ("feature", port_request(revision=5), "added port cutout for J1: 5 \u00d7 3 mm on left wall"),
         ("feature", delete_feature("port", 6, "delete-port"), "deleted port cutout"),
         ("feature", delete_feature("base", 7, "delete-base", cascade=True),
          "deleted pcb base with dependents mounts, lid, top_cover"),

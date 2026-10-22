@@ -46,7 +46,6 @@ from .graph import (
     Sketch,
     Standoffs,
 )
-from .lid_outline import capture_lid_outline
 from .parts import terminal_parts
 from .references import (
     BodySource,
@@ -1866,6 +1865,8 @@ def _terminal_base_source(committed: RegenResult, base: str) -> str:
 def _set_lid_outline(
     node: PcbLid, requested: str | None, committed: RegenResult
 ) -> None:
+    from .lid_outline import capture_lid_outline
+
     source = _terminal_base_source(committed, node.base)
     if requested is not None and requested != source:
         raise RequestError(

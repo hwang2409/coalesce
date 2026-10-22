@@ -72,13 +72,10 @@ def _cylinders(shape: Any) -> list[dict[str, Any]]:
         )
     return sorted(
         cylinders,
-        key=lambda item: tuple(
-            round(value, 9)
-            for value in (
-                item["radius"],
-                *item["axis"]["position"],
-                *item["axis"]["direction"],
-            )
+        key=lambda item: (
+            item["radius"],
+            *item["axis"]["position"],
+            *item["axis"]["direction"],
         ),
     )
 

@@ -202,6 +202,8 @@ def _load_lid(payload: dict[str, Any]) -> dict[str, Any]:
                     midpoint=tuple(item["midpoint"]),
                     end=tuple(item["end"]),
                     source=item["source"],
+                    center=tuple(item["center"]) if item.get("center") is not None else None,
+                    radius=item.get("radius"),
                 )
                 for item in geometry["segments"]
             )

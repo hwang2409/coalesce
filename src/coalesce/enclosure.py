@@ -203,8 +203,7 @@ def _prism(
     side_role: str,
 ) -> EnclosureResult:
     location = Location((0, 0, z))
-    profile_face = Face(profile.wire)
-    face = profile_face.moved(location)
+    face = Face(profile.wire).moved(location)
     prism = BRepPrimAPI_MakePrism(face.wrapped, gp_Vec(0, 0, height))
     prism.Build()
     if not prism.IsDone():
@@ -214,14 +213,7 @@ def _prism(
         candidate(feature, bottom_role, source, Shape.cast(prism.FirstShape()), body=body),
         candidate(feature, top_role, source, Shape.cast(prism.LastShape()), body=body),
     ]
-    profile_edges = profile_face.outer_wire().edges()
-    if len(profile_edges) != len(profile.edges):
-        raise GraphError(
-            "HISTORY_MISSING",
-            f"feature {feature} profile edge history is ambiguous",
-            feature=feature,
-        )
-    for (source_id, _), source_edge in zip(profile.edges, profile_edges, strict=True):
+    for source_id, source_edge in profile.edges:
         edge = source_edge.moved(location)
         generated = [Shape.cast(item) for item in prism.Generated(edge.wrapped)]
         if len(generated) != 1:

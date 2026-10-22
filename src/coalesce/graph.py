@@ -113,6 +113,8 @@ class LidOutlineSegment:
     midpoint: tuple[float, float, float]
     end: tuple[float, float, float]
     source: str
+    center: tuple[float, float, float] | None = None
+    radius: float | None = None
 
 
 @dataclass(frozen=True)
