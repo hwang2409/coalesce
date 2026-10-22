@@ -536,7 +536,7 @@ def test_refresh_added_mounting_hole_reports_standoffs(tmp_path):
         "outlineChanged": False,
         "dependentFeatures": ["standoffs"],
     }
-    assert _scene_summary(store, 4) == "refreshed board: 1 mounting hole added, standoffs updated"
+    assert _scene_summary(store, 4) == "refreshed board: H2 added at (10.0, 1.5), standoffs updated"
 
 
 def test_refresh_float_noise_below_tolerance_is_not_a_move(tmp_path):
@@ -892,14 +892,53 @@ def test_refresh_summary_counts_hole_changes_and_lists_dependents():
     )
 
 
+def test_refresh_outline_change_reports_exact_bbox(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "outline")
+    source.write_text(source.read_text().replace("(end 20 10)", "(end 22 10)"))
+
+    refreshed = _refresh_variant(service, source, revision=3)
+
+    assert refreshed["boardChanges"]["outline"] == {
+        "before": {"width": 20.0, "height": 10.0},
+        "after": {"width": 22.0, "height": 10.0},
+    }
+    assert _scene_summary(store, 4) == "refreshed board: outline 20.0 × 10.0 → 22.0 × 10.0 mm, pcb base and standoffs updated"
+
+
+def test_refresh_summary_names_labeled_removed_hole():
+    delta = {
+        "footprints": [],
+        "mountingHoles": [{"change": "removed", "reference": "H1", "oldPosition": [2.0, 3.0]}],
+        "dependentFeatures": [],
+    }
+    assert format_summary(delta) == "refreshed board: H1 removed"
+
+
+def test_refresh_summary_truncates_named_holes():
+    delta = {
+        "footprints": [],
+        "mountingHoles": [
+            {"change": "added", "reference": f"M{i}", "newPosition": [float(i), 2.0]}
+            for i in range(10)
+        ],
+        "dependentFeatures": [],
+    }
+    summary = format_summary(delta)
+    assert "+N more" not in summary
+    assert "+4 more" in summary
+    assert len(summary) <= 160 + len("refreshed board: ")
+
+
 def test_refresh_thickness_change_reports_every_consumer(tmp_path):
-    service, source, _ = _refresh_enclosure(tmp_path, "thickness", port=True)
+    service, source, store = _refresh_enclosure(tmp_path, "thickness", port=True)
     source.write_text(source.read_text().replace("(thickness 1.2)", "(thickness 1.6)"))
 
     refreshed = _refresh_variant(service, source, revision=4)
 
     assert refreshed["ok"]
+    assert refreshed["boardChanges"]["thickness"] == {"before": 1.2, "after": 1.6}
     assert set(refreshed["boardChanges"]["dependentFeatures"]) == {"pcb base", "standoffs", "port cutout"}
+    assert _scene_summary(store, 5) == "refreshed board: board thickness 1.2 → 1.6 mm, pcb base, standoffs and port cutout updated"
 
 
 def test_refresh_port_follows_its_reference_after_the_footprint_id_changes(tmp_path):

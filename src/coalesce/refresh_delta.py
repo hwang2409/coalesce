@@ -160,6 +160,22 @@ def _board_dimensions_changed(before_board: Any, after_board: Any) -> bool:
     return any(old.get(field) != new.get(field) for field in ("outline", "thickness"))
 
 
+def _outline_bbox(board: Any) -> dict[str, float] | None:
+    loops = (board.mechanics if board else {}).get("outline", [])
+    if not loops:
+        return None
+    points = [
+        point
+        for segment in loops[0].get("segments", [])
+        for point in (segment.get("start"), segment.get("mid"), segment.get("end"))
+        if point is not None
+    ]
+    if not points:
+        return None
+    xs, ys = zip(*points)
+    return {"width": max(xs) - min(xs), "height": max(ys) - min(ys)}
+
+
 def _feature_changed(
     before_graph: Any,
     after_graph: Any,
@@ -213,13 +229,19 @@ def refresh_delta(
         ):
             changed.add(node.id)
     dependent = [_kind_label(after_graph.nodes[feature_id]) for feature_id in sorted(changed)]
-    return {
+    old_mechanics = before_board.mechanics if before_board else {}
+    new_mechanics = after_board.mechanics if after_board else {}
+    delta = {
         "mountingHoles": mounting_holes,
         "footprints": footprints,
-        "outlineChanged": (before_board.mechanics if before_board else {}).get("outline")
-        != (after_board.mechanics if after_board else {}).get("outline"),
+        "outlineChanged": old_mechanics.get("outline") != new_mechanics.get("outline"),
         "dependentFeatures": dependent,
     }
+    if old_mechanics.get("thickness") != new_mechanics.get("thickness"):
+        delta["thickness"] = {"before": old_mechanics.get("thickness"), "after": new_mechanics.get("thickness")}
+    if delta["outlineChanged"]:
+        delta["outline"] = {"before": _outline_bbox(before_board), "after": _outline_bbox(after_board)}
+    return delta
 
 
 def _footprint_labels(footprints: list[dict]) -> list[str]:
@@ -230,9 +252,23 @@ def _footprint_labels(footprints: list[dict]) -> list[str]:
     ]
 
 
+def _named_hole_label(item: dict) -> str:
+    label = f"{item['reference']} {item['change']}"
+    if item["change"] == "added":
+        x, y = item["newPosition"]
+        label += f" at ({x:.1f}, {y:.1f})"
+    return label
+
+
 def _hole_labels(holes: list[dict]) -> list[str]:
     labels = []
-    for change in ("added", "removed", "changed", "moved"):
+    for change in ("added", "removed"):
+        named = [item for item in holes if item["change"] == change and item.get("reference")]
+        labels.extend(_named_hole_label(item) for item in named)
+        unnamed = sum(item["change"] == change and not item.get("reference") for item in holes)
+        if unnamed:
+            labels.append(f"{unnamed} mounting hole{'s' if unnamed != 1 else ''} {change}")
+    for change in ("changed", "moved"):
         count = sum(item["change"] == change for item in holes)
         if count:
             labels.append(f"{count} mounting hole{'s' if count != 1 else ''} {change}")
@@ -246,10 +282,37 @@ def _dependent_label(dependents: list[str]) -> list[str]:
     return [joined + " updated"]
 
 
+def _dimension_labels(delta: dict[str, Any]) -> list[str]:
+    labels = []
+    if thickness := delta.get("thickness"):
+        labels.append(f"board thickness {thickness['before']:.1f} → {thickness['after']:.1f} mm")
+    if delta.get("outlineChanged"):
+        outline = delta.get("outline") or {}
+        before, after = outline.get("before"), outline.get("after")
+        labels.append(
+            f"outline {before['width']:.1f} × {before['height']:.1f} → "
+            f"{after['width']:.1f} × {after['height']:.1f} mm"
+            if before and after else "board outline changed"
+        )
+    return labels
+
+
 def format_summary(delta: dict[str, Any], board_id: str = "") -> str:
     labels = [
+        *_dimension_labels(delta),
         *_footprint_labels(delta["footprints"]),
         *_hole_labels(delta["mountingHoles"]),
         *_dependent_label(delta["dependentFeatures"]),
     ]
-    return "refreshed board: " + (", ".join(labels) if labels else "source changed")
+    if not labels:
+        return "refreshed board: source changed"
+    summary = ", ".join(labels)
+    if len(summary) > 160:
+        shown, remaining = [], len(labels)
+        for label in labels:
+            candidate = ", ".join([*shown, label, f"+{remaining - len(shown) - 1} more"])
+            if len(candidate) > 160:
+                break
+            shown.append(label)
+        summary = ", ".join([*shown, f"+{remaining - len(shown)} more"])
+    return "refreshed board: " + summary
