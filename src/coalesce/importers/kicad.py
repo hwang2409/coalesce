@@ -82,13 +82,7 @@ class OutlineLoop:
 
     @property
     def bbox(self) -> dict[str, float]:
-        points = [point for segment in self.segments for point in _segment_extrema(segment)]
-        return {
-            "min_x": min(point[0] for point in points),
-            "min_y": min(point[1] for point in points),
-            "max_x": max(point[0] for point in points),
-            "max_y": max(point[1] for point in points),
-        }
+        return outline_bounds([self])
 
 
 @dataclass
@@ -407,6 +401,30 @@ def _segment_extrema(segment: Segment) -> list[tuple[float, float]]:
             points.append(_canonical_point((center[0] + radius * math.cos(angle),
                                             center[1] + radius * math.sin(angle))))
     return points
+
+
+def outline_bounds(loops: list[OutlineLoop] | list[dict[str, Any]]) -> dict[str, float] | None:
+    """Return exact aggregate bounds for serialized or parsed outline loops."""
+    segments = (
+        segment
+        for loop in loops
+        for segment in (loop.segments if isinstance(loop, OutlineLoop) else loop.get("segments", []))
+    )
+    points = [
+        point
+        for segment in segments
+        for point in _segment_extrema(
+            segment if isinstance(segment, Segment) else Segment(**segment)
+        )
+    ]
+    if not points:
+        return None
+    return {
+        "min_x": min(point[0] for point in points),
+        "min_y": min(point[1] for point in points),
+        "max_x": max(point[0] for point in points),
+        "max_y": max(point[1] for point in points),
+    }
 
 
 def _endpoint_key(point: tuple[float, float]) -> tuple[int, int]:

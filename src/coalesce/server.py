@@ -52,7 +52,7 @@ resolve environment variables in model paths. Later source edits do not affect t
 `import` refresh to read the persisted path, or supply an optional replacement absolute path, and
 commit a new snapshot explicitly. Refresh `format` is optional and inherits `kicad_pcb`; if supplied, it
 must match. Example: `{"action":"refresh","assetId":"board","expectedRevision":2,"requestId":"refresh-1"}`
-returns a deterministic `boardChanges` delta with thickness and outline dimensions when changed, named or positioned hole changes, moved holes, footprints, and dependent features.
+returns a deterministic `boardChanges` delta. `mountingHoles` and `footprints` contain `{id, reference, oldPosition, newPosition, distance, change}`; positions are `[x,y]` mm, distance is mm, absent endpoints are null, and change is added, removed, moved, or changed. `outlineChanged` is boolean. `dependentFeatures` lists regenerated feature-kind names. Optional `thickness {before, after}` values are mm. Optional `outlineBounds {before: {width, height}, after: {width, height}}` values are mm and cover all outer loops.
 `all_mounting` standoff selections follow the refreshed board and
 report added or removed holes in `selectionChanges`; explicit hole ids stay fixed and the refresh
 fails without writing when any selected id is missing.
