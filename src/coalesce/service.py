@@ -2147,6 +2147,8 @@ def _board_changes(before: Any, after: Any) -> dict[str, Any]:
     new_holes = [hole for hole in new.get("holes", []) if hole.get("mounting")]
     mounting_ids = {item["id"] for item in old_holes + new_holes}
     mounting_references = {item.get("reference") for item in old_holes + new_holes}
+    if None in mounting_references:
+        mounting_references.add("REF**")
     old_footprints = {
         item["id"]: item
         for item in old.get("footprints", [])
