@@ -8,7 +8,7 @@ import pytest
 from OCP.BRepCheck import BRepCheck_Analyzer
 from test_mcp_vertical import call_server_tool, run_server
 
-from coalesce.refresh_delta import refresh_delta
+from coalesce.refresh_delta import format_summary, refresh_delta
 from coalesce.service import DocumentService
 from coalesce.viewer import ViewerSceneStore
 
@@ -841,3 +841,52 @@ def test_creating_or_deleting_all_mounting_standoffs_is_not_a_selection_change(t
     )
     assert deleted["ok"] is True
     assert deleted["selectionChanges"] == []
+
+
+def _round_base(service: DocumentService, revision: int) -> None:
+    assert service.feature({
+        "action": "create",
+        "expectedRevision": revision,
+        "requestId": "round-base",
+        "featureId": "base_round",
+        "kind": "fillet",
+        "parameters": {
+            "target": {"featureId": "base"},
+            "edges": [{"feature": "base", "role": "outer_vertical", "cardinality": "exactly", "count": 4}],
+            "radius": quantity(1),
+        },
+    })["ok"]
+
+
+def test_refresh_j1_only_does_not_report_an_unaffected_fillet(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "j1-fillet", port=True)
+    _round_base(service, revision=4)
+    source.write_text(source.read_text().replace("(at 1 5)", "(at 1 6)"))
+
+    refreshed = _refresh_variant(service, source, revision=5)
+
+    assert refreshed["boardChanges"]["dependentFeatures"] == ["port cutout"]
+    assert _scene_summary(store, 6) == "refreshed board: J1 moved 1.0 mm, port cutout updated"
+
+
+def test_refresh_unrelated_footprint_does_not_report_an_unaffected_fillet(tmp_path):
+    service, source, store = _refresh_enclosure(tmp_path, "unrelated-fillet", port=True)
+    _round_base(service, revision=4)
+    source.write_text(source.read_text().replace("(at 10 5)", "(at 11 5)"))
+
+    refreshed = _refresh_variant(service, source, revision=5)
+
+    assert refreshed["boardChanges"]["dependentFeatures"] == []
+    assert _scene_summary(store, 6) == "refreshed board: J3 moved 1.0 mm"
+
+
+def test_refresh_summary_counts_hole_changes_and_lists_dependents():
+    delta = {
+        "footprints": [],
+        "mountingHoles": [{"change": "added"}, {"change": "added"}, {"change": "removed"}],
+        "dependentFeatures": ["standoffs", "port cutout", "fillet"],
+    }
+    assert format_summary(delta) == (
+        "refreshed board: 2 mounting holes added, 1 mounting hole removed, "
+        "standoffs, port cutout and fillet updated"
+    )

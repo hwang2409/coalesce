@@ -166,6 +166,7 @@ def _feature_changed(
     feature_id: str,
     hole_changes: list[dict],
     board_dimensions_changed: bool,
+    changed: set[str],
 ) -> bool:
     node = after_graph.nodes[feature_id]
     if isinstance(node, Standoffs):
@@ -174,7 +175,8 @@ def _feature_changed(
         return _port_cutout_changed(before_graph, after_graph, feature_id)
     if isinstance(node, (PcbBase, PcbLid)):
         return board_dimensions_changed
-    return True
+    # any other feature changes only through a feature it consumes
+    return bool(set(after_graph._dependencies(node)) & changed)
 
 
 def _kind_label(node: Any) -> str:
@@ -199,18 +201,15 @@ def refresh_delta(
         compared_fields=("rotation", "courtyard", "courtyard_availability"),
     )
     dimensions_changed = _board_dimensions_changed(before_board, after_board)
-    dependent = [
-        _kind_label(after_graph.nodes[feature_id])
-        for feature_id in _dependents(after_graph, board_id)
-        if feature_id in before_graph.nodes
-        and _feature_changed(
-            before_graph,
-            after_graph,
-            feature_id,
-            mounting_holes,
-            dimensions_changed,
-        )
-    ]
+    affected = set(_dependents(after_graph, board_id))
+    changed: set[str] = set()
+    # inputs before consumers, so a consumer sees every changed input
+    for node in after_graph.ordered():
+        if node.id in affected and node.id in before_graph.nodes and _feature_changed(
+            before_graph, after_graph, node.id, mounting_holes, dimensions_changed, changed
+        ):
+            changed.add(node.id)
+    dependent = [_kind_label(after_graph.nodes[feature_id]) for feature_id in sorted(changed)]
     return {
         "mountingHoles": mounting_holes,
         "footprints": footprints,
@@ -229,21 +228,18 @@ def _footprint_labels(footprints: list[dict]) -> list[str]:
 
 
 def _hole_labels(holes: list[dict]) -> list[str]:
-    labels = [
-        f"1 mounting hole {item['change']}"
-        for item in holes
-        if item["change"] in {"added", "removed", "changed"}
-    ]
-    moved = sum(item["change"] == "moved" for item in holes)
-    if moved:
-        labels.append(f"{moved} mounting hole{'s' if moved != 1 else ''} moved")
+    labels = []
+    for change in ("added", "removed", "changed", "moved"):
+        count = sum(item["change"] == change for item in holes)
+        if count:
+            labels.append(f"{count} mounting hole{'s' if count != 1 else ''} {change}")
     return labels
 
 
 def _dependent_label(dependents: list[str]) -> list[str]:
     if not dependents:
         return []
-    joined = dependents[0] if len(dependents) == 1 else " and ".join(dependents)
+    joined = dependents[0] if len(dependents) == 1 else ", ".join(dependents[:-1]) + " and " + dependents[-1]
     return [joined + " updated"]
 
 
