@@ -112,43 +112,87 @@ def _standoff_row(inspection: dict[str, Any], board: BoardImport, revision: int)
                 inspection["base"]["partId"], measured, reason)
 
 
+def _lid_outline_row(
+    lid: dict[str, Any], inspection: dict[str, Any], revision: int
+) -> dict[str, Any] | None:
+    result = _rule(
+        {"id": "outline", "kind": "lid_outline_match"},
+        {**inspection, "lids": [lid]},
+        revision,
+    )
+    if result["status"] != "FAIL":
+        return None
+    measured = lid["outline"]
+    return _row(
+        f"lid_outline:{lid['featureId']}",
+        "Lid outline",
+        "FAIL",
+        result["reason"],
+        lid["partId"],
+        measured,
+        f"update the lid's outlineSource to {measured['legalSource']}",
+    )
+
+
+def _lid_fit_row(lid: dict[str, Any], node: PcbLid) -> dict[str, Any]:
+    if node.lip_depth is None or node.lip_width is None:
+        return _row(
+            f"lid_fit_gap:{lid['featureId']}",
+            "Lid fit gap",
+            "N/A",
+            "the lid has no lip",
+            lid["partId"],
+            None,
+        )
+    gap = lid["fitGap"]
+    low, high = (
+        (_mm(gap[end]["value"]) for end in ("min", "max"))
+        if "min" in gap
+        else ("", "")
+    )
+    value = f"{low} mm" if low == high else f"{low}–{high} mm"
+    return _measured(
+        f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", gap, value, lid["partId"]
+    )
+
+
+def _one_lid_rows(
+    lid: dict[str, Any], inspection: dict[str, Any], node: PcbLid, revision: int
+) -> list[dict[str, Any]]:
+    result = _rule(
+        {"id": "lid", "kind": "lid_interference"},
+        {**inspection, "lids": [lid]},
+        revision,
+    )
+    overlap = lid["interference"]
+    value = "none" if overlap is None else f"{_mm(overlap['volume']['value'])} mm³"
+    reason = "lid and base overlap" if result["status"] == "FAIL" else result.get("reason")
+    interference = _row(
+        f"lid_interference:{lid['featureId']}",
+        "Lid interference",
+        result["status"],
+        value,
+        lid["partId"],
+        result["measured"],
+        reason,
+    )
+    return [
+        *([outline] if (outline := _lid_outline_row(lid, inspection, revision)) else []),
+        interference,
+        _lid_fit_row(lid, node),
+    ]
+
+
 def _lid_rows(inspection: dict[str, Any], graph: Any, revision: int) -> list[dict[str, Any]]:
     if not inspection["lids"]:
         result = _rule({"id": "lid", "kind": "lid_interference"}, inspection, revision)
         return [_row("lid", "Lid", "UNKNOWN", "not measured", inspection["base"]["partId"], result["measured"],
                      result["reason"])]
-    rows = []
-    for lid in inspection["lids"]:
-        lid_inspection = {**inspection, "lids": [lid]}
-        outline = _rule({"id": "outline", "kind": "lid_outline_match"}, lid_inspection, revision)
-        if outline["status"] == "FAIL":
-            measured = lid["outline"]
-            rows.append(_row(
-                f"lid_outline:{lid['featureId']}",
-                "Lid outline",
-                "FAIL",
-                outline["reason"],
-                lid["partId"],
-                measured,
-                f"update the lid's outlineSource to {measured['legalSource']}",
-            ))
-        result = _rule({"id": "lid", "kind": "lid_interference"}, lid_inspection, revision)
-        overlap = lid["interference"]
-        value = "none" if overlap is None else f"{_mm(overlap['volume']['value'])} mm³"
-        reason = "lid and base overlap" if result["status"] == "FAIL" else result.get("reason")
-        rows.append(_row(f"lid_interference:{lid['featureId']}", "Lid interference", result["status"], value,
-                         lid["partId"], result["measured"], reason))
-        node = graph.nodes[lid["featureId"]]
-        if node.lip_depth is None or node.lip_width is None:  # enclosure.py builds a slab only
-            # a lid without a lip has no faces that fit inside the walls: not a gate result, not counted
-            rows.append(_row(f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", "N/A", "the lid has no lip",
-                             lid["partId"], None))
-            continue
-        gap = lid["fitGap"]
-        low, high = (_mm(gap[end]["value"]) for end in ("min", "max")) if "min" in gap else ("", "")
-        rows.append(_measured(f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", gap,
-                              f"{low} mm" if low == high else f"{low}–{high} mm", lid["partId"]))
-    return rows
+    return [
+        row
+        for lid in inspection["lids"]
+        for row in _one_lid_rows(lid, inspection, graph.nodes[lid["featureId"]], revision)
+    ]
 
 
 def _port_rows(inspection: dict[str, Any], revision: int) -> list[dict[str, Any]]:
