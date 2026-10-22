@@ -480,6 +480,10 @@ def _requirement_gate(check, context):
     return _result(check, "pass" if passed else "fail", actual=results)
 
 
+# task targets name a semantic part; each maps to exactly one serialized graph type
+TARGET_GRAPH_TYPES = {"pcb_base": "PcbBase", "pcb_lid": "PcbLid"}
+
+
 def _edge_treatment(check, context):
     graph = context.service.query({"select": {"kind": "graph"}})
     if graph.get("ok") is not True:
@@ -491,14 +495,13 @@ def _edge_treatment(check, context):
 
     nodes = graph.get("graph", {}).get("nodes", [])
 
-    def semantic_kind(value):
-        return "".join(character for character in value.lower() if character.isalnum())
-
     targets = {}
     for item in expected:
         target = item["target"]
-        matches = [node.get("id") for node in nodes
-                   if semantic_kind(node.get("type", "")) == semantic_kind(target)]
+        graph_type = TARGET_GRAPH_TYPES.get(target)
+        if graph_type is None:
+            return _result(check, "fail", reason=f"unknown semantic target {target!r}", target=target)
+        matches = [node.get("id") for node in nodes if node.get("type") == graph_type]
         if len(matches) != 1:
             count = "no" if not matches else str(len(matches))
             return _result(
