@@ -354,6 +354,12 @@ def solve_sketch(request: SolveRequest) -> SolveResult:
     )
 
 
+def _success_status(redundant: tuple[str, ...], dof: int) -> SolveStatus:
+    if redundant:
+        return SolveStatus.REDUNDANT
+    return SolveStatus.FULLY_CONSTRAINED if dof == 0 else SolveStatus.UNDER_CONSTRAINED
+
+
 def _solve_sketch_native(request: SolveRequest) -> SolveResult:
     """Solve one sketch without exposing PlaneGCS handles or mutating the request."""
     try:
@@ -449,13 +455,7 @@ def _solve_sketch_native(request: SolveRequest) -> SolveResult:
         return _error_result(
             SolveStatus.BRANCH_FLIP, branch_error, dof=diagnosis.dof, landmarks=landmarks
         )
-    status = (
-        SolveStatus.REDUNDANT
-        if redundant
-        else SolveStatus.FULLY_CONSTRAINED
-        if diagnosis.dof == 0
-        else SolveStatus.UNDER_CONSTRAINED
-    )
+    status = _success_status(redundant, diagnosis.dof)
     return SolveResult(
         status,
         solved,

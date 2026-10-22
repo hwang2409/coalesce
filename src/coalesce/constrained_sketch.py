@@ -192,49 +192,60 @@ def _payload_error(field: str, message: str) -> None:
     raise ConstrainedSketchPayloadError(field, message)
 
 
+def _required_item_fields(item: dict[str, Any], name: str, path: str) -> None:
+    for required in _REQUIRED_FIELDS[name]:
+        if required not in item:
+            _payload_error(f"{path}.{required}", "is required")
+
+
+def _item_numbers(item: dict[str, Any], name: str, path: str) -> None:
+    for field_name in _NUMERIC_FIELDS.get(name, ()):
+        number = item[field_name]
+        if not isinstance(number, (int, float)) or not isfinite(number):
+            _payload_error(f"{path}.{field_name}", "must be a finite number")
+
+
+def _item_sequences(item: dict[str, Any], path: str) -> None:
+    for field_name in ("entities", "constraint_ids"):
+        if field_name not in item:
+            continue
+        if not isinstance(item[field_name], list) or not all(
+            isinstance(entry, str) and entry for entry in item[field_name]
+        ):
+            _payload_error(f"{path}.{field_name}", "must contain non-empty ids")
+        item[field_name] = tuple(item[field_name])
+
+
+def _parse_item(raw: Any, name: str, index: int) -> Any:
+    path = f"constrained.{name}[{index}]"
+    if not isinstance(raw, dict):
+        _payload_error(path, "must be an object")
+    item = dict(raw)
+    _required_item_fields(item, name, path)
+    if not isinstance(item["id"], str) or not item["id"]:
+        _payload_error(f"{path}.id", "must be a non-empty string")
+    cls, enum = _ITEM_TYPES[name]
+    if enum is not None:
+        try:
+            item["kind"] = enum(item["kind"])
+        except (TypeError, ValueError):
+            _payload_error(f"{path}.kind", "has an unknown value")
+    _item_numbers(item, name, path)
+    _item_sequences(item, path)
+    try:
+        return cls(**item)
+    except TypeError as error:
+        _payload_error(path, f"has invalid fields: {error}")
+
+
 def _parse_items(value: dict[str, Any], name: str) -> tuple[Any, ...]:
     raw_items = value.get(name, [])
     if not isinstance(raw_items, list):
         _payload_error(f"constrained.{name}", "must be an array")
-    cls, enum = _ITEM_TYPES[name]
-    parsed = []
-    for index, raw in enumerate(raw_items):
-        path = f"constrained.{name}[{index}]"
-        if not isinstance(raw, dict):
-            _payload_error(path, "must be an object")
-        item = dict(raw)
-        for required in _REQUIRED_FIELDS[name]:
-            if required not in item:
-                _payload_error(f"{path}.{required}", "is required")
-        if not isinstance(item["id"], str) or not item["id"]:
-            _payload_error(f"{path}.id", "must be a non-empty string")
-        if enum is not None:
-            try:
-                item["kind"] = enum(item["kind"])
-            except (TypeError, ValueError):
-                _payload_error(f"{path}.kind", "has an unknown value")
-        for numeric in _NUMERIC_FIELDS.get(name, ()):
-            number = item[numeric]
-            if not isinstance(number, (int, float)) or not isfinite(number):
-                _payload_error(f"{path}.{numeric}", "must be a finite number")
-        for sequence in ("entities", "constraint_ids"):
-            if sequence in item:
-                if not isinstance(item[sequence], list) or not all(
-                    isinstance(entry, str) and entry for entry in item[sequence]
-                ):
-                    _payload_error(f"{path}.{sequence}", "must contain non-empty ids")
-                item[sequence] = tuple(item[sequence])
-        try:
-            parsed.append(cls(**item))
-        except TypeError as error:
-            _payload_error(path, f"has invalid fields: {error}")
-    return tuple(parsed)
+    return tuple(_parse_item(raw, name, index) for index, raw in enumerate(raw_items))
 
 
-def _validate_references(model: ConstrainedSketch) -> None:
-    point_ids = {point.id for point in model.points}
-    entity_ids = point_ids | {item.id for item in (*model.lines, *model.arcs, *model.circles)}
-    constraint_ids = {item.id for item in (*model.dimensions, *model.constraints)}
+def _validate_point_references(model: ConstrainedSketch, point_ids: set[str]) -> None:
     for name, fields in _REFERENCE_FIELDS.items():
         for index, item in enumerate(getattr(model, name)):
             for field_name in fields:
@@ -242,20 +253,33 @@ def _validate_references(model: ConstrainedSketch) -> None:
                     _payload_error(
                         f"constrained.{name}[{index}].{field_name}", "references an unknown point id"
                     )
+
+
+def _validate_operand_references(model: ConstrainedSketch, entity_ids: set[str]) -> None:
     for name in ("dimensions", "constraints"):
         for index, item in enumerate(getattr(model, name)):
-            for entity_id in item.entities:
-                if entity_id not in entity_ids:
-                    _payload_error(
-                        f"constrained.{name}[{index}].entities", "references an unknown entity id"
-                    )
-    for index, landmark in enumerate(model.landmarks):
-        for constraint_id in landmark.constraint_ids:
-            if constraint_id not in constraint_ids:
+            if any(entity_id not in entity_ids for entity_id in item.entities):
                 _payload_error(
-                    f"constrained.landmarks[{index}].constraint_ids",
-                    "references an unknown constraint id",
+                    f"constrained.{name}[{index}].entities", "references an unknown entity id"
                 )
+
+
+def _validate_landmark_references(model: ConstrainedSketch, constraint_ids: set[str]) -> None:
+    for index, landmark in enumerate(model.landmarks):
+        if any(item not in constraint_ids for item in landmark.constraint_ids):
+            _payload_error(
+                f"constrained.landmarks[{index}].constraint_ids",
+                "references an unknown constraint id",
+            )
+
+
+def _validate_references(model: ConstrainedSketch) -> None:
+    point_ids = {point.id for point in model.points}
+    entity_ids = point_ids | {item.id for item in (*model.lines, *model.arcs, *model.circles)}
+    constraint_ids = {item.id for item in (*model.dimensions, *model.constraints)}
+    _validate_point_references(model, point_ids)
+    _validate_operand_references(model, entity_ids)
+    _validate_landmark_references(model, constraint_ids)
 
 
 def from_payload(value: dict[str, Any]) -> ConstrainedSketch:
