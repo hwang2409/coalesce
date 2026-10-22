@@ -8,6 +8,7 @@ import os
 import sys
 from typing import Any
 
+import anyio
 from jsonschema import ValidationError, validate
 from jsonschema.exceptions import best_match, relevance
 from mcp import types
@@ -323,16 +324,20 @@ def _prefer_unknown_field(error: ValidationError) -> ValidationError:
     return error
 
 
-def _schema_error_details(
-    name: str, arguments: dict[str, Any], error: ValidationError
-) -> dict[str, Any]:
+def _schema_error_field(error: ValidationError) -> str:
     field = "".join(
         f"[{part}]" if isinstance(part, int) else f".{part}" for part in error.absolute_path
     ).lstrip(".")
     if error.validator == "required" and isinstance(error.instance, dict):
         missing = next(name for name in error.validator_value if name not in error.instance)
-        field = f"{field}.{missing}" if field else missing
-    details: dict[str, Any] = {"field": field}
+        return f"{field}.{missing}" if field else missing
+    return field
+
+
+def _schema_error_details(
+    name: str, arguments: dict[str, Any], error: ValidationError
+) -> dict[str, Any]:
+    details: dict[str, Any] = {"field": _schema_error_field(error)}
     if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
         details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
     if name == "check" and error.validator == "enum":
@@ -431,7 +436,7 @@ def create_server(service: DocumentService) -> Server:
             return _tool_result(failure)
         try:
             handler = service.import_board if name == "import" else getattr(service, name)
-            return _tool_result(handler(arguments))
+            return _tool_result(await anyio.to_thread.run_sync(handler, arguments))
         except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
             _LOG.exception("unexpected failure during %s", name)
             return _tool_result(

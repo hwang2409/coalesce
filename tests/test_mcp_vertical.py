@@ -5,8 +5,10 @@ import os
 import shutil
 import stat
 import threading
+import time
 from pathlib import Path
 
+import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
@@ -57,6 +59,38 @@ FEATURE = {
         "direction": "normal",
     },
 }
+
+
+@pytest.mark.anyio
+async def test_slow_tool_call_does_not_block_other_mcp_requests(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "concurrent.coalesce.json", warmup=False)
+    started = threading.Event()
+
+    def slow_query(_arguments):
+        started.set()
+        time.sleep(0.5)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "query", slow_query)
+    server = create_server(service)
+    call_handler = server.request_handlers[types.CallToolRequest]
+    list_handler = server.request_handlers[types.ListToolsRequest]
+
+    async def call_slow_tool():
+        await call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query", arguments={"select": {"kind": "revision"}}
+                )
+            )
+        )
+
+    before = time.monotonic()
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(call_slow_tool)
+        assert await anyio.to_thread.run_sync(started.wait, 1.0)
+        await list_handler(types.ListToolsRequest())
+        assert time.monotonic() - before < 0.3
 
 
 async def call_server_tool(service, name, arguments):
