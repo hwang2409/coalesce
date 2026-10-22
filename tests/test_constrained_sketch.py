@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -525,6 +526,57 @@ async def test_did_not_converge_update_is_atomic(tmp_path):
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
     assert path.read_bytes() == saved
+
+
+def test_check_uses_one_locked_snapshot_while_repair_commits(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "atomic-check.coalesce.json", warmup=False)
+    service._document.graph.add(
+        Sketch("profile", constrained=constrained_from_payload(rectangle_model()))
+    )
+
+    def fail_solve(model: ConstrainedSketch) -> SolveResult:
+        result = SolveResult(
+            SolveStatus.DID_NOT_CONVERGE,
+            errors=(SketchSolveError("DID_NOT_CONVERGE", "solver failed"),),
+        )
+        model.solved = result
+        return result
+
+    monkeypatch.setattr(ConstrainedSketch, "solve", fail_solve)
+    service.query({"select": {"kind": "graph"}})
+    geometry_failure = service._geometry_failure
+    gate_read = threading.Event()
+    mutation_attempted = threading.Event()
+    committed = threading.Event()
+
+    def pause_after_gate(operation: str):
+        failure = geometry_failure(operation)
+        gate_read.set()
+        assert mutation_attempted.wait(1)
+        if not service._lock._is_owned():
+            assert committed.wait(1)
+        return failure
+
+    monkeypatch.setattr(service, "_geometry_failure", pause_after_gate)
+
+    def repair():
+        assert gate_read.wait(1)
+        mutation_attempted.set()
+        result = service.sketch(primitive_update(revision=0, request_id="repair"))
+        assert result["ok"] is True
+        committed.set()
+
+    repair_thread = threading.Thread(target=repair)
+    repair_thread.start()
+    result = service.check({"action": "evaluate", "revision": 0})
+    committed_before_response = committed.is_set()
+    repair_thread.join(timeout=1)
+
+    assert not repair_thread.is_alive()
+    assert not (
+        committed_before_response and result["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+    )
+    assert result["error"]["code"] in {"SKETCH_DID_NOT_CONVERGE", "REVISION_CONFLICT"}
 
 
 def test_graph_query_isolates_failed_sketch_and_marks_dependents_unavailable(

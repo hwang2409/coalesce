@@ -3462,9 +3462,9 @@ class DocumentService:
         }
 
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if failure := self._geometry_failure("check"):
-            return failure
         with self._lock:
+            if failure := self._geometry_failure("check"):
+                return failure
             if payload.get("action") != "evaluate":
                 return _safe_error(
                     self._document.revision,

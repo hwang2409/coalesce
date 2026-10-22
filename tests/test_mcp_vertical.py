@@ -110,6 +110,56 @@ async def call_server_tool(service, name, arguments):
     return result.root.structuredContent
 
 
+@pytest.mark.anyio
+async def test_schema_error_uses_one_locked_snapshot_off_event_loop(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "atomic-error.coalesce.json", warmup=False)
+    assert service.sketch(SKETCH)["revision"] == 1
+    context_started = threading.Event()
+    mutation_attempted = threading.Event()
+    committed = threading.Event()
+    context_threads = []
+    with_context = service._with_error_context
+
+    def overlap_mutation(payload, failure):
+        context_threads.append(threading.get_ident())
+        context_started.set()
+        assert mutation_attempted.wait(1)
+        if not service._lock._is_owned():
+            assert committed.wait(3)
+        return with_context(payload, failure)
+
+    monkeypatch.setattr(service, "_with_error_context", overlap_mutation)
+
+    def mutate():
+        assert context_started.wait(1)
+        mutation_attempted.set()
+        assert service.feature(FEATURE)["revision"] == 2
+        committed.set()
+
+    mutation = threading.Thread(target=mutate)
+    mutation.start()
+    event_loop_thread = threading.get_ident()
+    result = await call_server_tool(
+        service,
+        "feature",
+        {
+            "action": "update",
+            "expectedRevision": 1,
+            "requestId": "invalid-update",
+            "featureId": "plate_extrude",
+            "kind": "extrude",
+            "set": {"distance": {"value": "bad", "unit": "mm"}},
+        },
+    )
+    mutation.join(timeout=3)
+
+    assert not mutation.is_alive()
+    assert result["revision"] == 1
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert "affectedParts" not in result["error"]
+    assert context_threads and context_threads[0] != event_loop_thread
+
+
 def result_json(result):
     if result.structuredContent is not None:
         return result.structuredContent
