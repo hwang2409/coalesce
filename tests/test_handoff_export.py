@@ -42,6 +42,29 @@ def _separate(path: Path, **changes):
     }
 
 
+def test_preflight_reports_failed_parts_and_is_not_ready(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    original = export_module._validated_part_bytes
+
+    def fail_lid(parts, **kwargs):
+        if parts[0].label == "lid":
+            raise export_module.ExportFailure(
+                "EXPORT_VALIDATION_FAILED", "injected", mismatchedMetric="volume"
+            )
+        return original(parts, **kwargs)
+
+    monkeypatch.setattr(export_module, "_validated_part_bytes", fail_lid)
+    response = service.export(_preflight())
+
+    assert response["ok"] is True
+    assert response["ready"] is False
+    assert [(part["label"], part["status"]) for part in response["parts"]] == [
+        ("base", "passed"),
+        ("lid", "failed"),
+    ]
+    assert response["parts"][1]["validation"]["mismatchedMetric"] == "volume"
+
+
 def test_preflight_is_read_only_and_reports_each_part(tmp_path):
     service = _service(tmp_path)
     destination_parent = tmp_path / "delivery-parent"
