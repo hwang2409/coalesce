@@ -429,7 +429,10 @@ def _lid_measurement(
 def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> bool:
     feature = terminal
     while feature != base:
-        if isinstance(graph.nodes[feature], (Fillet, Chamfer)):
+        node = graph.nodes[feature]
+        if isinstance(node, (Fillet, Chamfer)) and any(
+            "outer" in reference.role for reference in node.edges
+        ):
             return True
         feature = result.predecessors.get(feature, base)
     return False
