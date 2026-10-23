@@ -231,3 +231,17 @@ def test_repair_tracking_bounds_features_and_fields():
     repair = store.scene(3)["repairHistory"][0]
     assert repair["featureId"] == last
     assert len(repair["fields"]) == MAX_REPAIR_FIELDS
+
+
+def test_delete_commit_consumes_pending_attempt():
+    store = ViewerSceneStore()
+    store.publish(1, [_part()])
+    store.publish_failure(
+        ["round"], {"code": "KERNEL_OPERATION_FAILED", "message": "failed"},
+        _edit("round", "fillet", radius=1000),
+    )
+
+    store.publish(2, [_part()], {"featureId": "round"})
+    store.publish(3, [_part()], {"featureId": "round"}, accepted_edit=_edit("round", "fillet", radius=1))
+
+    assert store.scene(3)["repairHistory"] == []
