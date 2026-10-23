@@ -21,6 +21,58 @@ def _message(process: subprocess.Popen[bytes], timeout: float = 3) -> dict:
         return json.loads(process.stdout.readline())
 
 
+def _send(process: subprocess.Popen[bytes], message: dict) -> None:
+    process.stdin.write((json.dumps(message) + "\n").encode())
+    process.stdin.flush()
+
+
+def _saved_outline_document(points: list[list[float]], *, include_polyline: bool = False) -> dict:
+    entities = [
+        {
+            "type": "Spline",
+            "id": "spline",
+            "points": points,
+            "closed": True,
+            "point_ids": [f"p{index}" for index in range(len(points))],
+        }
+    ]
+    if include_polyline:
+        entities.append(
+            {
+                "type": "Polyline",
+                "id": "polyline",
+                "points": [[0, 0], [2, 0], [0, 2]],
+                "closed": True,
+                "point_ids": ["p0", "p1", "p2"],
+            }
+        )
+    return {
+        "revision": 1,
+        "graph": {
+            "nodes": [
+                {
+                    "type": "Sketch",
+                    "id": "outlines",
+                    "plane": {"name": "XY", "offset": 0},
+                    "position": [0, 0, 0],
+                    "rotation": [0, 0, 0],
+                    "entities": entities,
+                }
+            ]
+        },
+    }
+
+
+def _stdio_process(document, environment):
+    return subprocess.Popen(
+        [sys.executable, "-m", "coalesce", "--document", str(document), "--no-viewer"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+
+
 @pytest.mark.parametrize("viewer_enabled", [True, False])
 def test_initialize_does_not_wait_for_kernel(tmp_path, viewer_enabled):
     document = tmp_path / "empty.coalesce.json"
@@ -64,6 +116,80 @@ def test_initialize_does_not_wait_for_kernel(tmp_path, viewer_enabled):
         process.terminate()
         process.wait(timeout=10)
     assert "build123d=False" in process.stderr.read().decode()
+
+
+def test_saved_outlines_list_tools_before_kernel_load(tmp_path):
+    document = tmp_path / "outlines.coalesce.json"
+    document.write_text(
+        json.dumps(
+            _saved_outline_document(
+                [[0, 0], [3, 0], [3, 2], [0, 2]], include_polyline=True
+            )
+        )
+    )
+    process = _stdio_process(document, {**os.environ, "COALESCE_DEBUG_MODULES": "1"})
+    try:
+        _send(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+        assert _message(process)["id"] == 1
+        _send(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        _send(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        assert _message(process)["id"] == 2
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+    assert "build123d=False" in process.stderr.read().decode()
+
+
+def test_tampered_saved_spline_reports_structured_failure_after_load(tmp_path):
+    document = tmp_path / "tampered.coalesce.json"
+    document.write_text(json.dumps(_saved_outline_document([[0, 0], [2, 2], [0, 2], [2, 0]])))
+    process = _stdio_process(document, os.environ.copy())
+    try:
+        _send(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+        assert _message(process)["id"] == 1
+        _send(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        _send(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "query", "arguments": {"select": {"kind": "graph"}}},
+            },
+        )
+        response = _message(process, timeout=10)
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+    result = json.loads(response["result"]["content"][0]["text"])
+    assert result["ok"] is True
+    assert result["graph"]["errors"][0]["code"] == "SKETCH_PROFILE_UNSUPPORTED"
+    assert result["graph"]["errors"][0]["reason"] == "self_intersecting"
 
 
 class _SlowKernelLoader:

@@ -4,10 +4,11 @@ import re
 from pathlib import Path
 
 import pytest
-from build123d import GeomType, import_step
+from build123d import GeomType, Location, import_step
 from test_mcp_cut_hole_circle import extrude
 from test_mcp_vertical import run_server
 
+from coalesce.profile_validation import InvalidProfile, build_outline_profile
 from coalesce.service import DocumentService
 
 DOCS = Path(__file__).parents[1] / "docs"
@@ -232,6 +233,57 @@ def test_outline_point_bounds_and_finite_coordinates_are_rejected(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_default_polyline_point_edit_stales_segment_references(tmp_path):
+    points = [[-5, -5], [5, -5], [5, 5], [-5, 5]]
+    rotated = [points[1], points[2], points[3], points[0]]
+    path = tmp_path / "default-references.coalesce.json"
+
+    results = await run_server(
+        path,
+        [
+            ("sketch", outline_sketch("polyline", points)),
+            (
+                "feature",
+                extrude(
+                    request_id="extrude",
+                    revision=1,
+                    feature_id="body",
+                    sketch_id="outline_sketch",
+                    profile_ids=["outline"],
+                    distance=5,
+                ),
+            ),
+            ("feature", fillet_segment()),
+            ("sketch", update_outline("polyline", rotated, 3, "rotate")),
+        ],
+    )
+
+    assert results[2]["ok"] is True
+    assert results[3]["ok"] is False and results[3]["revision"] == 3
+    assert results[3]["error"]["code"] == "REFERENCE_FAILED"
+    assert results[3]["error"]["resolution"]["status"] == "EMPTY"
+    assert results[3]["error"]["hint"] == (
+        "give the points explicit ids to keep references across point edits"
+    )
+
+
+@pytest.mark.anyio
+async def test_default_polyline_without_references_can_change_points(tmp_path):
+    points = [[-5, -5], [5, -5], [5, 5], [-5, 5]]
+    rotated = [points[1], points[2], points[3], points[0]]
+
+    results = await run_server(
+        tmp_path / "unreferenced-default.coalesce.json",
+        [
+            ("sketch", outline_sketch("polyline", points)),
+            ("sketch", update_outline("polyline", rotated, 1, "rotate")),
+        ],
+    )
+
+    assert results[1]["ok"] is True and results[1]["revision"] == 2
+
+
+@pytest.mark.anyio
 async def test_polyline_reference_follows_explicit_point_ids(tmp_path):
     points = [
         {"id": "a", "x": -5, "y": -5},
@@ -272,6 +324,40 @@ async def test_polyline_reference_follows_explicit_point_ids(tmp_path):
     assert results[4]["ok"] is False and results[4]["revision"] == 4
     assert results[4]["error"]["code"] == "REFERENCE_FAILED"
     assert results[4]["error"]["resolution"]["status"] == "EMPTY"
+
+
+@pytest.mark.anyio
+async def test_outline_point_ids_reject_ambiguous_segment_roles(tmp_path):
+    points = [
+        {"id": "a-b", "x": 0, "y": 0},
+        {"id": "c", "x": 2, "y": 0},
+        {"id": "a", "x": 2, "y": 2},
+        {"id": "b-c", "x": 0, "y": 2},
+    ]
+    service = DocumentService(tmp_path / "parser-ambiguous-roles.coalesce.json", warmup=False)
+
+    parser_result = service.sketch(outline_sketch("polyline", points))
+    (schema_result,) = await run_server(
+        tmp_path / "schema-ambiguous-roles.coalesce.json",
+        [("sketch", outline_sketch("polyline", points))],
+    )
+
+    assert parser_result["ok"] is False
+    assert parser_result["error"]["code"] == "INVALID_PARAMETER"
+    assert parser_result["error"]["field"] == "points[0].id"
+    assert schema_result["ok"] is False
+    assert schema_result["error"]["code"] == "INVALID_PARAMETER"
+    assert schema_result["error"]["field"] == "entities[0].points[3].id"
+
+
+def test_outline_profile_rejects_duplicate_generated_roles():
+    with pytest.raises(InvalidProfile, match="duplicate_segment_role"):
+        build_outline_profile(
+            "polyline",
+            ((0, 0), (2, 0), (2, 2), (0, 2)),
+            ("a-b", "c", "a", "b-c"),
+            Location(),
+        )
 
 
 @pytest.mark.anyio
