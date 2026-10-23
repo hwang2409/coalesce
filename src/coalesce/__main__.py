@@ -26,7 +26,7 @@ async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> N
 
     store = ViewerSceneStore()
     with ViewerServer(store) as viewer:
-        # The document loads once, before the URL is shown, so a bad document never advertises it.
+        # Load persisted structure off the event loop; exact geometry starts in the background.
         service = await asyncio.to_thread(
             DocumentService,
             document,
