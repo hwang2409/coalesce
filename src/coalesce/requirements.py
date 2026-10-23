@@ -374,6 +374,41 @@ def _ports(
     )
 
 
+def _screw_closure(
+    requirement: dict[str, Any], inspection: dict[str, Any], revision: int
+) -> dict[str, Any]:
+    closures = inspection.get("screwClosures", [])
+    involved = [inspection["base"]["partId"], *[lid["partId"] for lid in inspection["lids"]]]
+    if len(closures) != 1:
+        return _unknown(
+            requirement, "exactly one screw_closure is required", involved, revision, closures
+        )
+    measured = closures[0]
+    residual = _value(measured.get("minimumResidualWall", {}))
+    interference = measured.get("interference", {}).get("value")
+    passes = (
+        measured.get("count") == len(measured.get("names", []))
+        and measured.get("coaxial") is True
+        and residual is not None
+        and residual > 0
+        and interference is not None
+        and interference <= 1e-7
+    )
+    return _finish(
+        requirement,
+        measured,
+        {
+            "count": "all named points",
+            "coaxial": True,
+            "minimumResidualWall": {"exclusiveMinimum": 0, "unit": "mm"},
+            "interference": {"value": 0, "unit": "mm^3"},
+        },
+        involved,
+        revision,
+        "PASS" if passes else "FAIL",
+    )
+
+
 def _clean(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
@@ -407,6 +442,7 @@ REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "lid_engagement": _engagement,
     "port_clearance": _ports,
     "connector_clearance": _ports,
+    "screw_closure": _screw_closure,
     "clean_deliverables": _clean,
     "clean_manufacturing_bodies": _clean,
 }

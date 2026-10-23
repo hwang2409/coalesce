@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from typing import Any
 
@@ -17,6 +18,7 @@ from .graph import (
     PcbBase,
     PcbLid,
     PortCutout,
+    ScrewClosure,
     Standoffs,
 )
 from .lid_outline import capture_lid_outline, outline_geometry
@@ -480,6 +482,8 @@ def _lids(
     if not nodes:
         return [], []
     terminal = base_part.terminal_feature
+    if isinstance(graph.nodes[terminal], ScrewClosure):
+        terminal = result.predecessors[terminal]
     has_outer_treatment = _has_outer_treatment(graph, result, base.id, terminal)
     current = _current_outline(result, terminal)
     lids = []
@@ -688,6 +692,48 @@ def _warnings(
     return warnings
 
 
+def _screw_closures(
+    graph: Any, result: Any, base: PcbBase, base_part: TerminalPart, lids: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    inspected = []
+    lid_parts = {item["featureId"]: item["partId"] for item in lids}
+    parts = {part.part_id: part for part in terminal_parts(result, role="manufacturing")}
+    for node in graph.ordered():
+        if not isinstance(node, ScrewClosure) or node.base != base.id:
+            continue
+        pilots = {
+            item.key.source: item.entity
+            for item in result.provenance.get(node.id, [])
+            if item.key.role == "screw_pilot_wall" and isinstance(item.entity, Face)
+        }
+        clearances = {
+            item.key.source: item.entity
+            for item in result.provenance.get(node.id, [])
+            if item.key.role == "screw_clearance_wall" and isinstance(item.entity, Face)
+        }
+        names = [point.name for point in node.points]
+        def axis(face: Face) -> tuple[float, float]:
+            box = face.bounding_box()
+            return ((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2)
+
+        coaxial = set(pilots) == set(clearances) == set(names) and all(
+            math.dist(axis(pilots[name]), axis(clearances[name])) <= _TOLERANCE
+            for name in names
+        )
+        lid_part = parts[lid_parts[node.lid]]
+        inspected.append({
+            "featureId": node.id,
+            "count": len(pilots),
+            "names": names,
+            "coaxial": coaxial,
+            "minimumResidualWall": _quantity(
+                (node.boss_diameter - node.base_pilot_diameter) / 2
+            ),
+            "interference": {"value": _common_volume(base_part.shape, lid_part.shape), "unit": "mm^3"},
+        })
+    return inspected
+
+
 def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     base = graph.nodes.get(base_id)
     if not isinstance(base, PcbBase):
@@ -750,6 +796,7 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
         "standoffs": _standoffs(graph, result, base, board_shape, base_part.shape),
         "lids": lids,
         "ports": ports,
+        "screwClosures": _screw_closures(graph, result, base, base_part, lids),
         "assembled": {"bbox": _bbox(assembled), "size": _size(assembled)},
         "terminalParts": [
             {

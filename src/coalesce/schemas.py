@@ -489,6 +489,36 @@ PORT_CUTOUT_PARAMETERS = {
     "required": ["base", "footprint", "wall", "clearance", "envelope"],
     "additionalProperties": False,
 }
+SCREW_POINT = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "point": POINT_2D,
+    },
+    "required": ["name", "point"],
+    "additionalProperties": False,
+}
+SCREW_CLOSURE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "base": FEATURE_TARGET,
+        "lid": FEATURE_TARGET,
+        "points": {
+            "type": "array",
+            "items": SCREW_POINT,
+            "minItems": 2,
+            "maxItems": 8,
+        },
+        "basePilotDiameter": POSITIVE_QUANTITY,
+        "bossDiameter": POSITIVE_QUANTITY,
+        "lidClearanceDiameter": POSITIVE_QUANTITY,
+    },
+    "required": [
+        "base", "lid", "points", "basePilotDiameter", "bossDiameter",
+        "lidClearanceDiameter",
+    ],
+    "additionalProperties": False,
+}
 STANDOFFS_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -512,6 +542,7 @@ FEATURE_PARAMETERS = {
         STANDOFFS_PARAMETERS,
         PCB_LID_PARAMETERS,
         PORT_CUTOUT_PARAMETERS,
+        SCREW_CLOSURE_PARAMETERS,
     ]
 }
 FEATURE_PROPERTIES = {
@@ -528,6 +559,7 @@ FEATURE_PROPERTIES = {
             "standoffs",
             "pcb_lid",
             "port_cutout",
+            "screw_closure",
         ]
     },
 }
@@ -668,6 +700,7 @@ FEATURE_ACTION_SCHEMAS = {
             "standoffs": STANDOFFS_PARAMETERS,
             "pcb_lid": PCB_LID_PARAMETERS,
             "port_cutout": PORT_CUTOUT_PARAMETERS,
+            "screw_closure": SCREW_CLOSURE_PARAMETERS,
         }.items()
     },
 }
@@ -860,6 +893,7 @@ CHECK_REQUIREMENT = {
                         "valid_brep",
                         "lid_interference",
                         "lid_outline_match",
+                        "screw_closure",
                         "clean_deliverables",
                         "clean_manufacturing_bodies",
                     ]

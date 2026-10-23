@@ -6,7 +6,7 @@ import copy
 import math
 from dataclasses import asdict, dataclass, field, replace
 
-from build123d import Edge, Shape
+from build123d import Compound, Edge, Shape
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
 
@@ -19,6 +19,7 @@ from .enclosure import (
     build_pcb_lid,
     build_port_cutout,
     build_port_opening,
+    build_screw_closure,
     build_standoffs,
 )
 from .extrusion import extrude_sketch
@@ -34,6 +35,7 @@ from .graph import (
     PcbBase,
     PcbLid,
     PortCutout,
+    ScrewClosure,
     Sketch,
     Standoffs,
 )
@@ -576,13 +578,45 @@ class _EnclosureRegenerator:
         self.joined_material[node.id] = True
         self.lineage.replace(node.target, node.id, mounts.candidates)
 
-    def apply(self, node: PcbBase | PcbLid | PortCutout | Standoffs) -> None:
+    def _regenerate_screw_closure(self, node: ScrewClosure) -> None:
+        base, board = self._base_context(node.base, node.id)
+        lid = self.graph.nodes.get(node.lid)
+        if not isinstance(lid, PcbLid) or lid.base != base.id:
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"screw_closure {node.id} lid must reference a pcb_lid for its base",
+                feature=node.id,
+                parameter="lid",
+            )
+        base_terminal = self.lineage.terminal(node.base)
+        lid_terminal = self.lineage.terminal(node.lid)
+        closure = build_screw_closure(
+            node,
+            base,
+            board,
+            self.shapes[base_terminal],
+            self.states[base_terminal],
+            self.shapes[lid_terminal],
+            self.states[lid_terminal],
+        )
+        self.shapes[node.id] = Compound(children=[closure.base.shape, closure.lid.shape])
+        self.states[node.id] = [*closure.base.candidates, *closure.lid.candidates]
+        self.provenance[node.id] = self.states[node.id]
+        self.joined_material[node.id] = True
+        self.removed_material[node.id] = True
+        self.lineage.replace_many((node.base, node.lid), node.id, self.states[node.id])
+
+    def apply(
+        self, node: PcbBase | PcbLid | PortCutout | ScrewClosure | Standoffs
+    ) -> None:
         if isinstance(node, PcbBase):
             self._regenerate_pcb_base(node)
         elif isinstance(node, PcbLid):
             self._regenerate_pcb_lid(node)
         elif isinstance(node, PortCutout):
             self._regenerate_port_cutout(node)
+        elif isinstance(node, ScrewClosure):
+            self._regenerate_screw_closure(node)
         else:
             self._regenerate_standoffs(node)
 
@@ -934,7 +968,7 @@ def _regenerate(graph: Graph) -> RegenResult:
             states[node.id] = board.candidates
             provenance[node.id] = board.candidates
             lineage.create(node.id, board.candidates)
-        elif isinstance(node, (PcbBase, PcbLid, PortCutout, Standoffs)):
+        elif isinstance(node, (PcbBase, PcbLid, PortCutout, ScrewClosure, Standoffs)):
             enclosure.apply(node)
         elif isinstance(node, Extrude):
             _apply_extrude(

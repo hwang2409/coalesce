@@ -22,6 +22,7 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         "standoffs",
         "pcb_lid",
         "port_cutout",
+        "screw_closure",
     ]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
     assert "constant-radius fillet" in advertised
@@ -210,6 +211,6 @@ def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup()
     assert "explicit hole ids stay fixed" in guide
     assert "`selectionchanges`" in guide
     assert "import` the board, create `pcb_base`, create `standoffs`, create" in guide
-    assert "`pcb_lid`, create `port_cutout`, run `check`" in guide
+    assert "`pcb_lid`, optionally create `port_cutout`, create `screw_closure`" in guide
     assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE
     assert '"mcpServers"' in TOOLS_GUIDE

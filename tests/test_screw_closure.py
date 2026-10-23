@@ -1,22 +1,19 @@
-import json
 from pathlib import Path
 
 import pytest
 from build123d import Face, GeomType
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepCheck import BRepCheck_Analyzer
-
-from coalesce.export import verify_step_fresh
-from coalesce.service import DocumentService
+from test_mcp_vertical import run_server
 from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
 from test_pcb_lid import lid_request
 
+from coalesce.service import DocumentService
 
 POINTS = [
-    {"name": "front-left", "point": [5, 5]},
-    {"name": "front-right", "point": [15, 5]},
-    {"name": "rear-left", "point": [5, 8]},
-    {"name": "rear-right", "point": [15, 8]},
+    {"name": "front-left", "point": [7, 3]},
+    {"name": "front-right", "point": [13, 3]},
+    {"name": "rear-left", "point": [7, 8]},
+    {"name": "rear-right", "point": [13, 8]},
 ]
 
 
@@ -63,12 +60,15 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
     response = service.feature(closure_request(revision=3))
 
     assert response["ok"] is True
-    parts = service.query({"select": {"kind": "parts"}})["parts"]
-    assert len(parts) == 3  # PCB reference plus separate base and lid manufacturing parts.
-    manufacturing = [part for part in parts if part["role"] == "manufacturing"]
-    assert len(manufacturing) == 2
-    assert all(part["solidCount"] == 1 for part in manufacturing)
-    assert all(BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in __import__("coalesce.parts", fromlist=["terminal_parts"]).terminal_parts(service._regen))
+    measured = service.query({"select": {"kind": "measurements"}})
+    assert measured["solidCount"] == 2
+    assert len(measured["parts"]) == 2
+    from coalesce.parts import terminal_parts
+
+    assert all(
+        BRepCheck_Analyzer(part.shape.wrapped).IsValid()
+        for part in terminal_parts(service._regen)
+    )
 
     pilots = _closure_faces(service, "screw_pilot_wall")
     clearances = _closure_faces(service, "screw_clearance_wall")
@@ -76,9 +76,14 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
     assert {face.geom_type for face in [*pilots, *clearances]} == {GeomType.CYLINDER}
     assert sorted(face.radius for face in pilots) == pytest.approx([0.8] * 4)
     assert sorted(face.radius for face in clearances) == pytest.approx([1.2] * 4)
-    assert sorted((face.center().X, face.center().Y) for face in pilots) == pytest.approx(
-        sorted((face.center().X, face.center().Y) for face in clearances)
-    )
+    def axes(faces):
+        return sorted(
+            ((face.bounding_box().min.X + face.bounding_box().max.X) / 2,
+             (face.bounding_box().min.Y + face.bounding_box().max.Y) / 2)
+            for face in faces
+        )
+
+    assert axes(pilots) == pytest.approx(axes(clearances))
 
     checked = service.check({
         "action": "evaluate",
@@ -105,7 +110,7 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
     ("points", "point_name"),
     [
         ([*POINTS[:3], {"name": "bad", "point": [100, 100]}], "bad"),
-        ([*POINTS[:3], {"name": "rear-right", "point": [15.5, 8]}], "rear-right"),
+        ([*POINTS[:3], {"name": "rear-right", "point": [13, 6]}], "rear-right"),
     ],
 )
 def test_invalid_screw_points_fail_atomically_with_point_name(tmp_path, points, point_name):
@@ -115,6 +120,75 @@ def test_invalid_screw_points_fail_atomically_with_point_name(tmp_path, points, 
     assert response["error"]["code"] == "INVALID_PARAMETER"
     assert response["error"]["point"] == point_name
     assert service.query({"select": {"kind": "revision"}})["revision"] == 3
+
+
+@pytest.mark.anyio
+async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[1] / "src"))
+    document = tmp_path / "stdio-closure.coalesce.json"
+    imported, base, lid, closure, checked, refreshed, rechecked, preflight = await run_server(
+        document,
+        [
+            ("import", import_request(FIXTURES / "features.kicad_pcb")),
+            ("feature", base_request()),
+            ("feature", lid_request(revision=2, include_lip=False)),
+            ("feature", closure_request(revision=3)),
+            ("check", {
+                "action": "evaluate", "base": "base",
+                "requirements": [{"id": "closure", "kind": "screw_closure"}],
+            }),
+            ("import", import_request(
+                FIXTURES / "features-moved.kicad_pcb",
+                revision=4,
+                request_id="refresh-board",
+                action="refresh",
+            )),
+            ("check", {
+                "action": "evaluate", "base": "base",
+                "requirements": [{"id": "closure", "kind": "screw_closure"}],
+            }),
+            ("export", {
+                "action": "preflight",
+                "expectedRevision": 5,
+                "base": "base",
+                "requirements": [
+                    {"id": "valid", "kind": "valid_brep"},
+                    {"id": "closure", "kind": "screw_closure"},
+                ],
+            }),
+        ],
+    )
+    assert [imported["revision"], base["revision"], lid["revision"], closure["revision"]] == [1, 2, 3, 4]
+    assert checked["ok"], checked
+    assert rechecked["ok"], rechecked
+    assert checked["gate"] == rechecked["gate"] == "PASS"
+    assert refreshed["revision"] == 5
+    assert rechecked["results"][0]["measured"]["names"] == [
+        point["name"] for point in POINTS
+    ]
+    assert preflight["ready"] is True
+    assert len(preflight["parts"]) == 2
+    assert all(part["validation"]["freshProcess"] is True for part in preflight["parts"])
+
+
+def test_screw_requirement_fails_noncoaxial_evidence():
+    from coalesce.requirements import evaluate
+
+    inspection = {
+        "base": {"partId": "base/outline"},
+        "lids": [{"partId": "lid/outline"}],
+        "screwClosures": [{
+            "count": 4,
+            "names": ["a", "b", "c", "d"],
+            "coaxial": False,
+            "minimumResidualWall": quantity(1.2),
+            "interference": {"value": 0, "unit": "mm^3"},
+        }],
+    }
+    result = evaluate(
+        [{"id": "closure", "kind": "screw_closure"}], inspection, revision=5
+    )
+    assert result["gate"] == "FAIL"
 
 
 def test_screw_closure_rejects_boss_that_hits_standoff(tmp_path):

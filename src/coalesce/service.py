@@ -50,6 +50,8 @@ from .graph import (
     Polyline,
     PortCutout,
     Rectangle,
+    ScrewClosure,
+    ScrewPoint,
     Sketch,
     Spline,
     Standoffs,
@@ -89,6 +91,7 @@ _ALLOWED_FEATURE_KINDS = [
     "standoffs",
     "pcb_lid",
     "port_cutout",
+    "screw_closure",
 ]
 
 
@@ -392,6 +395,16 @@ class PortCutoutParameters:
 
 
 @dataclass(frozen=True)
+class ScrewClosureParameters:
+    base: FeatureTarget
+    lid: FeatureTarget
+    points: tuple[ScrewPoint, ...]
+    basePilotDiameter: float
+    bossDiameter: float
+    lidClearanceDiameter: float
+
+
+@dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
 
@@ -557,6 +570,16 @@ class PortCutoutCreate(_FeatureCreate):
 
 
 @dataclass(frozen=True)
+class ScrewClosureCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: ScrewClosureParameters
+    kind: ClassVar[str] = "screw_closure"
+
+
+@dataclass(frozen=True)
 class ExtrudeUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -700,6 +723,7 @@ MutationOperation = (
     | StandoffsCreate
     | PcbLidCreate
     | PortCutoutCreate
+    | ScrewClosureCreate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
@@ -1333,6 +1357,49 @@ def _parse_port_cutout(
     )
 
 
+def _parse_screw_closure(payload: dict[str, Any], common: dict[str, Any]) -> ScrewClosureCreate:
+    if common["action"] is Action.UPDATE:
+        raise RequestError("INVALID_PARAMETER", "screw_closure does not support update")
+    feature = common["featureId"]
+    values = payload.get("parameters", {})
+    raw_points = values.get("points")
+    if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= 8:
+        raise RequestError(
+            "INVALID_PARAMETER", "screw_closure requires 2 to 8 named points",
+            feature=feature, parameter="points",
+        )
+    points = []
+    for item in raw_points:
+        name = item.get("name") if isinstance(item, dict) else None
+        point = item.get("point") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not name or not isinstance(point, list) or len(point) != 2:
+            raise RequestError(
+                "INVALID_PARAMETER", "each screw_closure point requires a name and xy point",
+                feature=feature, parameter="points",
+            )
+        points.append(ScrewPoint(name, tuple(_finite_number(value, "point") for value in point)))
+    if len({point.name for point in points}) != len(points):
+        raise RequestError(
+            "INVALID_PARAMETER", "screw_closure point names must be unique",
+            feature=feature, parameter="points",
+        )
+    return ScrewClosureCreate(
+        **common,
+        parameters=ScrewClosureParameters(
+            base=FeatureTarget(values.get("base", {}).get("featureId")),
+            lid=FeatureTarget(values.get("lid", {}).get("featureId")),
+            points=tuple(points),
+            basePilotDiameter=_feature_quantity(
+                values.get("basePilotDiameter"), "basePilotDiameter", feature
+            ),
+            bossDiameter=_feature_quantity(values.get("bossDiameter"), "bossDiameter", feature),
+            lidClearanceDiameter=_feature_quantity(
+                values.get("lidClearanceDiameter"), "lidClearanceDiameter", feature
+            ),
+        ),
+    )
+
+
 def _parse_feature(
     payload: dict[str, Any],
 ) -> (
@@ -1345,6 +1412,7 @@ def _parse_feature(
     | StandoffsCreate
     | PcbLidCreate
     | PortCutoutCreate
+    | ScrewClosureCreate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
@@ -1369,6 +1437,7 @@ def _parse_feature(
         "standoffs": _parse_standoffs,
         "pcb_lid": _parse_pcb_lid,
         "port_cutout": _parse_port_cutout,
+        "screw_closure": _parse_screw_closure,
     }.get(kind)
     if parser is None:
         raise RequestError(
@@ -2181,6 +2250,42 @@ def _apply_port_cutout(graph: Any, operation: PortCutoutCreate | PortCutoutUpdat
     return _create_port_cutout(graph, operation)
 
 
+def _apply_screw_closure(graph: Any, operation: ScrewClosureCreate) -> str:
+    parameters = operation.parameters
+    base = graph.nodes.get(parameters.base.featureId)
+    lid = graph.nodes.get(parameters.lid.featureId)
+    if not isinstance(base, PcbBase):
+        raise RequestError(
+            "INVALID_PARAMETER", "screw_closure base must reference a pcb_base",
+            feature=operation.featureId, parameter="base",
+        )
+    if not isinstance(lid, PcbLid) or lid.base != base.id:
+        raise RequestError(
+            "INVALID_PARAMETER", "screw_closure lid must reference a pcb_lid for its base",
+            feature=operation.featureId, parameter="lid",
+        )
+    if parameters.basePilotDiameter >= parameters.bossDiameter:
+        raise RequestError(
+            "INVALID_PARAMETER", "basePilotDiameter must be smaller than bossDiameter",
+            feature=operation.featureId, parameter="basePilotDiameter",
+        )
+    if parameters.lidClearanceDiameter <= parameters.basePilotDiameter:
+        raise RequestError(
+            "INVALID_PARAMETER", "lidClearanceDiameter must exceed basePilotDiameter",
+            feature=operation.featureId, parameter="lidClearanceDiameter",
+        )
+    graph.add(ScrewClosure(
+        operation.featureId,
+        base=base.id,
+        lid=lid.id,
+        points=parameters.points,
+        base_pilot_diameter=parameters.basePilotDiameter,
+        boss_diameter=parameters.bossDiameter,
+        lid_clearance_diameter=parameters.lidClearanceDiameter,
+    ))
+    return operation.featureId
+
+
 def _apply_feature(
     graph: Any, operation: MutationOperation, committed: RegenResult | None
 ) -> str | _DeleteResult:
@@ -2206,6 +2311,7 @@ def _apply_feature(
         PcbLidUpdate: _apply_pcb_lid,
         PortCutoutCreate: _apply_port_cutout,
         PortCutoutUpdate: _apply_port_cutout,
+        ScrewClosureCreate: _apply_screw_closure,
     }[type(operation)]
     if isinstance(
         operation,
@@ -2519,6 +2625,9 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     order = {feature: index for index, feature in enumerate(result.graph.nodes)}
     parts = terminal_parts(result, role=None)
     for part in sorted(parts, key=lambda p: (order[p.source_body.feature], p.part_id)):
+        features = _lineage(result, part.terminal_feature)
+        if isinstance(result.graph.nodes[part.terminal_feature], ScrewClosure):
+            features = (*_lineage(result, part.source_body.feature), features[-1])
         yield ScenePart(
             part.part_id,
             part.shape,
@@ -2528,7 +2637,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
             terminal_feature=part.terminal_feature,
             area=part.shape.area,
             volume=part.shape.volume,
-            features=_lineage(result, part.terminal_feature),
+            features=features,
             facts=part_facts(result, part.source_body.feature),
         )
 

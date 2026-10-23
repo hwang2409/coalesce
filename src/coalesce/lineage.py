@@ -50,6 +50,21 @@ class BodyLineage:
             self.terminals[body] = feature
         self._replace_provenance(self.states[previous], candidates)
 
+    def replace_many(
+        self, targets: tuple[str, ...], feature: str, candidates: list[Candidate]
+    ) -> None:
+        previous = [self.terminal(target) for target in targets]
+        bodies = set().union(*(self.feature_bodies[target] for target in targets))
+        self.feature_bodies[feature] = bodies
+        self.predecessors[feature] = previous[0]
+        self.superseded.update(previous)
+        for body in bodies:
+            self.terminals[body] = feature
+        self._replace_provenance(
+            [candidate for terminal in previous for candidate in self.states[terminal]],
+            candidates,
+        )
+
     def _replace_provenance(
         self, previous: list[Candidate], current: list[Candidate]
     ) -> None:

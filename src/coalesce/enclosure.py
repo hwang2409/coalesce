@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from build123d import Align, Box, Compound, Face, GeomType, Location, Shape, Vertex, Wire
+from build123d import Align, Box, Compound, Cylinder, Face, GeomType, Location, Shape, Vertex, Wire
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
@@ -14,11 +14,22 @@ from OCP.gp import gp_Vec
 
 from .board_import import mounting_holes
 from .boolean import cut_shape, fuse_shape, join_contact_failures
-from .graph import BoardImport, GraphError, PcbBase, PcbLid, PortCutout, Standoffs
+from .graph import (
+    BoardImport,
+    GraphError,
+    Hole,
+    HolePosition,
+    PcbBase,
+    PcbLid,
+    PortCutout,
+    ScrewClosure,
+    Standoffs,
+)
+from .hole import make_hole_tool
 from .lid_outline import OutlineProfile
 from .pcb import board_loop_wire
 from .provenance import candidate, derive_edge_candidates
-from .references import BodySource, Candidate
+from .references import BodySource, Candidate, ElementKey
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,12 @@ class EnclosureResult:
 class PortCutoutResult(EnclosureResult):
     metadata: dict
     opening_tool: Shape
+
+
+@dataclass(frozen=True)
+class ScrewClosureResult:
+    base: EnclosureResult
+    lid: EnclosureResult
 
 
 _ProfileWire = OutlineProfile
@@ -936,3 +953,148 @@ def build_standoffs(
         kind="semantic",
     )
     return EnclosureResult(cut.shape, cut.candidates)
+
+
+def _closure_holes(node: ScrewClosure) -> list[dict]:
+    return [{"id": item.name, "position": item.point} for item in node.points]
+
+
+def _validate_closure_points(
+    node: ScrewClosure,
+    cavity: Face,
+    target_candidates: list[Candidate],
+) -> None:
+    holes = _closure_holes(node)
+    try:
+        _validate_bosses(
+            Standoffs(
+                node.id,
+                boss_diameter=node.boss_diameter,
+                pilot_diameter=node.base_pilot_diameter,
+            ),
+            cavity,
+            holes,
+        )
+    except GraphError as error:
+        point = error.error.pop("hole", None)
+        if point is not None:
+            error.error["point"] = point
+        raise
+    for index, first in enumerate(node.points):
+        for second in node.points[index + 1 :]:
+            if math.dist(first.point, second.point) < node.boss_diameter:
+                raise GraphError(
+                    "INVALID_PARAMETER",
+                    f"screw_closure {node.id} point {second.name} overlaps {first.name}",
+                    feature=node.id,
+                    parameter="points",
+                    point=second.name,
+                    conflict=first.name,
+                )
+    for point in node.points:
+        probe = Cylinder(
+            node.boss_diameter / 2,
+            1,
+            align=(Align.CENTER, Align.CENTER, Align.MIN),
+        ).moved(Location((*point.point, 0)))
+        conflict = next(
+            (
+                item.key.source
+                for item in target_candidates
+                if item.key.role.startswith("standoff_")
+                and item.entity.distance_to(probe) <= 1e-7
+            ),
+            None,
+        )
+        if conflict is not None:
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"screw_closure {node.id} point {point.name} hits standoff {conflict}",
+                feature=node.id,
+                parameter="points",
+                point=point.name,
+                conflict="standoff",
+                standoff=conflict,
+            )
+
+
+def build_screw_closure(
+    node: ScrewClosure,
+    base: PcbBase,
+    board: BoardImport,
+    base_shape: Shape,
+    base_candidates: list[Candidate],
+    lid_shape: Shape,
+    lid_candidates: list[Candidate],
+) -> ScrewClosureResult:
+    _, inner, _ = _base_wires(base, board)
+    _validate_closure_points(node, Face(inner.wire), base_candidates)
+    holes = _closure_holes(node)
+    boss_node = Standoffs(
+        node.id,
+        boss_diameter=node.boss_diameter,
+        pilot_diameter=node.base_pilot_diameter,
+    )
+    bottom = -base.board_seat_height
+    top = board.mechanics["thickness"] + base.wall_height_above_board
+    bosses = _cylinders(
+        boss_node,
+        holes,
+        node.boss_diameter,
+        bottom,
+        top - bottom,
+        ("screw_boss_bottom", "screw_boss_top", "screw_boss_side"),
+    )
+    unjoined, non_manifold = join_contact_failures(
+        node.id, base_shape, bosses.shape, bosses.candidates
+    )
+    if unjoined or non_manifold:
+        point = (unjoined or non_manifold)[0]
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"screw_closure {node.id} point {point} does not join the base floor",
+            feature=node.id,
+            parameter="points",
+            point=point,
+        )
+    joined = fuse_shape(node.id, base_shape, base_candidates, bosses.shape, bosses.candidates)
+    pilots = _cylinders(
+        boss_node,
+        holes,
+        node.base_pilot_diameter,
+        bottom - 1,
+        top - bottom + 2,
+        ("screw_pilot_bottom", "screw_pilot_top", "screw_pilot_wall"),
+    )
+    cut_base = cut_shape(
+        node.id, joined.shape, joined.candidates, pilots.shape, pilots.candidates, kind="semantic"
+    )
+
+    hole_node = Hole(
+        node.id,
+        target=node.lid,
+        diameter=node.lid_clearance_diameter,
+        positions=tuple(HolePosition(point.name, point.point) for point in node.points),
+    )
+    tool = make_hole_tool(hole_node, lid_shape)
+    renamed = [
+        Candidate(
+            ElementKey(
+                node.id,
+                "screw_clearance_wall" if item.key.role.startswith("side(") else "screw_clearance_cap",
+                item.key.source.name if hasattr(item.key.source, "name") else item.key.source,
+                item.key.body,
+            ),
+            item.entity,
+            item.descriptor,
+            item.merged_from,
+        )
+        for item in tool.candidates
+    ]
+    cut_lid = cut_shape(
+        node.id, lid_shape, lid_candidates, tool.shape, renamed, kind="semantic"
+    )
+    return ScrewClosureResult(
+        EnclosureResult(cut_base.shape, cut_base.candidates),
+        EnclosureResult(cut_lid.shape, cut_lid.candidates),
+    )
