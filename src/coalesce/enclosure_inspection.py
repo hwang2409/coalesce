@@ -230,7 +230,9 @@ def _measure_standoff(
         "classification": classification,
         "measured": {
             "remainingVolume": {**_quantity(remaining.volume), "unit": "mm^3"},
-            "topZ": _quantity(remaining.bounding_box().max.Z) if remaining.volume > _TOLERANCE else None,
+            "topZ": _quantity(remaining.bounding_box().max.Z)
+            if remaining.volume > _TOLERANCE
+            else None,
         },
         "designed": {
             "bossDiameter": _quantity(node.boss_diameter),
@@ -251,9 +253,7 @@ def _standoff_items(
     return [
         _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
         for node in nodes
-        for source in (
-            node.hole_ids if node.selection == "explicit" else tuple(holes_by_id)
-        )
+        for source in (node.hole_ids if node.selection == "explicit" else tuple(holes_by_id))
         if source in holes_by_id
     ]
 
@@ -276,7 +276,9 @@ def _standoffs(
         "count": len(items),
         "mountingHoleCount": len(holes),
         "holeIds": hole_ids,
-        "references": {hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")},
+        "references": {
+            hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")
+        },
         "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
         "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
         "items": items,
@@ -346,9 +348,7 @@ def _board_fit(
         "front": _optional_clearance(board_shape, base_part.shape, "Y", box.min.Y, -1),
         "back": _optional_clearance(board_shape, base_part.shape, "Y", box.max.Y, 1),
     }
-    interference = _interference(
-        board_shape, base_part.shape, [board_id, base_part.part_id]
-    )
+    interference = _interference(board_shape, base_part.shape, [board_id, base_part.part_id])
     reported = (
         dict.fromkeys(("left", "right", "front", "back"), 0.0)
         if interference is not None
@@ -409,7 +409,7 @@ def _lid_measurement(
     return measurement
 
 
-def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> bool:
+def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str, body: Any) -> bool:
     feature = terminal
     while feature != base:
         node = graph.nodes[feature]
@@ -417,7 +417,9 @@ def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> b
             "outer" in reference.role for reference in node.edges
         ):
             return True
-        feature = result.predecessors.get(feature, base)
+        feature = result.body_predecessors.get(
+            (feature, body), result.predecessors.get(feature, base)
+        )
     return False
 
 
@@ -474,24 +476,18 @@ def _lids(
     base: PcbBase,
     base_part: TerminalPart,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    nodes = [
-        node
-        for node in graph.ordered()
-        if isinstance(node, PcbLid) and node.base == base.id
-    ]
+    nodes = [node for node in graph.ordered() if isinstance(node, PcbLid) and node.base == base.id]
     if not nodes:
         return [], []
     terminal = base_part.terminal_feature
-    if isinstance(graph.nodes[terminal], ScrewClosure):
-        terminal = result.predecessors[terminal]
-    has_outer_treatment = _has_outer_treatment(graph, result, base.id, terminal)
+    has_outer_treatment = _has_outer_treatment(
+        graph, result, base.id, terminal, base_part.source_body
+    )
     current = _current_outline(result, terminal)
     lids = []
     warnings = []
     for node in nodes:
-        comparison = _lid_outline_comparison(
-            result, node, terminal, current, has_outer_treatment
-        )
+        comparison = _lid_outline_comparison(result, node, terminal, current, has_outer_treatment)
         lids.append(_lid_measurement(result, parts, node, base_part, comparison))
         if _outline_is_stale(node, current, terminal, has_outer_treatment):
             warnings.append(_lid_warning(node, terminal))
@@ -708,8 +704,7 @@ def _axes_are_coaxial(
         return ((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2)
 
     return set(pilots) == set(clearances) == set(names) and all(
-        math.dist(axis(pilots[name]), axis(clearances[name])) <= _TOLERANCE
-        for name in names
+        math.dist(axis(pilots[name]), axis(clearances[name])) <= _TOLERANCE for name in names
     )
 
 
@@ -726,19 +721,21 @@ def _screw_closures(
         clearances = _closure_faces(result, node.id, "screw_clearance_wall")
         names = [point.name for point in node.points]
         lid_part = parts[lid_parts[node.lid]]
-        inspected.append({
-            "featureId": node.id,
-            "count": len(pilots),
-            "names": names,
-            "coaxial": _axes_are_coaxial(pilots, clearances, names),
-            "minimumResidualWall": _quantity(
-                (node.boss_diameter - node.base_pilot_diameter) / 2
-            ),
-            "interference": {
-                "value": _common_volume(base_part.shape, lid_part.shape),
-                "unit": "mm^3",
-            },
-        })
+        inspected.append(
+            {
+                "featureId": node.id,
+                "count": len(pilots),
+                "names": names,
+                "coaxial": _axes_are_coaxial(pilots, clearances, names),
+                "minimumResidualWall": _quantity(
+                    (node.boss_diameter - node.base_pilot_diameter) / 2
+                ),
+                "interference": {
+                    "value": _common_volume(base_part.shape, lid_part.shape),
+                    "unit": "mm^3",
+                },
+            }
+        )
     return inspected
 
 

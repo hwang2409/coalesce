@@ -1365,8 +1365,10 @@ def _parse_screw_closure(payload: dict[str, Any], common: dict[str, Any]) -> Scr
     raw_points = values.get("points")
     if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= 8:
         raise RequestError(
-            "INVALID_PARAMETER", "screw_closure requires 2 to 8 named points",
-            feature=feature, parameter="points",
+            "INVALID_PARAMETER",
+            "screw_closure requires 2 to 8 named points",
+            feature=feature,
+            parameter="points",
         )
     points = []
     for item in raw_points:
@@ -1374,14 +1376,18 @@ def _parse_screw_closure(payload: dict[str, Any], common: dict[str, Any]) -> Scr
         point = item.get("point") if isinstance(item, dict) else None
         if not isinstance(name, str) or not name or not isinstance(point, list) or len(point) != 2:
             raise RequestError(
-                "INVALID_PARAMETER", "each screw_closure point requires a name and xy point",
-                feature=feature, parameter="points",
+                "INVALID_PARAMETER",
+                "each screw_closure point requires a name and xy point",
+                feature=feature,
+                parameter="points",
             )
         points.append(ScrewPoint(name, tuple(_finite_number(value, "point") for value in point)))
     if len({point.name for point in points}) != len(points):
         raise RequestError(
-            "INVALID_PARAMETER", "screw_closure point names must be unique",
-            feature=feature, parameter="points",
+            "INVALID_PARAMETER",
+            "screw_closure point names must be unique",
+            feature=feature,
+            parameter="points",
         )
     return ScrewClosureCreate(
         **common,
@@ -1822,22 +1828,16 @@ def _sketch_failures(graph: Any) -> dict[str, RequestError | GraphError]:
     return failures
 
 
-def _sketch_failure(
-    feature_id: str, error: RequestError | GraphError
-) -> SketchFailure:
+def _sketch_failure(feature_id: str, error: RequestError | GraphError) -> SketchFailure:
     if isinstance(error, RequestError):
         return SketchFailure(feature_id, error.code, str(error), error.details)
-    details = {
-        key: value for key, value in error.error.items() if key not in {"code", "message"}
-    }
+    details = {key: value for key, value in error.error.items() if key not in {"code", "message"}}
     return SketchFailure(feature_id, error.error["code"], str(error), details)
 
 
 def _solve_constrained_sketches(graph: Any) -> SolveAvailability:
     failures = _sketch_failures(graph)
-    failed = tuple(
-        _sketch_failure(feature_id, error) for feature_id, error in failures.items()
-    )
+    failed = tuple(_sketch_failure(feature_id, error) for feature_id, error in failures.items())
     unavailable = []
     reported = set(failures)
     for feature_id in failures:
@@ -2256,33 +2256,43 @@ def _apply_screw_closure(graph: Any, operation: ScrewClosureCreate) -> str:
     lid = graph.nodes.get(parameters.lid.featureId)
     if not isinstance(base, PcbBase):
         raise RequestError(
-            "INVALID_PARAMETER", "screw_closure base must reference a pcb_base",
-            feature=operation.featureId, parameter="base",
+            "INVALID_PARAMETER",
+            "screw_closure base must reference a pcb_base",
+            feature=operation.featureId,
+            parameter="base",
         )
     if not isinstance(lid, PcbLid) or lid.base != base.id:
         raise RequestError(
-            "INVALID_PARAMETER", "screw_closure lid must reference a pcb_lid for its base",
-            feature=operation.featureId, parameter="lid",
+            "INVALID_PARAMETER",
+            "screw_closure lid must reference a pcb_lid for its base",
+            feature=operation.featureId,
+            parameter="lid",
         )
     if parameters.basePilotDiameter >= parameters.bossDiameter:
         raise RequestError(
-            "INVALID_PARAMETER", "basePilotDiameter must be smaller than bossDiameter",
-            feature=operation.featureId, parameter="basePilotDiameter",
+            "INVALID_PARAMETER",
+            "basePilotDiameter must be smaller than bossDiameter",
+            feature=operation.featureId,
+            parameter="basePilotDiameter",
         )
     if parameters.lidClearanceDiameter <= parameters.basePilotDiameter:
         raise RequestError(
-            "INVALID_PARAMETER", "lidClearanceDiameter must exceed basePilotDiameter",
-            feature=operation.featureId, parameter="lidClearanceDiameter",
+            "INVALID_PARAMETER",
+            "lidClearanceDiameter must exceed basePilotDiameter",
+            feature=operation.featureId,
+            parameter="lidClearanceDiameter",
         )
-    graph.add(ScrewClosure(
-        operation.featureId,
-        base=base.id,
-        lid=lid.id,
-        points=parameters.points,
-        base_pilot_diameter=parameters.basePilotDiameter,
-        boss_diameter=parameters.bossDiameter,
-        lid_clearance_diameter=parameters.lidClearanceDiameter,
-    ))
+    graph.add(
+        ScrewClosure(
+            operation.featureId,
+            base=base.id,
+            lid=lid.id,
+            points=parameters.points,
+            base_pilot_diameter=parameters.basePilotDiameter,
+            boss_diameter=parameters.bossDiameter,
+            lid_clearance_diameter=parameters.lidClearanceDiameter,
+        )
+    )
     return operation.featureId
 
 
@@ -2384,12 +2394,15 @@ def _resolve_export_part(
     matches = [
         part
         for part in available
-        if requested_id in {feature["id"] for feature in _lineage(result, part.terminal_feature)}
+        if requested_id
+        in {feature["id"] for feature in _lineage(result, part.terminal_feature, part.source_body)}
     ]
     return matches[0] if len(matches) == 1 else None
 
 
-def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]:
+def _lineage(
+    result: RegenResult, feature_id: str, body: BodySource | None = None
+) -> tuple[dict[str, Any], ...]:
     """The features that built a terminal part, oldest first."""
     chain = []
     while feature_id:
@@ -2398,7 +2411,9 @@ def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]
         if isinstance(node, Hole):
             entry["holes"] = _hole_names(node)
         chain.append(entry)
-        feature_id = result.predecessors.get(feature_id, "")
+        feature_id = result.body_predecessors.get(
+            (feature_id, body), result.predecessors.get(feature_id, "")
+        )
     return tuple(reversed(chain))
 
 
@@ -2625,9 +2640,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     order = {feature: index for index, feature in enumerate(result.graph.nodes)}
     parts = terminal_parts(result, role=None)
     for part in sorted(parts, key=lambda p: (order[p.source_body.feature], p.part_id)):
-        features = _lineage(result, part.terminal_feature)
-        if isinstance(result.graph.nodes[part.terminal_feature], ScrewClosure):
-            features = (*_lineage(result, part.source_body.feature), features[-1])
+        features = _lineage(result, part.terminal_feature, part.source_body)
         yield ScenePart(
             part.part_id,
             part.shape,
@@ -2879,7 +2892,8 @@ class DocumentService:
         parts = [
             part
             for part in terminal_parts(result)
-            if changed_id in {item["id"] for item in _lineage(result, part.terminal_feature)}
+            if changed_id
+            in {item["id"] for item in _lineage(result, part.terminal_feature, part.source_body)}
         ]
         for part in parts:
             try:
@@ -2939,7 +2953,11 @@ class DocumentService:
             affected = [
                 part.part_id
                 for part in terminal_parts(self._regen)
-                if related & {item["id"] for item in _lineage(self._regen, part.terminal_feature)}
+                if related
+                & {
+                    item["id"]
+                    for item in _lineage(self._regen, part.terminal_feature, part.source_body)
+                }
             ]
             if affected:
                 error["affectedParts"] = affected

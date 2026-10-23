@@ -112,14 +112,18 @@ def _offset_profile(
     for source, edge in profile.edges:
         generated.extend((source, Shape.cast(item)) for item in operation.Generated(edge.wrapped))
     for vertex in profile.wire.vertices():
-        adjacent = sorted({
-            source
-            for source, edge in profile.edges
-            if any(vertex.is_same(item) for item in edge.vertices())
-        })
+        adjacent = sorted(
+            {
+                source
+                for source, edge in profile.edges
+                if any(vertex.is_same(item) for item in edge.vertices())
+            }
+        )
         if len(adjacent) == 2:
             source = f"between({adjacent[0]},{adjacent[1]})"
-            generated.extend((source, Shape.cast(item)) for item in operation.Generated(vertex.wrapped))
+            generated.extend(
+                (source, Shape.cast(item)) for item in operation.Generated(vertex.wrapped)
+            )
     edges = (
         [(singleton_source, edge) for edge in wire.edges()]
         if singleton_source is not None
@@ -480,7 +484,9 @@ def _wall_choice(
     }
     nearest = min(distances.values())
     candidates = sorted(
-        wall for wall, distance in distances.items() if math.isclose(distance, nearest, abs_tol=1e-7)
+        wall
+        for wall, distance in distances.items()
+        if math.isclose(distance, nearest, abs_tol=1e-7)
     )
     if len(candidates) != 1:
         raise GraphError(
@@ -610,14 +616,10 @@ def _opening_bounds(
         envelope_bottom - floor_top,
     ]
     rim_heights = [
-        item.entity.bounding_box().min.Z
-        for item in target_candidates
-        if item.key.role == "rim"
+        item.entity.bounding_box().min.Z for item in target_candidates if item.key.role == "rim"
     ]
     if rim_heights:
-        maximums.append(
-            min(rim_heights) - envelope_bottom - node.envelope_height
-        )
+        maximums.append(min(rim_heights) - envelope_bottom - node.envelope_height)
     maximum = min(maximums)
     limit_details = (
         {
@@ -737,9 +739,7 @@ def build_port_opening(
 ) -> tuple[Shape, list[Candidate], dict]:
     footprint = _resolve_footprint(node, board)
     footprint_bounds = (
-        _courtyard_bounds(node, footprint)
-        if node.envelope_source == "courtyard"
-        else None
+        _courtyard_bounds(node, footprint) if node.envelope_source == "courtyard" else None
     )
     _, inner, outer = _base_wires(base, board)
     wall = _wall_choice(node, footprint, footprint_bounds, inner.wire)
@@ -763,9 +763,7 @@ def build_port_cutout(
     target_shape: Shape,
     target_candidates: list[Candidate],
 ) -> PortCutoutResult:
-    tool, tool_candidates, metadata = build_port_opening(
-        node, base, board, target_candidates
-    )
+    tool, tool_candidates, metadata = build_port_opening(node, base, board, target_candidates)
     wall = metadata["wall"]
     result = cut_shape(
         node.id,
@@ -827,9 +825,7 @@ def _maximum_boss_diameter(cavity: Face, hole: dict, holes: list[dict]) -> float
     return min(wall_limit, spacing_limit)
 
 
-def _boss_limits(
-    node: Standoffs, cavity: Face, hole: dict, holes: list[dict]
-) -> dict | None:
+def _boss_limits(node: Standoffs, cavity: Face, hole: dict, holes: list[dict]) -> dict | None:
     maximum = _maximum_boss_diameter(cavity, hole, holes)
     if maximum <= node.pilot_diameter:
         return None
@@ -933,9 +929,7 @@ def build_standoffs(
             parameter="bossDiameter",
             holes=unjoined or non_manifold,
         )
-    joined = fuse_shape(
-        node.id, target_shape, target_candidates, bosses.shape, bosses.candidates
-    )
+    joined = fuse_shape(node.id, target_shape, target_candidates, bosses.shape, bosses.candidates)
     pilots = _cylinders(
         node,
         holes,
@@ -975,9 +969,7 @@ def _validate_closure_floor(node: ScrewClosure, cavity: Face) -> None:
         if name is not None:
             error.error["point"] = name
             screw = next(item for item in node.points if item.name == name)
-            disk = Face(
-                Wire.make_circle(node.boss_diameter / 2).moved(Location((*screw.point, 0)))
-            )
+            disk = Face(Wire.make_circle(node.boss_diameter / 2).moved(Location((*screw.point, 0))))
             crosses_wall = _common_area(disk, cavity) > 1e-8
             error.error["conflict"] = "wall" if crosses_wall else "floor"
             if crosses_wall:
@@ -1001,9 +993,7 @@ def _validate_closure_overlap(node: ScrewClosure) -> None:
                 )
 
 
-def _validate_closure_standoffs(
-    node: ScrewClosure, target_candidates: list[Candidate]
-) -> None:
+def _validate_closure_standoffs(node: ScrewClosure, target_candidates: list[Candidate]) -> None:
     for point in node.points:
         probe = Cylinder(
             node.boss_diameter / 2,
@@ -1014,8 +1004,7 @@ def _validate_closure_standoffs(
             (
                 item.key.source
                 for item in target_candidates
-                if item.key.role.startswith("standoff_")
-                and item.entity.distance_to(probe) <= 1e-7
+                if item.key.role.startswith("standoff_") and item.entity.distance_to(probe) <= 1e-7
             ),
             None,
         )
@@ -1045,6 +1034,7 @@ def build_screw_closure(
     node: ScrewClosure,
     base: PcbBase,
     board: BoardImport,
+    board_shape: Shape,
     base_shape: Shape,
     base_candidates: list[Candidate],
     lid_shape: Shape,
@@ -1104,7 +1094,9 @@ def build_screw_closure(
         Candidate(
             ElementKey(
                 node.id,
-                "screw_clearance_wall" if item.key.role.startswith("side(") else "screw_clearance_cap",
+                "screw_clearance_wall"
+                if item.key.role.startswith("side(")
+                else "screw_clearance_cap",
                 item.key.source.name if hasattr(item.key.source, "name") else item.key.source,
                 item.key.body,
             ),
@@ -1114,9 +1106,7 @@ def build_screw_closure(
         )
         for item in tool.candidates
     ]
-    cut_lid = cut_shape(
-        node.id, lid_shape, lid_candidates, tool.shape, renamed, kind="semantic"
-    )
+    cut_lid = cut_shape(node.id, lid_shape, lid_candidates, tool.shape, renamed, kind="semantic")
     return ScrewClosureResult(
         EnclosureResult(cut_base.shape, cut_base.candidates),
         EnclosureResult(cut_lid.shape, cut_lid.candidates),

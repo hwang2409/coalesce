@@ -28,11 +28,15 @@ class TerminalPart:
         }
 
 
-def _terminal_shapes(result: Any) -> list[tuple[str, Any]]:
+def _terminal_shapes(result: Any) -> list[tuple[str, Any, BodySource, list[Candidate]]]:
     return [
-        (feature, shape)
-        for feature, shape in result.shapes.items()
-        if feature not in result.superseded
+        (
+            result.body_terminals[body],
+            shape,
+            body,
+            result.body_terminal_states[body],
+        )
+        for body, shape in result.body_terminal_shapes.items()
     ]
 
 
@@ -81,9 +85,11 @@ def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[Term
         if candidate.key.body is not None and candidate.entity is not None
     ]
     solids: list[tuple[str, Any, BodySource, tuple[str, ...]]] = []
-    for feature, shape in _terminal_shapes(result):
+    for feature, shape, expected_body, terminal_state in _terminal_shapes(result):
         for solid in shape.solids():
-            body, history = _solid_body(solid, owned)
+            body, history = _solid_body(solid, [*owned, *terminal_state])
+            if body != expected_body:
+                raise ValueError("terminal solid does not match its body lineage")
             solids.append((feature, solid, body, history))
 
     counts: dict[BodySource, int] = {}
