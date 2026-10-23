@@ -64,11 +64,13 @@ def main() -> None:
                 open_browser=arguments.open,
             )
         )
-    except GraphError as error:
+    except (GraphError, json.JSONDecodeError, OSError) as error:
         try:
             revision = int(json.loads(arguments.document.read_text()).get("revision", 0))
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             revision = 0
+        if not isinstance(error, GraphError):
+            error = GraphError("INVALID_DOCUMENT", "document could not be loaded")
         failure = _graph_error_response(revision, None, "load", error)
         print(json.dumps(failure), file=sys.stderr, flush=True)
         sys.exit(2)

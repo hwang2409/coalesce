@@ -273,6 +273,19 @@ def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
         details.pop("alternatives", None)
 
 
+def _sketch_segment_source(source: object) -> SketchSegmentSource | None:
+    if isinstance(source, SketchSegmentSource):
+        return source
+    if isinstance(source, ElementKey):
+        return _sketch_segment_source(source.source)
+    if isinstance(source, tuple):
+        return next(
+            (segment for item in source if (segment := _sketch_segment_source(item))),
+            None,
+        )
+    return None
+
+
 def _uses_implicit_point_ids(source: object) -> bool:
     if isinstance(source, SketchSegmentSource):
         return source.topology[:1] == ("__implicit__",)
@@ -289,11 +302,37 @@ def _reference_failure(
     selected: list[Candidate],
     reference: Reference,
     resolution: Resolution,
+    provenance: dict[str, list[Candidate]],
 ) -> GraphError:
+    resolution_details = resolution.error
+    segment = _sketch_segment_source(reference.source)
+    if resolution.status is Status.EMPTY and segment is not None and resolution_details is not None:
+        current = next(
+            (
+                source
+                for candidate in provenance.get(reference.feature, [])
+                if (source := _sketch_segment_source(candidate.key.source)) is not None
+                and (source.sketch, source.entity, source.segment)
+                == (segment.sketch, segment.entity, segment.segment)
+            ),
+            None,
+        )
+        resolution_details["sketchSegment"] = {
+            "sketch": segment.sketch,
+            "entity": segment.entity,
+            "segment": segment.segment,
+            "storedTopology": list(segment.topology),
+            "currentTopology": (
+                list(current.topology) if current is not None else "segment no longer exists"
+            ),
+        }
+        resolution_details["suggestion"] = (
+            "re-select the face on the updated profile, or keep the original endpoint ids"
+        )
     details = {
         "feature": node.id,
         "selectedEdges": [asdict(candidate.key) for candidate in selected],
-        "resolution": resolution.error,
+        "resolution": resolution_details,
     }
     if _uses_implicit_point_ids(reference.source):
         details["hint"] = "give the points explicit ids to keep references across point edits"
@@ -334,7 +373,9 @@ def _resolve_edge_treatment_edges(
         }
         resolutions.append(resolution_details)
         if resolution.error is not None:
-            raise _reference_failure(node, kind, selected, reference, resolution)
+            raise _reference_failure(
+                node, kind, selected, reference, resolution, provenance
+            )
         selected.extend(resolution.candidates)
     if not selected:
         raise GraphError(
