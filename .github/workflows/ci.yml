@@ -8,20 +8,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm install --no-save --no-package-lock playwright@1.64.1
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-1.64.1
       - run: npx playwright@1.64.1 install --with-deps chromium
       - run: echo "PLAYWRIGHT_MODULE=${{ github.workspace }}/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with: {version: latest}
       - run: uv run --extra test ruff check .
       - run: uv run --extra test --extra sketch pytest -q
