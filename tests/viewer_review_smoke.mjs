@@ -301,7 +301,7 @@ async function act(action) {
       });
     }, action.pixels);
   }
-  if ('edgeStyle' in action) return page.evaluate(() => window.coalesceViewer.drawn.edgeStyle);
+  if ('edgeStyles' in action) return page.evaluate(() => window.coalesceViewer.drawn.edgeStyles);
   if ('fitRow' in action) await press(page.locator('.fit-row').nth(action.fitRow));
   if ('evidence' in action) await press(page.locator('.fit-evidence > summary'));
   if ('rawEvidence' in action) await press(page.locator('.fit-raw summary'));

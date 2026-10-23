@@ -1243,9 +1243,10 @@ if (window.coalesceDebug === true) {
       positions: model.children.map((group) => group.position.toArray()),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
-      edgeStyle: model.children[0]
-        ? { color: `#${model.children[0].children[1].material.color.getHexString()}`, opacity: model.children[0].children[1].material.opacity }
-        : null,
+      edgeStyles: model.children.map((group) => ({
+        color: `#${group.children[1].material.color.getHexString()}`,
+        opacity: group.children[1].material.opacity,
+      })),
       zRanges: model.children.map((group) => {
         const { min, max } = new THREE.Box3().setFromObject(surfaceOf(group));
         return [min.z, max.z];
