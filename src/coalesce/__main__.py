@@ -16,9 +16,52 @@ from .server import run_stdio
 from .service import DocumentService, _graph_error_response
 
 
+class _DocumentLoadFailure(Exception):
+    def __init__(self, revision: int, error: GraphError):
+        self.revision = revision
+        self.error = error
+
+
+def _revision(document: Path) -> int:
+    try:
+        return int(json.loads(document.read_text()).get("revision", 0))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return 0
+
+
+def _load_service(document: Path, **kwargs) -> DocumentService:
+    try:
+        return DocumentService(document, warmup=False, **kwargs)
+    except json.JSONDecodeError as error:
+        failure = GraphError(
+            "INVALID_DOCUMENT",
+            "document contains invalid JSON",
+            reason="json_syntax",
+            line=error.lineno,
+            column=error.colno,
+        )
+    except IsADirectoryError:
+        failure = GraphError(
+            "INVALID_DOCUMENT", "document path is a directory", reason="is_directory"
+        )
+    except PermissionError:
+        failure = GraphError(
+            "INVALID_DOCUMENT",
+            "document permission was denied",
+            reason="permission_denied",
+        )
+    except OSError:
+        failure = GraphError(
+            "INVALID_DOCUMENT", "document could not be read", reason="not_readable"
+        )
+    except GraphError as error:
+        raise _DocumentLoadFailure(_revision(document), error) from None
+    raise _DocumentLoadFailure(0, failure) from None
+
+
 async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> None:
     if not viewer_enabled:
-        service = await asyncio.to_thread(DocumentService, document, warmup=False)
+        service = await asyncio.to_thread(_load_service, document)
         await run_stdio(service)
         return
 
@@ -28,11 +71,10 @@ async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> N
     with ViewerServer(store) as viewer:
         # Load persisted structure off the event loop; exact geometry starts in the background.
         service = await asyncio.to_thread(
-            DocumentService,
+            _load_service,
             document,
             scene_store=store,
             viewer_url=viewer.url,
-            warmup=False,
         )
         print(f"coalesce viewer: {viewer.url}", file=sys.stderr, flush=True)
         if open_browser:
@@ -64,14 +106,8 @@ def main() -> None:
                 open_browser=arguments.open,
             )
         )
-    except (GraphError, json.JSONDecodeError, OSError) as error:
-        try:
-            revision = int(json.loads(arguments.document.read_text()).get("revision", 0))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            revision = 0
-        if not isinstance(error, GraphError):
-            error = GraphError("INVALID_DOCUMENT", "document could not be loaded")
-        failure = _graph_error_response(revision, None, "load", error)
+    except _DocumentLoadFailure as error:
+        failure = _graph_error_response(error.revision, None, "load", error.error)
         print(json.dumps(failure), file=sys.stderr, flush=True)
         sys.exit(2)
 

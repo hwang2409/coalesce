@@ -118,6 +118,15 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
 
+### `REFERENCE_FAILED` sketch segments
+
+For a stale sketch-segment reference, `resolution.sketchSegment` identifies the stored
+selection. Its fields are `sketch` (string sketch id), `entity` (string entity id),
+`segment` (string segment id), `storedTopology` (array of string endpoint ids),
+`currentTopology` (array of string endpoint ids or null), and `segmentExists` (boolean).
+Re-select the face on the updated profile. If the segment still exists, keeping its
+original endpoint ids can also recover the reference.
+
 ## inspection warnings
 
 a successful enclosure inspection can include `warnings`. a warning does not fail the request. agents can branch on its `code`.

@@ -335,7 +335,8 @@ async def test_polyline_reference_follows_explicit_point_ids(tmp_path):
         "entity": "outline",
         "segment": "seg-a-b",
         "storedTopology": ["a", "b"],
-        "currentTopology": "segment no longer exists",
+        "currentTopology": None,
+        "segmentExists": False,
     }
     assert resolution["suggestion"] == (
         "re-select the face on the updated profile, or keep the original endpoint ids"

@@ -296,6 +296,39 @@ def _uses_implicit_point_ids(source: object) -> bool:
     return False
 
 
+def _stale_segment_details(
+    reference: Reference,
+    status: Status,
+    candidates: list[Candidate],
+) -> dict[str, object]:
+    segment = _sketch_segment_source(reference.source)
+    if status is not Status.EMPTY or segment is None:
+        return {}
+    current = next(
+        (
+            source
+            for candidate in candidates
+            if (source := _sketch_segment_source(candidate.key.source)) is not None
+            and (source.sketch, source.entity, source.segment)
+            == (segment.sketch, segment.entity, segment.segment)
+        ),
+        None,
+    )
+    return {
+        "sketchSegment": {
+            "sketch": segment.sketch,
+            "entity": segment.entity,
+            "segment": segment.segment,
+            "storedTopology": list(segment.topology),
+            "currentTopology": list(current.topology) if current is not None else None,
+            "segmentExists": current is not None,
+        },
+        "suggestion": (
+            "re-select the face on the updated profile, or keep the original endpoint ids"
+        ),
+    }
+
+
 def _reference_failure(
     node: Fillet | Chamfer,
     kind: str,
@@ -305,29 +338,11 @@ def _reference_failure(
     provenance: dict[str, list[Candidate]],
 ) -> GraphError:
     resolution_details = resolution.error
-    segment = _sketch_segment_source(reference.source)
-    if resolution.status is Status.EMPTY and segment is not None and resolution_details is not None:
-        current = next(
-            (
-                source
-                for candidate in provenance.get(reference.feature, [])
-                if (source := _sketch_segment_source(candidate.key.source)) is not None
-                and (source.sketch, source.entity, source.segment)
-                == (segment.sketch, segment.entity, segment.segment)
-            ),
-            None,
-        )
-        resolution_details["sketchSegment"] = {
-            "sketch": segment.sketch,
-            "entity": segment.entity,
-            "segment": segment.segment,
-            "storedTopology": list(segment.topology),
-            "currentTopology": (
-                list(current.topology) if current is not None else "segment no longer exists"
-            ),
-        }
-        resolution_details["suggestion"] = (
-            "re-select the face on the updated profile, or keep the original endpoint ids"
+    if resolution_details is not None:
+        resolution_details.update(
+            _stale_segment_details(
+                reference, resolution.status, provenance.get(reference.feature, [])
+            )
         )
     details = {
         "feature": node.id,

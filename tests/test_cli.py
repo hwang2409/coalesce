@@ -4,9 +4,24 @@ import sys
 
 import pytest
 
+from coalesce.__main__ import _run
 
-@pytest.mark.parametrize("document_kind", ["malformed", "directory"])
-def test_cli_reports_structured_document_load_errors(document_kind, tmp_path):
+
+@pytest.mark.parametrize(
+    ("document_kind", "reason", "message", "location"),
+    [
+        (
+            "malformed",
+            "json_syntax",
+            "document contains invalid JSON",
+            {"line": 1, "column": 2},
+        ),
+        ("directory", "is_directory", "document path is a directory", {}),
+    ],
+)
+def test_cli_reports_structured_document_load_errors(
+    document_kind, reason, message, location, tmp_path
+):
     document = tmp_path / "document.coalesce.json"
     if document_kind == "malformed":
         document.write_text("{")
@@ -21,17 +36,25 @@ def test_cli_reports_structured_document_load_errors(document_kind, tmp_path):
         check=False,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 2
     assert "Traceback" not in result.stderr
-    assert json.loads(result.stderr) == {
-        "ok": False,
-        "revision": 0,
-        "requestId": None,
-        "units": "mm",
-        "error": {
-            "code": "INVALID_DOCUMENT",
-            "message": "document could not be loaded",
-            "retryable": False,
-            "operation": "load",
-        },
+    failure = json.loads(result.stderr)
+    assert failure["error"] == {
+        "code": "INVALID_DOCUMENT",
+        "message": message,
+        "retryable": False,
+        "operation": "load",
+        "reason": reason,
+        **location,
     }
+
+
+@pytest.mark.anyio
+async def test_oserror_after_document_load_is_not_mapped_to_invalid_document(tmp_path, monkeypatch):
+    async def fail_after_startup(service):
+        raise OSError("stdio failed")
+
+    monkeypatch.setattr("coalesce.__main__.run_stdio", fail_after_startup)
+
+    with pytest.raises(OSError, match="stdio failed"):
+        await _run(tmp_path / "document.coalesce.json", viewer_enabled=False, open_browser=False)

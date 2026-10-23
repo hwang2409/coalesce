@@ -271,6 +271,7 @@ async def test_reordered_entities_keep_reference_but_split_segment_is_rejected_a
         "segment": "base",
         "storedTopology": ["origin", "end"],
         "currentTopology": ["origin", "base-mid"],
+        "segmentExists": True,
     }
     assert resolution["suggestion"] == (
         "re-select the face on the updated profile, or keep the original endpoint ids"

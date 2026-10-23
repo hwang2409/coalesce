@@ -81,7 +81,11 @@ when the real edit path can prove it; otherwise `safeRange` is `unknown`.
 Use `query` with `select.kind: edge_roles` and `id` to list each selectable role, exact
 edge count, orientation, length, and an example exact-cardinality reference. Empty or
 failed references include the same `availableRoles` catalog. A reference query always
-includes `resolution`, including when `cardinality` is `any`.
+includes `resolution`, including when `cardinality` is `any`. For a stale sketch-segment
+reference, `resolution.sketchSegment` has string `sketch`, `entity`, and `segment` ids,
+a string array `storedTopology`, a string-array-or-null `currentTopology`, and boolean
+`segmentExists`. Re-select the face on the updated profile; if the segment still exists,
+keeping its original endpoint ids can also recover the reference.
 
 For a PCB enclosure, create `pcb_base` with a BoardImport id, wall and floor thickness,
 board-edge clearance, wall height above the board top, and board seat height. The inner
