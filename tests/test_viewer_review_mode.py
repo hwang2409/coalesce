@@ -97,6 +97,34 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         assert_clear_layout(state)
         state_memory = state["memory"]
 
+        if viewport[0] < 720:
+            selected = step("camera-selected-part", do=[{"fitRow": 0}, {"settle": True}, {"fit": True}])
+            selected_fit = selected["actions"][2]
+            assert selected_fit["rows"][0]["pressed"] == "true"
+            faded = selected["scene"]["faded"]
+            opened = step("camera-keyboard-open", do=[
+                {"blur": True}, {"tabTo": "View", "press": "Enter"},
+            ])
+            assert opened["actions"][1]["visited"][-1] == "View"
+            assert opened["cameraOpen"] is True and opened["focused"] == "View"
+            activated = step("camera-keyboard-iso", do=[
+                {"tabTo": "Iso", "press": "Enter"}, {"settle": True},
+            ])
+            assert activated["cameraOpen"] is False and activated["focused"] == "View"
+            assert activated["scene"]["faded"] == faded
+            reopened = step("camera-keyboard-reopen", do=[{"key": "Enter"}])
+            assert reopened["cameraOpen"] is True and reopened["focused"] == "View"
+            escaped = step("camera-keyboard-escape", do=[{"key": "Escape"}, {"fit": True}])
+            assert escaped["cameraOpen"] is False and escaped["focused"] == "View"
+            assert escaped["actions"][1]["rows"][0]["pressed"] == "true"
+            assert escaped["scene"]["faded"] == faded
+            step("camera-clear-selected-part", do=[{"fitRow": 0}, {"settle": True}])
+        else:
+            activated = step("camera-keyboard-desktop", do=[
+                {"blur": True}, {"tabTo": "Iso", "press": "Enter"}, {"settle": True},
+            ])
+            assert activated["cameraOpen"] is True and activated["focused"] == "Iso"
+
         lid_off = step("review-lid-off", do=[{"click": "Lid off"}, {"settle": True}, {"review": True},
                                               {"diff": "assembled"}])
         assert pressed(review(lid_off, 2)) == ["Lid off"]

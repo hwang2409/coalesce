@@ -106,6 +106,7 @@ new ResizeObserver(requestRender).observe(canvas);
 // ---- scale bar: a round length of about 100 px at the current zoom (48 px on narrow screens)
 
 const narrow = matchMedia('(max-width: 720px)');
+const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
 $('camera-menu').open = !narrow.matches;
 narrow.addEventListener('change', () => { $('camera-menu').open = !narrow.matches; });
 const scalePx = () => (narrow.matches ? 48 : 100);
@@ -234,7 +235,9 @@ function showRefit(on) {
 }
 
 function closeCameraMenu() {
-  if (narrow.matches) $('camera-menu').open = false;
+  if (!narrow.matches) return;
+  $('camera-menu').open = false;
+  $('camera-menu').querySelector('summary').focus();
 }
 
 for (const button of document.querySelectorAll('[data-view]')) {
@@ -245,6 +248,12 @@ for (const button of document.querySelectorAll('[data-view]')) {
 }
 $('fit').addEventListener('click', () => {
   applyView(activeView);
+  closeCameraMenu();
+});
+$('camera-menu').addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented || !narrow.matches || !$('camera-menu').open
+      || event.target.closest?.(OWNS_ESCAPE)) return;
+  event.preventDefault();
   closeCameraMenu();
 });
 
@@ -567,7 +576,6 @@ function showAll(focus = true) {
 $('showing-clear').addEventListener('click', () => showAll());
 // Escape shows all parts again; in the section controls their own Escape ends the section view first.
 // a field or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
-const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || event.defaultPrevented || !selected || event.target.closest?.(OWNS_ESCAPE)) return;
   event.preventDefault();

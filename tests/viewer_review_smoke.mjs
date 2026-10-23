@@ -55,6 +55,7 @@ async function snapshot() {
     code: await page.locator('#failure-code').textContent(),
     scene: await page.evaluate(() => window.coalesceViewer.drawn),
     focused: await label(),
+    cameraOpen: await page.locator('#camera-menu').evaluate((menu) => menu.open),
     view: await page.locator('#view').evaluate((canvas) => canvas.getBoundingClientRect().toJSON()),
     expanded: await page.locator('#parts .part').evaluateAll((rows) => rows.map((row) => row.getAttribute('aria-expanded'))),
     // each part row's boxes in page pixels, to check the swatch and hint line up with the row
