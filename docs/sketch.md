@@ -80,6 +80,84 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
   "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
 ```
 
+## exact closed profile extrusion
+
+A constrained sketch can supply one closed non-construction profile to the existing
+`extrude` and `cut` features. Use the sketch id as the single `profileIds` value.
+Lines, arcs, and circles remain analytic; construction geometry is ignored. Open,
+self-intersecting, nested, and multiple loops are rejected with
+`SKETCH_PROFILE_UNSUPPORTED` and a structured `reason`.
+
+This complete line-and-arc bracket example is sent unchanged through the real stdio
+server by the acceptance test:
+
+<!-- bracket-stdio -->
+```json
+[
+  {
+    "tool": "sketch",
+    "arguments": {
+      "action": "create",
+      "expectedRevision": 0,
+      "requestId": "bracket-sketch",
+      "sketchId": "bracket_profile",
+      "plane": {"kind": "origin", "name": "XY"},
+      "constrained": {
+        "kind": "constrained",
+        "points": [
+          {"id": "origin", "x": 0, "y": 0},
+          {"id": "tangent", "x": 0, "y": 20},
+          {"id": "end", "x": -20, "y": 0},
+          {"id": "center", "x": -20, "y": 20, "construction": true}
+        ],
+        "lines": [
+          {"id": "side", "start": "origin", "end": "tangent"},
+          {"id": "base", "start": "origin", "end": "end"}
+        ],
+        "arcs": [
+          {
+            "id": "corner",
+            "center": "center",
+            "start": "tangent",
+            "end": "end",
+            "radius": 20,
+            "start_angle": 0,
+            "end_angle": 4.71238898038469
+          }
+        ],
+        "dimensions": [
+          {"id": "side-length", "kind": "distance", "entities": ["origin", "tangent"], "value": 20},
+          {"id": "corner-radius", "kind": "radius", "entities": ["corner"], "value": 20}
+        ],
+        "constraints": [
+          {"id": "fix-origin", "kind": "fix", "entities": ["origin"]},
+          {"id": "base-horizontal", "kind": "horizontal", "entities": ["base"]},
+          {"id": "equal-sides", "kind": "equal", "entities": ["side", "base"]},
+          {"id": "side-tangent", "kind": "tangent", "entities": ["side", "corner", "tangent"]}
+        ]
+      }
+    }
+  },
+  {
+    "tool": "feature",
+    "arguments": {
+      "action": "create",
+      "expectedRevision": 1,
+      "requestId": "bracket-extrude",
+      "featureId": "bracket",
+      "kind": "extrude",
+      "parameters": {
+        "profile": {"sketchId": "bracket_profile", "profileIds": ["bracket_profile"]},
+        "distance": {"value": 5, "unit": "mm"},
+        "operation": "new_body",
+        "direction": "normal"
+      }
+    }
+  },
+  {"tool": "query", "arguments": {"select": {"kind": "measurements"}}}
+]
+```
+
 ## replace the solver
 
 PlaneGCS is a separate optional dependency. To use a different compatible solver, replace only the private implementation in `src/coalesce/sketch_solver.py` while keeping its coalesce-owned request and result types stable. No other coalesce module imports PlaneGCS.

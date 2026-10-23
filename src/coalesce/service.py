@@ -1762,7 +1762,10 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     sketch = graph.nodes.get(parameters.profile.sketchId)
     if not isinstance(sketch, Sketch):
         raise RequestError("UNKNOWN_ID", "extrude profile sketch does not exist")
-    if list(parameters.profile.profileIds) != [entity.id for entity in sketch.entities]:
+    expected_profiles = (
+        [sketch.id] if sketch.constrained is not None else [entity.id for entity in sketch.entities]
+    )
+    if list(parameters.profile.profileIds) != expected_profiles:
         raise RequestError(
             "INVALID_PARAMETER",
             "profileIds must list all sketch profiles in graph order",

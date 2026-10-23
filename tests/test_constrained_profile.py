@@ -180,6 +180,7 @@ async def test_documented_line_arc_bracket_extrudes_exactly_through_real_stdio(t
     expected_volume = (300 * math.pi + 400) * 5
     assert results[2]["volume"]["value"] == pytest.approx(expected_volume, rel=1e-6)
     service = DocumentService(path, warmup=False)
+    service.query({"select": {"kind": "measurements"}})
     assert any(face.geom_type is GeomType.CYLINDER for face in service._regen.shapes["bracket"].faces())
 
 
@@ -201,6 +202,7 @@ async def test_dimension_update_regenerates_and_keeps_profile_face_reference(tmp
     assert results[3]["ok"] is True and results[3]["revision"] == 4
     assert results[4]["parts"][0]["terminalFeatureId"] == "finished_bracket"
     service = DocumentService(path, warmup=False)
+    service.query({"select": {"kind": "measurements"}})
     corner = next(
         item.entity
         for item in service._regen.provenance["bracket"]
