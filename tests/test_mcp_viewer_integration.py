@@ -795,11 +795,11 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
 
 
 class FailingSlowStore:
-    def publish(self, revision, parts):
+    def publish(self, revision, parts, change=None, fit=None, accepted_edit=None):
         time.sleep(0.5)
         raise RuntimeError("viewer unavailable")
 
-    def publish_failure(self, feature_ids, error):
+    def publish_failure(self, feature_ids, error, attempted_edit=None):
         time.sleep(0.5)
         raise RuntimeError("viewer unavailable")
 
