@@ -124,7 +124,7 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
     assert "hole" in feature_schema["properties"]["set"]["description"]
     sketch = tools["sketch"].inputSchema
     assert sketch["properties"]["plane"]["properties"]["name"]["enum"] == ["XY", "XZ", "YZ"]
-    assert {branch["properties"]["kind"]["const"] for branch in sketch["properties"]["entities"]["items"]["oneOf"]} == {"rectangle", "circle"}
+    assert {branch["properties"]["kind"]["const"] for branch in sketch["properties"]["entities"]["items"]["oneOf"]} == {"rectangle", "circle", "polyline", "spline"}
     description = tools["feature"].description
     assert "global +Z" in description
     assert "flip=false" in description

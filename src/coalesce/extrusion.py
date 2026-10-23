@@ -6,12 +6,13 @@ from math import isclose
 
 from build123d import Compound, Edge, Face, Location, Shape, Wire
 from build123d import Plane as BuildPlane
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_NurbsConvert
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
 from .constrained_profile import build_constrained_profile
-from .graph import Circle, Extrude, GraphError, Rectangle, Sketch, validate_sketch
+from .graph import Circle, Extrude, GraphError, Polyline, Rectangle, Sketch, Spline, validate_sketch
+from .profile_validation import build_outline_profile
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
 
@@ -71,8 +72,7 @@ def _rectangle_profile(entity: Rectangle, location: Location) -> tuple[Face, Wir
     points = [(-x, -y, 0), (x, -y, 0), (x, y, 0), (-x, y, 0)]
     names = ("bottom", "right", "top", "left")
     edges = [
-        Edge.make_line(points[index], points[(index + 1) % 4]).moved(location)
-        for index in range(4)
+        Edge.make_line(points[index], points[(index + 1) % 4]).moved(location) for index in range(4)
     ]
     builder = BRepBuilderAPI_MakeWire()
     constructed: dict[str, Edge] = {}
@@ -83,7 +83,26 @@ def _rectangle_profile(entity: Rectangle, location: Location) -> tuple[Face, Wir
     return Face(wire), wire, constructed
 
 
-def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
+def _outline_profile(entity: Polyline | Spline, location: Location) -> _Profile:
+    exact = build_outline_profile(
+        "polyline" if isinstance(entity, Polyline) else "spline",
+        entity.points,
+        entity.point_ids,
+        location,
+        point_ids_explicit=entity.point_ids_explicit,
+    )
+    return _Profile(
+        entity.id,
+        exact.face,
+        exact.wire,
+        exact.segments,
+        exact.segment_topology,
+    )
+
+
+def _profile(entity: Rectangle | Circle | Polyline | Spline, sketch_location: Location) -> _Profile:
+    if isinstance(entity, (Polyline, Spline)):
+        return _outline_profile(entity, sketch_location)
     entity_location = Location(
         (entity.position[0], entity.position[1], 0),
         (0, 0, entity.rotation),
@@ -122,9 +141,7 @@ def _profile_relation(left: _Profile, right: _Profile) -> _ProfileRelation:
         rel_tol=_AREA_RELATIVE_TOLERANCE,
         abs_tol=area_tolerance,
     )
-    boundaries_touch = (
-        left.wire.distance_to(right.wire) <= _LINEAR_BOUNDARY_TOLERANCE
-    )
+    boundaries_touch = left.wire.distance_to(right.wire) <= _LINEAR_BOUNDARY_TOLERANCE
     if left_inside != right_inside:
         if boundaries_touch:
             return _ProfileRelation.TOUCHING
@@ -134,7 +151,9 @@ def _profile_relation(left: _Profile, right: _Profile) -> _ProfileRelation:
     return _ProfileRelation.OVERLAP
 
 
-def _pair_error(sketch: Sketch, left: _Profile, right: _Profile, relation: _ProfileRelation) -> None:
+def _pair_error(
+    sketch: Sketch, left: _Profile, right: _Profile, relation: _ProfileRelation
+) -> None:
     if relation not in (_ProfileRelation.TOUCHING, _ProfileRelation.OVERLAP):
         return
     details = {
@@ -195,6 +214,19 @@ def _extrude_region(
         face.wrapped,
         gp_Vec(direction.X, direction.Y, direction.Z),
     )
+    converter = (
+        BRepBuilderAPI_NurbsConvert(prism.Shape())
+        if any("spline" in profile.segments for profile in profiles)
+        else None
+    )
+
+    def final_shape(shape) -> Shape:
+        return (
+            Shape.cast(converter.ModifiedShape(shape))
+            if converter is not None
+            else Shape.cast(shape)
+        )
+
     outer = profiles[0]
     body = BodySource(node.id, outer.entity_id)
     faces = [
@@ -202,14 +234,14 @@ def _extrude_region(
             node.id,
             "cap_start",
             outer.entity_id,
-            Shape.cast(prism.FirstShape()),
+            final_shape(prism.FirstShape()),
             body=body,
         ),
         candidate(
             node.id,
             "cap_end",
             outer.entity_id,
-            Shape.cast(prism.LastShape()),
+            final_shape(prism.LastShape()),
             body=body,
         ),
     ]
@@ -231,11 +263,11 @@ def _extrude_region(
                     node.id,
                     f"side({segment})",
                     source,
-                    Shape.cast(generated[0]),
+                    final_shape(generated[0]),
                     body=body,
                 )
             )
-    return Shape.cast(prism.Shape()), faces
+    return final_shape(prism.Shape()), faces
 
 
 def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:

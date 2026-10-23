@@ -51,9 +51,42 @@ class Circle:
     rotation: float = 0.0
 
 
+MIN_OUTLINE_POINTS = 3
+MAX_OUTLINE_POINTS = 2000
+
+
+@dataclass
+class Polyline:
+    id: str
+    points: tuple[tuple[float, float], ...]
+    closed: bool = True
+    point_ids: tuple[str, ...] = ()
+    point_ids_explicit: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.point_ids:
+            self.point_ids = tuple(f"p{index}" for index in range(len(self.points)))
+
+
+@dataclass
+class Spline:
+    id: str
+    points: tuple[tuple[float, float], ...]
+    closed: bool = True
+    point_ids: tuple[str, ...] = ()
+    point_ids_explicit: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.point_ids:
+            self.point_ids = tuple(f"p{index}" for index in range(len(self.points)))
+
+
+PrimitiveEntity = Rectangle | Circle | Polyline | Spline
+
+
 @dataclass
 class PrimitiveSketchState:
-    entities: list[Rectangle | Circle] = field(default_factory=list)
+    entities: list[PrimitiveEntity] = field(default_factory=list)
 
 
 @dataclass
@@ -73,7 +106,7 @@ class Sketch:
         self,
         id: str,
         plane: Plane | None = None,
-        entities: list[Rectangle | Circle] | None = None,
+        entities: list[PrimitiveEntity] | None = None,
         constrained: Any | None = None,
         position: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -93,14 +126,14 @@ class Sketch:
         self.rotation = rotation
 
     @property
-    def entities(self) -> list[Rectangle | Circle]:
+    def entities(self) -> list[PrimitiveEntity]:
         return self.state.entities if isinstance(self.state, PrimitiveSketchState) else []
 
     @property
     def constrained(self) -> Any | None:
         return self.state.constrained if isinstance(self.state, ConstrainedSketchState) else None
 
-    def replace_entities(self, entities: list[Rectangle | Circle]) -> None:
+    def replace_entities(self, entities: list[PrimitiveEntity]) -> None:
         self.state = PrimitiveSketchState(entities)
 
     def replace_constrained(self, constrained: Any) -> None:
@@ -229,6 +262,66 @@ def _require_finite(sketch: Sketch, field: str, values: tuple[float, ...]) -> No
         )
 
 
+def _unsupported_outline(sketch: Sketch, entity: PrimitiveEntity, reason: str) -> None:
+    raise GraphError(
+        "SKETCH_PROFILE_UNSUPPORTED",
+        f"sketch {sketch.id} entity {entity.id} has an unsupported {reason.replace('_', ' ')} profile",
+        sketch=sketch.id,
+        entity=entity.id,
+        reason=reason,
+    )
+
+
+def _validate_outline(sketch: Sketch, entity: Polyline | Spline) -> None:
+    if not MIN_OUTLINE_POINTS <= len(entity.points) <= MAX_OUTLINE_POINTS:
+        _unsupported_outline(sketch, entity, "point_count")
+    if len(entity.point_ids) != len(entity.points) or len(set(entity.point_ids)) != len(
+        entity.point_ids
+    ):
+        _unsupported_outline(sketch, entity, "duplicate_point_id")
+
+
+def _validate_outline_exact(sketch: Sketch, entity: Polyline | Spline) -> None:
+    from build123d import Location
+
+    from .profile_validation import InvalidProfile, build_outline_profile
+
+    try:
+        build_outline_profile(
+            "polyline" if isinstance(entity, Polyline) else "spline",
+            entity.points,
+            entity.point_ids,
+            Location(),
+            point_ids_explicit=entity.point_ids_explicit,
+        )
+    except InvalidProfile as error:
+        _unsupported_outline(sketch, entity, error.reason)
+
+
+def _validate_primitive_entity(sketch: Sketch, entity: PrimitiveEntity) -> None:
+    if isinstance(entity, (Polyline, Spline)):
+        _require_finite(
+            sketch,
+            f"entity.{entity.id}.points",
+            tuple(coordinate for point in entity.points for coordinate in point),
+        )
+        _validate_outline(sketch, entity)
+        return
+    _require_finite(sketch, f"entity.{entity.id}.position", entity.position)
+    _require_finite(sketch, f"entity.{entity.id}.rotation", (entity.rotation,))
+    if not isinstance(entity, Circle):
+        return
+    _require_finite(sketch, f"entity.{entity.id}.radius", (entity.radius,))
+    if entity.radius <= 0:
+        raise GraphError(
+            "INVALID_CIRCLE_RADIUS",
+            f"circle {entity.id} radius must be positive",
+            sketch=sketch.id,
+            entity=entity.id,
+            radius=entity.radius,
+        )
+
+
 def validate_sketch(sketch: Sketch) -> None:
     if sketch.plane.name not in {"XY", "XZ", "YZ"}:
         raise GraphError(
@@ -242,18 +335,13 @@ def validate_sketch(sketch: Sketch) -> None:
     _require_finite(sketch, "position", sketch.position)
     _require_finite(sketch, "rotation", sketch.rotation)
     for entity in sketch.entities:
-        _require_finite(sketch, f"entity.{entity.id}.position", entity.position)
-        _require_finite(sketch, f"entity.{entity.id}.rotation", (entity.rotation,))
-        if isinstance(entity, Circle):
-            _require_finite(sketch, f"entity.{entity.id}.radius", (entity.radius,))
-            if entity.radius <= 0:
-                raise GraphError(
-                    "INVALID_CIRCLE_RADIUS",
-                    f"circle {entity.id} radius must be positive",
-                    sketch=sketch.id,
-                    entity=entity.id,
-                    radius=entity.radius,
-                )
+        _validate_primitive_entity(sketch, entity)
+
+
+def validate_sketch_profiles(sketch: Sketch) -> None:
+    for entity in sketch.entities:
+        if isinstance(entity, (Polyline, Spline)):
+            _validate_outline_exact(sketch, entity)
 
 
 class Graph:
@@ -302,7 +390,12 @@ class Graph:
             *(
                 getattr(node, dependency_field, None)
                 for dependency_field in (
-                    "sketch", "target", "tool", "board", "base", "outline_source"
+                    "sketch",
+                    "target",
+                    "tool",
+                    "board",
+                    "base",
+                    "outline_source",
                 )
             ),
             *Graph._typed_reference_dependencies(node),

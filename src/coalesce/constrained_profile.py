@@ -8,14 +8,11 @@ from math import cos, sin
 
 from build123d import Edge, Face, Location, Wire
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
-from OCP.BRepCheck import BRepCheck_Analyzer
-from OCP.Precision import Precision
 
 from .constrained_sketch import ConstrainedSketch
 from .graph import GraphError
+from .profile_validation import InvalidProfile, checked_face, profile_tolerance, same_point
 from .sketch_solver import SolvedArc, SolvedCircle, SolvedLine
-
-_RELATIVE_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
@@ -57,17 +54,11 @@ def _unsupported(sketch_id: str, reason: str) -> None:
     )
 
 
-def _same_point(
-    left: tuple[float, float], right: tuple[float, float], tolerance: float
-) -> bool:
-    return (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2 <= tolerance**2
-
-
 def _vertex_index(
     vertices: list[tuple[float, float]], point: tuple[float, float], tolerance: float
 ) -> int:
     for index, vertex in enumerate(vertices):
-        if _same_point(vertex, point, tolerance):
+        if same_point(vertex, point, tolerance):
             return index
     vertices.append(point)
     return len(vertices) - 1
@@ -174,11 +165,10 @@ def _checked_profile(
     topology: dict[str, tuple[str, ...]],
     tolerance: float,
 ) -> ConstrainedProfile:
-    face = Face(wire)
-    if not BRepCheck_Analyzer(face.wrapped).IsValid():
-        _unsupported(sketch_id, "self_intersecting")
-    if face.area <= tolerance**2:
-        _unsupported(sketch_id, "degenerate")
+    try:
+        face = checked_face(wire, tolerance)
+    except InvalidProfile as error:
+        _unsupported(sketch_id, error.reason)
     return ConstrainedProfile(sketch_id, face, wire, segments, topology)
 
 
@@ -248,7 +238,7 @@ def _topology(model: ConstrainedSketch) -> dict[str, tuple[str, ...]]:
     }
 
 
-def _profile_tolerance(solved: Mapping[str, object]) -> float:
+def _profile_points(solved: Mapping[str, object]) -> list[tuple[float, float]]:
     points = [
         point
         for entity in solved.values()
@@ -265,11 +255,7 @@ def _profile_tolerance(solved: Mapping[str, object]) -> float:
         for circle in solved.values()
         if isinstance(circle, SolvedCircle) and not circle.construction
     )
-    extent = max(
-        max(point[axis] for point in points) - min(point[axis] for point in points)
-        for axis in (0, 1)
-    ) if points else 0.0
-    return max(extent * _RELATIVE_TOLERANCE, Precision.Confusion_s())
+    return points
 
 
 def _validate_geometry(
@@ -279,7 +265,7 @@ def _validate_geometry(
     tolerance: float,
 ) -> None:
     for curve in curves:
-        if _same_point(curve.start, curve.end, tolerance):
+        if same_point(curve.start, curve.end, tolerance):
             _unsupported(sketch_id, "degenerate")
         if isinstance(curve.solved, SolvedArc) and curve.solved.radius <= tolerance:
             _unsupported(sketch_id, "degenerate")
@@ -298,7 +284,7 @@ def build_constrained_profile(model: ConstrainedSketch, sketch_id: str, location
     topology = _topology(model)
     curves = _solved_curves(solved, topology)
     circles = _solved_circles(solved)
-    tolerance = _profile_tolerance(solved)
+    tolerance = profile_tolerance(_profile_points(solved))
     _validate_geometry(sketch_id, curves, circles, tolerance)
     profiles: list[ConstrainedProfile] = []
     for component in _curve_components(sketch_id, curves, tolerance) if curves else []:

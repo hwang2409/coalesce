@@ -80,6 +80,37 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
   "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
 ```
 
+## primitive closed outlines
+
+Primitive sketches support two free-form closed outline kinds in addition to rectangles and circles:
+
+- `polyline` joins 3 to 2000 points with straight segments. Each role names its endpoint point ids, such as `seg-p0-p1`, including the closing segment.
+- `spline` creates one periodic interpolating B-spline through 3 to 2000 points. It stays one analytic edge with the single role `spline`; it has no segment roles and is not polygonized.
+
+A point can be `[x, y]` or `{"id": "corner", "x": x, "y": y}`. References follow point ids. Array points get default ids `p0`, `p1`, and so on by list position, so reordering or rotating that list moves the ids to different coordinates. Give points explicit ids if you will reorder them.
+
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. Inner holes are separate cut or hole features. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
+
+This example creates and extrudes a triangular polyline:
+
+```json
+{"action":"create","expectedRevision":0,"requestId":"triangle-sketch","sketchId":"triangle_profile","plane":{"kind":"origin","name":"XY"},"entities":[{"id":"triangle","kind":"polyline","points":[[0,0],[30,0],[0,20]],"closed":true}]}
+```
+
+```json
+{"action":"create","expectedRevision":1,"requestId":"triangle-extrude","featureId":"triangle","kind":"extrude","parameters":{"profile":{"sketchId":"triangle_profile","profileIds":["triangle"]},"distance":{"value":5,"unit":"mm"},"operation":"new_body","direction":"normal"}}
+```
+
+How a downstream reference (for example a fillet on a profile edge) behaves when you update the outline points:
+
+- polyline with explicit point ids: a segment reference follows its two endpoint ids. Moving, reordering, or rotating the points keeps it on the same segment. If an endpoint id is removed or replaced, the reference resolves as `EMPTY`.
+- polyline with default ids (array points): segment identity is positional. While any downstream reference exists, every change to the point list (coordinates, order, or count) is rejected atomically with `REFERENCE_FAILED` (`EMPTY`) and the hint to give the points explicit ids. With no downstream references, you can edit the points freely.
+- spline: the single `spline` role stays bound across any point edit, including a point-count change.
+
+Documents saved before point ids were recorded load as default-id polylines, which is the conservative rule. coalesce never silently binds a reference to a different edge.
+
+See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a complete spline, extrusion, center bore, and STEP export workflow.
+
 ## exact closed profile extrusion
 
 A constrained sketch can supply one closed non-construction profile to the existing

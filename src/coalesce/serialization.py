@@ -18,9 +18,11 @@ from .graph import (
     PcbBase,
     PcbLid,
     Plane,
+    Polyline,
     PortCutout,
     Rectangle,
     Sketch,
+    Spline,
     Standoffs,
 )
 from .references import (
@@ -40,6 +42,8 @@ _TYPES = {
         Sketch,
         Rectangle,
         Circle,
+        Polyline,
+        Spline,
         Extrude,
         PcbBase,
         PcbLid,
@@ -74,6 +78,19 @@ def _reference(payload: dict[str, Any]) -> Reference:
     return Reference(**value)
 
 
+def _primitive_entity(raw_entity: dict[str, Any]) -> Rectangle | Circle | Polyline | Spline:
+    entity = dict(raw_entity)
+    entity_type = _TYPES.get(entity.pop("type", None))
+    if entity_type not in (Rectangle, Circle, Polyline, Spline):
+        raise ValueError("unknown primitive sketch entity type")
+    if entity_type in (Polyline, Spline):
+        entity["points"] = tuple(tuple(point) for point in entity["points"])
+        entity["point_ids"] = tuple(entity.get("point_ids", ()))
+    else:
+        entity["position"] = tuple(entity.get("position", (0, 0)))
+    return entity_type(**entity)
+
+
 def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
     payload["plane"] = Plane(**payload.get("plane", {}))
     payload["position"] = tuple(payload.get("position", (0, 0, 0)))
@@ -83,15 +100,9 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
         payload.pop("entities", None)
         payload["constrained"] = constrained_from_payload(constrained)
         return payload
-    entities = []
-    for raw_entity in payload.get("entities", []):
-        entity = dict(raw_entity)
-        entity_type = _TYPES.get(entity.pop("type", None))
-        if entity_type not in (Rectangle, Circle):
-            raise ValueError("sketch entity must be a Rectangle or Circle")
-        entity["position"] = tuple(entity.get("position", (0, 0)))
-        entities.append(entity_type(**entity))
-    payload["entities"] = entities
+    payload["entities"] = [
+        _primitive_entity(entity) for entity in payload.get("entities", [])
+    ]
     return payload
 
 

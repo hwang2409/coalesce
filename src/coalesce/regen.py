@@ -47,6 +47,7 @@ from .references import (
     ElementKey,
     Reference,
     Resolution,
+    SketchSegmentSource,
     Status,
     edge_role_catalog,
     reference_matches_key,
@@ -272,6 +273,37 @@ def _verify_error_remedies(graph: Graph, error: GraphError) -> None:
         details.pop("alternatives", None)
 
 
+def _uses_implicit_point_ids(source: object) -> bool:
+    if isinstance(source, SketchSegmentSource):
+        return source.topology[:1] == ("__implicit__",)
+    if isinstance(source, ElementKey):
+        return _uses_implicit_point_ids(source.source)
+    if isinstance(source, tuple):
+        return any(_uses_implicit_point_ids(item) for item in source)
+    return False
+
+
+def _reference_failure(
+    node: Fillet | Chamfer,
+    kind: str,
+    selected: list[Candidate],
+    reference: Reference,
+    resolution: Resolution,
+) -> GraphError:
+    details = {
+        "feature": node.id,
+        "selectedEdges": [asdict(candidate.key) for candidate in selected],
+        "resolution": resolution.error,
+    }
+    if _uses_implicit_point_ids(reference.source):
+        details["hint"] = "give the points explicit ids to keep references across point edits"
+    return GraphError(
+        "REFERENCE_FAILED",
+        f"{kind} {node.id} edge reference did not resolve",
+        **details,
+    )
+
+
 def _resolve_edge_treatment_edges(
     node: Fillet | Chamfer,
     provenance: dict[str, list[Candidate]],
@@ -302,13 +334,7 @@ def _resolve_edge_treatment_edges(
         }
         resolutions.append(resolution_details)
         if resolution.error is not None:
-            raise GraphError(
-                "REFERENCE_FAILED",
-                f"{kind} {node.id} edge reference did not resolve",
-                feature=node.id,
-                selectedEdges=[asdict(candidate.key) for candidate in selected],
-                resolution=resolution.error,
-            )
+            raise _reference_failure(node, kind, selected, reference, resolution)
         selected.extend(resolution.candidates)
     if not selected:
         raise GraphError(
