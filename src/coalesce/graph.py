@@ -5,9 +5,6 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from math import isfinite
 from typing import Any
 
-from build123d import Location
-
-from .profile_validation import InvalidProfile, build_outline_profile
 from .references import (
     BodySource,
     ElementKey,
@@ -274,6 +271,10 @@ def _unsupported_outline(sketch: Sketch, entity: PrimitiveEntity, reason: str) -
 
 
 def _validate_outline(sketch: Sketch, entity: Polyline | Spline) -> None:
+    from build123d import Location
+
+    from .profile_validation import InvalidProfile, build_outline_profile
+
     if len(entity.point_ids) != len(entity.points) or len(set(entity.point_ids)) != len(
         entity.point_ids
     ):
