@@ -954,29 +954,49 @@ def _closure_holes(node: ScrewClosure) -> list[dict]:
 
 
 def _validate_closure_floor(node: ScrewClosure, cavity: Face) -> None:
-    try:
-        _validate_bosses(
-            Standoffs(
-                node.id,
-                boss_diameter=node.boss_diameter,
-                pilot_diameter=node.base_pilot_diameter,
-            ),
-            cavity,
-            _closure_holes(node),
+    radius = node.boss_diameter / 2
+    for point in node.points:
+        disk = Face(Wire.make_circle(radius).moved(Location((*point.point, 0))))
+        if not cavity.is_inside((*point.point, 0)):
+            conflict = "floor"
+            message = f"screw_closure {node.id} point {point.name} is off the base floor"
+        elif not math.isclose(_common_area(cavity, disk), disk.area, rel_tol=1e-9, abs_tol=1e-8):
+            conflict = "wall"
+            message = f"screw_closure {node.id} point {point.name} crosses the base wall"
+        else:
+            continue
+        raise GraphError(
+            "INVALID_PARAMETER",
+            message,
+            feature=node.id,
+            parameter="points",
+            point=point.name,
+            conflict=conflict,
         )
-    except GraphError as error:
-        name = error.error.pop("hole", None)
-        if name is not None:
-            error.error["point"] = name
-            screw = next(item for item in node.points if item.name == name)
-            disk = Face(Wire.make_circle(node.boss_diameter / 2).moved(Location((*screw.point, 0))))
-            crosses_wall = _common_area(disk, cavity) > 1e-8
-            error.error["conflict"] = "wall" if crosses_wall else "floor"
-            if crosses_wall:
-                error.error["message"] = (
-                    f"screw_closure {node.id} point {name} crosses the base wall"
-                )
-        raise
+
+
+def _validate_closure_board(
+    node: ScrewClosure, board_shape: Shape, bottom: float, height: float
+) -> None:
+    for point in node.points:
+        boss = Cylinder(
+            node.boss_diameter / 2,
+            height,
+            align=(Align.CENTER, Align.CENTER, Align.MIN),
+        ).moved(Location((*point.point, bottom)))
+        common = BRepAlgoAPI_Common(boss.wrapped, board_shape.wrapped)
+        common.Build()
+        overlap = Shape.cast(common.Shape()) if common.IsDone() else None
+        if overlap is None or sum(solid.volume for solid in overlap.solids()) <= 1e-9:
+            continue
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"screw_closure {node.id} point {point.name} intersects the board",
+            feature=node.id,
+            parameter="points",
+            point=point.name,
+            conflict="board",
+        )
 
 
 def _validate_closure_overlap(node: ScrewClosure) -> None:
@@ -1023,11 +1043,15 @@ def _validate_closure_standoffs(node: ScrewClosure, target_candidates: list[Cand
 def _validate_closure_points(
     node: ScrewClosure,
     cavity: Face,
+    board_shape: Shape,
     target_candidates: list[Candidate],
+    bottom: float,
+    height: float,
 ) -> None:
     _validate_closure_floor(node, cavity)
     _validate_closure_overlap(node)
     _validate_closure_standoffs(node, target_candidates)
+    _validate_closure_board(node, board_shape, bottom, height)
 
 
 def build_screw_closure(
@@ -1041,15 +1065,22 @@ def build_screw_closure(
     lid_candidates: list[Candidate],
 ) -> ScrewClosureResult:
     _, inner, _ = _base_wires(base, board)
-    _validate_closure_points(node, Face(inner.wire), base_candidates)
+    bottom = -base.board_seat_height
+    top = board.mechanics["thickness"] + base.wall_height_above_board
+    _validate_closure_points(
+        node,
+        Face(inner.wire),
+        board_shape,
+        base_candidates,
+        bottom,
+        top - bottom,
+    )
     holes = _closure_holes(node)
     boss_node = Standoffs(
         node.id,
         boss_diameter=node.boss_diameter,
         pilot_diameter=node.base_pilot_diameter,
     )
-    bottom = -base.board_seat_height
-    top = board.mechanics["thickness"] + base.wall_height_above_board
     bosses = _cylinders(
         boss_node,
         holes,

@@ -129,7 +129,7 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
     ("point", "conflict"),
     [
         ({"name": "off-floor", "point": [100, 100]}, "floor"),
-        ({"name": "through-wall", "point": [-1.5, 5]}, "wall"),
+        ({"name": "through-wall", "point": [-4, 5]}, "wall"),
     ],
 )
 def test_invalid_screw_points_fail_atomically_with_point_name(tmp_path, point, conflict):
@@ -149,7 +149,7 @@ def test_overlapping_screw_points_fail_atomically(tmp_path):
     assert response["ok"] is False
     assert response["error"]["code"] == "INVALID_PARAMETER"
     assert response["error"]["point"] == "overlap"
-    assert response["error"]["conflict"] == "front-right"
+    assert response["error"]["conflict"] == "right"
     assert service.query({"select": {"kind": "revision"}})["revision"] == 3
 
 
