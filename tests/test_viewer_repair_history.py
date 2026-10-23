@@ -7,10 +7,7 @@ from coalesce.graph import Extrude, Fillet, Graph, Rectangle, Sketch
 from coalesce.references import Cardinality, Reference
 from coalesce.service import DocumentService
 from coalesce.viewer import ScenePart, ViewerSceneStore
-from coalesce.viewer import scene as scene_module
-
-MAX_REPAIR_FEATURES = getattr(scene_module, "MAX_REPAIR_FEATURES", 4)
-MAX_REPAIR_FIELDS = getattr(scene_module, "MAX_REPAIR_FIELDS", 3)
+from coalesce.viewer.scene import MAX_REPAIR_FEATURES, MAX_REPAIR_FIELDS
 
 
 def _plate_graph() -> Graph:
