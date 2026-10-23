@@ -60,6 +60,7 @@ class _Profile:
     face: Face
     wire: Wire
     segments: dict[str, Edge]
+    segment_topology: dict[str, tuple[str, ...]]
     parent: int | None = None
     depth: int = 0
 
@@ -90,11 +91,11 @@ def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
     location = sketch_location * entity_location
     if isinstance(entity, Rectangle):
         face, wire, segments = _rectangle_profile(entity, location)
-        return _Profile(entity.id, face, wire, segments)
+        return _Profile(entity.id, face, wire, segments, {})
     if isinstance(entity, Circle):
         wire = Wire.make_circle(entity.radius).moved(location)
         (edge,) = wire.edges()
-        return _Profile(entity.id, Face(wire), wire, {"circle": edge})
+        return _Profile(entity.id, Face(wire), wire, {"circle": edge}, {})
     raise TypeError(f"unsupported sketch entity: {type(entity).__name__}")
 
 
@@ -219,7 +220,12 @@ def _extrude_region(
                 raise RuntimeError(
                     f"extrude {node.id} generated {len(generated)} faces from segment {segment}"
                 )
-            source = SketchSegmentSource(sketch.id, profile.entity_id, segment)
+            source = SketchSegmentSource(
+                sketch.id,
+                profile.entity_id,
+                segment,
+                profile.segment_topology.get(segment, ()),
+            )
             faces.append(
                 candidate(
                     node.id,
@@ -240,7 +246,15 @@ def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
     direction = BuildPlane(location).z_dir * node.height
     if sketch.constrained is not None:
         exact = build_constrained_profile(sketch.constrained, sketch.id, location)
-        profiles = [_Profile(exact.id, exact.face, exact.wire, exact.segments)]
+        profiles = [
+            _Profile(
+                exact.id,
+                exact.face,
+                exact.wire,
+                exact.segments,
+                exact.segment_topology,
+            )
+        ]
     else:
         profiles = _organize_profiles(sketch, location)
     shapes: list[Shape] = []

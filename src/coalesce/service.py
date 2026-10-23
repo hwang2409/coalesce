@@ -9,7 +9,7 @@ import math
 import queue
 import threading
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
@@ -1799,6 +1799,7 @@ def _apply_target_update(
 def _apply_edge_treatment(
     graph: Any,
     operation: FilletCreate | ChamferCreate | FilletUpdate | ChamferUpdate,
+    committed: RegenResult | None = None,
 ) -> str:
     feature_type = Fillet if operation.kind == "fillet" else Chamfer
     parameter = "radius" if operation.kind == "fillet" else "distance"
@@ -1812,11 +1813,21 @@ def _apply_edge_treatment(
     parameters = operation.parameters
     target = parameters.target.featureId
     _validate_body_target(graph, target, operation.kind)
+    assert committed is not None
+    edges = []
+    for reference in parameters.edges:
+        resolution = committed.resolve(reference, before_feature=operation.featureId)
+        source = (
+            resolution.candidates[0].key.source
+            if reference.source is None and len(resolution.candidates) == 1
+            else reference.source
+        )
+        edges.append(replace(reference, source=source))
     graph.add(
         feature_type(
             operation.featureId,
             target=target,
-            edges=list(parameters.edges),
+            edges=edges,
             **{parameter: parameters.size},
         )
     )
@@ -2107,7 +2118,10 @@ def _apply_feature(
         PortCutoutCreate: _apply_port_cutout,
         PortCutoutUpdate: _apply_port_cutout,
     }[type(operation)]
-    if isinstance(operation, (PcbLidCreate, PcbLidUpdate)):
+    if isinstance(
+        operation,
+        (FilletCreate, ChamferCreate, PcbLidCreate, PcbLidUpdate),
+    ):
         assert committed is not None
         return applier(graph, operation, committed)
     return applier(graph, operation)
@@ -2627,7 +2641,15 @@ class DocumentService:
     def _committed_regeneration(self, operation: MutationOperation) -> RegenResult | None:
         if not isinstance(
             operation,
-            (ImportDelete, SketchDelete, FeatureDelete, PcbLidCreate, PcbLidUpdate),
+            (
+                ImportDelete,
+                SketchDelete,
+                FeatureDelete,
+                FilletCreate,
+                ChamferCreate,
+                PcbLidCreate,
+                PcbLidUpdate,
+            ),
         ):
             return None
         self._ensure_geometry()

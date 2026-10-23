@@ -33,6 +33,7 @@ class SketchSegmentSource:
     sketch: str
     entity: str
     segment: str
+    topology: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,7 +156,10 @@ def _source_dict(
                 else None
             ),
         }
-    return {"kind": kinds[type(source)], **asdict(source)}
+    values = asdict(source)
+    if isinstance(source, SketchSegmentSource) and not source.topology:
+        values.pop("topology")
+    return {"kind": kinds[type(source)], **values}
 
 
 def _source_from_dict(
@@ -170,9 +174,10 @@ def _source_from_dict(
         "hole_surface": HoleSurfaceSource,
     }
     if kind in source_types:
-        return source_types[kind](
-            **{key: value for key, value in source.items() if key != "kind"}
-        )
+        values = {key: value for key, value in source.items() if key != "kind"}
+        if kind == "sketch_segment":
+            values["topology"] = tuple(values.get("topology", ()))
+        return source_types[kind](**values)
     if kind == "element_keys":
         return tuple(_source_from_dict(item) for item in source["items"])
     if kind == "element_key":

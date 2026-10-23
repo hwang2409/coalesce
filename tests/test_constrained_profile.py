@@ -144,6 +144,14 @@ def fixed_line_model(points: list[tuple[float, float]], edges: list[tuple[int, i
     }
 
 
+def square_model(size: float, *, origin: tuple[float, float] = (0, 0)) -> dict:
+    x, y = origin
+    return fixed_line_model(
+        [(x, y), (x + size, y), (x + size, y + size), (x, y + size)],
+        [(0, 1), (1, 2), (2, 3), (3, 0)],
+    )
+
+
 def circles_model(*, nested: bool) -> dict:
     second_x = 0 if nested else 8
     return {
@@ -215,6 +223,54 @@ async def test_dimension_update_regenerates_and_keeps_profile_face_reference(tmp
 
 
 @pytest.mark.anyio
+async def test_reordered_entities_keep_reference_but_split_segment_is_rejected_atomically(tmp_path):
+    path = tmp_path / "topology-reference.coalesce.json"
+    reordered = bracket_model()
+    reordered["lines"] = list(reversed(reordered["lines"]))
+    split = bracket_model()
+    split["points"].append({"id": "base-mid", "x": -10, "y": 0})
+    split["lines"] = [
+        {"id": "side", "start": "origin", "end": "tangent"},
+        {"id": "base", "start": "origin", "end": "base-mid"},
+        {"id": "base-tail", "start": "base-mid", "end": "end"},
+    ]
+    split["constraints"] = [
+        constraint
+        for constraint in split["constraints"]
+        if constraint["id"] not in {"equal-sides", "base-horizontal"}
+    ]
+    split["constraints"].append(
+        {"id": "fix-base-mid", "kind": "fix", "entities": ["base-mid"]}
+    )
+    results = await run_server(
+        path,
+        [
+            ("sketch", sketch_request(bracket_model())),
+            ("feature", extrude_request()),
+            ("feature", fillet_request()),
+            ("sketch", update_request(reordered)),
+        ],
+    )
+
+    assert results[3]["ok"] is True
+    assert results[3]["selectionChanges"] == []
+    before_split = path.read_bytes()
+    (rejected,) = await run_server(
+        path,
+        [("sketch", update_request(split, revision=4) | {"requestId": "split"})],
+    )
+
+    assert rejected["ok"] is False
+    assert rejected["revision"] == 4
+    assert rejected["error"]["code"] == "REFERENCE_FAILED"
+    assert rejected["error"]["resolution"]["status"] == "EMPTY"
+    assert path.read_bytes() == before_split
+    service = DocumentService(path, warmup=False)
+    measured = service.query({"select": {"kind": "measurements"}})
+    assert measured["parts"][0]["terminalFeatureId"] == "finished_bracket"
+
+
+@pytest.mark.anyio
 async def test_reload_and_step_round_trip_keep_constrained_arc_cylindrical(tmp_path):
     path = tmp_path / "round-trip.coalesce.json"
     target = tmp_path / "bracket.step"
@@ -255,6 +311,18 @@ async def test_reload_and_step_round_trip_keep_constrained_arc_cylindrical(tmp_p
         ),
         ("nested", circles_model(nested=True)),
         ("multiple", circles_model(nested=False)),
+        (
+            "degenerate",
+            {
+                "kind": "constrained",
+                "points": [{"id": "p0", "x": 0, "y": 0}, {"id": "p1", "x": 1, "y": 0}],
+                "lines": [{"id": "edge0", "start": "p0", "end": "p1"}],
+                "constraints": [
+                    {"id": "fix", "kind": "fix", "entities": ["p0"]},
+                    {"id": "same", "kind": "coincident", "entities": ["p0", "p1"]},
+                ],
+            },
+        ),
     ],
 )
 async def test_unsupported_profiles_fail_extrude_atomically(tmp_path, reason, model):
@@ -269,6 +337,98 @@ async def test_unsupported_profiles_fail_extrude_atomically(tmp_path, reason, mo
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == "SKETCH_PROFILE_UNSUPPORTED"
     assert rejected["error"]["reason"] == reason
+    assert path.read_bytes() == saved
+
+
+@pytest.mark.anyio
+async def test_tiny_and_large_coordinate_squares_match_primitive_volume(tmp_path):
+    for name, model, expected_volume in (
+        ("tiny", square_model(0.00001), 0.00001**2 * 5),
+        ("large-coordinate", square_model(10, origin=(1_000_000_000, -1_000_000_000)), 10**2 * 5),
+    ):
+        path = tmp_path / f"{name}.coalesce.json"
+        results = await run_server(
+            path,
+            [
+                ("sketch", sketch_request(model)),
+                ("feature", extrude_request()),
+                ("query", {"select": {"kind": "measurements"}}),
+            ],
+        )
+
+        assert all(result["ok"] is True for result in results)
+        assert results[2]["volume"]["value"] == pytest.approx(expected_volume, rel=1e-6)
+
+
+@pytest.mark.anyio
+async def test_minor_arc_profile_has_exact_volume(tmp_path):
+    radius = 6
+    angle = math.pi / 3
+    model = {
+        "kind": "constrained",
+        "points": [
+            {"id": "center", "x": 0, "y": 0, "construction": True},
+            {"id": "start", "x": radius, "y": 0},
+            {"id": "end", "x": radius * math.cos(angle), "y": radius * math.sin(angle)},
+        ],
+        "lines": [{"id": "chord", "start": "end", "end": "start"}],
+        "arcs": [
+            {
+                "id": "minor",
+                "center": "center",
+                "start": "start",
+                "end": "end",
+                "radius": radius,
+                "start_angle": 0,
+                "end_angle": angle,
+            }
+        ],
+        "constraints": [],
+    }
+    path = tmp_path / "minor-arc.coalesce.json"
+
+    results = await run_server(
+        path,
+        [
+            ("sketch", sketch_request(model)),
+            ("feature", extrude_request()),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    expected_area = radius**2 * (angle - math.sin(angle)) / 2
+    assert all(result["ok"] is True for result in results)
+    assert results[2]["volume"]["value"] == pytest.approx(expected_area * 5, rel=1e-6)
+
+
+@pytest.mark.anyio
+async def test_tangent_arc_loops_are_rejected_through_real_stdio(tmp_path):
+    model = {
+        "kind": "constrained",
+        "points": [
+            {"id": "touch", "x": 0, "y": 0},
+            {"id": "left", "x": -2, "y": 0},
+            {"id": "left-center", "x": -1, "y": 0, "construction": True},
+            {"id": "right", "x": 2, "y": 0},
+            {"id": "right-center", "x": 1, "y": 0, "construction": True},
+        ],
+        "arcs": [
+            {"id": "left-top", "center": "left-center", "start": "touch", "end": "left", "radius": 1, "start_angle": 0, "end_angle": math.pi},
+            {"id": "left-bottom", "center": "left-center", "start": "left", "end": "touch", "radius": 1, "start_angle": math.pi, "end_angle": 2 * math.pi},
+            {"id": "right-top", "center": "right-center", "start": "touch", "end": "right", "radius": 1, "start_angle": math.pi, "end_angle": 2 * math.pi},
+            {"id": "right-bottom", "center": "right-center", "start": "right", "end": "touch", "radius": 1, "start_angle": 0, "end_angle": math.pi},
+        ],
+        "constraints": [],
+    }
+    path = tmp_path / "tangent-arcs.coalesce.json"
+    (created,) = await run_server(path, [("sketch", sketch_request(model))])
+    saved = path.read_bytes()
+
+    (rejected,) = await run_server(path, [("feature", extrude_request())])
+
+    assert created["ok"] is True
+    assert rejected["ok"] is False
+    assert rejected["error"]["code"] == "SKETCH_PROFILE_UNSUPPORTED"
     assert path.read_bytes() == saved
 
 
