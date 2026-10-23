@@ -14,6 +14,9 @@ from .graph import GraphError
 from .profile_validation import InvalidProfile, checked_face, profile_tolerance, same_point
 from .sketch_solver import SolvedArc, SolvedCircle, SolvedLine
 
+# 64 supports detailed profiles while bounding exact pairwise intersections to 2,016.
+MAX_PROFILE_LOOPS = 64
+
 
 @dataclass(frozen=True)
 class ConstrainedProfile:
@@ -45,8 +48,17 @@ class _OrientedCurve:
     forward: bool
 
 
-def _unsupported(sketch_id: str, reason: str, loops: list[str] | None = None) -> None:
-    details: dict[str, object] = {"sketch": sketch_id, "reason": reason}
+def _unsupported(
+    sketch_id: str,
+    reason: str,
+    loops: list[str] | None = None,
+    **reason_details: object,
+) -> None:
+    details: dict[str, object] = {
+        "sketch": sketch_id,
+        "reason": reason,
+        **reason_details,
+    }
     if loops is not None:
         details["loops"] = sorted(loops)
     raise GraphError(
@@ -263,34 +275,39 @@ def _profile_hierarchy(
     profiles: list[ConstrainedProfile],
     containers: list[list[int]],
 ) -> tuple[int, list[ConstrainedProfile]]:
-    outer_indices = [index for index, items in enumerate(containers) if not items]
-    if len(outer_indices) != 1:
+    roots: list[int] = []
+    direct_children: list[int] = []
+    nested_children: list[int] = []
+    for index, items in enumerate(containers):
+        if not items:
+            roots.append(index)
+        elif len(items) == 1:
+            direct_children.append(index)
+        else:
+            nested_children.append(index)
+
+    if len(roots) != 1:
         _unsupported(
             sketch_id,
             "multiple_outer",
-            [_loop_name(profiles[index]) for index in outer_indices],
+            [_loop_name(profiles[index]) for index in roots],
         )
-    if any(len(items) > 1 for items in containers):
+    if nested_children:
         _unsupported(sketch_id, "island", [_loop_name(profile) for profile in profiles])
 
-    outer_index = outer_indices[0]
-    holes = [
-        profile
-        for index, profile in enumerate(profiles)
-        if index != outer_index and containers[index] == [outer_index]
-    ]
-    if len(holes) != len(profiles) - 1:
-        _unsupported(
-            sketch_id,
-            "ambiguous_containment",
-            [_loop_name(profile) for profile in profiles],
-        )
-    return outer_index, holes
+    return roots[0], [profiles[index] for index in direct_children]
 
 
 def _combine_profiles(
     sketch_id: str, profiles: list[ConstrainedProfile], tolerance: float
 ) -> ConstrainedProfile:
+    if len(profiles) > MAX_PROFILE_LOOPS:
+        _unsupported(
+            sketch_id,
+            "too_many_loops",
+            limit=MAX_PROFILE_LOOPS,
+            count=len(profiles),
+        )
     containers = _containment(sketch_id, profiles, tolerance)
     outer_index, holes = _profile_hierarchy(sketch_id, profiles, containers)
     outer = profiles[outer_index]

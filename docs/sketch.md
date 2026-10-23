@@ -119,8 +119,10 @@ as the single `profileIds` value. Inner loops become holes. Lines, arcs, and cir
 remain analytic; construction geometry is ignored. Loop containment is derived from
 the exact solved faces, not entity order. Open, degenerate, self-intersecting,
 touching, crossing, ambiguous, multiple-outer, and three-level island profiles are
-rejected with `SKETCH_PROFILE_UNSUPPORTED`. Its structured `reason` identifies the
-relationship and `loops` names the involved segment or circle ids. A profile is
+rejected with `SKETCH_PROFILE_UNSUPPORTED`. A profile can contain at most 64 loops;
+this bounds exact pairwise containment checks to 2,016 while allowing detailed parts.
+The `too_many_loops` reason includes the `limit` and actual `count`. Other structured
+reasons use `loops` to name the involved segment or circle ids. A profile is
 `degenerate` when a solved line or arc collapses within the scale-aware OCCT precision
 floor. Segment references from outer and inner loops use the same typed sketch-segment
 provenance and can drive downstream treatments.

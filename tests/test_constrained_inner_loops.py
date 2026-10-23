@@ -4,7 +4,8 @@ import pytest
 from build123d import Face, Location, import_step
 from test_constrained_profile import extrude_request, run_server, sketch_request
 
-from coalesce.constrained_profile import build_constrained_profile
+from coalesce import constrained_profile
+from coalesce.constrained_profile import MAX_PROFILE_LOOPS, build_constrained_profile
 from coalesce.references import SketchSegmentSource
 from coalesce.service import DocumentService
 
@@ -69,6 +70,33 @@ def _circles_model(circles: list[tuple[str, float, float]]) -> dict:
         "constraints": [
             {"id": f"fix-{name}", "kind": "fix", "entities": [f"{name}-center"]}
             for name, _x, _radius in circles
+        ],
+    }
+
+
+def _many_circle_model(loop_count: int) -> dict:
+    centers = [(0, 0)] + [
+        ((index % 8 - 3.5) * 5, (index // 8 - 3.5) * 5)
+        for index in range(loop_count - 1)
+    ]
+    names = ["outer", *(f"hole-{index}" for index in range(loop_count - 1))]
+    return {
+        "kind": "constrained",
+        "points": [
+            {"id": f"{name}-center", "x": x, "y": y}
+            for name, (x, y) in zip(names, centers, strict=True)
+        ],
+        "circles": [
+            {
+                "id": name,
+                "center": f"{name}-center",
+                "radius": 100 if name == "outer" else 1,
+            }
+            for name in names
+        ],
+        "constraints": [
+            {"id": f"fix-{name}", "kind": "fix", "entities": [f"{name}-center"]}
+            for name in names
         ],
     }
 
@@ -154,6 +182,61 @@ async def test_two_closed_line_loops_keep_hole_through_step_round_trip(tmp_path)
     sketch = service._document.graph.nodes["bracket_profile"]
     exact = build_constrained_profile(sketch.constrained, sketch.id, Location())
     assert Face(exact.wire).area == pytest.approx(100)
+
+
+@pytest.mark.anyio
+async def test_profile_loop_limit_is_accepted(tmp_path):
+    path = tmp_path / "loop-limit.coalesce.json"
+
+    created, extruded = await run_server(
+        path,
+        [
+            ("sketch", sketch_request(_many_circle_model(MAX_PROFILE_LOOPS))),
+            ("feature", extrude_request()),
+        ],
+    )
+
+    assert created["ok"] is True
+    assert extruded["ok"] is True
+    assert extruded["revision"] == 2
+
+
+@pytest.mark.anyio
+async def test_profile_over_loop_limit_fails_atomically(tmp_path):
+    path = tmp_path / "over-loop-limit.coalesce.json"
+    count = MAX_PROFILE_LOOPS + 1
+    (created,) = await run_server(path, [("sketch", sketch_request(_many_circle_model(count)))])
+    saved = path.read_bytes()
+
+    (rejected,) = await run_server(path, [("feature", extrude_request())])
+
+    assert created["ok"] is True
+    assert rejected["ok"] is False
+    assert rejected["revision"] == 1
+    assert rejected["error"]["code"] == "SKETCH_PROFILE_UNSUPPORTED"
+    assert rejected["error"]["reason"] == "too_many_loops"
+    assert rejected["error"]["limit"] == MAX_PROFILE_LOOPS
+    assert rejected["error"]["count"] == count
+    assert path.read_bytes() == saved
+
+
+def test_profile_loop_limit_is_checked_before_containment(monkeypatch):
+    containment_calls = 0
+
+    def unexpected_containment(*_args):
+        nonlocal containment_calls
+        containment_calls += 1
+        raise AssertionError("containment must not run above the loop limit")
+
+    monkeypatch.setattr(constrained_profile, "_containment", unexpected_containment)
+
+    with pytest.raises(constrained_profile.GraphError) as error:
+        constrained_profile._combine_profiles(
+            "profile", [object()] * (MAX_PROFILE_LOOPS + 1), 1e-6
+        )
+
+    assert error.value.error["code"] == "SKETCH_PROFILE_UNSUPPORTED"
+    assert containment_calls == 0
 
 
 @pytest.mark.anyio
