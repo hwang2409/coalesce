@@ -823,7 +823,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, fillet radius, chamfer distance, and enclosure dimensions.",
+            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, and enclosure dimensions.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
