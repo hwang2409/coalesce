@@ -321,8 +321,7 @@ async def test_reload_and_step_round_trip_keep_constrained_arc_cylindrical(tmp_p
                 [(0, 1), (1, 2), (2, 3), (3, 0)],
             ),
         ),
-        ("nested", circles_model(nested=True)),
-        ("multiple", circles_model(nested=False)),
+        ("multiple_outer", circles_model(nested=False)),
         (
             "degenerate",
             {

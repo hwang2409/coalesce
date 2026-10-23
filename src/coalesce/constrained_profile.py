@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from math import cos, sin
+from math import cos, sin, sqrt
 
 from build123d import Edge, Face, Location, Wire
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
@@ -45,12 +45,14 @@ class _OrientedCurve:
     forward: bool
 
 
-def _unsupported(sketch_id: str, reason: str) -> None:
+def _unsupported(sketch_id: str, reason: str, loops: list[str] | None = None) -> None:
+    details: dict[str, object] = {"sketch": sketch_id, "reason": reason}
+    if loops is not None:
+        details["loops"] = sorted(loops)
     raise GraphError(
         "SKETCH_PROFILE_UNSUPPORTED",
-        f"constrained sketch {sketch_id} has an unsupported {reason.replace('_', ' ')} profile",
-        sketch=sketch_id,
-        reason=reason,
+        f"constrained sketch {sketch_id} has unsupported {reason.replace('_', ' ')} loops",
+        **details,
     )
 
 
@@ -187,12 +189,27 @@ def _circle_profile(
     )
 
 
-def _profiles_are_nested(
-    left: ConstrainedProfile, right: ConstrainedProfile, area_tolerance: float
-) -> bool:
+def _profile_relation(
+    left: ConstrainedProfile, right: ConstrainedProfile, tolerance: float
+) -> str:
     intersection = left.face.intersect(right.face)
     overlap = sum(face.area for face in intersection or [])
-    return abs(overlap - min(left.face.area, right.face.area)) <= area_tolerance
+    area_tolerance = max(
+        tolerance**2,
+        tolerance * sqrt(min(left.face.area, right.face.area)),
+    )
+    left_inside = abs(overlap - left.face.area) <= area_tolerance
+    right_inside = abs(overlap - right.face.area) <= area_tolerance
+    boundaries_touch = left.wire.distance_to(right.wire) <= tolerance
+    if left_inside != right_inside:
+        if boundaries_touch:
+            return "touching"
+        return "left_in_right" if left_inside else "right_in_left"
+    if left_inside and right_inside:
+        return "ambiguous_containment"
+    if overlap <= area_tolerance:
+        return "touching" if boundaries_touch else "disjoint"
+    return "crossing"
 
 
 def _solved_curves(
@@ -219,15 +236,75 @@ def _solved_circles(solved: Mapping[str, object]) -> list[tuple[str, SolvedCircl
     )
 
 
-def _multiple_profile_reason(
-    profiles: list[ConstrainedProfile], area_tolerance: float
-) -> str:
-    nested = any(
-        _profiles_are_nested(left, right, area_tolerance)
-        for index, left in enumerate(profiles)
-        for right in profiles[index + 1 :]
-    )
-    return "nested" if nested else "multiple"
+def _loop_name(profile: ConstrainedProfile) -> str:
+    return ",".join(sorted(profile.segments))
+
+
+def _containment(
+    sketch_id: str, profiles: list[ConstrainedProfile], tolerance: float
+) -> list[list[int]]:
+    containers: list[list[int]] = [[] for _ in profiles]
+    rejected = {"touching", "crossing", "ambiguous_containment"}
+    for left_index, left in enumerate(profiles):
+        for right_index in range(left_index + 1, len(profiles)):
+            right = profiles[right_index]
+            relation = _profile_relation(left, right, tolerance)
+            if relation in rejected:
+                _unsupported(sketch_id, relation, [_loop_name(left), _loop_name(right)])
+            if relation == "left_in_right":
+                containers[left_index].append(right_index)
+            elif relation == "right_in_left":
+                containers[right_index].append(left_index)
+    return containers
+
+
+def _profile_hierarchy(
+    sketch_id: str,
+    profiles: list[ConstrainedProfile],
+    containers: list[list[int]],
+) -> tuple[int, list[ConstrainedProfile]]:
+    outer_indices = [index for index, items in enumerate(containers) if not items]
+    if len(outer_indices) != 1:
+        _unsupported(
+            sketch_id,
+            "multiple_outer",
+            [_loop_name(profiles[index]) for index in outer_indices],
+        )
+    if any(len(items) > 1 for items in containers):
+        _unsupported(sketch_id, "island", [_loop_name(profile) for profile in profiles])
+
+    outer_index = outer_indices[0]
+    holes = [
+        profile
+        for index, profile in enumerate(profiles)
+        if index != outer_index and containers[index] == [outer_index]
+    ]
+    if len(holes) != len(profiles) - 1:
+        _unsupported(
+            sketch_id,
+            "ambiguous_containment",
+            [_loop_name(profile) for profile in profiles],
+        )
+    return outer_index, holes
+
+
+def _combine_profiles(
+    sketch_id: str, profiles: list[ConstrainedProfile], tolerance: float
+) -> ConstrainedProfile:
+    containers = _containment(sketch_id, profiles, tolerance)
+    outer_index, holes = _profile_hierarchy(sketch_id, profiles, containers)
+    outer = profiles[outer_index]
+    try:
+        face = checked_face(outer.wire, tolerance, [hole.wire for hole in holes])
+    except InvalidProfile as error:
+        _unsupported(sketch_id, error.reason, [_loop_name(profile) for profile in profiles])
+    segments = {item: edge for profile in profiles for item, edge in profile.segments.items()}
+    topology = {
+        item: value
+        for profile in profiles
+        for item, value in profile.segment_topology.items()
+    }
+    return ConstrainedProfile(sketch_id, face, outer.wire, segments, topology)
 
 
 def _topology(model: ConstrainedSketch) -> dict[str, tuple[str, ...]]:
@@ -296,6 +373,6 @@ def build_constrained_profile(model: ConstrainedSketch, sketch_id: str, location
     )
     if not profiles:
         _unsupported(sketch_id, "open")
-    if len(profiles) > 1:
-        _unsupported(sketch_id, _multiple_profile_reason(profiles, tolerance**2))
-    return profiles[0]
+    if len(profiles) == 1:
+        return profiles[0]
+    return _combine_profiles(sketch_id, profiles, tolerance)

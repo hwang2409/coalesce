@@ -2,10 +2,10 @@ import math
 
 import pytest
 from build123d import import_step
+from test_constrained_profile import extrude_request, run_server, sketch_request
 
 from coalesce.references import SketchSegmentSource
 from coalesce.service import DocumentService
-from test_constrained_profile import extrude_request, run_server, sketch_request
 
 
 def _fixed_square(prefix: str, size: float, origin: tuple[float, float]) -> tuple[list[dict], list[dict], list[dict]]:
@@ -36,9 +36,9 @@ def _line_loops_model() -> dict:
     inner = _fixed_square("inner", 4, (-2, -2))
     return {
         "kind": "constrained",
-        "points": outer[0] + inner[0],
-        "lines": outer[1] + inner[1],
-        "constraints": outer[2] + inner[2],
+        "points": inner[0] + outer[0],
+        "lines": inner[1] + outer[1],
+        "constraints": inner[2] + outer[2],
     }
 
 
@@ -107,14 +107,15 @@ async def test_rectangle_and_circle_hole_extrude_with_typed_segment_sources_afte
         [
             ("sketch", sketch_request(_rectangle_circle_model())),
             ("feature", extrude_request()),
+            ("query", {"select": {"kind": "measurements"}}),
             ("feature", _fillet_both_loops()),
             ("query", {"select": {"kind": "measurements"}}),
         ],
     )
 
     assert all(result["ok"] is True for result in results)
-    assert results[1]["volume"]["value"] == pytest.approx((100 - 4 * math.pi) * 5)
-    assert results[3]["parts"][0]["terminalFeatureId"] == "finished_bracket"
+    assert results[2]["volume"]["value"] == pytest.approx((100 - 4 * math.pi) * 5)
+    assert results[4]["parts"][0]["terminalFeatureId"] == "finished_bracket"
     service = DocumentService(path, warmup=False)
     service.query({"select": {"kind": "measurements"}})
     sources = {
@@ -138,12 +139,13 @@ async def test_two_closed_line_loops_keep_hole_through_step_round_trip(tmp_path)
         [
             ("sketch", sketch_request(_line_loops_model())),
             ("feature", extrude_request()),
+            ("query", {"select": {"kind": "measurements"}}),
             ("export", {"expectedRevision": 2, "path": str(target)}),
         ],
     )
 
     assert all(result["ok"] is True for result in results)
-    assert results[1]["volume"]["value"] == pytest.approx((100 - 16) * 5)
+    assert results[2]["volume"]["value"] == pytest.approx((100 - 16) * 5)
     imported = import_step(target)
     assert imported.volume == pytest.approx((100 - 16) * 5)
     assert len(imported.faces()) == 10

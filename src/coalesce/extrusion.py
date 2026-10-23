@@ -287,11 +287,13 @@ def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
                 exact.segment_topology,
             )
         ]
+        regions = [(exact.face, profiles)]
     else:
         profiles = _organize_profiles(sketch, location)
+        regions = _regions(profiles)
     shapes: list[Shape] = []
     faces: list[Candidate] = []
-    for region, region_profiles in _regions(profiles):
+    for region, region_profiles in regions:
         shape, region_faces = _extrude_region(node, sketch, region, region_profiles, direction)
         shapes.append(shape)
         faces.extend(region_faces)
