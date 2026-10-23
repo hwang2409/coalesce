@@ -10,6 +10,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
+from .constrained_profile import build_constrained_profile
 from .graph import Circle, Extrude, GraphError, Rectangle, Sketch, validate_sketch
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
@@ -55,10 +56,11 @@ class _ProfileRelation(Enum):
 
 @dataclass
 class _Profile:
-    entity: Rectangle | Circle
+    entity_id: str
     face: Face
     wire: Wire
     segments: dict[str, Edge]
+    segment_topology: dict[str, tuple[str, ...]]
     parent: int | None = None
     depth: int = 0
 
@@ -89,11 +91,11 @@ def _profile(entity: Rectangle | Circle, sketch_location: Location) -> _Profile:
     location = sketch_location * entity_location
     if isinstance(entity, Rectangle):
         face, wire, segments = _rectangle_profile(entity, location)
-        return _Profile(entity, face, wire, segments)
+        return _Profile(entity.id, face, wire, segments, {})
     if isinstance(entity, Circle):
         wire = Wire.make_circle(entity.radius).moved(location)
         (edge,) = wire.edges()
-        return _Profile(entity, Face(wire), wire, {"circle": edge})
+        return _Profile(entity.id, Face(wire), wire, {"circle": edge}, {})
     raise TypeError(f"unsupported sketch entity: {type(entity).__name__}")
 
 
@@ -137,7 +139,7 @@ def _pair_error(sketch: Sketch, left: _Profile, right: _Profile, relation: _Prof
         return
     details = {
         "sketch": sketch.id,
-        "entities": sorted([left.entity.id, right.entity.id]),
+        "entities": sorted([left.entity_id, right.entity_id]),
     }
     if relation is _ProfileRelation.TOUCHING:
         raise GraphError("TOUCHING_PROFILES", "sketch profile boundaries touch", **details)
@@ -193,20 +195,20 @@ def _extrude_region(
         face.wrapped,
         gp_Vec(direction.X, direction.Y, direction.Z),
     )
-    outer = profiles[0].entity
-    body = BodySource(node.id, outer.id)
+    outer = profiles[0]
+    body = BodySource(node.id, outer.entity_id)
     faces = [
         candidate(
             node.id,
             "cap_start",
-            outer.id,
+            outer.entity_id,
             Shape.cast(prism.FirstShape()),
             body=body,
         ),
         candidate(
             node.id,
             "cap_end",
-            outer.id,
+            outer.entity_id,
             Shape.cast(prism.LastShape()),
             body=body,
         ),
@@ -218,7 +220,12 @@ def _extrude_region(
                 raise RuntimeError(
                     f"extrude {node.id} generated {len(generated)} faces from segment {segment}"
                 )
-            source = SketchSegmentSource(sketch.id, profile.entity.id, segment)
+            source = SketchSegmentSource(
+                sketch.id,
+                profile.entity_id,
+                segment,
+                profile.segment_topology.get(segment, ()),
+            )
             faces.append(
                 candidate(
                     node.id,
@@ -232,12 +239,24 @@ def _extrude_region(
 
 
 def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
-    if not sketch.entities:
+    if not sketch.entities and sketch.constrained is None:
         raise ValueError(f"sketch {sketch.id} has no entities")
 
     location = sketch_location(sketch)
     direction = BuildPlane(location).z_dir * node.height
-    profiles = _organize_profiles(sketch, location)
+    if sketch.constrained is not None:
+        exact = build_constrained_profile(sketch.constrained, sketch.id, location)
+        profiles = [
+            _Profile(
+                exact.id,
+                exact.face,
+                exact.wire,
+                exact.segments,
+                exact.segment_topology,
+            )
+        ]
+    else:
+        profiles = _organize_profiles(sketch, location)
     shapes: list[Shape] = []
     faces: list[Candidate] = []
     for region, region_profiles in _regions(profiles):

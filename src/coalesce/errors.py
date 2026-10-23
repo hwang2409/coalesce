@@ -23,6 +23,7 @@ ERROR_REGISTRY = {
     "SKETCH_DID_NOT_CONVERGE": ErrorDefinition("request"),
     "SKETCH_SOLVE_TIMEOUT": ErrorDefinition("request"),
     "SKETCH_BRANCH_FLIP": ErrorDefinition("request"),
+    "SKETCH_PROFILE_UNSUPPORTED": ErrorDefinition("geometry"),
     "REQUEST_ID_REUSED": ErrorDefinition("request"),
     "REVISION_CONFLICT": ErrorDefinition("request", retryable=True),
     "STALE_REVISION": ErrorDefinition("request"),

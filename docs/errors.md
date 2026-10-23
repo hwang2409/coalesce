@@ -65,6 +65,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `SKETCH_DID_NOT_CONVERGE` | request | constrained sketch did not converge | revise initial values or constraints |
 | `SKETCH_SOLVE_TIMEOUT` | request | constrained sketch exceeded the 1 second solve bound | simplify or repair the sketch and retry |
 | `SKETCH_BRANCH_FLIP` | request | constrained sketch changed branch | preserve the branch landmark |
+| `SKETCH_PROFILE_UNSUPPORTED` | geometry | a constrained extrusion profile is open, degenerate, self-intersecting, nested, or contains multiple loops | inspect `reason` and provide one non-degenerate closed non-construction loop |
 | `REQUEST_ID_REUSED` | request | a request id was used for a different body or its receipt expired | send the intended edit with a new request id |
 | `REVISION_CONFLICT` | request | a mutation was based on an old revision | query revision, review the model, and retry against that revision |
 | `STALE_REVISION` | request | export was requested from an old revision | query revision, review the model, and export that revision |
