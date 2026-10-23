@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from build123d import Edge, GeomType, Location, import_step
+from OCP.StdFail import StdFail_NotDone
 from test_mcp_cut_hole_circle import extrude
 from test_mcp_vertical import run_server
 
@@ -350,9 +351,13 @@ async def test_outline_point_ids_reject_ambiguous_segment_roles(tmp_path):
     assert schema_result["error"]["field"] == "entities[0].points[3].id"
 
 
-def test_outline_profile_normalizes_build123d_value_error(monkeypatch):
+@pytest.mark.parametrize(
+    "kernel_error",
+    [ValueError("kernel rejected spline"), StdFail_NotDone("face build not done")],
+)
+def test_outline_profile_normalizes_build123d_errors(monkeypatch, kernel_error):
     def reject_spline(*_args, **_kwargs):
-        raise ValueError("kernel rejected spline")
+        raise kernel_error
 
     monkeypatch.setattr(Edge, "make_spline", reject_spline)
 

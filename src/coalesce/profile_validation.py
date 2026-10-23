@@ -10,6 +10,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.Precision import Precision
 from OCP.Standard import Standard_Failure
+from OCP.StdFail import StdFail_NotDone
 
 _RELATIVE_TOLERANCE = 1e-9
 
@@ -47,7 +48,7 @@ def same_point(
 def checked_face(wire: Wire, tolerance: float) -> Face:
     try:
         face = Face(wire)
-    except (Standard_Failure, ValueError) as error:
+    except (Standard_Failure, StdFail_NotDone, ValueError) as error:
         raise InvalidProfile("self_intersecting") from error
     if not BRepCheck_Analyzer(wire.wrapped).IsValid() or not BRepCheck_Analyzer(
         face.wrapped
@@ -114,5 +115,5 @@ def build_outline_profile(
         return ExactProfile(checked_face(wire, tolerance), wire, segments, topology)
     except InvalidProfile:
         raise
-    except (Standard_Failure, ValueError) as error:
+    except (Standard_Failure, StdFail_NotDone, ValueError) as error:
         raise InvalidProfile("self_intersecting") from error
