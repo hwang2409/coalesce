@@ -31,6 +31,8 @@ from .export import (
 )
 from .fit_summary import fit_summary, part_facts
 from .graph import (
+    MAX_OUTLINE_POINTS,
+    MIN_OUTLINE_POINTS,
     BoardImport,
     Chamfer,
     Circle,
@@ -44,9 +46,11 @@ from .graph import (
     PcbBase,
     PcbLid,
     Plane,
+    Polyline,
     PortCutout,
     Rectangle,
     Sketch,
+    Spline,
     Standoffs,
 )
 from .parts import terminal_parts
@@ -276,7 +280,7 @@ class SketchPlane:
 @dataclass(frozen=True)
 class SketchChanges:
     position: tuple[float, float, float] | None
-    entities: tuple[Rectangle | Circle, ...] | None
+    entities: tuple[Rectangle | Circle | Polyline | Spline, ...] | None
     constrained: ConstrainedSketch | None = None
 
 
@@ -437,7 +441,7 @@ class SketchCreate(_Operation):
     requestId: str
     sketchId: str
     plane: SketchPlane
-    entities: tuple[Rectangle | Circle, ...]
+    entities: tuple[Rectangle | Circle | Polyline | Spline, ...]
     constrained: ConstrainedSketch | None = None
 
 
@@ -738,17 +742,55 @@ def _parse_import(payload: dict[str, Any]) -> BoardImportOperation | ImportDelet
     )
 
 
-def _entities(payload: Any) -> tuple[Rectangle | Circle, ...]:
+def _outline_entity(entity: dict[str, Any]) -> Polyline | Spline:
+    kind = entity["kind"]
+    if entity.get("closed") is not True:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"{kind} closed must be true; open outlines are not supported",
+            field="closed",
+        )
+    raw_points = entity.get("points")
+    if (
+        not isinstance(raw_points, list)
+        or not MIN_OUTLINE_POINTS <= len(raw_points) <= MAX_OUTLINE_POINTS
+    ):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"{kind} points must contain {MIN_OUTLINE_POINTS} to {MAX_OUTLINE_POINTS} points",
+            field="points",
+        )
+    points = tuple(
+        (
+            _finite_number(point[0], "points"),
+            _finite_number(point[1], "points"),
+        )
+        for point in raw_points
+        if isinstance(point, (list, tuple)) and len(point) == 2
+    )
+    if len(points) != len(raw_points):
+        raise RequestError(
+            "INVALID_PARAMETER", "each outline point must contain x and y", field="points"
+        )
+    entity_type = Polyline if kind == "polyline" else Spline
+    return entity_type(entity["id"], points)
+
+
+def _entities(payload: Any) -> tuple[Rectangle | Circle | Polyline | Spline, ...]:
     if not isinstance(payload, list) or not payload:
         raise RequestError("INVALID_PARAMETER", "entities must not be empty")
     parsed = []
+    allowed = ["rectangle", "circle", "polyline", "spline"]
     for entity in payload:
-        if not isinstance(entity, dict) or entity.get("kind") not in {"rectangle", "circle"}:
+        if not isinstance(entity, dict) or entity.get("kind") not in allowed:
             raise RequestError(
                 "INVALID_PARAMETER",
                 "unknown sketch entity kind",
-                allowedKinds=["rectangle", "circle"],
+                allowedKinds=allowed,
             )
+        if entity["kind"] in {"polyline", "spline"}:
+            parsed.append(_outline_entity(entity))
+            continue
         center = entity.get("center", [0, 0])
         common = {
             "id": entity["id"],
@@ -2128,12 +2170,13 @@ def _apply_feature(
 
 
 def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
-    return {
-        entity["id"]: (
-            ["bottom", "right", "top", "left"] if entity["kind"] == "rectangle" else ["circle"]
-        )
-        for entity in entities
+    segments = {
+        "rectangle": lambda _entity: ["bottom", "right", "top", "left"],
+        "circle": lambda _entity: ["circle"],
+        "polyline": lambda entity: [f"seg-{index}" for index in range(len(entity["points"]))],
+        "spline": lambda _entity: ["spline"],
     }
+    return {entity["id"]: segments[entity["kind"]](entity) for entity in entities}
 
 
 def _kind(node: Any) -> str:
@@ -2444,9 +2487,7 @@ class _ScenePublisher:
         accepted_edit: dict[str, Any] | None = None,
     ) -> None:
         """Describe the commit when supplied; disk startup publishes without a change."""
-        self._jobs.put(
-            ("publish", (revision, result, before, changed_id, change, accepted_edit))
-        )
+        self._jobs.put(("publish", (revision, result, before, changed_id, change, accepted_edit)))
 
     def publish_failure(
         self,
@@ -3547,9 +3588,7 @@ class DocumentService:
     def _evaluate_enclosure_requirements(
         self, payload: dict[str, Any], requirements: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        enclosure_requirements = [
-            item for item in requirements if item.get("kind") != "valid_brep"
-        ]
+        enclosure_requirements = [item for item in requirements if item.get("kind") != "valid_brep"]
         if not enclosure_requirements:
             return [], None
         try:
@@ -3559,9 +3598,9 @@ class DocumentService:
                 self._document.graph, self._regen, payload.get("base", "base")
             )
             return (
-                evaluate_requirements(
-                    enclosure_requirements, inspection, self._document.revision
-                )["results"],
+                evaluate_requirements(enclosure_requirements, inspection, self._document.revision)[
+                    "results"
+                ],
                 None,
             )
         except InvalidHoleIds as error:

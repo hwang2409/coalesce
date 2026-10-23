@@ -18,9 +18,11 @@ from .graph import (
     PcbBase,
     PcbLid,
     Plane,
+    Polyline,
     PortCutout,
     Rectangle,
     Sketch,
+    Spline,
     Standoffs,
 )
 from .references import (
@@ -40,6 +42,8 @@ _TYPES = {
         Sketch,
         Rectangle,
         Circle,
+        Polyline,
+        Spline,
         Extrude,
         PcbBase,
         PcbLid,
@@ -87,9 +91,12 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
     for raw_entity in payload.get("entities", []):
         entity = dict(raw_entity)
         entity_type = _TYPES.get(entity.pop("type", None))
-        if entity_type not in (Rectangle, Circle):
-            raise ValueError("sketch entity must be a Rectangle or Circle")
-        entity["position"] = tuple(entity.get("position", (0, 0)))
+        if entity_type not in (Rectangle, Circle, Polyline, Spline):
+            raise ValueError("unknown primitive sketch entity type")
+        if entity_type in (Polyline, Spline):
+            entity["points"] = tuple(tuple(point) for point in entity["points"])
+        else:
+            entity["position"] = tuple(entity.get("position", (0, 0)))
         entities.append(entity_type(**entity))
     payload["entities"] = entities
     return payload

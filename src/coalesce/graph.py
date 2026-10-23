@@ -51,9 +51,30 @@ class Circle:
     rotation: float = 0.0
 
 
+MIN_OUTLINE_POINTS = 3
+MAX_OUTLINE_POINTS = 2000
+
+
+@dataclass
+class Polyline:
+    id: str
+    points: tuple[tuple[float, float], ...]
+    closed: bool = True
+
+
+@dataclass
+class Spline:
+    id: str
+    points: tuple[tuple[float, float], ...]
+    closed: bool = True
+
+
+PrimitiveEntity = Rectangle | Circle | Polyline | Spline
+
+
 @dataclass
 class PrimitiveSketchState:
-    entities: list[Rectangle | Circle] = field(default_factory=list)
+    entities: list[PrimitiveEntity] = field(default_factory=list)
 
 
 @dataclass
@@ -73,7 +94,7 @@ class Sketch:
         self,
         id: str,
         plane: Plane | None = None,
-        entities: list[Rectangle | Circle] | None = None,
+        entities: list[PrimitiveEntity] | None = None,
         constrained: Any | None = None,
         position: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -93,14 +114,14 @@ class Sketch:
         self.rotation = rotation
 
     @property
-    def entities(self) -> list[Rectangle | Circle]:
+    def entities(self) -> list[PrimitiveEntity]:
         return self.state.entities if isinstance(self.state, PrimitiveSketchState) else []
 
     @property
     def constrained(self) -> Any | None:
         return self.state.constrained if isinstance(self.state, ConstrainedSketchState) else None
 
-    def replace_entities(self, entities: list[Rectangle | Circle]) -> None:
+    def replace_entities(self, entities: list[PrimitiveEntity]) -> None:
         self.state = PrimitiveSketchState(entities)
 
     def replace_constrained(self, constrained: Any) -> None:
@@ -229,6 +250,70 @@ def _require_finite(sketch: Sketch, field: str, values: tuple[float, ...]) -> No
         )
 
 
+def _outline_tolerance(points: tuple[tuple[float, float], ...]) -> float:
+    extent = max(
+        max(point[axis] for point in points) - min(point[axis] for point in points)
+        for axis in (0, 1)
+    )
+    return max(extent * 1e-9, 1e-12)
+
+
+def _cross(
+    start: tuple[float, float], end: tuple[float, float], point: tuple[float, float]
+) -> float:
+    return (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0])
+
+
+def _segments_intersect(
+    left: tuple[tuple[float, float], tuple[float, float]],
+    right: tuple[tuple[float, float], tuple[float, float]],
+    tolerance: float,
+) -> bool:
+    a, b = left
+    c, d = right
+    products = (_cross(a, b, c) * _cross(a, b, d), _cross(c, d, a) * _cross(c, d, b))
+    if products[0] > tolerance**2 or products[1] > tolerance**2:
+        return False
+    return not (
+        max(a[0], b[0]) < min(c[0], d[0]) - tolerance
+        or max(c[0], d[0]) < min(a[0], b[0]) - tolerance
+        or max(a[1], b[1]) < min(c[1], d[1]) - tolerance
+        or max(c[1], d[1]) < min(a[1], b[1]) - tolerance
+    )
+
+
+def _unsupported_outline(sketch: Sketch, entity: PrimitiveEntity, reason: str) -> None:
+    raise GraphError(
+        "SKETCH_PROFILE_UNSUPPORTED",
+        f"sketch {sketch.id} entity {entity.id} has an unsupported {reason.replace('_', ' ')} profile",
+        sketch=sketch.id,
+        entity=entity.id,
+        reason=reason,
+    )
+
+
+def _validate_outline(sketch: Sketch, entity: Polyline | Spline) -> None:
+    points = entity.points
+    tolerance = _outline_tolerance(points)
+    if any(
+        (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2 <= tolerance**2
+        for left, right in zip(points, (*points[1:], points[0]), strict=True)
+    ):
+        _unsupported_outline(sketch, entity, "degenerate")
+    segments = list(zip(points, (*points[1:], points[0]), strict=True))
+    count = len(segments)
+    if any(
+        _segments_intersect(segments[left], segments[right], tolerance)
+        for left in range(count)
+        for right in range(left + 1, count)
+        if right not in {left + 1, count - 1 if left == 0 else -1}
+    ):
+        _unsupported_outline(sketch, entity, "self_intersecting")
+    area_twice = sum(left[0] * right[1] - right[0] * left[1] for left, right in segments)
+    if abs(area_twice) <= tolerance**2:
+        _unsupported_outline(sketch, entity, "degenerate")
+
+
 def validate_sketch(sketch: Sketch) -> None:
     if sketch.plane.name not in {"XY", "XZ", "YZ"}:
         raise GraphError(
@@ -242,6 +327,14 @@ def validate_sketch(sketch: Sketch) -> None:
     _require_finite(sketch, "position", sketch.position)
     _require_finite(sketch, "rotation", sketch.rotation)
     for entity in sketch.entities:
+        if isinstance(entity, (Polyline, Spline)):
+            _require_finite(
+                sketch,
+                f"entity.{entity.id}.points",
+                tuple(coordinate for point in entity.points for coordinate in point),
+            )
+            _validate_outline(sketch, entity)
+            continue
         _require_finite(sketch, f"entity.{entity.id}.position", entity.position)
         _require_finite(sketch, f"entity.{entity.id}.rotation", (entity.rotation,))
         if isinstance(entity, Circle):
@@ -302,7 +395,12 @@ class Graph:
             *(
                 getattr(node, dependency_field, None)
                 for dependency_field in (
-                    "sketch", "target", "tool", "board", "base", "outline_source"
+                    "sketch",
+                    "target",
+                    "tool",
+                    "board",
+                    "base",
+                    "outline_source",
                 )
             ),
             *Graph._typed_reference_dependencies(node),

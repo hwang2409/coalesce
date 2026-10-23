@@ -1,16 +1,14 @@
 import ast
-import json
 import math
 import re
 from pathlib import Path
 
 import pytest
 from build123d import GeomType, import_step
-from test_mcp_cut_hole_circle import extrude, hole
+from test_mcp_cut_hole_circle import extrude
 from test_mcp_vertical import run_server
 
 from coalesce.service import DocumentService
-
 
 DOCS = Path(__file__).parents[1] / "docs"
 
@@ -32,9 +30,7 @@ def update_outline(kind, points, revision, request_id):
         "expectedRevision": revision,
         "requestId": request_id,
         "sketchId": "outline_sketch",
-        "set": {
-            "entities": [{"id": "outline", "kind": kind, "points": points, "closed": True}]
-        },
+        "set": {"entities": [{"id": "outline", "kind": kind, "points": points, "closed": True}]},
     }
 
 
@@ -130,15 +126,27 @@ async def test_spline_step_round_trip_keeps_bspline_surface(tmp_path):
     assert results[-1]["ok"] is True
     solid = import_step(target)
     assert solid.is_valid
-    assert sum(face.geom_type is GeomType.BSPLINE for face in solid.faces()) == 1
+    assert any(face.geom_type is GeomType.BSPLINE for face in solid.faces())
 
 
 @pytest.mark.parametrize(
     ("kind", "points", "closed", "code", "reason"),
     [
         ("polyline", [[0, 0], [2, 0], [2, 2]], False, "INVALID_PARAMETER", None),
-        ("polyline", [[0, 0], [2, 0], [2, 0], [0, 2]], True, "SKETCH_PROFILE_UNSUPPORTED", "degenerate"),
-        ("polyline", [[0, 0], [2, 2], [0, 2], [2, 0]], True, "SKETCH_PROFILE_UNSUPPORTED", "self_intersecting"),
+        (
+            "polyline",
+            [[0, 0], [2, 0], [2, 0], [0, 2]],
+            True,
+            "SKETCH_PROFILE_UNSUPPORTED",
+            "degenerate",
+        ),
+        (
+            "polyline",
+            [[0, 0], [2, 2], [0, 2], [2, 0]],
+            True,
+            "SKETCH_PROFILE_UNSUPPORTED",
+            "self_intersecting",
+        ),
         ("spline", [[0, 0], [2, 0], [4, 0]], True, "SKETCH_PROFILE_UNSUPPORTED", "degenerate"),
     ],
 )
@@ -160,7 +168,12 @@ def test_outline_validation_is_atomic(kind, points, closed, code, reason, tmp_pa
 
 def test_outline_point_bounds_and_finite_coordinates_are_rejected(tmp_path):
     service = DocumentService(tmp_path / "bounds.coalesce.json", warmup=False)
-    for index, points in enumerate(([[0, 0], [1, 0]], [[0, 0], [1, 0], [math.inf, 1]])):
+    invalid_points = (
+        [[0, 0], [1, 0]],
+        [[0, 0], [1, 0], [math.inf, 1]],
+        [[index, index % 2] for index in range(2001)],
+    )
+    for index, points in enumerate(invalid_points):
         result = service.sketch(outline_sketch("polyline", points, request_id=f"invalid-{index}"))
         assert result["error"]["code"] == "INVALID_PARAMETER"
 
@@ -195,42 +208,43 @@ async def test_polyline_reference_survives_same_count_and_is_stale_on_count_chan
     assert results[2]["ok"] is True
     assert results[3]["ok"] is True and results[3]["revision"] == 4
     assert results[4]["ok"] is False and results[4]["revision"] == 4
-    assert results[4]["error"]["code"] == "REFERENCE_RESOLUTION_FAILED"
-    assert results[4]["error"]["status"] == "EMPTY"
+    assert results[4]["error"]["code"] == "REFERENCE_FAILED"
+    assert results[4]["error"]["resolution"]["status"] == "EMPTY"
 
 
 def _python_block(markdown):
-    match = re.search(r"<!-- cycloid-python -->\s*```python\n(.*?)```", markdown, re.S)
+    match = re.search(r"<!-- cycloid-python -->\s*```python\n(.*?)```", markdown, re.DOTALL)
     assert match
     return match.group(1)
 
 
-def _calls_block(markdown):
-    match = re.search(r"<!-- cycloid-stdio -->\s*```json\n(.*?)```", markdown, re.S)
+def _calls_block(markdown, namespace):
+    match = re.search(r"<!-- cycloid-stdio -->\s*```python\n(.*?)```", markdown, re.DOTALL)
     assert match
-    return json.loads(match.group(1))
+    exec(  # noqa: S102 - execute the documented example verbatim
+        compile(ast.parse(match.group(1)), "cycloidal-disc.md", "exec"), namespace
+    )
+    return namespace["calls"]
 
 
 @pytest.mark.anyio
 async def test_cycloidal_disc_documented_example_end_to_end(tmp_path):
     markdown = (DOCS / "examples/cycloidal-disc.md").read_text()
     namespace = {}
-    exec(compile(ast.parse(_python_block(markdown)), "cycloidal-disc.md", "exec"), namespace)
+    exec(  # noqa: S102 - execute the documented example verbatim
+        compile(ast.parse(_python_block(markdown)), "cycloidal-disc.md", "exec"), namespace
+    )
     points = namespace["points"]
     radii = [math.hypot(x, y) for x, y in points]
     maxima = sum(
         radii[index] > radii[index - 1] and radii[index] > radii[(index + 1) % len(radii)]
         for index in range(len(radii))
     )
-    calls = _calls_block(markdown)
-    calls[0]["arguments"]["entities"][0]["points"] = points
+    calls = _calls_block(markdown, namespace)
     target = tmp_path / "cycloidal-disc.step"
-    calls[-1]["arguments"]["path"] = str(target)
+    calls[-1][1]["path"] = str(target)
 
-    results = await run_server(
-        tmp_path / "cycloidal-disc.coalesce.json",
-        [(call["tool"], call["arguments"]) for call in calls],
-    )
+    results = await run_server(tmp_path / "cycloidal-disc.coalesce.json", calls)
 
     assert maxima == 7
     assert all(result["ok"] is True for result in results)

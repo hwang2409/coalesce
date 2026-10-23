@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .constrained_sketch import CONSTRAINED_SKETCH_SCHEMA
+from .graph import MAX_OUTLINE_POINTS, MIN_OUTLINE_POINTS
 from .requirements import SUPPORTED_REQUIREMENT_KINDS as EVALUATED_REQUIREMENT_KINDS
 
 SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT_KINDS)))
@@ -66,7 +67,30 @@ CIRCLE = {
     "required": ["id", "kind", "radius"],
     "additionalProperties": False,
 }
-SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE]}
+
+
+def _outline_entity(kind: str) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "kind": {"const": kind},
+            "points": {
+                "type": "array",
+                "items": POINT_2D,
+                "minItems": MIN_OUTLINE_POINTS,
+                "maxItems": MAX_OUTLINE_POINTS,
+            },
+            "closed": {"const": True},
+        },
+        "required": ["id", "kind", "points", "closed"],
+        "additionalProperties": False,
+    }
+
+
+POLYLINE = _outline_entity("polyline")
+SPLINE = _outline_entity("spline")
+SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE, POLYLINE, SPLINE]}
 CONSTRAINED_SKETCH = CONSTRAINED_SKETCH_SCHEMA
 DIRECTION = {
     "type": "array",
@@ -709,7 +733,11 @@ IMPORT_REFRESH_SCHEMA = {
         "action": {"const": "refresh"},
         **MUTATION_PROPERTIES,
         "assetId": IMPORT_PROPERTIES["assetId"],
-        "format": {"type": "string", "minLength": 1, "description": "Optional; inherits the imported asset format and must match it."},
+        "format": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional; inherits the imported asset format and must match it.",
+        },
         "path": {
             **IMPORT_CREATE_SCHEMA["properties"]["path"],
             "description": "Optional explicit absolute path to the replacement local regular file, at most 16 MiB.",
@@ -842,8 +870,12 @@ CHECK_REQUIREMENT = {
                 "id": CHECK_ID,
                 "kind": {
                     "enum": [
-                        "wall_thickness", "floor_thickness", "engagement_depth",
-                        "lid_engagement", "port_clearance", "connector_clearance",
+                        "wall_thickness",
+                        "floor_thickness",
+                        "engagement_depth",
+                        "lid_engagement",
+                        "port_clearance",
+                        "connector_clearance",
                     ]
                 },
                 "threshold": QUANTITY,
@@ -872,7 +904,7 @@ CHECK_REQUIREMENT = {
             "required": ["id", "kind", "threshold"],
             "additionalProperties": False,
         },
-    ]
+    ],
 }
 EXPORT_SCHEMA = {
     "type": "object",
