@@ -58,6 +58,23 @@ def _size(shape: Shape) -> dict[str, Any]:
     }
 
 
+class IncompleteEvidence(Exception):
+    """A required exact face is missing from the regenerated provenance."""
+
+    def __init__(self, feature: str, role: str, count: int) -> None:
+        super().__init__(f"{feature} has {count} {role} faces, expected 1")
+        self.feature = feature
+        self.role = role
+        self.count = count
+
+
+def _single_face(result: Any, feature: str, role: str) -> Face:
+    faces = _faces(result, feature, role)
+    if len(faces) != 1:
+        raise IncompleteEvidence(feature, role, len(faces))
+    return faces[0]
+
+
 def _faces(result: Any, feature: str, role: str) -> list[Face]:
     return [
         candidate.entity
@@ -445,7 +462,7 @@ def _lid_outline_comparison(
     current: Any | None,
     has_outer_treatment: bool,
 ) -> LidOutlineComparison:
-    [top] = _faces(result, node.id, "top")
+    top = _single_face(result, node.id, "top")
     source = (
         _current_outline(result, node.outline_source)
         if node.outline_source is not None

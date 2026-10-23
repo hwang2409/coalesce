@@ -3893,7 +3893,7 @@ class DocumentService:
         if not enclosure_requirements:
             return [], None
         try:
-            from .enclosure_inspection import inspect_enclosure
+            from .enclosure_inspection import IncompleteEvidence, inspect_enclosure
 
             inspection = inspect_enclosure(
                 self._document.graph, self._regen, payload.get("base", "base")
@@ -3914,7 +3914,7 @@ class DocumentService:
                 invalidHoleIds=error.invalid_hole_ids,
                 validHoles=error.valid_holes,
             )
-        except ValueError:
+        except IncompleteEvidence as error:
             return [], _safe_error(
                 self._document.revision,
                 None,
@@ -3922,6 +3922,9 @@ class DocumentService:
                 "enclosure inspection could not be completed",
                 operation="check",
                 reason="enclosure geometry evidence is incomplete",
+                feature=error.feature,
+                role=error.role,
+                faceCount=error.count,
             )
         except (KeyError, TypeError, RuntimeError) as error:
             return [], _safe_error(

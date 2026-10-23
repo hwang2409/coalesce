@@ -309,15 +309,17 @@ def test_clean_base_passes_measured_requirements(tmp_path):
     assert all(result["revision"] == service.revision for result in response["results"])
 
 
-def test_incomplete_inspection_returns_structured_reason(tmp_path, monkeypatch):
-    import coalesce.enclosure_inspection
+def test_missing_lid_top_face_returns_structured_reason(tmp_path, monkeypatch):
+    import coalesce.enclosure_inspection as inspection
 
     service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+    assert service.feature(lid_request(revision=service.revision))["ok"]
+    faces = inspection._faces
 
-    def incomplete(*_args, **_kwargs):
-        raise ValueError("not enough values to unpack")
+    def without_lid_top(result, feature, role):
+        return [] if role == "top" else faces(result, feature, role)
 
-    monkeypatch.setattr(coalesce.enclosure_inspection, "inspect_enclosure", incomplete)
+    monkeypatch.setattr(inspection, "_faces", without_lid_top)
     response = service.check(
         {"action": "evaluate", "base": "base", "requirements": [{"id": "mounts", "kind": "mounting_holes"}]}
     )
@@ -325,7 +327,23 @@ def test_incomplete_inspection_returns_structured_reason(tmp_path, monkeypatch):
     error = response["error"]
     assert error["code"] == "INSPECTION_FAILED"
     assert error["reason"] == "enclosure geometry evidence is incomplete"
-    assert "not enough values to unpack" not in str(error)
+    assert (error["role"], error["faceCount"]) == ("top", 0)
+    assert "unpack" not in str(error)
+
+
+def test_unexpected_value_error_is_not_reported_as_incomplete_evidence(tmp_path, monkeypatch):
+    import coalesce.enclosure_inspection
+
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+
+    def broken(*_args, **_kwargs):
+        raise ValueError("implementation defect")
+
+    monkeypatch.setattr(coalesce.enclosure_inspection, "inspect_enclosure", broken)
+    with pytest.raises(ValueError, match="implementation defect"):
+        service.check(
+            {"action": "evaluate", "base": "base", "requirements": [{"id": "mounts", "kind": "mounting_holes"}]}
+        )
 
 
 def test_inspection_failure_keeps_exception_text_out_of_message(tmp_path, monkeypatch):
