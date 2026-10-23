@@ -298,6 +298,9 @@ def test_review_flow_reads_clearly_in_a_real_browser(module, viewport, tmp_path,
         keys = step("keyboard-part", do=[{"blur": True}, {"tabTo": names[0]}])
         assert keys["actions"][1]["visited"][-1] == names[0]
         assert keys["details"][0] is not None  # the focused part shows its detail, narrow too
+        if narrow:
+            keys = step("keyboard-view", do=[{"tabTo": "View", "press": "Enter"}])
+            assert keys["actions"][0]["visited"][-1] == "View"
         keys = step("keyboard-front", do=[{"tabTo": "Front", "press": "Enter"}])
         assert keys["actions"][0]["visited"][-1] == "Front"
         assert keys["description"].startswith(f"Revision {revision}, front view")
