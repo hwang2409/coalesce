@@ -84,10 +84,12 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
 
 Primitive sketches support two free-form closed outline kinds in addition to rectangles and circles:
 
-- `polyline` joins 3 to 2000 points with straight segments. Its edge roles are `seg-0`, `seg-1`, and so on, including the closing segment.
-- `spline` creates one periodic interpolating B-spline through 3 to 2000 points. It stays one analytic edge with the role `spline`; it is not polygonized.
+- `polyline` joins 3 to 2000 points with straight segments. Each role names its endpoint point ids, such as `seg-p0-p1`, including the closing segment.
+- `spline` creates one periodic interpolating B-spline through 3 to 2000 points. It stays one analytic edge with the single role `spline`; it has no segment roles and is not polygonized.
 
-Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and self-intersections are rejected before the CAD kernel runs. Inner holes are separate cut or hole features. The `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
+A point can be `[x, y]` or `{"id": "corner", "x": x, "y": y}`. References follow point ids. Array points get default ids `p0`, `p1`, and so on by list position, so reordering or rotating that list moves the ids to different coordinates. Give points explicit ids if you will reorder them.
+
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. Inner holes are separate cut or hole features. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
 
 This example creates and extrudes a triangular polyline:
 

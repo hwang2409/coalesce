@@ -764,20 +764,31 @@ def _outline_entity(entity: dict[str, Any], index: int) -> Polyline | Spline:
             f"{kind} points must contain {MIN_OUTLINE_POINTS} to {MAX_OUTLINE_POINTS} points",
             field="points",
         )
-    points = tuple(
-        (
-            _finite_number(point[0], "points"),
-            _finite_number(point[1], "points"),
-        )
-        for point in raw_points
-        if isinstance(point, (list, tuple)) and len(point) == 2
-    )
-    if len(points) != len(raw_points):
-        raise RequestError(
-            "INVALID_PARAMETER", "each outline point must contain x and y", field="points"
-        )
+    points: list[tuple[float, float]] = []
+    point_ids: list[str] = []
+    for point_index, point in enumerate(raw_points):
+        if isinstance(point, (list, tuple)) and len(point) == 2:
+            point_id, x, y = f"p{point_index}", point[0], point[1]
+        elif (
+            isinstance(point, dict)
+            and isinstance(point.get("id"), str)
+            and point["id"]
+            and "x" in point
+            and "y" in point
+        ):
+            point_id, x, y = point["id"], point["x"], point["y"]
+        else:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "each outline point must be [x, y] or {id, x, y}",
+                field="points",
+            )
+        point_ids.append(point_id)
+        points.append((_finite_number(x, "points"), _finite_number(y, "points")))
+    if len(set(point_ids)) != len(point_ids):
+        raise RequestError("INVALID_PARAMETER", "outline point ids must be unique", field="points")
     entity_type = Polyline if kind == "polyline" else Spline
-    return entity_type(_entity_id(entity, index), points)
+    return entity_type(_entity_id(entity, index), tuple(points), point_ids=tuple(point_ids))
 
 
 def _entities(payload: Any) -> tuple[Rectangle | Circle | Polyline | Spline, ...]:
@@ -2173,11 +2184,25 @@ def _apply_feature(
     return applier(graph, operation)
 
 
+def _outline_point_ids(entity: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        point.get("id", f"p{index}") if isinstance(point, dict) else f"p{index}"
+        for index, point in enumerate(entity["points"])
+    )
+
+
 def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
     segments = {
         "rectangle": lambda _entity: ["bottom", "right", "top", "left"],
         "circle": lambda _entity: ["circle"],
-        "polyline": lambda entity: [f"seg-{index}" for index in range(len(entity["points"]))],
+        "polyline": lambda entity: [
+            f"seg-{start}-{end}"
+            for start, end in zip(
+                _outline_point_ids(entity),
+                (*_outline_point_ids(entity)[1:], _outline_point_ids(entity)[0]),
+                strict=True,
+            )
+        ],
         "spline": lambda _entity: ["spline"],
     }
     return {

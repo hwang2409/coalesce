@@ -5,6 +5,9 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from math import isfinite
 from typing import Any
 
+from build123d import Location
+
+from .profile_validation import InvalidProfile, build_outline_profile
 from .references import (
     BodySource,
     ElementKey,
@@ -60,6 +63,11 @@ class Polyline:
     id: str
     points: tuple[tuple[float, float], ...]
     closed: bool = True
+    point_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.point_ids:
+            self.point_ids = tuple(f"p{index}" for index in range(len(self.points)))
 
 
 @dataclass
@@ -67,6 +75,11 @@ class Spline:
     id: str
     points: tuple[tuple[float, float], ...]
     closed: bool = True
+    point_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.point_ids:
+            self.point_ids = tuple(f"p{index}" for index in range(len(self.points)))
 
 
 PrimitiveEntity = Rectangle | Circle | Polyline | Spline
@@ -250,38 +263,6 @@ def _require_finite(sketch: Sketch, field: str, values: tuple[float, ...]) -> No
         )
 
 
-def _outline_tolerance(points: tuple[tuple[float, float], ...]) -> float:
-    extent = max(
-        max(point[axis] for point in points) - min(point[axis] for point in points)
-        for axis in (0, 1)
-    )
-    return max(extent * 1e-9, 1e-12)
-
-
-def _cross(
-    start: tuple[float, float], end: tuple[float, float], point: tuple[float, float]
-) -> float:
-    return (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0])
-
-
-def _segments_intersect(
-    left: tuple[tuple[float, float], tuple[float, float]],
-    right: tuple[tuple[float, float], tuple[float, float]],
-    tolerance: float,
-) -> bool:
-    a, b = left
-    c, d = right
-    products = (_cross(a, b, c) * _cross(a, b, d), _cross(c, d, a) * _cross(c, d, b))
-    if products[0] > tolerance**2 or products[1] > tolerance**2:
-        return False
-    return not (
-        max(a[0], b[0]) < min(c[0], d[0]) - tolerance
-        or max(c[0], d[0]) < min(a[0], b[0]) - tolerance
-        or max(a[1], b[1]) < min(c[1], d[1]) - tolerance
-        or max(c[1], d[1]) < min(a[1], b[1]) - tolerance
-    )
-
-
 def _unsupported_outline(sketch: Sketch, entity: PrimitiveEntity, reason: str) -> None:
     raise GraphError(
         "SKETCH_PROFILE_UNSUPPORTED",
@@ -293,25 +274,43 @@ def _unsupported_outline(sketch: Sketch, entity: PrimitiveEntity, reason: str) -
 
 
 def _validate_outline(sketch: Sketch, entity: Polyline | Spline) -> None:
-    points = entity.points
-    tolerance = _outline_tolerance(points)
-    if any(
-        (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2 <= tolerance**2
-        for left, right in zip(points, (*points[1:], points[0]), strict=True)
+    if len(entity.point_ids) != len(entity.points) or len(set(entity.point_ids)) != len(
+        entity.point_ids
     ):
-        _unsupported_outline(sketch, entity, "degenerate")
-    segments = list(zip(points, (*points[1:], points[0]), strict=True))
-    count = len(segments)
-    if any(
-        _segments_intersect(segments[left], segments[right], tolerance)
-        for left in range(count)
-        for right in range(left + 1, count)
-        if right not in {left + 1, count - 1 if left == 0 else -1}
-    ):
-        _unsupported_outline(sketch, entity, "self_intersecting")
-    area_twice = sum(left[0] * right[1] - right[0] * left[1] for left, right in segments)
-    if abs(area_twice) <= tolerance**2:
-        _unsupported_outline(sketch, entity, "degenerate")
+        _unsupported_outline(sketch, entity, "duplicate_point_id")
+    try:
+        build_outline_profile(
+            "polyline" if isinstance(entity, Polyline) else "spline",
+            entity.points,
+            entity.point_ids,
+            Location(),
+        )
+    except InvalidProfile as error:
+        _unsupported_outline(sketch, entity, error.reason)
+
+
+def _validate_primitive_entity(sketch: Sketch, entity: PrimitiveEntity) -> None:
+    if isinstance(entity, (Polyline, Spline)):
+        _require_finite(
+            sketch,
+            f"entity.{entity.id}.points",
+            tuple(coordinate for point in entity.points for coordinate in point),
+        )
+        _validate_outline(sketch, entity)
+        return
+    _require_finite(sketch, f"entity.{entity.id}.position", entity.position)
+    _require_finite(sketch, f"entity.{entity.id}.rotation", (entity.rotation,))
+    if not isinstance(entity, Circle):
+        return
+    _require_finite(sketch, f"entity.{entity.id}.radius", (entity.radius,))
+    if entity.radius <= 0:
+        raise GraphError(
+            "INVALID_CIRCLE_RADIUS",
+            f"circle {entity.id} radius must be positive",
+            sketch=sketch.id,
+            entity=entity.id,
+            radius=entity.radius,
+        )
 
 
 def validate_sketch(sketch: Sketch) -> None:
@@ -327,26 +326,7 @@ def validate_sketch(sketch: Sketch) -> None:
     _require_finite(sketch, "position", sketch.position)
     _require_finite(sketch, "rotation", sketch.rotation)
     for entity in sketch.entities:
-        if isinstance(entity, (Polyline, Spline)):
-            _require_finite(
-                sketch,
-                f"entity.{entity.id}.points",
-                tuple(coordinate for point in entity.points for coordinate in point),
-            )
-            _validate_outline(sketch, entity)
-            continue
-        _require_finite(sketch, f"entity.{entity.id}.position", entity.position)
-        _require_finite(sketch, f"entity.{entity.id}.rotation", (entity.rotation,))
-        if isinstance(entity, Circle):
-            _require_finite(sketch, f"entity.{entity.id}.radius", (entity.radius,))
-            if entity.radius <= 0:
-                raise GraphError(
-                    "INVALID_CIRCLE_RADIUS",
-                    f"circle {entity.id} radius must be positive",
-                    sketch=sketch.id,
-                    entity=entity.id,
-                    radius=entity.radius,
-                )
+        _validate_primitive_entity(sketch, entity)
 
 
 class Graph:

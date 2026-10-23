@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from itertools import pairwise
 from math import isclose
 
 from build123d import Compound, Edge, Face, Location, Shape, Wire
@@ -13,6 +12,7 @@ from OCP.gp import gp_Vec
 
 from .constrained_profile import build_constrained_profile
 from .graph import Circle, Extrude, GraphError, Polyline, Rectangle, Sketch, Spline, validate_sketch
+from .profile_validation import build_outline_profile
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
 
@@ -83,35 +83,25 @@ def _rectangle_profile(entity: Rectangle, location: Location) -> tuple[Face, Wir
     return Face(wire), wire, constructed
 
 
-def _polyline_profile(entity: Polyline, location: Location) -> _Profile:
-    builder = BRepBuilderAPI_MakeWire()
-    segments = {}
-    points = (*entity.points, entity.points[0])
-    for index, (start, end) in enumerate(pairwise(points)):
-        builder.Add(Edge.make_line((*start, 0), (*end, 0)).moved(location).wrapped)
-        segments[f"seg-{index}"] = Edge(builder.Edge())
-    wire = Wire(builder.Wire())
-    topology = {name: (f"point-count:{len(entity.points)}",) for name in segments}
-    return _Profile(entity.id, Face(wire), wire, segments, topology)
-
-
-def _spline_profile(entity: Spline, location: Location) -> _Profile:
-    edge = Edge.make_spline([(*point, 0) for point in entity.points], periodic=True).moved(location)
-    wire = Wire(edge)
+def _outline_profile(entity: Polyline | Spline, location: Location) -> _Profile:
+    exact = build_outline_profile(
+        "polyline" if isinstance(entity, Polyline) else "spline",
+        entity.points,
+        entity.point_ids,
+        location,
+    )
     return _Profile(
         entity.id,
-        Face(wire),
-        wire,
-        {"spline": edge},
-        {"spline": (f"point-count:{len(entity.points)}",)},
+        exact.face,
+        exact.wire,
+        exact.segments,
+        exact.segment_topology,
     )
 
 
 def _profile(entity: Rectangle | Circle | Polyline | Spline, sketch_location: Location) -> _Profile:
-    if isinstance(entity, Polyline):
-        return _polyline_profile(entity, sketch_location)
-    if isinstance(entity, Spline):
-        return _spline_profile(entity, sketch_location)
+    if isinstance(entity, (Polyline, Spline)):
+        return _outline_profile(entity, sketch_location)
     entity_location = Location(
         (entity.position[0], entity.position[1], 0),
         (0, 0, entity.rotation),

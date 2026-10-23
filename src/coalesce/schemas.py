@@ -31,10 +31,24 @@ ANGLE = {
     "additionalProperties": False,
 }
 POINT_2D = {
-    "type": "array",
-    "items": {"type": "number"},
-    "minItems": 2,
-    "maxItems": 2,
+    "oneOf": [
+        {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+            },
+            "required": ["id", "x", "y"],
+            "additionalProperties": False,
+        },
+    ]
 }
 POINT_3D = {
     "type": "array",
