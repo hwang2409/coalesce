@@ -47,26 +47,53 @@ class BodyLineage:
             )
         return next(iter(bodies))
 
+    def _coherent_bodies(self, target: str) -> set[BodySource]:
+        bodies = self.feature_bodies.get(target, set())
+        shapes = {id(self.terminal_shapes[body]) for body in bodies}
+        if not bodies or len(shapes) != 1:
+            raise GraphError(
+                "BODY_LINEAGE_DIVERGED",
+                f"target {target} does not resolve to one body",
+                target=target,
+                bodySources=sorted(repr(body) for body in bodies),
+                hint="target a feature that belongs to one body",
+            )
+        return bodies
+
     def terminal(self, target: str) -> str:
-        return self.terminals[self.body(target)]
+        bodies = self._coherent_bodies(target)
+        terminals = {self.terminals[body] for body in bodies}
+        if len(terminals) != 1:
+            raise GraphError(
+                "BODY_LINEAGE_DIVERGED",
+                f"target {target} has diverged body terminals",
+                target=target,
+            )
+        return next(iter(terminals))
 
     def shape(self, target: str) -> Any:
-        return self.terminal_shapes[self.body(target)]
+        bodies = self._coherent_bodies(target)
+        return self.terminal_shapes[next(iter(bodies))]
 
     def candidates(self, target: str) -> list[Candidate]:
-        return self.terminal_states[self.body(target)]
+        return [
+            candidate
+            for body in sorted(self._coherent_bodies(target), key=repr)
+            for candidate in self.terminal_states[body]
+        ]
 
     def replace(self, target: str, feature: str, shape: Any, candidates: list[Candidate]) -> None:
-        body = self.body(target)
-        previous = self.terminals[body]
+        bodies = self._coherent_bodies(target)
+        previous = self.terminal(target)
         self.predecessors[feature] = previous
-        self.body_predecessors[feature, body] = previous
-        self.feature_bodies[feature] = {body}
-        self.terminals[body] = feature
-        self.terminal_shapes[body] = shape
-        self.terminal_states[body] = [
-            candidate for candidate in candidates if candidate.key.body == body
-        ]
+        self.feature_bodies[feature] = bodies
+        for body in bodies:
+            self.body_predecessors[feature, body] = previous
+            self.terminals[body] = feature
+            self.terminal_shapes[body] = shape
+            self.terminal_states[body] = [
+                candidate for candidate in candidates if candidate.key.body == body
+            ]
         self._refresh_superseded(previous)
         self._replace_provenance(self.states[previous], candidates)
 

@@ -652,6 +652,15 @@ SCREW_CLOSURE_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+ENCLOSURE_BOSS_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        **STANDOFFS_UPDATE_SET["properties"],
+        **SCREW_CLOSURE_UPDATE_SET["properties"],
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
 PCB_LID_UPDATE_SET = {
     "type": "object",
     "properties": {
@@ -680,15 +689,14 @@ FEATURE_UPDATE_SCHEMA = {
         "action": {"const": "update"},
         **FEATURE_PROPERTIES,
         "set": {
-            "anyOf": [
+            "oneOf": [
                 EXTRUDE_UPDATE_SET,
                 TARGET_UPDATE_SET,
                 FILLET_UPDATE_SET,
                 PCB_BASE_UPDATE_SET,
-                STANDOFFS_UPDATE_SET,
+                ENCLOSURE_BOSS_UPDATE_SET,
                 PCB_LID_UPDATE_SET,
                 PORT_CUTOUT_ROOT_UPDATE_SET,
-                SCREW_CLOSURE_UPDATE_SET,
             ]
         },
     },

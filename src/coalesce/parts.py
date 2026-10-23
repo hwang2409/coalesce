@@ -28,16 +28,15 @@ class TerminalPart:
         }
 
 
-def _terminal_shapes(result: Any) -> list[tuple[str, Any, BodySource, list[Candidate]]]:
-    return [
-        (
-            result.body_terminals[body],
-            shape,
-            body,
-            result.body_terminal_states[body],
-        )
-        for body, shape in result.body_terminal_shapes.items()
-    ]
+def _terminal_shapes(
+    result: Any,
+) -> list[tuple[str, Any, set[BodySource], list[Candidate]]]:
+    groups: dict[int, tuple[str, Any, set[BodySource], list[Candidate]]] = {}
+    for body, shape in result.body_terminal_shapes.items():
+        group = groups.setdefault(id(shape), (result.body_terminals[body], shape, set(), []))
+        group[2].add(body)
+        group[3].extend(result.body_terminal_states[body])
+    return list(groups.values())
 
 
 def _solid_body(solid: Any, owned: list[Candidate]) -> tuple[BodySource, tuple[str, ...]]:
@@ -85,10 +84,10 @@ def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[Term
         if candidate.key.body is not None and candidate.entity is not None
     ]
     solids: list[tuple[str, Any, BodySource, tuple[str, ...]]] = []
-    for feature, shape, expected_body, terminal_state in _terminal_shapes(result):
+    for feature, shape, expected_bodies, terminal_state in _terminal_shapes(result):
         for solid in shape.solids():
             body, history = _solid_body(solid, [*owned, *terminal_state])
-            if body != expected_body:
+            if body not in expected_bodies:
                 raise ValueError("terminal solid does not match its body lineage")
             solids.append((feature, solid, body, history))
 
