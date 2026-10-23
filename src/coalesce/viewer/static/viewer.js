@@ -3,7 +3,7 @@ import * as THREE from './vendor/three-0.186.1/three.module.js';
 import { OrbitControls } from './vendor/three-0.186.1/OrbitControls.js';
 
 const BACKGROUND = 0xe4e8eb;
-const EDGE = 0x1d2329;
+const EDGE = 0x101820;
 const VIEWS = {
   iso: [1, -1, 0.8],
   front: [0, -1, 0],
@@ -106,6 +106,9 @@ new ResizeObserver(requestRender).observe(canvas);
 // ---- scale bar: a round length of about 100 px at the current zoom (48 px on narrow screens)
 
 const narrow = matchMedia('(max-width: 720px)');
+const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
+$('camera-menu').open = !narrow.matches;
+narrow.addEventListener('change', () => { $('camera-menu').open = !narrow.matches; });
 const scalePx = () => (narrow.matches ? 48 : 100);
 
 function niceLength(target) {
@@ -231,10 +234,28 @@ function showRefit(on) {
   $('fit-text').textContent = on ? 'Fit new model' : 'Fit';
 }
 
-for (const button of document.querySelectorAll('[data-view]')) {
-  button.addEventListener('click', () => applyView(button.dataset.view));
+function closeCameraMenu() {
+  if (!narrow.matches) return;
+  $('camera-menu').open = false;
+  $('camera-menu').querySelector('summary').focus();
 }
-$('fit').addEventListener('click', () => applyView(activeView));
+
+for (const button of document.querySelectorAll('[data-view]')) {
+  button.addEventListener('click', () => {
+    applyView(button.dataset.view);
+    closeCameraMenu();
+  });
+}
+$('fit').addEventListener('click', () => {
+  applyView(activeView);
+  closeCameraMenu();
+});
+$('camera-menu').addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented || !narrow.matches || !$('camera-menu').open
+      || event.target.closest?.(OWNS_ESCAPE)) return;
+  event.preventDefault();
+  closeCameraMenu();
+});
 
 // off before the first scene and once the link expired: nothing current to aim at
 function enableCamera(on) {
@@ -524,7 +545,7 @@ function fitRow(row, key) {
       }
       showPart({ key, partId: row.partId });
       part.focus({ preventScroll: true });
-      part.scrollIntoView({ block: 'nearest' });
+      if (!narrow.matches) part.scrollIntoView({ block: 'nearest' });
     });
   }
   item.dataset.key = key;
@@ -555,7 +576,6 @@ function showAll(focus = true) {
 $('showing-clear').addEventListener('click', () => showAll());
 // Escape shows all parts again; in the section controls their own Escape ends the section view first.
 // a field or a dialog keeps its own Escape: defaultPrevented does not cover browser defaults
-const OWNS_ESCAPE = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog';
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || event.defaultPrevented || !selected || event.target.closest?.(OWNS_ESCAPE)) return;
   event.preventDefault();
@@ -567,6 +587,20 @@ function evidenceLine(row) {
   const on = partTitle(row.partId);
   const what = on ? `${row.label} on ${on}` : row.label;
   return `${what}: ${row.value}, ${(STATUS_TEXT[row.status] ?? row.status).toLowerCase()}`;
+}
+
+function pointEvidence(row) {
+  if (row.id !== 'screw_closure' || !row.evidence?.points) return [];
+  return row.evidence.points.toSorted((a, b) => severity(a) - severity(b)).map((point) => {
+    const wall = point.residualWall?.value;
+    const measured = wall === undefined ? 'wall not measured' : `wall ${formatMm(wall)} mm`;
+    const axis = point.coaxial === null ? 'axis not measured' : point.coaxial ? 'coaxial' : 'not coaxial';
+    const line = document.createElement('li');
+    line.dataset.point = point.name;
+    line.dataset.status = point.status;
+    line.textContent = `${point.name}: ${measured}, ${axis} — ${point.status.toLowerCase()}`;
+    return line;
+  });
 }
 
 function renderInspection(fit) {
@@ -596,7 +630,7 @@ function renderInspection(fit) {
       list.append(item);
       const line = document.createElement('li');
       line.textContent = evidenceLine(row);
-      evidence.append(line);
+      evidence.append(line, ...pointEvidence(row));
     }
   }
   const raw = fit.map(({ baseId, rows: measured }) => ({
@@ -1217,6 +1251,10 @@ if (window.coalesceDebug === true) {
       positions: model.children.map((group) => group.position.toArray()),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
+      edgeStyles: model.children.map((group) => ({
+        color: `#${group.children[1].material.color.getHexString()}`,
+        opacity: group.children[1].material.opacity,
+      })),
       zRanges: model.children.map((group) => {
         const { min, max } = new THREE.Box3().setFromObject(surfaceOf(group));
         return [min.z, max.z];

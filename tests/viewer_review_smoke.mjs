@@ -55,6 +55,7 @@ async function snapshot() {
     code: await page.locator('#failure-code').textContent(),
     scene: await page.evaluate(() => window.coalesceViewer.drawn),
     focused: await label(),
+    cameraOpen: await page.locator('#camera-menu').evaluate((menu) => menu.open),
     view: await page.locator('#view').evaluate((canvas) => canvas.getBoundingClientRect().toJSON()),
     expanded: await page.locator('#parts .part').evaluateAll((rows) => rows.map((row) => row.getAttribute('aria-expanded'))),
     // each part row's boxes in page pixels, to check the swatch and hint line up with the row
@@ -125,7 +126,13 @@ async function act(action) {
   if ('rejectClipboard' in action) {
     await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new DOMException('denied', 'NotAllowedError')); });
   }
-  if ('click' in action) await page.getByRole('button', { name: action.click, exact: true }).click();
+  if ('click' in action) {
+    const button = page.getByRole('button', { name: action.click, exact: true });
+    if (!(await button.isVisible()) && await page.locator('#camera-menu').isVisible()) {
+      await page.locator('#camera-menu > summary').click();
+    }
+    await button.click();
+  }
   // a control marked aria-disabled still takes a click or tap; playwright waits for it to look enabled unless forced
   if ('force' in action) {
     const button = page.getByRole('button', { name: action.force, exact: true });
@@ -200,7 +207,7 @@ async function act(action) {
           min: Number(range.min),
           max: Number(range.max),
         },
-        boxes: Object.fromEntries(['#modes', '#section-controls', '#review-hint', '.views', '#scale', '#gizmo', '#status', '.panel', '#view']
+        boxes: Object.fromEntries(['#modes', '#section-controls', '#review-hint', '.views', '#camera-menu > summary', '.views .segmented', '#scale', '#gizmo', '#status', '.panel', '#view']
           .map((selector) => [selector, box(document.querySelector(selector))])),
       };
     });
@@ -295,6 +302,7 @@ async function act(action) {
       });
     }, action.pixels);
   }
+  if ('edgeStyles' in action) return page.evaluate(() => window.coalesceViewer.drawn.edgeStyles);
   if ('fitRow' in action) await press(page.locator('.fit-row').nth(action.fitRow));
   if ('evidence' in action) await press(page.locator('.fit-evidence > summary'));
   if ('rawEvidence' in action) await press(page.locator('.fit-raw summary'));
@@ -312,6 +320,7 @@ async function act(action) {
           status: row.querySelector('.fit-status').textContent,
           text: row.innerText.replace(/\s+/g, ' ').trim(),
           pressed: row.getAttribute('aria-pressed'),
+          box: row.getBoundingClientRect().toJSON(),
           // the badge ends before the label starts
           gap: row.querySelector('.fit-label').getBoundingClientRect().left - row.querySelector('.fit-status').getBoundingClientRect().right,
           labelLeft: row.querySelector('.fit-label').getBoundingClientRect().left,
@@ -323,6 +332,9 @@ async function act(action) {
           return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
         })(),
         count: document.getElementById('inspection-count').textContent,
+        countVisible: document.getElementById('inspection-title').checkVisibility()
+          && document.getElementById('inspection-title').getBoundingClientRect().top >= document.querySelector('.panel').getBoundingClientRect().top,
+        panelBox: document.querySelector('.panel').getBoundingClientRect().toJSON(),
         // each "<n> <status>" count, by the lines it takes
         countLines: (() => {
           const nodes = [];

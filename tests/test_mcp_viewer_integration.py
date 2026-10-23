@@ -19,6 +19,7 @@ from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
 from test_pcb_enclosure import base_request, import_request, standoffs_request
 from test_pcb_lid import lid_request
 from test_port_cutout import explicit_envelope, port_request
+from test_screw_closure import closure_request, normal_standoffs_request
 from test_viewer_browser import playwright_module
 
 import coalesce.service as service_module
@@ -31,6 +32,7 @@ from coalesce.viewer.scene import REFERENCE_COLOR
 
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
 ENCLOSURE_SMOKE = Path(__file__).with_name("mcp_viewer_enclosure_smoke.mjs")
+SCREW_SMOKE = Path(__file__).with_name("mcp_viewer_screw_smoke.mjs")
 REPAIR_HISTORY_SMOKE = Path(__file__).with_name("viewer_repair_history.mjs")
 LID_SMOKE = Path(__file__).with_name("mcp_viewer_lid_smoke.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
@@ -800,6 +802,66 @@ async def test_stale_lid_outline_is_in_scene_and_clears_in_browser(tmp_path, bro
             "readable": True,
         }
         assert cleared[size] == {"count": 0}
+
+
+@pytest.mark.anyio
+async def test_named_screw_closure_evidence_in_real_browser(tmp_path, browser_module):
+    path = tmp_path / "screw-closure.coalesce.json"
+    errlog = (tmp_path / "screw-closure.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    screenshots = Path(
+        os.environ.get(
+            "UX_ROUND_9_SCREENSHOTS",
+            Path.home() / ".zeta/scratch/coalesce/ux-shots-round-9-fixed",
+        )
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        calls = [
+            ("import", import_request(KICAD_FIXTURE)),
+            ("feature", base_request(clearance={"value": 5, "unit": "mm"})),
+            ("feature", normal_standoffs_request()),
+            ("feature", lid_request(revision=3, include_lip=False)),
+            ("feature", closure_request(revision=4)),
+        ]
+        for tool, arguments in calls:
+            assert result_json(await session.call_tool(tool, arguments))["ok"] is True
+        driver = await asyncio.create_subprocess_exec(
+            "node", str(SCREW_SMOKE), browser_module, url, str(screenshots),
+            stdout=asyncio.subprocess.PIPE,
+        )
+        output = [
+            json.loads(line)
+            for line in (await asyncio.wait_for(driver.stdout.read(), timeout=60)).decode().splitlines()
+        ]
+        assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
+
+    assert output[-1] == {"errors": []}
+    expected = [
+        "left: wall 1.2 mm, coaxial — pass",
+        "right: wall 1.2 mm, coaxial — pass",
+        "front: wall 1.2 mm, coaxial — pass",
+        "rear: wall 1.2 mm, coaxial — pass",
+    ]
+    for result in output[:-1]:
+        assert result["result"] == {
+            "row": "PASS\nScrew closure\n4 points, 1.2 mm minimum wall, coaxial, no interference",
+            "points": expected,
+            "visible": True,
+        }
 
 
 @pytest.mark.anyio

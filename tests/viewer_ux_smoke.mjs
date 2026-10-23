@@ -57,7 +57,7 @@ const texts = async () => ({
   notice: await shown('#notice'),
   status: await shown('#status'),
   scale: await shown('#scale'),
-  fit: await page.locator('#fit').innerText(),
+  fit: await page.locator('#fit').textContent(),
   fitDisabled: await page.locator('#fit').isDisabled(),
 });
 
@@ -121,6 +121,7 @@ await step('orbited', drawn);
 await waitRevision(4);
 await settled();
 await step('held', async () => ({ ...(await texts()), ...(await drawn()) }));
+if (!(await page.locator('#fit').isVisible())) await page.locator('#camera-menu > summary').click();
 await page.locator('#fit').click();
 await settled();
 await step('refit', async () => ({ ...(await texts()), ...(await drawn()) }));
