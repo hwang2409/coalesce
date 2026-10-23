@@ -752,7 +752,6 @@ FEATURE_UPDATE_SCHEMA = {
         "set": {
             "oneOf": [
                 EXTRUDE_UPDATE_SET,
-                TARGET_UPDATE_SET,
                 HOLE_UPDATE_SET,
                 FILLET_UPDATE_SET,
                 PCB_BASE_UPDATE_SET,

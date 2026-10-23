@@ -12,7 +12,14 @@ from OCP.gp import gp_Vec
 from OCP.TopoDS import TopoDS
 
 from .boolean import _has_solid_common
-from .graph import CircularHolePattern, GraphError, Hole, HolePosition, LinearHolePattern
+from .graph import (
+    MAX_HOLE_COUNT,
+    CircularHolePattern,
+    GraphError,
+    Hole,
+    HolePosition,
+    LinearHolePattern,
+)
 from .provenance import candidate
 from .references import BodySource, Candidate, HoleSurfaceSource
 
@@ -132,7 +139,11 @@ def _edge_breakouts(target: Shape, cutters: list[_NamedCutter]) -> list[str]:
         wall = cutter.candidates[-1].entity
         wall_faces = [TopoDS.Face(shape) for shape in algorithm.Modified(wall.wrapped)]
         if wall_faces and any(
-            not isclose(BRepTools.UVBounds_s(face)[1] - BRepTools.UVBounds_s(face)[0], tau, abs_tol=1e-7)
+            not isclose(
+                BRepTools.UVBounds_s(face)[1] - BRepTools.UVBounds_s(face)[0],
+                tau,
+                abs_tol=1e-7,
+            )
             for face in wall_faces
         ):
             breakouts.append(cutter.name)
@@ -162,7 +173,7 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
             names=missing,
             hint="check target, position, diameter, and depth",
         )
-    breakouts = _edge_breakouts(target, cutters)
+    breakouts = _edge_breakouts(target, cutters) if node.pattern is not None else []
     if breakouts:
         raise GraphError(
             "INVALID_HOLE",
@@ -175,6 +186,38 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
 
 
 def _validate_parameters(node: Hole) -> None:
+    pattern = node.pattern
+    if pattern is not None and not 1 <= pattern.count <= MAX_HOLE_COUNT:
+        raise GraphError(
+            "INVALID_HOLE",
+            f"hole {node.id} pattern count must be from 1 through {MAX_HOLE_COUNT}",
+            feature=node.id,
+            field="pattern.count",
+            maximum=MAX_HOLE_COUNT,
+        )
+    if pattern is not None and not pattern.name_prefix:
+        raise GraphError(
+            "INVALID_HOLE",
+            f"hole {node.id} pattern name prefix must not be empty",
+            feature=node.id,
+            field="pattern.namePrefix",
+        )
+    if isinstance(pattern, CircularHolePattern) and pattern.radius <= 0:
+        raise GraphError(
+            "INVALID_HOLE",
+            f"hole {node.id} pattern radius must be positive",
+            feature=node.id,
+            field="pattern.radius",
+        )
+    if isinstance(pattern, LinearHolePattern) and (
+        pattern.pitch <= 0 or not isclose(hypot(*pattern.direction), 1, abs_tol=1e-12)
+    ):
+        raise GraphError(
+            "INVALID_HOLE",
+            f"hole {node.id} pattern pitch must be positive and direction must be normalized",
+            feature=node.id,
+            field="pattern",
+        )
     if node.diameter <= 0:
         raise GraphError(
             "INVALID_HOLE",

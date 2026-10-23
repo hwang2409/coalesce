@@ -17,8 +17,7 @@ from coalesce import (
     Sketch,
     regenerate,
 )
-from coalesce.graph import CircularHolePattern, Hole, LinearHolePattern
-from coalesce.hole import hole_positions
+from coalesce.graph import Hole
 
 
 def circular_pattern(*, radius=12, count=6, prefix="bolt", start_angle=0):
@@ -91,6 +90,9 @@ def reference_query(name):
 
 
 def test_pattern_expansion_has_exact_deterministic_centers_and_names():
+    from coalesce.graph import CircularHolePattern, LinearHolePattern
+    from coalesce.hole import hole_positions
+
     circular = Hole(
         "holes",
         pattern=CircularHolePattern((2, -3), 12, 6, 30, "bolt"),
@@ -118,6 +120,8 @@ def test_pattern_expansion_has_exact_deterministic_centers_and_names():
 
 
 def patterned_graph(member: str) -> Graph:
+    from coalesce.graph import CircularHolePattern
+
     graph = Graph()
     graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 50, 50)]))
     graph.add(Extrude("plate", sketch="plate_sketch", height=5))
