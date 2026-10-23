@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from math import hypot
+from math import cos, hypot, isclose, radians, sin, tau
 
 from build123d import Compound, Face, Location, Shape, Wire
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.BRepTools import BRepTools
 from OCP.gp import gp_Vec
+from OCP.TopoDS import TopoDS
 
 from .boolean import _has_solid_common
-from .graph import GraphError, Hole, HolePosition
+from .graph import CircularHolePattern, GraphError, Hole, HolePosition, LinearHolePattern
 from .provenance import candidate
 from .references import BodySource, Candidate, HoleSurfaceSource
 
@@ -80,6 +83,35 @@ def _build_cutter(
     return _NamedCutter(name, position, shape, faces, prism)
 
 
+def hole_positions(node: Hole) -> tuple[HolePosition, ...]:
+    if isinstance(node.pattern, CircularHolePattern):
+        step = 360 / node.pattern.count
+        return tuple(
+            HolePosition(
+                f"{node.pattern.name_prefix}{index + 1}",
+                (
+                    node.pattern.center[0]
+                    + node.pattern.radius * cos(radians(node.pattern.start_angle + index * step)),
+                    node.pattern.center[1]
+                    + node.pattern.radius * sin(radians(node.pattern.start_angle + index * step)),
+                ),
+            )
+            for index in range(node.pattern.count)
+        )
+    if isinstance(node.pattern, LinearHolePattern):
+        return tuple(
+            HolePosition(
+                f"{node.pattern.name_prefix}{index + 1}",
+                (
+                    node.pattern.start[0] + index * node.pattern.pitch * node.pattern.direction[0],
+                    node.pattern.start[1] + index * node.pattern.pitch * node.pattern.direction[1],
+                ),
+            )
+            for index in range(node.pattern.count)
+        )
+    return node.positions or (HolePosition(None, node.position),)
+
+
 def _intersecting_pairs(cutters: list[_NamedCutter], diameter: float) -> list[list[str]]:
     return [
         [first.name, second.name]
@@ -90,6 +122,21 @@ def _intersecting_pairs(cutters: list[_NamedCutter], diameter: float) -> list[li
         )
         <= diameter
     ]
+
+
+def _edge_breakouts(target: Shape, cutters: list[_NamedCutter]) -> list[str]:
+    breakouts = []
+    for cutter in cutters:
+        algorithm = BRepAlgoAPI_Cut(target.wrapped, cutter.shape.wrapped)
+        algorithm.Build()
+        wall = cutter.candidates[-1].entity
+        wall_faces = [TopoDS.Face(shape) for shape in algorithm.Modified(wall.wrapped)]
+        if wall_faces and any(
+            not isclose(BRepTools.UVBounds_s(face)[1] - BRepTools.UVBounds_s(face)[0], tau, abs_tol=1e-7)
+            for face in wall_faces
+        ):
+            breakouts.append(cutter.name)
+    return breakouts
 
 
 def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) -> None:
@@ -114,6 +161,16 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
             target=node.target,
             names=missing,
             hint="check target, position, diameter, and depth",
+        )
+    breakouts = _edge_breakouts(target, cutters)
+    if breakouts:
+        raise GraphError(
+            "INVALID_HOLE",
+            f"hole {node.id} has positions that break out of a body edge",
+            feature=node.id,
+            target=node.target,
+            names=breakouts,
+            hint="move each named member fully inside the target body",
         )
 
 
@@ -143,7 +200,7 @@ def _cutter_span(node: Hole, target: Shape) -> tuple[float, float]:
 def make_hole_tool(node: Hole, target: Shape) -> HoleTool:
     _validate_parameters(node)
     start, height = _cutter_span(node, target)
-    positions = node.positions or (HolePosition(None, node.position),)
+    positions = hole_positions(node)
     cutters = [
         _build_cutter(node, position, position.name or f"h{index}", start, height)
         for index, position in enumerate(positions, start=1)

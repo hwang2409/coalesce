@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .constrained_sketch import CONSTRAINED_SKETCH_SCHEMA
-from .graph import MAX_OUTLINE_POINTS, MIN_OUTLINE_POINTS
+from .graph import MAX_HOLE_COUNT, MAX_OUTLINE_POINTS, MIN_OUTLINE_POINTS
 from .requirements import SUPPORTED_REQUIREMENT_KINDS as EVALUATED_REQUIREMENT_KINDS
 
 SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT_KINDS)))
@@ -376,6 +376,39 @@ CHAMFER_PARAMETERS = {
     "required": ["target", "edges", "distance"],
     "additionalProperties": False,
 }
+HOLE_COUNT = {
+    "type": "integer",
+    "description": f"Member count from 1 through {MAX_HOLE_COUNT}.",
+}
+HOLE_PATTERN_COMMON = {
+    "count": HOLE_COUNT,
+    "namePrefix": {"type": "string", "minLength": 1},
+}
+CIRCULAR_HOLE_PATTERN = {
+    "type": "object",
+    "properties": {
+        "kind": {"const": "circular"},
+        "center": POINT_2D,
+        "radius": QUANTITY,
+        "startAngle": ANGLE,
+        **HOLE_PATTERN_COMMON,
+    },
+    "required": ["kind", "center", "radius", "count", "startAngle", "namePrefix"],
+    "additionalProperties": False,
+}
+LINEAR_HOLE_PATTERN = {
+    "type": "object",
+    "properties": {
+        "kind": {"const": "linear"},
+        "start": POINT_2D,
+        "direction": POINT_2D,
+        "pitch": QUANTITY,
+        **HOLE_PATTERN_COMMON,
+    },
+    "required": ["kind", "start", "direction", "pitch", "count", "namePrefix"],
+    "additionalProperties": False,
+}
+HOLE_PATTERN = {"oneOf": [CIRCULAR_HOLE_PATTERN, LINEAR_HOLE_PATTERN]}
 HOLE_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -387,12 +420,17 @@ HOLE_PARAMETERS = {
             "type": "array",
             "items": HOLE_POSITION,
             "minItems": 1,
-            "maxItems": 64,
+            "maxItems": MAX_HOLE_COUNT,
             "description": "Named XY positions in mm; names are caller identities and default to h1..hn.",
         },
+        "pattern": HOLE_PATTERN,
     },
     "required": ["target", "diameter"],
-    "oneOf": [{"required": ["position"]}, {"required": ["positions"]}],
+    "oneOf": [
+        {"required": ["position"]},
+        {"required": ["positions"]},
+        {"required": ["pattern"]},
+    ],
     "additionalProperties": False,
 }
 PCB_BASE_PARAMETERS = {
@@ -601,6 +639,29 @@ TARGET_UPDATE_SET = {
     "required": ["target"],
     "additionalProperties": False,
 }
+CIRCULAR_HOLE_PATTERN_UPDATE = {
+    "type": "object",
+    "properties": CIRCULAR_HOLE_PATTERN["properties"],
+    "required": ["kind"],
+    "minProperties": 2,
+    "additionalProperties": False,
+}
+LINEAR_HOLE_PATTERN_UPDATE = {
+    "type": "object",
+    "properties": LINEAR_HOLE_PATTERN["properties"],
+    "required": ["kind"],
+    "minProperties": 2,
+    "additionalProperties": False,
+}
+HOLE_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "target": FEATURE_TARGET,
+        "pattern": {"oneOf": [CIRCULAR_HOLE_PATTERN_UPDATE, LINEAR_HOLE_PATTERN_UPDATE]},
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
 PCB_BASE_UPDATE_SET = {
     "type": "object",
     "properties": {
@@ -692,6 +753,7 @@ FEATURE_UPDATE_SCHEMA = {
             "oneOf": [
                 EXTRUDE_UPDATE_SET,
                 TARGET_UPDATE_SET,
+                HOLE_UPDATE_SET,
                 FILLET_UPDATE_SET,
                 PCB_BASE_UPDATE_SET,
                 ENCLOSURE_BOSS_UPDATE_SET,
@@ -731,7 +793,7 @@ FEATURE_ACTION_SCHEMAS = {
 for kind, changes in {
     "extrude": EXTRUDE_UPDATE_SET,
     "cut": TARGET_UPDATE_SET,
-    "hole": TARGET_UPDATE_SET,
+    "hole": HOLE_UPDATE_SET,
     "fillet": FILLET_UPDATE_SET,
     "chamfer": CHAMFER_UPDATE_SET,
     "pcb_base": PCB_BASE_UPDATE_SET,

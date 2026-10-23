@@ -8,6 +8,7 @@ from .graph import (
     BoardImport,
     Chamfer,
     Circle,
+    CircularHolePattern,
     Cut,
     Extrude,
     Fillet,
@@ -15,6 +16,7 @@ from .graph import (
     GraphError,
     Hole,
     HolePosition,
+    LinearHolePattern,
     PcbBase,
     PcbLid,
     Plane,
@@ -156,7 +158,31 @@ def _lid_payload(node: PcbLid, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _hole_payload(node: Hole, payload: dict[str, Any]) -> dict[str, Any]:
-    payload.pop("position" if node.positions else "positions")
+    if isinstance(node.pattern, CircularHolePattern):
+        payload.pop("position")
+        payload.pop("positions")
+        payload["pattern"] = {
+            "kind": "circular",
+            "center": node.pattern.center,
+            "radius": node.pattern.radius,
+            "count": node.pattern.count,
+            "startAngle": node.pattern.start_angle,
+            "namePrefix": node.pattern.name_prefix,
+        }
+    elif isinstance(node.pattern, LinearHolePattern):
+        payload.pop("position")
+        payload.pop("positions")
+        payload["pattern"] = {
+            "kind": "linear",
+            "start": node.pattern.start,
+            "direction": node.pattern.direction,
+            "pitch": node.pattern.pitch,
+            "count": node.pattern.count,
+            "namePrefix": node.pattern.name_prefix,
+        }
+    else:
+        payload.pop("pattern")
+        payload.pop("position" if node.positions else "positions")
     return payload
 
 
@@ -229,6 +255,31 @@ def _load_hole(payload: dict[str, Any]) -> dict[str, Any]:
     payload["positions"] = tuple(
         HolePosition(item["name"], tuple(item["point"])) for item in payload.get("positions", [])
     )
+    pattern = payload.get("pattern")
+    if pattern is not None:
+        if pattern["kind"] == "circular":
+            payload["pattern"] = CircularHolePattern(
+                center=tuple(pattern["center"]),
+                radius=pattern["radius"],
+                count=pattern["count"],
+                start_angle=pattern["startAngle"],
+                name_prefix=pattern["namePrefix"],
+            )
+        elif pattern["kind"] == "linear":
+            payload["pattern"] = LinearHolePattern(
+                start=tuple(pattern["start"]),
+                direction=tuple(pattern["direction"]),
+                pitch=pattern["pitch"],
+                count=pattern["count"],
+                name_prefix=pattern["namePrefix"],
+            )
+        else:
+            raise GraphError(
+                "INVALID_DOCUMENT",
+                "hole pattern kind must be circular or linear",
+                feature=payload.get("id"),
+                field="pattern.kind",
+            )
     return payload
 
 

@@ -37,6 +37,7 @@ from .graph import (
     BoardImport,
     Chamfer,
     Circle,
+    CircularHolePattern,
     Cut,
     Extrude,
     Feature,
@@ -44,6 +45,7 @@ from .graph import (
     GraphError,
     Hole,
     HolePosition,
+    LinearHolePattern,
     PcbBase,
     PcbLid,
     Plane,
@@ -205,9 +207,11 @@ def _positive_quantity(value: Any, field: str) -> float:
     return number
 
 
-def _angle(value: Any) -> float:
+def _angle(value: Any, field: str = "rotation") -> float:
     if not isinstance(value, dict) or set(value) != {"value", "unit"}:
-        raise RequestError("INVALID_PARAMETER", "angle must contain value and unit")
+        raise RequestError(
+            "INVALID_PARAMETER", "angle must contain value and unit", field=field
+        )
     if value["unit"] not in {"deg", "rad"}:
         raise RequestError(
             "UNIT_MISMATCH",
@@ -216,10 +220,10 @@ def _angle(value: Any) -> float:
             actual=value["unit"],
         )
     if not isinstance(value["value"], (int, float)):
-        raise RequestError("INVALID_PARAMETER", "angle value must be a number", field="rotation")
-    angle = _finite_number(value["value"], "rotation")
+        raise RequestError("INVALID_PARAMETER", "angle value must be a number", field=field)
+    angle = _finite_number(value["value"], field)
     converted = math.degrees(angle) if value["unit"] == "rad" else angle
-    return _finite_number(converted, "rotation")
+    return _finite_number(converted, field)
 
 
 class Action(str, Enum):
@@ -329,6 +333,7 @@ class HoleParameters:
     diameter: float
     depth: float | None
     positions: tuple[HolePosition, ...]
+    pattern: CircularHolePattern | LinearHolePattern | None
 
 
 @dataclass(frozen=True)
@@ -451,6 +456,30 @@ class ScrewClosureChanges:
 @dataclass(frozen=True)
 class TargetChanges:
     target: FeatureTarget
+
+
+@dataclass(frozen=True)
+class CircularHolePatternChanges:
+    center: tuple[float, float] | None = None
+    radius: float | None = None
+    count: int | None = None
+    start_angle: float | None = None
+    name_prefix: str | None = None
+
+
+@dataclass(frozen=True)
+class LinearHolePatternChanges:
+    start: tuple[float, float] | None = None
+    direction: tuple[float, float] | None = None
+    pitch: float | None = None
+    count: int | None = None
+    name_prefix: str | None = None
+
+
+@dataclass(frozen=True)
+class HoleChanges:
+    target: FeatureTarget | None = None
+    pattern: CircularHolePatternChanges | LinearHolePatternChanges | None = None
 
 
 @dataclass(frozen=True)
@@ -719,7 +748,7 @@ class HoleUpdate(_Operation):
     expectedRevision: float
     requestId: str
     featureId: str
-    set: TargetChanges
+    set: HoleChanges
     kind: ClassVar[str] = "hole"
 
     @classmethod
@@ -1061,10 +1090,127 @@ def _hole_positions(parameters: dict[str, Any]) -> tuple[HolePosition, ...]:
     return positions
 
 
+def _hole_point(value: Any, field: str) -> tuple[float, float]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise RequestError("INVALID_PARAMETER", f"{field} must contain two numbers", field=field)
+    return tuple(_finite_number(item, f"{field}[{index}]") for index, item in enumerate(value))
+
+
+def _hole_count(value: Any) -> int:
+    from .graph import MAX_HOLE_COUNT
+
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_HOLE_COUNT:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"pattern.count must be an integer from 1 through {MAX_HOLE_COUNT}",
+            field="pattern.count",
+            maximum=MAX_HOLE_COUNT,
+        )
+    return value
+
+
+def _name_prefix(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "pattern.namePrefix must be a non-empty string",
+            field="pattern.namePrefix",
+        )
+    return value
+
+
+def _direction(value: Any) -> tuple[float, float]:
+    x, y = _hole_point(value, "pattern.direction")
+    length = math.hypot(x, y)
+    if length == 0:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "pattern.direction must be non-zero",
+            field="pattern.direction",
+        )
+    return x / length, y / length
+
+
+def _hole_pattern(value: Any) -> CircularHolePattern | LinearHolePattern:
+    if not isinstance(value, dict):
+        raise RequestError("INVALID_PARAMETER", "pattern must be an object", field="pattern")
+    kind = value.get("kind")
+    if kind == "circular":
+        return CircularHolePattern(
+            center=_hole_point(value.get("center"), "pattern.center"),
+            radius=_positive_quantity(value.get("radius"), "pattern.radius"),
+            count=_hole_count(value.get("count")),
+            start_angle=_angle(value.get("startAngle"), "pattern.startAngle"),
+            name_prefix=_name_prefix(value.get("namePrefix")),
+        )
+    if kind == "linear":
+        return LinearHolePattern(
+            start=_hole_point(value.get("start"), "pattern.start"),
+            direction=_direction(value.get("direction")),
+            pitch=_positive_quantity(value.get("pitch"), "pattern.pitch"),
+            count=_hole_count(value.get("count")),
+            name_prefix=_name_prefix(value.get("namePrefix")),
+        )
+    raise RequestError("INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind")
+
+
+def _hole_pattern_changes(
+    value: Any,
+) -> CircularHolePatternChanges | LinearHolePatternChanges:
+    if not isinstance(value, dict):
+        raise RequestError("INVALID_PARAMETER", "pattern must be an object", field="pattern")
+    kind = value.get("kind")
+    if kind == "circular":
+        return CircularHolePatternChanges(
+            center=_hole_point(value["center"], "pattern.center") if "center" in value else None,
+            radius=(
+                _positive_quantity(value["radius"], "pattern.radius")
+                if "radius" in value
+                else None
+            ),
+            count=_hole_count(value["count"]) if "count" in value else None,
+            start_angle=(
+                _angle(value["startAngle"], "pattern.startAngle")
+                if "startAngle" in value
+                else None
+            ),
+            name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
+        )
+    if kind == "linear":
+        return LinearHolePatternChanges(
+            start=_hole_point(value["start"], "pattern.start") if "start" in value else None,
+            direction=_direction(value["direction"]) if "direction" in value else None,
+            pitch=(
+                _positive_quantity(value["pitch"], "pattern.pitch")
+                if "pitch" in value
+                else None
+            ),
+            count=_hole_count(value["count"]) if "count" in value else None,
+            name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
+        )
+    raise RequestError("INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind")
+
+
 def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate | HoleUpdate:
     if common["action"] is Action.UPDATE:
-        return _parse_target_update(payload, common, HoleUpdate)
+        changes = payload.get("set", {})
+        return HoleUpdate(
+            **common,
+            set=HoleChanges(
+                target=(
+                    FeatureTarget(changes["target"].get("featureId"))
+                    if "target" in changes
+                    else None
+                ),
+                pattern=(
+                    _hole_pattern_changes(changes["pattern"])
+                    if "pattern" in changes
+                    else None
+                ),
+            ),
+        )
     parameters = payload.get("parameters", {})
+    pattern = _hole_pattern(parameters["pattern"]) if "pattern" in parameters else None
     return HoleCreate(
         **common,
         parameters=HoleParameters(
@@ -1073,7 +1219,8 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate |
             depth=(
                 _positive_quantity(parameters["depth"], "depth") if "depth" in parameters else None
             ),
-            positions=_hole_positions(parameters),
+            positions=() if pattern is not None else _hole_positions(parameters),
+            pattern=pattern,
         ),
     )
 
@@ -2006,8 +2153,8 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
 
 def _apply_target_update(
     graph: Any,
-    operation: CutUpdate | HoleUpdate,
-    feature_type: type[Cut | Hole],
+    operation: CutUpdate,
+    feature_type: type[Cut],
 ) -> str:
     node = graph.nodes.get(operation.featureId)
     if not isinstance(node, feature_type):
@@ -2077,7 +2224,36 @@ def _apply_cut(graph: Any, operation: CutCreate | CutUpdate) -> str:
 
 def _apply_hole(graph: Any, operation: HoleCreate | HoleUpdate) -> str:
     if isinstance(operation, HoleUpdate):
-        return _apply_target_update(graph, operation, Hole)
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, Hole):
+            raise RequestError("UNKNOWN_ID", f"unknown hole: {operation.featureId}")
+        if operation.set.target is not None:
+            target = operation.set.target.featureId
+            _validate_body_target(graph, target, "hole")
+            node.target = target
+        if operation.set.pattern is not None:
+            changes = operation.set.pattern
+            expected = (
+                CircularHolePattern
+                if isinstance(changes, CircularHolePatternChanges)
+                else LinearHolePattern
+            )
+            if not isinstance(node.pattern, expected):
+                raise RequestError(
+                    "INVALID_PARAMETER",
+                    "hole pattern update kind must match the stored pattern",
+                    feature=operation.featureId,
+                    field="pattern.kind",
+                )
+            node.pattern = replace(
+                node.pattern,
+                **{
+                    field.name: getattr(changes, field.name)
+                    for field in fields(changes)
+                    if getattr(changes, field.name) is not None
+                },
+            )
+        return operation.featureId
     parameters = operation.parameters
     _validate_body_target(graph, parameters.target.featureId, "hole")
     graph.add(
@@ -2087,6 +2263,7 @@ def _apply_hole(graph: Any, operation: HoleCreate | HoleUpdate) -> str:
             diameter=parameters.diameter,
             depth=parameters.depth,
             positions=parameters.positions,
+            pattern=parameters.pattern,
         )
     )
     return operation.featureId
@@ -2473,7 +2650,9 @@ def _kind(node: Any) -> str:
 
 
 def _hole_names(node: Hole) -> list[str | None]:
-    return [position.name for position in node.positions] or [None]
+    from .hole import hole_positions
+
+    return [position.name for position in hole_positions(node)]
 
 
 def _infer_update_kind(payload: dict[str, Any], node: Any) -> tuple[str, str | None]:
@@ -3334,7 +3513,7 @@ class DocumentService:
         }
 
     def _hole_metadata(self, result: RegenResult, node: Hole) -> dict[str, Any]:
-        from .hole import make_hole_tool
+        from .hole import hole_positions, make_hole_tool
 
         sketch = Sketch("global_xy")
         tool = make_hole_tool(node, result.shapes[node.target]).shape
@@ -3342,10 +3521,7 @@ class DocumentService:
             "frame": self._frame(sketch),
             "direction": [0.0, 0.0, 1.0],
             "toolBBox": self._bbox([tool]),
-            "positionNames": [
-                position.name
-                for position in (node.positions or (HolePosition(None, node.position),))
-            ],
+            "positionNames": [position.name for position in hole_positions(node)],
         }
 
     def _node_metadata(self, graph: Any, result: RegenResult, node_id: str) -> dict[str, Any]:
