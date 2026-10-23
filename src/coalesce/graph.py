@@ -61,6 +61,7 @@ class Polyline:
     points: tuple[tuple[float, float], ...]
     closed: bool = True
     point_ids: tuple[str, ...] = ()
+    point_ids_explicit: bool = False
 
     def __post_init__(self) -> None:
         if not self.point_ids:
@@ -73,6 +74,7 @@ class Spline:
     points: tuple[tuple[float, float], ...]
     closed: bool = True
     point_ids: tuple[str, ...] = ()
+    point_ids_explicit: bool = False
 
     def __post_init__(self) -> None:
         if not self.point_ids:
@@ -285,6 +287,7 @@ def _validate_outline(sketch: Sketch, entity: Polyline | Spline) -> None:
             entity.points,
             entity.point_ids,
             Location(),
+            point_ids_explicit=entity.point_ids_explicit,
         )
     except InvalidProfile as error:
         _unsupported_outline(sketch, entity, error.reason)

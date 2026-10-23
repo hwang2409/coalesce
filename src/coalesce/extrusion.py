@@ -89,6 +89,7 @@ def _outline_profile(entity: Polyline | Spline, location: Location) -> _Profile:
         entity.points,
         entity.point_ids,
         location,
+        point_ids_explicit=entity.point_ids_explicit,
     )
     return _Profile(
         entity.id,

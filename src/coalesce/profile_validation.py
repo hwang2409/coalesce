@@ -63,6 +63,8 @@ def build_outline_profile(
     points: tuple[tuple[float, float], ...],
     point_ids: tuple[str, ...],
     location: Location,
+    *,
+    point_ids_explicit: bool = True,
 ) -> ExactProfile:
     tolerance = profile_tolerance(list(points))
     closed_points = (*points, points[0])
@@ -93,13 +95,19 @@ def build_outline_profile(
         segments: dict[str, Edge] = {}
         topology: dict[str, tuple[str, ...]] = {}
         closed_ids = (*point_ids, point_ids[0])
+        implicit_topology = (
+            "__implicit__",
+            *(f"{x.hex()}:{y.hex()}" for x, y in points),
+        )
         for (start, end), (start_id, end_id) in zip(
             pairwise(closed_points), pairwise(closed_ids), strict=True
         ):
             builder.Add(Edge.make_line((*start, 0), (*end, 0)).moved(location).wrapped)
             role = f"seg-{start_id}-{end_id}"
             segments[role] = Edge(builder.Edge())
-            topology[role] = (start_id, end_id)
+            topology[role] = (
+                (start_id, end_id) if point_ids_explicit else implicit_topology
+            )
         wire = Wire(builder.Wire())
         return ExactProfile(checked_face(wire, tolerance), wire, segments, topology)
     except Standard_Failure as error:

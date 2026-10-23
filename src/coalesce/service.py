@@ -766,9 +766,11 @@ def _outline_entity(entity: dict[str, Any], index: int) -> Polyline | Spline:
         )
     points: list[tuple[float, float]] = []
     point_ids: list[str] = []
+    point_ids_explicit = True
     for point_index, point in enumerate(raw_points):
         if isinstance(point, (list, tuple)) and len(point) == 2:
             point_id, x, y = f"p{point_index}", point[0], point[1]
+            point_ids_explicit = False
         elif (
             isinstance(point, dict)
             and isinstance(point.get("id"), str)
@@ -788,7 +790,12 @@ def _outline_entity(entity: dict[str, Any], index: int) -> Polyline | Spline:
     if len(set(point_ids)) != len(point_ids):
         raise RequestError("INVALID_PARAMETER", "outline point ids must be unique", field="points")
     entity_type = Polyline if kind == "polyline" else Spline
-    return entity_type(_entity_id(entity, index), tuple(points), point_ids=tuple(point_ids))
+    return entity_type(
+        _entity_id(entity, index),
+        tuple(points),
+        point_ids=tuple(point_ids),
+        point_ids_explicit=point_ids_explicit,
+    )
 
 
 def _entities(payload: Any) -> tuple[Rectangle | Circle | Polyline | Spline, ...]:
