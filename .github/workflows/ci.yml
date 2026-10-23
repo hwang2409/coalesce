@@ -21,7 +21,7 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-1.64.1
       - run: npx playwright@1.64.1 install --with-deps chromium
       - run: echo "PLAYWRIGHT_MODULE=${{ github.workspace }}/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
         with: {version: latest}
       - run: uv run --extra test ruff check .
       - run: uv run --extra test --extra sketch pytest -q
