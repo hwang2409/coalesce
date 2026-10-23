@@ -959,12 +959,7 @@ def _closure_holes(node: ScrewClosure) -> list[dict]:
     return [{"id": item.name, "position": item.point} for item in node.points]
 
 
-def _validate_closure_points(
-    node: ScrewClosure,
-    cavity: Face,
-    target_candidates: list[Candidate],
-) -> None:
-    holes = _closure_holes(node)
+def _validate_closure_floor(node: ScrewClosure, cavity: Face) -> None:
     try:
         _validate_bosses(
             Standoffs(
@@ -973,7 +968,7 @@ def _validate_closure_points(
                 pilot_diameter=node.base_pilot_diameter,
             ),
             cavity,
-            holes,
+            _closure_holes(node),
         )
     except GraphError as error:
         name = error.error.pop("hole", None)
@@ -990,6 +985,9 @@ def _validate_closure_points(
                     f"screw_closure {node.id} point {name} crosses the base wall"
                 )
         raise
+
+
+def _validate_closure_overlap(node: ScrewClosure) -> None:
     for index, first in enumerate(node.points):
         for second in node.points[index + 1 :]:
             if math.dist(first.point, second.point) < node.boss_diameter:
@@ -1001,6 +999,11 @@ def _validate_closure_points(
                     point=second.name,
                     conflict=first.name,
                 )
+
+
+def _validate_closure_standoffs(
+    node: ScrewClosure, target_candidates: list[Candidate]
+) -> None:
     for point in node.points:
         probe = Cylinder(
             node.boss_diameter / 2,
@@ -1026,6 +1029,16 @@ def _validate_closure_points(
                 conflict="standoff",
                 standoff=conflict,
             )
+
+
+def _validate_closure_points(
+    node: ScrewClosure,
+    cavity: Face,
+    target_candidates: list[Candidate],
+) -> None:
+    _validate_closure_floor(node, cavity)
+    _validate_closure_overlap(node)
+    _validate_closure_standoffs(node, target_candidates)
 
 
 def build_screw_closure(
