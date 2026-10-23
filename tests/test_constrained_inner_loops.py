@@ -3,11 +3,13 @@ import math
 import pytest
 from build123d import Face, Location, import_step
 from test_constrained_profile import extrude_request, run_server, sketch_request
+from test_viewer_review_flow import call, module, open_driver, wait_for  # noqa: F401
 
 from coalesce import constrained_profile
 from coalesce.constrained_profile import MAX_PROFILE_LOOPS, build_constrained_profile
 from coalesce.references import SketchSegmentSource
 from coalesce.service import DocumentService
+from coalesce.viewer import ViewerSceneStore, ViewerServer
 
 
 def _fixed_square(prefix: str, size: float, origin: tuple[float, float]) -> tuple[list[dict], list[dict], list[dict]]:
@@ -156,6 +158,27 @@ async def test_rectangle_and_circle_hole_extrude_with_typed_segment_sources_afte
     assert all(isinstance(source, SketchSegmentSource) for source in sources.values())
     assert sources["side(outer-edge0)"].topology == ("outer-p0", "outer-p1")
     assert sources["side(hole)"].topology == ("hole-center",)
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_constrained_inner_circle_is_named_in_browser_part_facts(module, viewport, tmp_path):  # noqa: F811
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "opening.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        assert call(service, "sketch", sketch_request(_rectangle_circle_model()))["ok"]
+        assert call(service, "feature", extrude_request())["ok"]
+        wait_for(store, 2)
+        shown = step("inner-opening", wait={"revision": 2}, do=[{"tapPart": 0}])
+        assert "1 opening" in shown["parts"][0]
+        assert "⌀4 mm" in shown["parts"][0]
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
 
 
 @pytest.mark.anyio

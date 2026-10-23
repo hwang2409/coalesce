@@ -120,13 +120,18 @@
     </div>
 
     <nav class="views" aria-label="Camera">
-      <div class="segmented" role="group" aria-label="View direction">
-        <button type="button" data-view="iso" aria-pressed="false" disabled>Iso</button>
-        <button type="button" data-view="front" aria-pressed="false" disabled>Front</button>
-        <button type="button" data-view="right" aria-pressed="false" disabled>Right</button>
-        <button type="button" data-view="top" aria-pressed="false" disabled>Top</button>
-      </div>
-      <button type="button" class="fit" id="fit" disabled><span id="fit-text">Fit</span></button>
+      <details id="camera-menu" open>
+        <summary>View</summary>
+        <div class="camera-actions">
+          <div class="segmented" role="group" aria-label="View direction">
+            <button type="button" data-view="iso" aria-pressed="false" disabled>Iso</button>
+            <button type="button" data-view="front" aria-pressed="false" disabled>Front</button>
+            <button type="button" data-view="right" aria-pressed="false" disabled>Right</button>
+            <button type="button" data-view="top" aria-pressed="false" disabled>Top</button>
+          </div>
+          <button type="button" class="fit" id="fit" disabled><span id="fit-text">Fit</span></button>
+        </div>
+      </details>
     </nav>
   </div>
 </main>

@@ -718,15 +718,17 @@ def _closure_faces(result: Any, feature: str, role: str) -> dict[Any, Face]:
     }
 
 
+def _face_axis(face: Face) -> tuple[float, float]:
+    box = face.bounding_box()
+    return ((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2)
+
+
 def _axes_are_coaxial(
     pilots: dict[Any, Face], clearances: dict[Any, Face], names: list[str]
 ) -> bool:
-    def axis(face: Face) -> tuple[float, float]:
-        box = face.bounding_box()
-        return ((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2)
-
     return set(pilots) == set(clearances) == set(names) and all(
-        math.dist(axis(pilots[name]), axis(clearances[name])) <= _TOLERANCE for name in names
+        math.dist(_face_axis(pilots[name]), _face_axis(clearances[name])) <= _TOLERANCE
+        for name in names
     )
 
 
@@ -737,11 +739,28 @@ def _screw_closure_measurement(
     pilots = _closure_faces(result, node.id, "screw_pilot_wall")
     clearances = _closure_faces(result, node.id, "screw_clearance_wall")
     names = [point.name for point in node.points]
-    walls = [
-        bosses[name].radius - pilots[name].radius
-        for name in names
-        if name in bosses and name in pilots
-    ]
+    points = []
+    for name in names:
+        wall = (
+            _quantity(bosses[name].radius - pilots[name].radius)
+            if name in bosses and name in pilots
+            else {"status": "unknown", "reason": "boss or pilot wall evidence is missing"}
+        )
+        coaxial = (
+            math.dist(_face_axis(pilots[name]), _face_axis(clearances[name])) <= _TOLERANCE
+            if name in pilots and name in clearances
+            else None
+        )
+        status = (
+            "UNKNOWN"
+            if wall.get("status") == "unknown" or coaxial is None
+            else "PASS"
+            if wall["value"] + _TOLERANCE >= (node.boss_diameter - node.base_pilot_diameter) / 2
+            and coaxial
+            else "FAIL"
+        )
+        points.append({"name": name, "residualWall": wall, "coaxial": coaxial, "status": status})
+    walls = [point["residualWall"]["value"] for point in points if point["status"] != "UNKNOWN"]
     residual = (
         _quantity(min(walls))
         if len(walls) == len(names)
@@ -751,6 +770,7 @@ def _screw_closure_measurement(
         "featureId": node.id,
         "count": len(pilots),
         "names": names,
+        "points": points,
         "coaxial": _axes_are_coaxial(pilots, clearances, names),
         "minimumResidualWall": residual,
         "interference": {

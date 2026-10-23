@@ -3,7 +3,7 @@ import * as THREE from './vendor/three-0.186.1/three.module.js';
 import { OrbitControls } from './vendor/three-0.186.1/OrbitControls.js';
 
 const BACKGROUND = 0xe4e8eb;
-const EDGE = 0x1d2329;
+const EDGE = 0x101820;
 const VIEWS = {
   iso: [1, -1, 0.8],
   front: [0, -1, 0],
@@ -106,6 +106,8 @@ new ResizeObserver(requestRender).observe(canvas);
 // ---- scale bar: a round length of about 100 px at the current zoom (48 px on narrow screens)
 
 const narrow = matchMedia('(max-width: 720px)');
+$('camera-menu').open = !narrow.matches;
+narrow.addEventListener('change', () => { $('camera-menu').open = !narrow.matches; });
 const scalePx = () => (narrow.matches ? 48 : 100);
 
 function niceLength(target) {
@@ -524,7 +526,7 @@ function fitRow(row, key) {
       }
       showPart({ key, partId: row.partId });
       part.focus({ preventScroll: true });
-      part.scrollIntoView({ block: 'nearest' });
+      if (!narrow.matches) part.scrollIntoView({ block: 'nearest' });
     });
   }
   item.dataset.key = key;
@@ -569,6 +571,20 @@ function evidenceLine(row) {
   return `${what}: ${row.value}, ${(STATUS_TEXT[row.status] ?? row.status).toLowerCase()}`;
 }
 
+function pointEvidence(row) {
+  if (row.id !== 'screw_closure' || !row.evidence?.points) return [];
+  return row.evidence.points.toSorted((a, b) => severity(a) - severity(b)).map((point) => {
+    const wall = point.residualWall?.value;
+    const measured = wall === undefined ? 'wall not measured' : `wall ${formatMm(wall)} mm`;
+    const axis = point.coaxial === null ? 'axis not measured' : point.coaxial ? 'coaxial' : 'not coaxial';
+    const line = document.createElement('li');
+    line.dataset.point = point.name;
+    line.dataset.status = point.status;
+    line.textContent = `${point.name}: ${measured}, ${axis} — ${point.status.toLowerCase()}`;
+    return line;
+  });
+}
+
 function renderInspection(fit) {
   $('inspection').hidden = !fit.length;
   const rows = fit.flatMap((summary) => summary.rows);
@@ -596,7 +612,7 @@ function renderInspection(fit) {
       list.append(item);
       const line = document.createElement('li');
       line.textContent = evidenceLine(row);
-      evidence.append(line);
+      evidence.append(line, ...pointEvidence(row));
     }
   }
   const raw = fit.map(({ baseId, rows: measured }) => ({
@@ -1217,6 +1233,9 @@ if (window.coalesceDebug === true) {
       positions: model.children.map((group) => group.position.toArray()),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
+      edgeStyle: model.children[0]
+        ? { color: `#${model.children[0].children[1].material.color.getHexString()}`, opacity: model.children[0].children[1].material.opacity }
+        : null,
       zRanges: model.children.map((group) => {
         const { min, max } = new THREE.Box3().setFromObject(surfaceOf(group));
         return [min.z, max.z];

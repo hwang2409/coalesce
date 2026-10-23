@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .graph import BoardImport, PcbBase, PcbLid, PortCutout, ScrewClosure, Standoffs
+from .graph import BoardImport, Extrude, PcbBase, PcbLid, PortCutout, ScrewClosure, Standoffs
 from .requirements import evaluate
 
 _LOG = logging.getLogger(__name__)
@@ -410,6 +410,29 @@ def _base_facts(result: Any, base: PcbBase) -> list[dict[str, Any]]:
     return facts
 
 
+def _opening_facts(result: Any, node: Extrude) -> tuple[dict[str, Any], ...]:
+    from build123d import GeomType, Location
+
+    from .constrained_profile import build_constrained_profile
+
+    sketch = result.graph.nodes[node.sketch]
+    if sketch.constrained is None:
+        return ()
+    profile = build_constrained_profile(sketch.constrained, sketch.id, Location())
+    openings = []
+    for wire in profile.face.inner_wires():
+        edges = wire.edges()
+        if len(edges) == 1 and edges[0].geom_type == GeomType.CIRCLE:
+            openings.append(f"⌀{_mm(2 * edges[0].radius)} mm")
+        else:
+            box = wire.bounding_box()
+            openings.append(f"{_mm(box.size.X)} × {_mm(box.size.Y)} mm")
+    if not openings:
+        return ()
+    label = f"{len(openings)} opening" + ("" if len(openings) == 1 else "s")
+    return (_fact(label, ", ".join(openings)),)
+
+
 def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
     """What the committed features say about the part whose body ``source_feature`` made."""
     node = result.graph.nodes[source_feature]
@@ -424,6 +447,8 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
         )
     if isinstance(node, PcbBase):
         return tuple(_base_facts(result, node))
+    if isinstance(node, Extrude):
+        return _opening_facts(result, node)
     if isinstance(node, PcbLid):
         if node.lip_depth is None or node.lip_width is None:
             # the fit gap only spaces a lip from the walls; a slab lid has none to report

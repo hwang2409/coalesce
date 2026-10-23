@@ -258,7 +258,16 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert escaped["focused"].startswith("FAILStandoffs")
         assert escaped["description"].startswith("All parts shown. Revision 5,")
         # a section and a shown part: Escape in the section controls ends the section first, the next shows all
-        step("fit-row-section", do=[{"fitRow": 0}, {"click": "Section"}, {"settle": True}, {"focus": "#section-range"}])
+        sectioned = step(
+            "fit-row-section",
+            do=[{"fitRow": 0}, {"click": "Section"}, {"settle": True}, {"fit": True}, {"focus": "#section-range"}],
+        )
+        if viewport[0] < 720:
+            fit_state = sectioned["actions"][3]
+            selected_box = fit_state["rows"][0]["box"]
+            assert fit_state["countVisible"] is True
+            assert fit_state["panelBox"]["top"] <= selected_box["top"]
+            assert selected_box["bottom"] <= fit_state["panelBox"]["bottom"]
         first = step("fit-row-section-escape", do=[{"key": "Escape"}, {"settle": True}])
         assert first["focused"] == "Assembled"
         assert first["scene"]["cut"] == [False] * 3 and first["scene"]["faded"].count(False) == 1
@@ -280,6 +289,37 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert ["Standoffs", "2 × ⌀5 mm, pilot ⌀1.6 mm"] in opened["facts"]
         raw = step("fit-evidence-raw", do=[{"rawEvidence": True}, {"fit": True}])["actions"][1]
         assert raw["rawOpen"] is True and H1 in raw["raw"]
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
+
+
+def test_failing_screw_point_is_named_first_in_browser_evidence(module):  # noqa: F811
+    store = ViewerSceneStore()
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, (1280, 800))
+    evidence = {
+        "points": [
+            {"name": "front-left", "residualWall": {"value": 1.2}, "coaxial": True, "status": "PASS"},
+            {"name": "rear-right", "residualWall": {"value": 0.8}, "coaxial": False, "status": "FAIL"},
+        ]
+    }
+    fit = [{"baseId": "base", "rows": [{
+        "id": "screw_closure", "label": "Screw closure", "status": "FAIL",
+        "value": "2 points, 0.8 mm minimum wall, not coaxial, no interference",
+        "partId": "base", "evidence": evidence,
+    }]}]
+    try:
+        step("empty", wait={"ready": True})
+        store.publish(1, [ScenePart("base", plate(6))], fit=fit)
+        shown = step("screw-points", wait={"revision": 1}, do=[{"evidence": True}, {"fit": True}])
+        points = [line for line in shown["actions"][1]["evidence"] if line.startswith(("front-left", "rear-right"))]
+        assert points == [
+            "rear-right: wall 0.8 mm, not coaxial — fail",
+            "front-left: wall 1.2 mm, coaxial — pass",
+        ]
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

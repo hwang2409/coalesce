@@ -443,8 +443,9 @@ def test_enclosure_rounds_and_part_rows_in_a_real_browser(module, viewport, tmp_
         ]:
             result = call(service, tool, arguments)
             assert result.get("ok"), result
-        shown = step("enclosure", wait={"revision": 3})
+        shown = step("enclosure", wait={"revision": 3}, do=[{"edgeStyle": True}])
         assert [name.strip() for name in shown["names"]] == ["pcb reference", "base"]
+        assert shown["actions"][0] == {"color": "#101820", "opacity": 1}
 
         board, base = store.scene(3)["parts"]
         # 5 mm bosses, their 1.6 mm pilots, and the board's 1.5 mm drill: each drawn circle has

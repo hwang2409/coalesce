@@ -132,6 +132,13 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
         assert state["section"]["value"] == pytest.approx(
             (state["section"]["min"] + state["section"]["max"]) / 2, abs=0.05)
         assert_clear_layout(state)
+        if viewport[0] < 720:
+            assert state["boxes"]["#camera-menu > summary"] is not None
+            assert state["boxes"][".views .segmented"] is None
+            assert state["boxes"]["#section-controls"]["height"] <= 42
+        else:
+            assert state["boxes"]["#camera-menu > summary"] is None
+            assert state["boxes"][".views .segmented"] is not None
 
         moved = step("review-section-moved", do=[
             {"fill": {"label": "Section position in mm", "value": STANDOFF_Y}}, {"settle": True},
