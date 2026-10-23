@@ -449,6 +449,18 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
     assert "new-rear" in sources
 
 
+def test_closure_inspection_measures_wall_from_exact_faces(tmp_path):
+    from coalesce.enclosure_inspection import inspect_enclosure
+
+    service = enclosure(tmp_path, mounts=True)
+    assert service.feature(closure_request(revision=4))["ok"]
+    service._regen.graph.nodes["closure"].boss_diameter = 10
+
+    measured = inspect_enclosure(service._regen.graph, service._regen, "base")
+
+    assert measured["screwClosures"][0]["minimumResidualWall"]["value"] == pytest.approx(1.2)
+
+
 def test_screw_requirement_uses_explicit_minimum_wall():
     from coalesce.requirements import evaluate
 

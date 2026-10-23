@@ -717,9 +717,20 @@ def _screw_closures(
     for node in graph.ordered():
         if not isinstance(node, ScrewClosure) or node.base != base.id:
             continue
+        bosses = _closure_faces(result, node.id, "screw_boss_side")
         pilots = _closure_faces(result, node.id, "screw_pilot_wall")
         clearances = _closure_faces(result, node.id, "screw_clearance_wall")
         names = [point.name for point in node.points]
+        walls = [
+            bosses[name].radius - pilots[name].radius
+            for name in names
+            if name in bosses and name in pilots
+        ]
+        residual = (
+            _quantity(min(walls))
+            if len(walls) == len(names)
+            else {"status": "unknown", "reason": "boss or pilot wall evidence is missing"}
+        )
         lid_part = parts[lid_parts[node.lid]]
         inspected.append(
             {
@@ -727,9 +738,7 @@ def _screw_closures(
                 "count": len(pilots),
                 "names": names,
                 "coaxial": _axes_are_coaxial(pilots, clearances, names),
-                "minimumResidualWall": _quantity(
-                    (node.boss_diameter - node.base_pilot_diameter) / 2
-                ),
+                "minimumResidualWall": residual,
                 "interference": {
                     "value": _common_volume(base_part.shape, lid_part.shape),
                     "unit": "mm^3",
