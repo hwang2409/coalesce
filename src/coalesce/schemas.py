@@ -514,7 +514,11 @@ SCREW_CLOSURE_PARAMETERS = {
         "lidClearanceDiameter": POSITIVE_QUANTITY,
     },
     "required": [
-        "base", "lid", "points", "basePilotDiameter", "bossDiameter",
+        "base",
+        "lid",
+        "points",
+        "basePilotDiameter",
+        "bossDiameter",
         "lidClearanceDiameter",
     ],
     "additionalProperties": False,
@@ -637,6 +641,17 @@ PORT_CUTOUT_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+SCREW_CLOSURE_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "points": SCREW_CLOSURE_PARAMETERS["properties"]["points"],
+        "basePilotDiameter": POSITIVE_QUANTITY,
+        "bossDiameter": POSITIVE_QUANTITY,
+        "lidClearanceDiameter": POSITIVE_QUANTITY,
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
 PCB_LID_UPDATE_SET = {
     "type": "object",
     "properties": {
@@ -673,6 +688,7 @@ FEATURE_UPDATE_SCHEMA = {
                 STANDOFFS_UPDATE_SET,
                 PCB_LID_UPDATE_SET,
                 PORT_CUTOUT_ROOT_UPDATE_SET,
+                SCREW_CLOSURE_UPDATE_SET,
             ]
         },
     },
@@ -714,6 +730,7 @@ for kind, changes in {
     "standoffs": STANDOFFS_UPDATE_SET,
     "pcb_lid": PCB_LID_UPDATE_SET,
     "port_cutout": PORT_CUTOUT_UPDATE_SET,
+    "screw_closure": SCREW_CLOSURE_UPDATE_SET,
 }.items():
     FEATURE_ACTION_SCHEMAS[("update", kind)] = {
         **FEATURE_UPDATE_SCHEMA,

@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import pytest
 from build123d import Face, GeomType
@@ -44,6 +45,15 @@ def enclosure(tmp_path: Path, *, mounts=False) -> DocumentService:
         assert service.feature(standoffs_request())["ok"]
     assert service.feature(lid_request(revision=3 if mounts else 2, include_lip=False))["ok"]
     return service
+
+
+def _wait_for_scene(store, revision):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if (scene := store.scene(revision)) is not None:
+            return scene
+        time.sleep(0.02)
+    raise AssertionError("viewer publication timed out")
 
 
 def _closure_faces(service, role):
@@ -369,7 +379,7 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
     assert service.feature(standoffs_request())["ok"]
     assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
     assert service.feature(closure_request(revision=4))["ok"]
-    created_scene = store.snapshot()
+    created_scene = _wait_for_scene(store, 5)
     assert created_scene["change"]["summary"] == (
         "added screw closure: 4 points, pilot 1.6 mm, boss 4 mm, clearance 2.4 mm"
     )
@@ -378,6 +388,17 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
     )
     assert closure_row["status"] == "PASS"
     assert closure_row["value"] == "4 points, 1.2 mm minimum wall, coaxial, no interference"
+    failed = service.feature(
+        {
+            "action": "update",
+            "expectedRevision": 5,
+            "requestId": "bad-closure",
+            "featureId": "closure",
+            "kind": "screw_closure",
+            "set": {"bossDiameter": quantity(1)},
+        }
+    )
+    assert failed["ok"] is False
     updated_points = [*POINTS[:3], {"name": "new-rear", "point": [15, 12.5]}]
     response = service.feature(
         {
@@ -398,7 +419,7 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
     node = service._regen.graph.nodes["closure"]
     assert node.id == "closure"
     assert [point.name for point in node.points] == [point["name"] for point in updated_points]
-    scene = store.snapshot()
+    scene = _wait_for_scene(store, 6)
     assert scene["change"]["summary"] == (
         "updated screw closure: 4 points, pilot 1.8 mm, boss 4.4 mm, clearance 2.8 mm"
     )

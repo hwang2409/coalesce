@@ -441,6 +441,14 @@ class PortCutoutChanges:
 
 
 @dataclass(frozen=True)
+class ScrewClosureChanges:
+    points: tuple[ScrewPoint, ...] | None = None
+    basePilotDiameter: float | None = None
+    bossDiameter: float | None = None
+    lidClearanceDiameter: float | None = None
+
+
+@dataclass(frozen=True)
 class TargetChanges:
     target: FeatureTarget
 
@@ -650,6 +658,20 @@ class PortCutoutUpdate(_Operation):
 
 
 @dataclass(frozen=True)
+class ScrewClosureUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: ScrewClosureChanges
+    kind: ClassVar[str] = "screw_closure"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
 class FilletUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -724,6 +746,7 @@ MutationOperation = (
     | PcbLidCreate
     | PortCutoutCreate
     | ScrewClosureCreate
+    | ScrewClosureUpdate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
@@ -1357,12 +1380,7 @@ def _parse_port_cutout(
     )
 
 
-def _parse_screw_closure(payload: dict[str, Any], common: dict[str, Any]) -> ScrewClosureCreate:
-    if common["action"] is Action.UPDATE:
-        raise RequestError("INVALID_PARAMETER", "screw_closure does not support update")
-    feature = common["featureId"]
-    values = payload.get("parameters", {})
-    raw_points = values.get("points")
+def _parse_screw_points(raw_points: Any, feature: str) -> tuple[ScrewPoint, ...]:
     if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= 8:
         raise RequestError(
             "INVALID_PARAMETER",
@@ -1389,12 +1407,56 @@ def _parse_screw_closure(payload: dict[str, Any], common: dict[str, Any]) -> Scr
             feature=feature,
             parameter="points",
         )
+    return tuple(points)
+
+
+def _parse_screw_closure(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> ScrewClosureCreate | ScrewClosureUpdate:
+    feature = common["featureId"]
+    update = common["action"] is Action.UPDATE
+    values = payload.get("set" if update else "parameters", {})
+    if not isinstance(values, dict):
+        raise RequestError("INVALID_PARAMETER", "screw_closure values must be an object")
+    if update:
+        allowed = {"points", "basePilotDiameter", "bossDiameter", "lidClearanceDiameter"}
+        if not values or not set(values) <= allowed:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "screw_closure update requires points or a diameter",
+                feature=feature,
+            )
+        return ScrewClosureUpdate(
+            **common,
+            set=ScrewClosureChanges(
+                points=_parse_screw_points(values["points"], feature)
+                if "points" in values
+                else None,
+                basePilotDiameter=(
+                    _feature_quantity(values["basePilotDiameter"], "basePilotDiameter", feature)
+                    if "basePilotDiameter" in values
+                    else None
+                ),
+                bossDiameter=(
+                    _feature_quantity(values["bossDiameter"], "bossDiameter", feature)
+                    if "bossDiameter" in values
+                    else None
+                ),
+                lidClearanceDiameter=(
+                    _feature_quantity(
+                        values["lidClearanceDiameter"], "lidClearanceDiameter", feature
+                    )
+                    if "lidClearanceDiameter" in values
+                    else None
+                ),
+            ),
+        )
     return ScrewClosureCreate(
         **common,
         parameters=ScrewClosureParameters(
             base=FeatureTarget(values.get("base", {}).get("featureId")),
             lid=FeatureTarget(values.get("lid", {}).get("featureId")),
-            points=tuple(points),
+            points=_parse_screw_points(values.get("points"), feature),
             basePilotDiameter=_feature_quantity(
                 values.get("basePilotDiameter"), "basePilotDiameter", feature
             ),
@@ -1419,6 +1481,7 @@ def _parse_feature(
     | PcbLidCreate
     | PortCutoutCreate
     | ScrewClosureCreate
+    | ScrewClosureUpdate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
@@ -2250,7 +2313,42 @@ def _apply_port_cutout(graph: Any, operation: PortCutoutCreate | PortCutoutUpdat
     return _create_port_cutout(graph, operation)
 
 
-def _apply_screw_closure(graph: Any, operation: ScrewClosureCreate) -> str:
+def _validate_screw_closure_diameters(
+    feature: str, pilot: float, boss: float, clearance: float
+) -> None:
+    if pilot >= boss:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "basePilotDiameter must be smaller than bossDiameter",
+            feature=feature,
+            parameter="basePilotDiameter",
+        )
+    if clearance <= pilot:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "lidClearanceDiameter must exceed basePilotDiameter",
+            feature=feature,
+            parameter="lidClearanceDiameter",
+        )
+
+
+def _apply_screw_closure(graph: Any, operation: ScrewClosureCreate | ScrewClosureUpdate) -> str:
+    if isinstance(operation, ScrewClosureUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, ScrewClosure):
+            raise RequestError("UNKNOWN_ID", f"unknown screw_closure: {operation.featureId}")
+        changes = operation.set
+        pilot = changes.basePilotDiameter or node.base_pilot_diameter
+        boss = changes.bossDiameter or node.boss_diameter
+        clearance = changes.lidClearanceDiameter or node.lid_clearance_diameter
+        _validate_screw_closure_diameters(operation.featureId, pilot, boss, clearance)
+        if changes.points is not None:
+            node.points = changes.points
+        node.base_pilot_diameter = pilot
+        node.boss_diameter = boss
+        node.lid_clearance_diameter = clearance
+        return operation.featureId
+
     parameters = operation.parameters
     base = graph.nodes.get(parameters.base.featureId)
     lid = graph.nodes.get(parameters.lid.featureId)
@@ -2268,20 +2366,12 @@ def _apply_screw_closure(graph: Any, operation: ScrewClosureCreate) -> str:
             feature=operation.featureId,
             parameter="lid",
         )
-    if parameters.basePilotDiameter >= parameters.bossDiameter:
-        raise RequestError(
-            "INVALID_PARAMETER",
-            "basePilotDiameter must be smaller than bossDiameter",
-            feature=operation.featureId,
-            parameter="basePilotDiameter",
-        )
-    if parameters.lidClearanceDiameter <= parameters.basePilotDiameter:
-        raise RequestError(
-            "INVALID_PARAMETER",
-            "lidClearanceDiameter must exceed basePilotDiameter",
-            feature=operation.featureId,
-            parameter="lidClearanceDiameter",
-        )
+    _validate_screw_closure_diameters(
+        operation.featureId,
+        parameters.basePilotDiameter,
+        parameters.bossDiameter,
+        parameters.lidClearanceDiameter,
+    )
     graph.add(
         ScrewClosure(
             operation.featureId,
@@ -2322,6 +2412,7 @@ def _apply_feature(
         PortCutoutCreate: _apply_port_cutout,
         PortCutoutUpdate: _apply_port_cutout,
         ScrewClosureCreate: _apply_screw_closure,
+        ScrewClosureUpdate: _apply_screw_closure,
     }[type(operation)]
     if isinstance(
         operation,
@@ -2615,6 +2706,11 @@ def _edit_record(operation: MutationOperation) -> dict[str, Any] | None:
         "standoffs": {"bossDiameter": "bossDiameter", "pilotDiameter": "pilotDiameter"},
         "pcb_lid": {"thickness": "thickness", "fitGap": "fitGap"},
         "port_cutout": {"clearance": "clearance"},
+        "screw_closure": {
+            "basePilotDiameter": "basePilotDiameter",
+            "bossDiameter": "bossDiameter",
+            "lidClearanceDiameter": "lidClearanceDiameter",
+        },
     }.get(kind, {})
     fields = {
         public: {"value": value, "unit": "mm"}
