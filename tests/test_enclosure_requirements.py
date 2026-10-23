@@ -309,6 +309,25 @@ def test_clean_base_passes_measured_requirements(tmp_path):
     assert all(result["revision"] == service.revision for result in response["results"])
 
 
+def test_incomplete_inspection_returns_structured_reason(tmp_path, monkeypatch):
+    import coalesce.enclosure_inspection
+
+    service = _service(tmp_path, holes=["hole-03e3c0594f5f1b105237c4c0"])
+
+    def incomplete(*_args, **_kwargs):
+        raise ValueError("not enough values to unpack")
+
+    monkeypatch.setattr(coalesce.enclosure_inspection, "inspect_enclosure", incomplete)
+    response = service.check(
+        {"action": "evaluate", "base": "base", "requirements": [{"id": "mounts", "kind": "mounting_holes"}]}
+    )
+
+    error = response["error"]
+    assert error["code"] == "INSPECTION_FAILED"
+    assert error["reason"] == "enclosure geometry evidence is incomplete"
+    assert "not enough values to unpack" not in str(error)
+
+
 def test_inspection_failure_keeps_exception_text_out_of_message(tmp_path, monkeypatch):
     import coalesce.enclosure_inspection
 

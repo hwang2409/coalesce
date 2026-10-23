@@ -713,44 +713,46 @@ def _axes_are_coaxial(
     )
 
 
+def _screw_closure_measurement(
+    result: Any, node: ScrewClosure, base_part: TerminalPart, lid_part: TerminalPart
+) -> dict[str, Any]:
+    bosses = _closure_faces(result, node.id, "screw_boss_side")
+    pilots = _closure_faces(result, node.id, "screw_pilot_wall")
+    clearances = _closure_faces(result, node.id, "screw_clearance_wall")
+    names = [point.name for point in node.points]
+    walls = [
+        bosses[name].radius - pilots[name].radius
+        for name in names
+        if name in bosses and name in pilots
+    ]
+    residual = (
+        _quantity(min(walls))
+        if len(walls) == len(names)
+        else {"status": "unknown", "reason": "boss or pilot wall evidence is missing"}
+    )
+    return {
+        "featureId": node.id,
+        "count": len(pilots),
+        "names": names,
+        "coaxial": _axes_are_coaxial(pilots, clearances, names),
+        "minimumResidualWall": residual,
+        "interference": {
+            "value": _common_volume(base_part.shape, lid_part.shape),
+            "unit": "mm^3",
+        },
+    }
+
+
 def _screw_closures(
     graph: Any, result: Any, base: PcbBase, base_part: TerminalPart, lids: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    inspected = []
     lid_parts = {item["featureId"]: item["partId"] for item in lids}
     parts = {part.part_id: part for part in terminal_parts(result, role="manufacturing")}
-    for node in graph.ordered():
-        if not isinstance(node, ScrewClosure) or node.base != base.id:
-            continue
-        bosses = _closure_faces(result, node.id, "screw_boss_side")
-        pilots = _closure_faces(result, node.id, "screw_pilot_wall")
-        clearances = _closure_faces(result, node.id, "screw_clearance_wall")
-        names = [point.name for point in node.points]
-        walls = [
-            bosses[name].radius - pilots[name].radius
-            for name in names
-            if name in bosses and name in pilots
-        ]
-        residual = (
-            _quantity(min(walls))
-            if len(walls) == len(names)
-            else {"status": "unknown", "reason": "boss or pilot wall evidence is missing"}
-        )
-        lid_part = parts[lid_parts[node.lid]]
-        inspected.append(
-            {
-                "featureId": node.id,
-                "count": len(pilots),
-                "names": names,
-                "coaxial": _axes_are_coaxial(pilots, clearances, names),
-                "minimumResidualWall": residual,
-                "interference": {
-                    "value": _common_volume(base_part.shape, lid_part.shape),
-                    "unit": "mm^3",
-                },
-            }
-        )
-    return inspected
+    return [
+        _screw_closure_measurement(result, node, base_part, parts[lid_parts[node.lid]])
+        for node in graph.ordered()
+        if isinstance(node, ScrewClosure) and node.base == base.id
+    ]
 
 
 def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:

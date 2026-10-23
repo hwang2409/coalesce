@@ -326,6 +326,77 @@ def test_refresh_that_moves_board_under_boss_fails_atomically(tmp_path):
     assert service.query({"select": {"kind": "revision"}})["revision"] == 5
 
 
+@pytest.mark.parametrize(
+    ("target", "preserved_role"),
+    [("base", "screw_clearance_wall"), ("lid", "screw_pilot_wall")],
+)
+def test_later_hole_preserves_other_closure_body_contract(tmp_path, target, preserved_role):
+    from coalesce.viewer import ViewerSceneStore
+
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / f"{target}-hole.coalesce.json", scene_store=store)
+    assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
+    assert service.feature(base_request(clearance=quantity(5)))["ok"]
+    assert service.feature(normal_standoffs_request())["ok"]
+    assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
+    assert service.feature(closure_request(revision=4))["ok"]
+
+    before_scene = _wait_for_scene(store, 5)
+    before_preflight = service.export(
+        {
+            "action": "preflight",
+            "expectedRevision": 5,
+            "base": "base",
+            "requirements": [
+                {"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)}
+            ],
+        }
+    )
+    assert service.feature(
+        hole(
+            request_id=f"{target}-hole",
+            revision=5,
+            feature_id=f"{target}-hole",
+            target=target,
+            position=(10, 4),
+            diameter=1,
+        )
+    )["ok"]
+
+    preserved = [
+        item
+        for item in service._regen.provenance["closure"]
+        if item.key.role == preserved_role
+    ]
+    assert len(preserved) == len(POINTS)
+    checked = service.check(
+        {
+            "action": "evaluate",
+            "base": "base",
+            "requirements": [
+                {"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)}
+            ],
+        }
+    )
+    assert checked["gate"] == "PASS"
+    after_scene = _wait_for_scene(store, 6)
+    assert [part["name"] for part in after_scene["parts"]] == [
+        part["name"] for part in before_scene["parts"]
+    ]
+    after_preflight = service.export(
+        {
+            "action": "preflight",
+            "expectedRevision": 6,
+            "base": "base",
+            "requirements": [
+                {"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)}
+            ],
+        }
+    )
+    assert after_preflight["ready"] == before_preflight["ready"] is True
+    assert after_preflight["partIds"] == before_preflight["partIds"]
+
+
 def test_later_holes_replace_only_the_requested_closure_body(tmp_path):
     document = tmp_path / "closure.coalesce.json"
     service = enclosure(tmp_path, mounts=True)

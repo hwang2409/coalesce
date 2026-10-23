@@ -3914,7 +3914,16 @@ class DocumentService:
                 invalidHoleIds=error.invalid_hole_ids,
                 validHoles=error.valid_holes,
             )
-        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        except ValueError:
+            return [], _safe_error(
+                self._document.revision,
+                None,
+                "INSPECTION_FAILED",
+                "enclosure inspection could not be completed",
+                operation="check",
+                reason="enclosure geometry evidence is incomplete",
+            )
+        except (KeyError, TypeError, RuntimeError) as error:
             return [], _safe_error(
                 self._document.revision,
                 None,

@@ -85,6 +85,9 @@ class BodyLineage:
     def replace(self, target: str, feature: str, shape: Any, candidates: list[Candidate]) -> None:
         bodies = self._coherent_bodies(target)
         previous = self.terminal(target)
+        previous_candidates = [
+            candidate for body in bodies for candidate in self.terminal_states[body]
+        ]
         self.predecessors[feature] = previous
         self.feature_bodies[feature] = bodies
         for body in bodies:
@@ -95,7 +98,7 @@ class BodyLineage:
                 candidate for candidate in candidates if candidate.key.body == body
             ]
         self._refresh_superseded(previous)
-        self._replace_provenance(self.states[previous], candidates)
+        self._replace_provenance(previous_candidates, candidates)
 
     def replace_many(
         self,
@@ -111,6 +114,9 @@ class BodyLineage:
                 feature=feature,
             )
         previous = {body: self.terminals[body] for body in bodies}
+        previous_candidates = [
+            candidate for body in bodies for candidate in self.terminal_states[body]
+        ]
         self.feature_bodies[feature] = bodies
         for body, (shape, candidates) in outputs.items():
             self.body_predecessors[feature, body] = previous[body]
@@ -120,7 +126,7 @@ class BodyLineage:
         for predecessor in previous.values():
             self._refresh_superseded(predecessor)
         self._replace_provenance(
-            [candidate for terminal in previous.values() for candidate in self.states[terminal]],
+            previous_candidates,
             [candidate for _, candidates in outputs.values() for candidate in candidates],
         )
 
@@ -132,6 +138,12 @@ class BodyLineage:
         groups: dict[str, list[Candidate]] = {}
         for item in current:
             groups.setdefault(item.key.feature, []).append(item)
+        replaced_bodies = _body_sources(previous)
         affected = {item.key.feature for item in previous} | set(groups)
         for feature in affected:
-            self.provenance[feature] = groups.get(feature, [])
+            retained = [
+                item
+                for item in self.provenance.get(feature, [])
+                if item.key.body not in replaced_bodies
+            ]
+            self.provenance[feature] = [*retained, *groups.get(feature, [])]
