@@ -2349,6 +2349,45 @@ def _mutation_change(
     return deletion_change or _change(before, result, changed_id, before_result, delta)
 
 
+def _edit_record(operation: MutationOperation) -> dict[str, Any] | None:
+    feature_id = getattr(operation, "featureId", None)
+    kind = getattr(operation, "kind", None)
+    values = getattr(operation, "set", None) or getattr(operation, "parameters", None)
+    if not isinstance(feature_id, str) or not isinstance(kind, str) or values is None:
+        return None
+    names = {
+        "extrude": {"distance": "distance"},
+        "hole": {"diameter": "diameter", "depth": "depth"},
+        "fillet": {"size": "radius"},
+        "chamfer": {"size": "distance"},
+        "pcb_base": {
+            "wallThickness": "wallThickness",
+            "floorThickness": "floorThickness",
+            "clearance": "clearance",
+            "wallHeightAboveBoard": "wallHeightAboveBoard",
+            "boardSeatHeight": "boardSeatHeight",
+        },
+        "standoffs": {"bossDiameter": "bossDiameter", "pilotDiameter": "pilotDiameter"},
+        "pcb_lid": {"thickness": "thickness", "fitGap": "fitGap"},
+        "port_cutout": {"clearance": "clearance"},
+    }.get(kind, {})
+    fields = {
+        public: {"value": value, "unit": "mm"}
+        for internal, public in names.items()
+        if isinstance((value := getattr(values, internal, None)), (int, float))
+        and not isinstance(value, bool)
+    }
+    if not fields:
+        return None
+    from .viewer.scene import MAX_REPAIR_FIELDS
+
+    return {
+        "featureId": feature_id,
+        "kind": kind,
+        "fields": dict(list(fields.items())[:MAX_REPAIR_FIELDS]),
+    }
+
+
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     from .viewer import ScenePart
 
@@ -2385,23 +2424,35 @@ class _ScenePublisher:
         before: Any = None,
         changed_id: str | None = None,
         change: dict[str, str] | None = None,
+        accepted_edit: dict[str, Any] | None = None,
     ) -> None:
         """Describe the commit when supplied; disk startup publishes without a change."""
-        self._jobs.put(("publish", (revision, result, before, changed_id, change)))
+        self._jobs.put(
+            ("publish", (revision, result, before, changed_id, change, accepted_edit))
+        )
 
-    def publish_failure(self, feature_ids: list[str], error: dict[str, str]) -> None:
-        self._jobs.put(("publish_failure", (feature_ids, error)))
+    def publish_failure(
+        self,
+        feature_ids: list[str],
+        error: dict[str, str],
+        attempted_edit: dict[str, Any] | None = None,
+    ) -> None:
+        self._jobs.put(("publish_failure", (feature_ids, error, attempted_edit)))
 
     def _run(self) -> None:
         while True:
             method, arguments = self._jobs.get()
             try:
                 if method == "publish":
-                    revision, result, before, changed_id, change = arguments
+                    revision, result, before, changed_id, change, accepted_edit = arguments
                     if change is None and changed_id:
                         change = _change(before, result, changed_id)
                     self._store.publish(
-                        revision, _scene_parts(result), change, fit_summary(result, revision)
+                        revision,
+                        _scene_parts(result),
+                        change,
+                        fit_summary(result, revision),
+                        accepted_edit,
                     )
                 else:
                     self._store.publish_failure(*arguments)
@@ -2655,7 +2706,12 @@ class DocumentService:
                 error["affectedParts"] = affected
         return failure
 
-    def publish_failure(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
+    def publish_failure(
+        self,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+        attempted_edit: dict[str, Any] | None = None,
+    ) -> None:
         """Show a failed sketch or feature call in the viewer; the last good scene stays."""
         if self._publisher is None:
             return
@@ -2664,6 +2720,7 @@ class DocumentService:
         self._publisher.publish_failure(
             [feature_id] if isinstance(feature_id, str) else [],
             _viewer_error(error),
+            attempted_edit,
         )
 
     def _mutation_request(
@@ -2715,11 +2772,14 @@ class DocumentService:
         before: Any,
         changed_id: str,
         change: dict[str, str],
+        accepted_edit: dict[str, Any] | None,
     ) -> None:
         if self._publisher is None:
             return
         if result.availability.geometry_available:
-            self._publisher.publish(self._document.revision, result, before, changed_id, change)
+            self._publisher.publish(
+                self._document.revision, result, before, changed_id, change, accepted_edit
+            )
         else:
             self._publish_regeneration(result)
 
@@ -2730,6 +2790,7 @@ class DocumentService:
         body_hash: str,
         apply: Callable[[Any, MutationOperation, RegenResult | None], str | _DeleteResult],
         response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
+        accepted_edit: dict[str, Any] | None,
     ) -> dict[str, Any]:
         self.start_kernel_warmup()
         self._kernel_loader.wait()
@@ -2789,7 +2850,7 @@ class DocumentService:
         self._document = document
         self._regen = result
         self._graph_error = None
-        self._publish_mutation(result, before, changed_id, change)
+        self._publish_mutation(result, before, changed_id, change, accepted_edit)
         if not durable:
             _LOG.warning(
                 "document rename committed but directory fsync failed; durability is unconfirmed"
@@ -2797,7 +2858,11 @@ class DocumentService:
         return response
 
     def _mutation_failure(
-        self, operation: str, payload: dict[str, Any], error: BaseException
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        error: BaseException,
+        attempted_edit: dict[str, Any] | None,
     ) -> dict[str, Any]:
         if isinstance(error, RequestError):
             failure = self.error_response(
@@ -2832,7 +2897,7 @@ class DocumentService:
                 "KERNEL_OPERATION_FAILED",
                 "the modeling operation could not produce valid geometry",
             )
-        self.publish_failure(payload, failure)
+        self.publish_failure(payload, failure, attempted_edit)
         return failure
 
     def _mutate(
@@ -2844,13 +2909,18 @@ class DocumentService:
         response_fields: Callable[[Any, RegenResult, str], dict[str, Any]],
     ) -> dict[str, Any]:
         with self._lock:
+            attempted_edit = None
             try:
                 parsed, body_hash, replay = self._mutation_request(payload, parse)
                 if replay is not None:
                     return replay
-                return self._commit_mutation(payload, parsed, body_hash, apply, response_fields)
+                attempted_edit = _edit_record(parsed)
+                accepted_edit = attempted_edit if parsed.action == "update" else None
+                return self._commit_mutation(
+                    payload, parsed, body_hash, apply, response_fields, accepted_edit
+                )
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
-                return self._mutation_failure(operation, payload, error)
+                return self._mutation_failure(operation, payload, error, attempted_edit)
 
     @staticmethod
     def _frame(sketch: Sketch) -> dict[str, list[float]]:

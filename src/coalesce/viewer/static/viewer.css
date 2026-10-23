@@ -146,6 +146,21 @@ button {
   font-size: 12px;
 }
 
+.repair-history {
+  padding: 12px 16px 14px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.repair-history[hidden] { display: none; }
+.repair-history summary { font-weight: 600; cursor: pointer; }
+.repair-history summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.repair-history p { margin-top: 4px; color: var(--mute); font-size: 12px; }
+.repair-history ul { display: grid; gap: 8px; margin-top: 10px; padding: 0; list-style: none; }
+.repair-history li { display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; }
+.repair-history code { overflow-wrap: anywhere; font-size: 12px; }
+.repair-field { color: var(--mute); font-size: 11px; }
+.repair-values { grid-column: 1 / -1; font-variant-numeric: tabular-nums; }
+
 .parts {
   flex: 1 0 auto;
   padding: 16px 8px;

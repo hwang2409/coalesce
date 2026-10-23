@@ -31,6 +31,7 @@ from coalesce.viewer.scene import REFERENCE_COLOR
 
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
 ENCLOSURE_SMOKE = Path(__file__).with_name("mcp_viewer_enclosure_smoke.mjs")
+REPAIR_HISTORY_SMOKE = Path(__file__).with_name("viewer_repair_history.mjs")
 LID_SMOKE = Path(__file__).with_name("mcp_viewer_lid_smoke.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
 KICAD_MOVED_FIXTURE = Path(__file__).parent / "fixtures/kicad/features-moved.kicad_pcb"
@@ -527,6 +528,149 @@ async def test_real_mcp_viewer_updates_in_browser_without_console_errors(
     assert (screenshots / "failure.png").stat().st_size > 0
 
 
+@pytest.mark.anyio
+async def test_fillet_repair_history_over_real_stdio_and_browser(tmp_path, browser_module):
+    path = tmp_path / "repair.coalesce.json"
+    errlog = (tmp_path / "repair.stderr").open("w+")
+    shots = Path(
+        os.environ.get(
+            "REPAIR_HISTORY_SCREENSHOTS",
+            tmp_path / "repair-history-screenshots",
+        )
+    )
+    edges = [
+        {
+            "feature": "plate",
+            "role": "between(side(bottom),cap_end)",
+            "cardinality": "one",
+        }
+    ]
+    calls = [
+        (
+            "sketch",
+            {
+                "action": "create",
+                "expectedRevision": 0,
+                "requestId": "plate-sketch",
+                "sketchId": "plate_sketch",
+                "plane": {"kind": "origin", "name": "XY", "offset": {"value": 0, "unit": "mm"}},
+                "entities": [
+                    {
+                        "kind": "rectangle",
+                        "id": "plate",
+                        "width": {"value": 20, "unit": "mm"},
+                        "height": {"value": 20, "unit": "mm"},
+                    }
+                ],
+            },
+        ),
+        (
+            "feature",
+            {
+                "action": "create",
+                "expectedRevision": 1,
+                "requestId": "plate-extrude",
+                "featureId": "plate",
+                "kind": "extrude",
+                "parameters": {
+                    "profile": {"sketchId": "plate_sketch", "profileIds": ["plate"]},
+                    "distance": {"value": 10, "unit": "mm"},
+                    "operation": "new_body",
+                    "direction": "normal",
+                },
+            },
+        ),
+        (
+            "feature",
+            _edge_treatment("create", 2, "round-create", "round", "fillet", 4, edges, "plate"),
+        ),
+    ]
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        viewer_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        parsed, headers = _viewer_access(viewer_url)
+        for tool, arguments in calls:
+            assert result_json(await session.call_tool(tool, arguments))["ok"] is True
+        failed = result_json(
+            await session.call_tool(
+                "feature",
+                _edge_treatment("update", 3, "too-large", "round", "fillet", 1000),
+            )
+        )
+        assert failed["ok"] is False and failed["revision"] == 3
+
+        invalid = _edge_treatment("update", 3, "schema-invalid", "round", "fillet", 1)
+        invalid["set"]["radius"]["value"] = "not-a-number"
+        assert result_json(await session.call_tool("feature", invalid))["error"]["code"] == "INVALID_PARAMETER"
+
+        repaired = result_json(
+            await session.call_tool(
+                "feature",
+                _edge_treatment("update", 3, "repaired", "round", "fillet", 1),
+            )
+        )
+        assert repaired["revision"] == 4
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 4, errlog)
+        assert scene["repairHistory"][0]["fields"]["radius"] == {
+            "attempted": {"value": 1000, "unit": "mm"},
+            "accepted": {"value": 1, "unit": "mm"},
+        }
+        browser = await asyncio.create_subprocess_exec(
+            "node",
+            str(REPAIR_HISTORY_SMOKE),
+            browser_module,
+            viewer_url,
+            str(shots),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await browser.communicate()
+        assert browser.returncode == 0, stderr.decode()
+        shown = json.loads(stdout)
+        assert shown["rows"] == 1
+        assert "Session repair history" in shown["history"]
+        assert (
+            "Failed attempts are session-only and are not document revisions."
+            in shown["history"]
+        )
+        assert "Failed 1000 mm → accepted 1 mm" in shown["history"]
+        assert shown["errors"] == []
+
+    restart_log = (tmp_path / "restart.stderr").open("w+")
+    async with stdio_client(parameters, errlog=restart_log) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        restart_log.seek(0)
+        restarted_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in restart_log.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        restarted, restart_headers = _viewer_access(restarted_url)
+        await session.call_tool("query", {"select": {"kind": "measurements"}})
+        restarted_scene = await asyncio.to_thread(
+            _wait_for_scene, restarted, restart_headers, 4, restart_log
+        )
+        assert restarted_scene["repairHistory"] == []
+
+    assert (shots / "repair-history-1280x800.png").stat().st_size > 0
+    assert (shots / "repair-history-390x844.png").stat().st_size > 0
+
+
 def _edge_treatment(action, revision, request_id, feature_id, kind, size, edges=None, target=None):
     word = "radius" if kind == "fillet" else "distance"
     request = {"action": action, "expectedRevision": revision, "requestId": request_id,
@@ -762,11 +906,11 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
 
 
 class FailingSlowStore:
-    def publish(self, revision, parts):
+    def publish(self, revision, parts, change=None, fit=None, accepted_edit=None):
         time.sleep(0.5)
         raise RuntimeError("viewer unavailable")
 
-    def publish_failure(self, feature_ids, error):
+    def publish_failure(self, feature_ids, error, attempted_edit=None):
         time.sleep(0.5)
         raise RuntimeError("viewer unavailable")
 
@@ -1004,6 +1148,11 @@ def test_kernel_failure_publishes_coalesce_wording_only(tmp_path, monkeypatch):
         "error": {
             "code": "KERNEL_OPERATION_FAILED",
             "message": "the modeling operation could not produce valid geometry",
+        },
+        "attemptedEdit": {
+            "featureId": "plate_extrude",
+            "kind": "extrude",
+            "fields": {"distance": {"value": 6.0, "unit": "mm"}},
         },
     }
 

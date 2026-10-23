@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 from array import array
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
@@ -48,6 +49,8 @@ _SPLIT_LIGHTNESS = (0.45, 0.95)
 _SPLIT_VARIANTS = ((0, 0), (math.radians(45), 0.02), (math.radians(-45), 0.02), (0, 0.05))
 # shortcut: split shades keep apart from the first 12 body colors only; check more once models have more bodies.
 _SPLIT_GUARD = 12
+MAX_REPAIR_FEATURES = 32
+MAX_REPAIR_FIELDS = 8
 
 
 @dataclass(frozen=True)
@@ -287,6 +290,36 @@ def _build_scene(
     return scene, meshes
 
 
+def _bounded_edit(edit: dict | None) -> dict | None:
+    if not edit or not isinstance(edit.get("featureId"), str) or not isinstance(edit.get("kind"), str):
+        return None
+    fields = edit.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        return None
+    return {
+        "featureId": edit["featureId"],
+        "kind": edit["kind"],
+        "fields": dict(list(fields.items())[:MAX_REPAIR_FIELDS]),
+    }
+
+
+def _repair(attempted: dict | None, accepted: dict) -> dict | None:
+    if attempted is None or attempted["kind"] != accepted["kind"]:
+        return None
+    fields = {
+        name: {"attempted": value, "accepted": accepted["fields"][name]}
+        for name, value in attempted["fields"].items()
+        if name in accepted["fields"]
+    }
+    if not fields:
+        return None
+    return {
+        "featureId": accepted["featureId"],
+        "kind": accepted["kind"],
+        "fields": fields,
+    }
+
+
 class ViewerSceneStore:
     """Holds the current and previous committed revision as tessellated named parts.
 
@@ -306,6 +339,8 @@ class ViewerSceneStore:
         self._meshes: dict[str, bytes] = {}
         self._revision: int | None = None
         self._failure: dict | None = None
+        self._pending_edits: OrderedDict[str, dict] = OrderedDict()
+        self._repair_history: OrderedDict[str, dict] = OrderedDict()
 
     def publish(
         self,
@@ -313,6 +348,7 @@ class ViewerSceneStore:
         parts: Iterable[ScenePart],
         change: dict | None = None,
         fit: list[dict] | None = None,
+        accepted_edit: dict | None = None,
     ) -> None:
         """``change`` says what the commit did, for the human: {"featureId", "summary"}.
 
@@ -327,6 +363,8 @@ class ViewerSceneStore:
         with self._changed:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
+            self._accept_edit(change, accepted_edit)
+            scene["repairHistory"] = list(self._repair_history.values())
             self._scenes = {r: s for r, s in self._scenes.items() if r == self._revision}
             self._scenes[revision] = scene
             live = {p["mesh"]["id"] for s in self._scenes.values() for p in s["parts"]}
@@ -336,16 +374,46 @@ class ViewerSceneStore:
             self._version += 1
             self._changed.notify_all()
 
-    def publish_failure(self, feature_ids: Sequence[str], error: dict[str, str]) -> None:
+    def publish_failure(
+        self, feature_ids: Sequence[str], error: dict[str, str], attempted_edit: dict | None = None
+    ) -> None:
         """Mark a failed edit attempt; the last good scene stays current."""
         with self._changed:
+            attempted_edit = self._track_attempt(attempted_edit)
             self._failure = {
                 "revision": self._revision,
                 "featureIds": list(feature_ids),
                 "error": error,
+                **({"attemptedEdit": attempted_edit} if attempted_edit else {}),
             }
             self._version += 1
             self._changed.notify_all()
+
+    def _track_attempt(self, edit: dict | None) -> dict | None:
+        edit = _bounded_edit(edit)
+        if edit is None:
+            return None
+        feature_id = edit["featureId"]
+        self._pending_edits.pop(feature_id, None)
+        self._pending_edits[feature_id] = edit
+        while len(self._pending_edits) > MAX_REPAIR_FEATURES:
+            self._pending_edits.popitem(last=False)
+        return edit
+
+    def _accept_edit(self, change: dict | None, edit: dict | None) -> None:
+        feature_id = change.get("featureId") if change else None
+        if not isinstance(feature_id, str):
+            return
+        # A same-feature commit consumes the attempt; only overlapping update fields make a repair.
+        attempted = self._pending_edits.pop(feature_id, None)
+        edit = _bounded_edit(edit)
+        repair = _repair(attempted, edit) if edit and edit["featureId"] == feature_id else None
+        if repair is None:
+            return
+        self._repair_history.pop(feature_id, None)
+        self._repair_history[feature_id] = repair
+        while len(self._repair_history) > MAX_REPAIR_FEATURES:
+            self._repair_history.popitem(last=False)
 
     @property
     def current_revision(self) -> int | None:
