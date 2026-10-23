@@ -1144,6 +1144,11 @@ def test_kernel_failure_publishes_coalesce_wording_only(tmp_path, monkeypatch):
             "code": "KERNEL_OPERATION_FAILED",
             "message": "the modeling operation could not produce valid geometry",
         },
+        "attemptedEdit": {
+            "featureId": "plate_extrude",
+            "kind": "extrude",
+            "fields": {"distance": {"value": 6.0, "unit": "mm"}},
+        },
     }
 
 
