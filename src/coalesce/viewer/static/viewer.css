@@ -156,10 +156,10 @@ button {
 .repair-history summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .repair-history p { margin-top: 4px; color: var(--mute); font-size: 12px; }
 .repair-history ul { display: grid; gap: 8px; margin-top: 10px; padding: 0; list-style: none; }
-.repair-history li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 8px; }
+.repair-history li { display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; }
 .repair-history code { overflow-wrap: anywhere; font-size: 12px; }
 .repair-field { color: var(--mute); font-size: 11px; }
-.repair-values { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-variant-numeric: tabular-nums; }
+.repair-values { grid-column: 1 / -1; font-variant-numeric: tabular-nums; }
 
 .parts {
   flex: 1 0 auto;
