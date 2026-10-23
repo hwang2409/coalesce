@@ -203,6 +203,8 @@ async def test_dimension_update_regenerates_and_keeps_profile_face_reference(tmp
     assert results[4]["parts"][0]["terminalFeatureId"] == "finished_bracket"
     service = DocumentService(path, warmup=False)
     service.query({"select": {"kind": "measurements"}})
+    expected_volume = (3 * math.pi * 25**2 / 4 + 25**2) * 5
+    assert service._regen.shapes["bracket"].volume == pytest.approx(expected_volume, rel=1e-6)
     corner = next(
         item.entity
         for item in service._regen.provenance["bracket"]
