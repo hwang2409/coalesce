@@ -73,7 +73,7 @@ from .references import (
     SketchSegmentSource,
     edge_role_catalog,
 )
-from .refresh_delta import format_summary, refresh_delta
+from .refresh_delta import bounded_summary, format_summary, refresh_delta
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
 from .schemas import SUPPORTED_REQUIREMENT_KINDS
@@ -2840,6 +2840,22 @@ def _selection_snapshot(graph: Any) -> dict[str, dict[str, Any]]:
     }
 
 
+def _moved_pattern_members(
+    before: dict[str, Any], after: dict[str, Any]
+) -> list[dict[str, Any]]:
+    old, new = before["positions"], after["positions"]
+    referenced = before["referenced"] | after["referenced"]
+    return [
+        {
+            "name": name,
+            "oldPosition": old[name],
+            "newPosition": new[name],
+        }
+        for name in sorted(set(old) & set(new) & referenced)
+        if math.dist(old[name], new[name]) > 1e-6
+    ]
+
+
 def _selection_changes(
     before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -2852,19 +2868,7 @@ def _selection_changes(
         added = sorted(set(new) - set(old))
         removed = sorted(set(old) - set(new))
         moved = (
-            [
-                {
-                    "name": name,
-                    "oldPosition": old[name],
-                    "newPosition": new[name],
-                }
-                for name in sorted(
-                    set(old)
-                    & set(new)
-                    & (before[feature_id]["referenced"] | after[feature_id]["referenced"])
-                )
-                if math.dist(old[name], new[name]) > 1e-6
-            ]
+            _moved_pattern_members(before[feature_id], after[feature_id])
             if before[feature_id]["selector"] == "pattern"
             else []
         )
@@ -2881,26 +2885,21 @@ def _selection_changes(
     return changes
 
 
-def _pattern_selection_summary(changes: list[dict[str, Any]]) -> str | None:
+def _pattern_selection_summary(changes: list[dict[str, Any]], prefix: str) -> str | None:
     pattern = next((change for change in changes if change["selector"] == "pattern"), None)
     if pattern is None:
         return None
-    labels = []
-    moved = pattern.get("holesMoved", [])
-    if moved:
-        first = moved[0]
-        labels.append(
-            f"{first['name']} moved {_mm(tuple(first['oldPosition']))} → "
-            f"{_mm(tuple(first['newPosition']))}"
-        )
-        if len(moved) > 1:
-            labels.append(f"{len(moved) - 1} more moved")
+    labels = [
+        f"{member['name']} moved {_mm(tuple(member['oldPosition']))} → "
+        f"{_mm(tuple(member['newPosition']))}"
+        for member in pattern.get("holesMoved", [])
+    ]
     for key, word in (("holesRemoved", "removed"), ("holesAdded", "added")):
         names = pattern[key]
         if names:
             subject = " and ".join(names) if len(names) <= 3 else f"{len(names)} members"
             labels.append(f"{subject} {word}")
-    return ", ".join(labels)
+    return bounded_summary(f"{prefix}, ", labels)
 
 
 def _is_board_refresh(operation: MutationOperation) -> bool:
@@ -3444,9 +3443,9 @@ class DocumentService:
             deletion_change, before, result, changed_id, committed_result, delta
         )
         selection_changes = _selection_changes(previous_selections, _selection_snapshot(graph))
-        if selection_summary := _pattern_selection_summary(selection_changes):
-            change["summary"] = change["summary"].removesuffix(", no value changed")
-            change["summary"] += f", {selection_summary}"
+        summary_prefix = change["summary"].removesuffix(", no value changed")
+        if selection_summary := _pattern_selection_summary(selection_changes, summary_prefix):
+            change["summary"] = selection_summary
         response = {
             "ok": True,
             "revision": previous + 1,

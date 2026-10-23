@@ -18,6 +18,7 @@ from coalesce import (
     regenerate,
 )
 from coalesce.graph import Hole
+from coalesce.service import _pattern_selection_summary
 
 
 def circular_pattern(*, radius=12, count=6, prefix="bolt", start_angle=0):
@@ -333,6 +334,35 @@ async def test_count_update_reports_moved_and_removed_pattern_members(tmp_path):
             "holesRemoved": ["bolt5", "bolt6"],
         }
     ]
+
+
+def test_pattern_change_summary_is_bounded_with_long_member_names():
+    name_prefix = "p" * 140
+    moved = [
+        {
+            "name": f"{name_prefix}{index}",
+            "oldPosition": [float(index), 0.0],
+            "newPosition": [float(index), 1.0],
+        }
+        for index in range(1, 65)
+    ]
+
+    summary = _pattern_selection_summary(
+        [
+            {
+                "selector": "pattern",
+                "holesAdded": [],
+                "holesRemoved": [],
+                "holesMoved": moved,
+            }
+        ],
+        "edited hole holes",
+    )
+
+    assert summary is not None
+    assert len(summary) <= 160
+    assert "+N more" not in summary
+    assert "+64 more" in summary
 
 
 @pytest.mark.anyio
