@@ -479,9 +479,14 @@ def _lids(
     nodes = [node for node in graph.ordered() if isinstance(node, PcbLid) and node.base == base.id]
     if not nodes:
         return [], []
-    terminal = base_part.terminal_feature
+    body_terminal = base_part.terminal_feature
+    terminal = (
+        body_terminal
+        if body_terminal in result.predecessors
+        else result.body_predecessors.get((body_terminal, base_part.source_body), body_terminal)
+    )
     has_outer_treatment = _has_outer_treatment(
-        graph, result, base.id, terminal, base_part.source_body
+        graph, result, base.id, body_terminal, base_part.source_body
     )
     current = _current_outline(result, terminal)
     lids = []

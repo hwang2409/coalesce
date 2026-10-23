@@ -393,6 +393,7 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
     assert created_scene["change"]["summary"] == (
         "added screw closure: 4 points, pilot 1.6 mm, boss 4 mm, clearance 2.4 mm"
     )
+    assert not any(row["id"].startswith("lid_outline:") for row in created_scene["fit"][0]["rows"])
     closure_row = next(
         row for row in created_scene["fit"][0]["rows"] if row["id"] == "screw_closure"
     )
