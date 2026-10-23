@@ -304,6 +304,66 @@ async def test_single_solved_circle_extrudes_exactly_with_stable_segment_source(
 
 
 @pytest.mark.anyio
+async def test_cut_consumes_one_exact_constrained_circle(tmp_path):
+    from test_mcp_cut_hole_circle import cut, extrude, rectangle_sketch
+
+    circle = {
+        "kind": "constrained",
+        "points": [{"id": "center", "x": 0, "y": 0}],
+        "circles": [{"id": "rim", "center": "center", "radius": 3}],
+        "dimensions": [
+            {"id": "radius", "kind": "radius", "entities": ["rim"], "value": 3}
+        ],
+        "constraints": [{"id": "fix-center", "kind": "fix", "entities": ["center"]}],
+    }
+    path = tmp_path / "constrained-cut.coalesce.json"
+    tool = sketch_request(circle, revision=2, request_id="tool")
+
+    results = await run_server(
+        path,
+        [
+            (
+                "sketch",
+                rectangle_sketch(
+                    request_id="base-profile",
+                    revision=0,
+                    sketch_id="base-profile",
+                    entity_id="outline",
+                    width=10,
+                    height=8,
+                ),
+            ),
+            (
+                "feature",
+                extrude(
+                    request_id="base",
+                    revision=1,
+                    feature_id="base",
+                    sketch_id="base-profile",
+                    profile_ids=["outline"],
+                    distance=5,
+                ),
+            ),
+            ("sketch", tool),
+            (
+                "feature",
+                cut(
+                    request_id="cut",
+                    revision=3,
+                    feature_id="cut",
+                    target="base",
+                    tool="bracket_profile",
+                ),
+            ),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert all(result["ok"] is True for result in results)
+    assert results[4]["volume"]["value"] == pytest.approx((10 * 8 - math.pi * 3**2) * 5)
+
+
+@pytest.mark.anyio
 async def test_base_install_rejects_constrained_workflow_but_primitive_extrude_works(tmp_path):
     blocker = tmp_path / "without-planegcs"
     blocker.mkdir()
