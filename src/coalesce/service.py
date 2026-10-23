@@ -173,6 +173,9 @@ def regenerate(
     return result
 
 
+_REGENERATE = regenerate
+
+
 class RequestError(ValueError):
     def __init__(self, code: str, message: str, **details: Any):
         self.code = code
@@ -3146,6 +3149,11 @@ class DocumentService:
         if warmup:
             self.start_kernel_warmup()
 
+    def _regenerate(self, graph: Any) -> RegenResult:
+        if regenerate is not _REGENERATE:
+            return regenerate(graph)
+        return regenerate(graph, self._solver.solve)
+
     def start_kernel_warmup(self) -> None:
         with self._warmup_lock:
             if self._warmup_started:
@@ -3163,7 +3171,7 @@ class DocumentService:
                 if self._regen is not None or self._graph_error is not None:
                     return
                 try:
-                    result = regenerate(self._document.graph, self._solver.solve)
+                    result = self._regenerate(self._document.graph)
                 except GraphError as error:
                     self._record_graph_error(error)
                     return
@@ -3218,7 +3226,7 @@ class DocumentService:
             if self._graph_error is not None:
                 raise self._graph_error
             try:
-                result = regenerate(self._document.graph, self._solver.solve)
+                result = self._regenerate(self._document.graph)
             except GraphError as error:
                 self._record_graph_error(error)
                 raise
@@ -3462,7 +3470,7 @@ class DocumentService:
         graph = loads(dumps(self._document.graph))
         applied = apply(graph, parsed, self._committed_regeneration(parsed))
         changed_id, changed_ids, deletion = _applied_result(applied)
-        result = regenerate(graph, self._solver.solve)
+        result = self._regenerate(graph)
         if not result.availability.geometry_available and not isinstance(
             parsed, (SketchCreate, SketchUpdate, SketchDelete)
         ):
