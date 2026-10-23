@@ -16,6 +16,7 @@ from test_constrained_sketch import (
 )
 
 import coalesce.sketch_solver as solver_module
+from coalesce.server import TOOLS_GUIDE, create_server
 from coalesce.service import DocumentService
 from coalesce.sketch_solver import (
     MAX_FRAME_BYTES,
@@ -138,6 +139,38 @@ def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkey
     assert _wait_until(lambda: not _pid_exists(int(restart_pid_file.read_text())))
 
 
+@pytest.mark.parametrize("failure", ["crash", "malformed", "oversized", "timeout"])
+def test_solver_failure_preserves_accepted_document(tmp_path, monkeypatch, failure):
+    path = tmp_path / f"atomic-{failure}.coalesce.json"
+    service = DocumentService(path, warmup=False, sketch_solve_timeout=0.5)
+    assert service.sketch(create_request(rectangle_model()))["ok"] is True
+    saved = path.read_bytes()
+    service.close()
+    pid_file = tmp_path / "atomic-pid"
+    actions = {
+        "crash": "os._exit(7)",
+        "malformed": "sys.stdout.buffer.write(struct.pack('!Q', 3) + b'bad'); sys.stdout.buffer.flush(); time.sleep(30)",
+        "oversized": f"sys.stdout.buffer.write(struct.pack('!Q', {MAX_FRAME_BYTES + 1})); sys.stdout.buffer.flush(); time.sleep(30)",
+        "timeout": "time.sleep(30)",
+    }
+    child = _script_child(
+        tmp_path,
+        f"import os, struct, sys, time\nfrom pathlib import Path\nPath({str(pid_file)!r}).write_text(str(os.getpid()))\nsys.stdin.buffer.read(1)\n{actions[failure]}\n",
+    )
+    monkeypatch.setattr(solver_module, "_start_solver_child", lambda: child)
+    try:
+        rejected = service.sketch(update_request(rectangle_model(width=42), 1, "rejected"))
+    finally:
+        service.close()
+    assert rejected["ok"] is False
+    assert rejected["revision"] == 1
+    assert rejected["error"]["code"] == (
+        "SKETCH_SOLVE_TIMEOUT" if failure == "timeout" else "SKETCH_SOLVER_FAILED"
+    )
+    assert path.read_bytes() == saved
+    assert _wait_until(lambda: not _pid_exists(int(pid_file.read_text())))
+
+
 def test_missing_optional_dependency_reaps_child(tmp_path, monkeypatch):
     pid_file = tmp_path / "pid"
     response = tmp_path / "response"
@@ -154,6 +187,19 @@ def test_missing_optional_dependency_reaps_child(tmp_path, monkeypatch):
     assert _wait_until(lambda: not _pid_exists(int(pid_file.read_text())))
 
 
+def test_configured_timeout_is_reported_in_server_info_and_tool_guide(tmp_path):
+    service = DocumentService(
+        tmp_path / "reported.coalesce.json", warmup=False, sketch_solve_timeout=2.5
+    )
+    try:
+        info = create_server(service).create_initialization_options()
+        assert "solve timeout is 2.5 seconds" in info.instructions
+        assert "--sketch-solve-timeout SECONDS" in TOOLS_GUIDE
+        assert "COALESCE_SKETCH_SOLVE_TIMEOUT" in TOOLS_GUIDE
+    finally:
+        service.close()
+
+
 def test_invalid_solver_timeout_is_clean_cli_error(tmp_path):
     result = subprocess.run(
         [
@@ -166,6 +212,26 @@ def test_invalid_solver_timeout_is_clean_cli_error(tmp_path):
             "--sketch-solve-timeout",
             "0.1",
         ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "--sketch-solve-timeout" in result.stderr
+
+
+def test_invalid_solver_timeout_environment_is_clean_cli_error(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coalesce",
+            "--document",
+            str(tmp_path / "doc.coalesce.json"),
+            "--no-viewer",
+        ],
+        env={**os.environ, "COALESCE_SKETCH_SOLVE_TIMEOUT": "infinite"},
         capture_output=True,
         text=True,
         check=False,
