@@ -80,6 +80,29 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
   "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
 ```
 
+## primitive closed outlines
+
+Primitive sketches support two free-form closed outline kinds in addition to rectangles and circles:
+
+- `polyline` joins 3 to 2000 points with straight segments. Its edge roles are `seg-0`, `seg-1`, and so on, including the closing segment.
+- `spline` creates one periodic interpolating B-spline through 3 to 2000 points. It stays one analytic edge with the role `spline`; it is not polygonized.
+
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and self-intersections are rejected before the CAD kernel runs. Inner holes are separate cut or hole features.
+
+This example creates and extrudes a triangular polyline:
+
+```json
+{"action":"create","expectedRevision":0,"requestId":"triangle-sketch","sketchId":"triangle_profile","plane":{"kind":"origin","name":"XY"},"entities":[{"id":"triangle","kind":"polyline","points":[[0,0],[30,0],[0,20]],"closed":true}]}
+```
+
+```json
+{"action":"create","expectedRevision":1,"requestId":"triangle-extrude","featureId":"triangle","kind":"extrude","parameters":{"profile":{"sketchId":"triangle_profile","profileIds":["triangle"]},"distance":{"value":5,"unit":"mm"},"operation":"new_body","direction":"normal"}}
+```
+
+A reference bound to a polyline segment or spline remains stable when coordinates change and the point count stays the same. A point-count change makes the old reference resolve as `EMPTY`; coalesce does not silently bind it to a different edge.
+
+See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a complete spline, extrusion, center bore, and STEP export workflow.
+
 ## exact closed profile extrusion
 
 A constrained sketch can supply one closed non-construction profile to the existing
