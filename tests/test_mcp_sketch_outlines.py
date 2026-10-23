@@ -234,9 +234,13 @@ def test_outline_point_bounds_and_finite_coordinates_are_rejected(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_default_polyline_point_edit_stales_segment_references(tmp_path):
+@pytest.mark.parametrize("edit", ["rotate", "move"])
+async def test_default_polyline_point_edit_stales_segment_references(tmp_path, edit):
     points = [[-5, -5], [5, -5], [5, 5], [-5, 5]]
-    rotated = [points[1], points[2], points[3], points[0]]
+    if edit == "rotate":
+        changed = [points[1], points[2], points[3], points[0]]
+    else:
+        changed = [[-5, -5], [5, -5], [5, 6], [-5, 6]]
     path = tmp_path / "default-references.coalesce.json"
 
     results = await run_server(
@@ -255,7 +259,7 @@ async def test_default_polyline_point_edit_stales_segment_references(tmp_path):
                 ),
             ),
             ("feature", fillet_segment()),
-            ("sketch", update_outline("polyline", rotated, 3, "rotate")),
+            ("sketch", update_outline("polyline", changed, 3, edit)),
         ],
     )
 

@@ -101,7 +101,13 @@ This example creates and extrudes a triangular polyline:
 {"action":"create","expectedRevision":1,"requestId":"triangle-extrude","featureId":"triangle","kind":"extrude","parameters":{"profile":{"sketchId":"triangle_profile","profileIds":["triangle"]},"distance":{"value":5,"unit":"mm"},"operation":"new_body","direction":"normal"}}
 ```
 
-A reference bound to a polyline segment or spline remains stable when coordinates change and the point count stays the same. A point-count change makes the old reference resolve as `EMPTY`; coalesce does not silently bind it to a different edge.
+How a downstream reference (for example a fillet on a profile edge) behaves when you update the outline points:
+
+- polyline with explicit point ids: a segment reference follows its two endpoint ids. Moving, reordering, or rotating the points keeps it on the same segment. If an endpoint id is removed or replaced, the reference resolves as `EMPTY`.
+- polyline with default ids (array points): segment identity is positional. While any downstream reference exists, every change to the point list (coordinates, order, or count) is rejected atomically with `REFERENCE_FAILED` (`EMPTY`) and the hint to give the points explicit ids. With no downstream references, you can edit the points freely.
+- spline: the single `spline` role stays bound across any point edit, including a point-count change.
+
+Documents saved before point ids were recorded load as default-id polylines, which is the conservative rule. coalesce never silently binds a reference to a different edge.
 
 See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a complete spline, extrusion, center bore, and STEP export workflow.
 
