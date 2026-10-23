@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import cos, sin
 
@@ -83,8 +84,6 @@ def _curve_vertices(curves: list[_Curve]) -> tuple[list[tuple[int, int]], list[l
 
 def _ordered_loop(sketch_id: str, curves: list[_Curve]) -> list[_OrientedCurve]:
     endpoints, incident = _curve_vertices(curves)
-    if any(len(curves_at_vertex) != 2 for curves_at_vertex in incident):
-        _unsupported(sketch_id, "open")
     start_curve = min(range(len(curves)), key=lambda index: curves[index].id)
     start_vertex, current_vertex = endpoints[start_curve]
     ordered = [_OrientedCurve(curves[start_curve], True)]
@@ -105,6 +104,27 @@ def _ordered_loop(sketch_id: str, curves: list[_Curve]) -> list[_OrientedCurve]:
     if len(used) != len(curves):
         _unsupported(sketch_id, "multiple")
     return ordered
+
+
+def _curve_components(sketch_id: str, curves: list[_Curve]) -> list[list[_Curve]]:
+    endpoints, incident = _curve_vertices(curves)
+    if any(len(curves_at_vertex) != 2 for curves_at_vertex in incident):
+        _unsupported(sketch_id, "open")
+    remaining = set(range(len(curves)))
+    components: list[list[_Curve]] = []
+    while remaining:
+        pending = [min(remaining, key=lambda index: curves[index].id)]
+        component: set[int] = set()
+        while pending:
+            index = pending.pop()
+            if index in component:
+                continue
+            component.add(index)
+            for vertex in endpoints[index]:
+                pending.extend(incident[vertex])
+        remaining -= component
+        components.append([curves[index] for index in sorted(component)])
+    return components
 
 
 def _local_edge(item: _OrientedCurve) -> Edge:
@@ -138,10 +158,12 @@ def _checked_profile(sketch_id: str, wire: Wire, segments: dict[str, Edge]) -> C
     return ConstrainedProfile(sketch_id, face, wire, segments)
 
 
-def _circle_profile(sketch_id: str, circle: SolvedCircle, location: Location) -> ConstrainedProfile:
+def _circle_profile(
+    sketch_id: str, circle_id: str, circle: SolvedCircle, location: Location
+) -> ConstrainedProfile:
     local = Location((circle.center[0], circle.center[1], 0))
     wire = Wire.make_circle(circle.radius).moved(location * local)
-    return _checked_profile(sketch_id, wire, {"circle": wire.edges()[0]})
+    return _checked_profile(sketch_id, wire, {circle_id: wire.edges()[0]})
 
 
 def _profiles_are_nested(left: ConstrainedProfile, right: ConstrainedProfile) -> bool:
@@ -150,12 +172,8 @@ def _profiles_are_nested(left: ConstrainedProfile, right: ConstrainedProfile) ->
     return abs(overlap - min(left.face.area, right.face.area)) <= _AREA_TOLERANCE
 
 
-def build_constrained_profile(model: ConstrainedSketch, sketch_id: str, location: Location) -> ConstrainedProfile:
-    """Return one exact solved loop, or a structured unsupported-profile error."""
-    if model.solved is None:
-        raise RuntimeError(f"constrained sketch {sketch_id} has no solved geometry")
-    solved = model.solved.entities
-    curves = sorted(
+def _solved_curves(solved: Mapping[str, object]) -> list[_Curve]:
+    return sorted(
         (
             _Curve(entity_id, entity)
             for entity_id, entity in solved.items()
@@ -163,27 +181,45 @@ def build_constrained_profile(model: ConstrainedSketch, sketch_id: str, location
         ),
         key=lambda item: item.id,
     )
-    circles = sorted(
+
+
+def _solved_circles(solved: Mapping[str, object]) -> list[tuple[str, SolvedCircle]]:
+    return sorted(
         (
-            entity
-            for entity in solved.values()
+            (entity_id, entity)
+            for entity_id, entity in solved.items()
             if isinstance(entity, SolvedCircle) and not entity.construction
         ),
-        key=lambda item: (item.center, item.radius),
+        key=lambda item: item[0],
     )
+
+
+def _multiple_profile_reason(profiles: list[ConstrainedProfile]) -> str:
+    nested = any(
+        _profiles_are_nested(left, right)
+        for index, left in enumerate(profiles)
+        for right in profiles[index + 1 :]
+    )
+    return "nested" if nested else "multiple"
+
+
+def build_constrained_profile(model: ConstrainedSketch, sketch_id: str, location: Location) -> ConstrainedProfile:
+    """Return one exact solved loop, or a structured unsupported-profile error."""
+    if model.solved is None:
+        raise RuntimeError(f"constrained sketch {sketch_id} has no solved geometry")
+    solved = model.solved.entities
+    curves = _solved_curves(solved)
     profiles: list[ConstrainedProfile] = []
-    if curves:
-        order = _ordered_loop(sketch_id, curves)
+    for component in _curve_components(sketch_id, curves) if curves else []:
+        order = _ordered_loop(sketch_id, component)
         wire, segments = _wire_from_order(order, location)
         profiles.append(_checked_profile(sketch_id, wire, segments))
-    profiles.extend(_circle_profile(sketch_id, circle, location) for circle in circles)
+    profiles.extend(
+        _circle_profile(sketch_id, circle_id, circle, location)
+        for circle_id, circle in _solved_circles(solved)
+    )
     if not profiles:
         _unsupported(sketch_id, "open")
     if len(profiles) > 1:
-        reason = "nested" if any(
-            _profiles_are_nested(left, right)
-            for index, left in enumerate(profiles)
-            for right in profiles[index + 1 :]
-        ) else "multiple"
-        _unsupported(sketch_id, reason)
+        _unsupported(sketch_id, _multiple_profile_reason(profiles))
     return profiles[0]
