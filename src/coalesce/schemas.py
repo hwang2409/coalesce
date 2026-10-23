@@ -680,7 +680,7 @@ FEATURE_UPDATE_SCHEMA = {
         "action": {"const": "update"},
         **FEATURE_PROPERTIES,
         "set": {
-            "oneOf": [
+            "anyOf": [
                 EXTRUDE_UPDATE_SET,
                 TARGET_UPDATE_SET,
                 FILLET_UPDATE_SET,
