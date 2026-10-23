@@ -233,10 +233,20 @@ function showRefit(on) {
   $('fit-text').textContent = on ? 'Fit new model' : 'Fit';
 }
 
-for (const button of document.querySelectorAll('[data-view]')) {
-  button.addEventListener('click', () => applyView(button.dataset.view));
+function closeCameraMenu() {
+  if (narrow.matches) $('camera-menu').open = false;
 }
-$('fit').addEventListener('click', () => applyView(activeView));
+
+for (const button of document.querySelectorAll('[data-view]')) {
+  button.addEventListener('click', () => {
+    applyView(button.dataset.view);
+    closeCameraMenu();
+  });
+}
+$('fit').addEventListener('click', () => {
+  applyView(activeView);
+  closeCameraMenu();
+});
 
 // off before the first scene and once the link expired: nothing current to aim at
 function enableCamera(on) {
