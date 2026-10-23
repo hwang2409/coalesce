@@ -283,6 +283,27 @@ def _uses_implicit_point_ids(source: object) -> bool:
     return False
 
 
+def _reference_failure(
+    node: Fillet | Chamfer,
+    kind: str,
+    selected: list[Candidate],
+    reference: Reference,
+    resolution: Resolution,
+) -> GraphError:
+    details = {
+        "feature": node.id,
+        "selectedEdges": [asdict(candidate.key) for candidate in selected],
+        "resolution": resolution.error,
+    }
+    if _uses_implicit_point_ids(reference.source):
+        details["hint"] = "give the points explicit ids to keep references across point edits"
+    return GraphError(
+        "REFERENCE_FAILED",
+        f"{kind} {node.id} edge reference did not resolve",
+        **details,
+    )
+
+
 def _resolve_edge_treatment_edges(
     node: Fillet | Chamfer,
     provenance: dict[str, list[Candidate]],
@@ -313,20 +334,7 @@ def _resolve_edge_treatment_edges(
         }
         resolutions.append(resolution_details)
         if resolution.error is not None:
-            details = {
-                "feature": node.id,
-                "selectedEdges": [asdict(candidate.key) for candidate in selected],
-                "resolution": resolution.error,
-            }
-            if _uses_implicit_point_ids(reference.source):
-                details["hint"] = (
-                    "give the points explicit ids to keep references across point edits"
-                )
-            raise GraphError(
-                "REFERENCE_FAILED",
-                f"{kind} {node.id} edge reference did not resolve",
-                **details,
-            )
+            raise _reference_failure(node, kind, selected, reference, resolution)
         selected.extend(resolution.candidates)
     if not selected:
         raise GraphError(

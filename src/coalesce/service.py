@@ -1753,22 +1753,21 @@ def _sketch_failures(graph: Any) -> dict[str, RequestError | GraphError]:
     return failures
 
 
+def _sketch_failure(
+    feature_id: str, error: RequestError | GraphError
+) -> SketchFailure:
+    if isinstance(error, RequestError):
+        return SketchFailure(feature_id, error.code, str(error), error.details)
+    details = {
+        key: value for key, value in error.error.items() if key not in {"code", "message"}
+    }
+    return SketchFailure(feature_id, error.error["code"], str(error), details)
+
+
 def _solve_constrained_sketches(graph: Any) -> SolveAvailability:
     failures = _sketch_failures(graph)
     failed = tuple(
-        SketchFailure(
-            feature_id,
-            error.code if isinstance(error, RequestError) else error.error["code"],
-            str(error),
-            error.details
-            if isinstance(error, RequestError)
-            else {
-                key: value
-                for key, value in error.error.items()
-                if key not in {"code", "message"}
-            },
-        )
-        for feature_id, error in failures.items()
+        _sketch_failure(feature_id, error) for feature_id, error in failures.items()
     )
     unavailable = []
     reported = set(failures)
