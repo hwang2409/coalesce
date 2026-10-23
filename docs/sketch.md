@@ -113,12 +113,19 @@ See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a co
 
 ## exact closed profile extrusion
 
-A constrained sketch can supply one closed non-construction profile to the existing
-`extrude` and `cut` features. Use the sketch id as the single `profileIds` value.
-Lines, arcs, and circles remain analytic; construction geometry is ignored. Open,
-degenerate, self-intersecting, nested, and multiple loops are rejected with
-`SKETCH_PROFILE_UNSUPPORTED` and a structured `reason`. A profile is `degenerate`
-when a solved line or arc collapses within the scale-aware OCCT precision floor.
+A constrained sketch can supply one outer closed non-construction loop and directly
+contained inner loops to the existing `extrude` and `cut` features. Use the sketch id
+as the single `profileIds` value. Inner loops become holes. Lines, arcs, and circles
+remain analytic; construction geometry is ignored. Loop containment is derived from
+the exact solved faces, not entity order. Open, degenerate, self-intersecting,
+touching, crossing, ambiguous, multiple-outer, and three-level island profiles are
+rejected with `SKETCH_PROFILE_UNSUPPORTED`. A profile can contain at most 64 loops;
+this bounds exact pairwise containment checks to 2,016 while allowing detailed parts.
+The `too_many_loops` reason includes the `limit` and actual `count`. Other structured
+reasons use `loops` to name the involved segment or circle ids. A profile is
+`degenerate` when a solved line or arc collapses within the scale-aware OCCT precision
+floor. Segment references from outer and inner loops use the same typed sketch-segment
+provenance and can drive downstream treatments.
 
 This complete line-and-arc bracket example is sent unchanged through the real stdio
 server by the acceptance test:

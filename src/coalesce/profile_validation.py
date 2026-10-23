@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -45,9 +46,11 @@ def same_point(
     return (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2 <= tolerance**2
 
 
-def checked_face(wire: Wire, tolerance: float) -> Face:
+def checked_face(
+    wire: Wire, tolerance: float, inner_wires: Iterable[Wire] = ()
+) -> Face:
     try:
-        face = Face(wire)
+        face = Face(wire, list(inner_wires))
     except (Standard_Failure, StdFail_NotDone, ValueError) as error:
         raise InvalidProfile("self_intersecting") from error
     if not BRepCheck_Analyzer(wire.wrapped).IsValid() or not BRepCheck_Analyzer(
