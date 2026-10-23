@@ -19,6 +19,10 @@ POINTS = [
 ]
 
 
+def normal_standoffs_request():
+    return standoffs_request(selection={"mode": "all_mounting"})
+
+
 def closure_request(*, revision=4, points=POINTS):
     return {
         "action": "create",
@@ -42,7 +46,7 @@ def enclosure(tmp_path: Path, *, mounts=False) -> DocumentService:
     assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
     assert service.feature(base_request(clearance=quantity(5)))["ok"]
     if mounts:
-        assert service.feature(standoffs_request())["ok"]
+        assert service.feature(normal_standoffs_request())["ok"]
     assert service.feature(lid_request(revision=3 if mounts else 2, include_lip=False))["ok"]
     return service
 
@@ -184,7 +188,7 @@ async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_
         [
             ("import", import_request(FIXTURES / "features.kicad_pcb")),
             ("feature", base_request(clearance=quantity(5))),
-            ("feature", standoffs_request()),
+            ("feature", normal_standoffs_request()),
             ("feature", lid_request(revision=3, include_lip=False)),
             ("feature", closure_request(revision=4)),
             (
@@ -287,7 +291,7 @@ def test_screw_closure_rejects_board_collision_atomically(tmp_path):
     response = service.feature(
         closure_request(
             revision=4,
-            points=[{"name": "hits-board", "point": [10, 5]}, *POINTS[:3]],
+            points=[{"name": "hits-board", "point": [10, 1]}, *POINTS[:3]],
         )
     )
     assert response["ok"] is False
@@ -302,7 +306,7 @@ def test_refresh_that_moves_board_under_boss_fails_atomically(tmp_path):
     service = DocumentService(tmp_path / "moving.coalesce.json")
     assert service.import_board(import_request(source))["ok"]
     assert service.feature(base_request(clearance=quantity(5)))["ok"]
-    assert service.feature(standoffs_request())["ok"]
+    assert service.feature(normal_standoffs_request())["ok"]
     assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
     assert service.feature(closure_request(revision=4))["ok"]
     source.write_text(
@@ -342,7 +346,7 @@ def test_later_holes_replace_only_the_requested_closure_body(tmp_path):
             revision=5,
             feature_id="base-hole",
             target="base",
-            position=(10, 5),
+            position=(10, 4),
             diameter=1,
         )
     )["ok"]
@@ -357,7 +361,7 @@ def test_later_holes_replace_only_the_requested_closure_body(tmp_path):
             revision=6,
             feature_id="lid-hole",
             target="lid",
-            position=(10, 5),
+            position=(10, 4),
             diameter=1,
         )
     )["ok"]
@@ -386,7 +390,7 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
     service = DocumentService(tmp_path / "update.coalesce.json", scene_store=store)
     assert service.import_board(import_request(FIXTURES / "features.kicad_pcb"))["ok"]
     assert service.feature(base_request(clearance=quantity(5)))["ok"]
-    assert service.feature(standoffs_request())["ok"]
+    assert service.feature(normal_standoffs_request())["ok"]
     assert service.feature(lid_request(revision=3, include_lip=False))["ok"]
     assert service.feature(closure_request(revision=4))["ok"]
     created_scene = _wait_for_scene(store, 5)
@@ -394,6 +398,10 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
         "added screw closure: 4 points, pilot 1.6 mm, boss 4 mm, clearance 2.4 mm"
     )
     assert not any(row["id"].startswith("lid_outline:") for row in created_scene["fit"][0]["rows"])
+    assert (
+        next(row for row in created_scene["fit"][0]["rows"] if row["id"] == "standoffs")["status"]
+        == "PASS"
+    )
     closure_row = next(
         row for row in created_scene["fit"][0]["rows"] if row["id"] == "screw_closure"
     )
