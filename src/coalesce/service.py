@@ -53,6 +53,8 @@ from .graph import (
     Sketch,
     Spline,
     Standoffs,
+    validate_sketch,
+    validate_sketch_profiles,
 )
 from .parts import terminal_parts
 from .references import (
@@ -1736,22 +1738,36 @@ def _accept_constrained_sketch(model: ConstrainedSketch) -> None:
         raise _sketch_rejection(result, model)
 
 
-def _constrained_sketch_failures(graph: Any) -> dict[str, RequestError]:
+def _sketch_failures(graph: Any) -> dict[str, RequestError | GraphError]:
     failures = {}
     for node in graph.nodes.values():
-        if not isinstance(node, Sketch) or node.constrained is None:
+        if not isinstance(node, Sketch):
             continue
         try:
-            _accept_constrained_sketch(node.constrained)
-        except RequestError as error:
+            if node.constrained is not None:
+                _accept_constrained_sketch(node.constrained)
+            else:
+                validate_sketch_profiles(node)
+        except (RequestError, GraphError) as error:
             failures[node.id] = error
     return failures
 
 
 def _solve_constrained_sketches(graph: Any) -> SolveAvailability:
-    failures = _constrained_sketch_failures(graph)
+    failures = _sketch_failures(graph)
     failed = tuple(
-        SketchFailure(feature_id, error.code, str(error), error.details)
+        SketchFailure(
+            feature_id,
+            error.code if isinstance(error, RequestError) else error.error["code"],
+            str(error),
+            error.details
+            if isinstance(error, RequestError)
+            else {
+                key: value
+                for key, value in error.error.items()
+                if key not in {"code", "message"}
+            },
+        )
         for feature_id, error in failures.items()
     )
     unavailable = []
@@ -1802,6 +1818,9 @@ def _apply_sketch(
         if operation.set.constrained is not None:
             _accept_constrained_sketch(operation.set.constrained)
             node.replace_constrained(operation.set.constrained)
+    node = graph.nodes[operation.sketchId]
+    validate_sketch(node)
+    validate_sketch_profiles(node)
     return operation.sketchId
 
 

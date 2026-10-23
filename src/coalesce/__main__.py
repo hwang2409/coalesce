@@ -18,7 +18,8 @@ from .service import DocumentService, _graph_error_response
 
 async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> None:
     if not viewer_enabled:
-        await run_stdio(DocumentService(document, warmup=False))
+        service = await asyncio.to_thread(DocumentService, document, warmup=False)
+        await run_stdio(service)
         return
 
     from .viewer import ViewerSceneStore, ViewerServer
@@ -26,7 +27,13 @@ async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> N
     store = ViewerSceneStore()
     with ViewerServer(store) as viewer:
         # The document loads once, before the URL is shown, so a bad document never advertises it.
-        service = DocumentService(document, scene_store=store, viewer_url=viewer.url, warmup=False)
+        service = await asyncio.to_thread(
+            DocumentService,
+            document,
+            scene_store=store,
+            viewer_url=viewer.url,
+            warmup=False,
+        )
         print(f"coalesce viewer: {viewer.url}", file=sys.stderr, flush=True)
         if open_browser:
             webbrowser.open(viewer.url)

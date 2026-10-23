@@ -273,14 +273,19 @@ def _unsupported_outline(sketch: Sketch, entity: PrimitiveEntity, reason: str) -
 
 
 def _validate_outline(sketch: Sketch, entity: Polyline | Spline) -> None:
-    from build123d import Location
-
-    from .profile_validation import InvalidProfile, build_outline_profile
-
+    if not MIN_OUTLINE_POINTS <= len(entity.points) <= MAX_OUTLINE_POINTS:
+        _unsupported_outline(sketch, entity, "point_count")
     if len(entity.point_ids) != len(entity.points) or len(set(entity.point_ids)) != len(
         entity.point_ids
     ):
         _unsupported_outline(sketch, entity, "duplicate_point_id")
+
+
+def _validate_outline_exact(sketch: Sketch, entity: Polyline | Spline) -> None:
+    from build123d import Location
+
+    from .profile_validation import InvalidProfile, build_outline_profile
+
     try:
         build_outline_profile(
             "polyline" if isinstance(entity, Polyline) else "spline",
@@ -331,6 +336,12 @@ def validate_sketch(sketch: Sketch) -> None:
     _require_finite(sketch, "rotation", sketch.rotation)
     for entity in sketch.entities:
         _validate_primitive_entity(sketch, entity)
+
+
+def validate_sketch_profiles(sketch: Sketch) -> None:
+    for entity in sketch.entities:
+        if isinstance(entity, (Polyline, Spline)):
+            _validate_outline_exact(sketch, entity)
 
 
 class Graph:
