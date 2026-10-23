@@ -65,10 +65,10 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
     assert len(measured["parts"]) == 2
     from coalesce.parts import terminal_parts
 
-    assert all(
-        BRepCheck_Analyzer(part.shape.wrapped).IsValid()
-        for part in terminal_parts(service._regen)
-    )
+    manufacturing = terminal_parts(service._regen, role="manufacturing")
+    assert len(manufacturing) == 2
+    assert all(len(part.shape.solids()) == 1 for part in manufacturing)
+    assert all(BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in manufacturing)
 
     pilots = _closure_faces(service, "screw_pilot_wall")
     clearances = _closure_faces(service, "screw_clearance_wall")
