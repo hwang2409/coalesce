@@ -365,6 +365,21 @@ def test_pattern_change_summary_is_bounded_with_long_member_names():
     assert "+64 more" in summary
 
 
+def test_pattern_change_summary_with_overlong_feature_id_keeps_plain_summary():
+    changes = [
+        {
+            "selector": "pattern",
+            "holesAdded": [],
+            "holesRemoved": [],
+            "holesMoved": [
+                {"name": "bolt2", "oldPosition": [6.0, 10.4], "newPosition": [0.0, 12.0]}
+            ],
+        }
+    ]
+
+    assert _pattern_selection_summary(changes, "edited hole " + "h" * 150) is None
+
+
 @pytest.mark.anyio
 async def test_linear_pattern_normalizes_direction_and_updates_pitch_and_count(tmp_path):
     document = tmp_path / "linear.coalesce.json"

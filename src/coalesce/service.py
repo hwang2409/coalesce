@@ -2899,6 +2899,10 @@ def _pattern_selection_summary(changes: list[dict[str, Any]], prefix: str) -> st
         if names:
             subject = " and ".join(names) if len(names) <= 3 else f"{len(names)} members"
             labels.append(f"{subject} {word}")
+    if not labels or len(f"{prefix}, +{len(labels)} more") > 160:
+        # a very long feature id leaves no room; keep the plain change summary,
+        # the full delta stays in selectionChanges
+        return None
     return bounded_summary(f"{prefix}, ", labels)
 
 
