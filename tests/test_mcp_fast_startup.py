@@ -155,38 +155,9 @@ def test_saved_outlines_list_tools_before_kernel_load(tmp_path):
 def test_tampered_saved_spline_reports_structured_failure_after_load(tmp_path):
     document = tmp_path / "tampered.coalesce.json"
     document.write_text(json.dumps(_saved_outline_document([[0, 0], [2, 2], [0, 2], [2, 0]])))
-    process = _stdio_process(document, os.environ.copy())
-    try:
-        _send(
-            process,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "1"},
-                },
-            },
-        )
-        assert _message(process)["id"] == 1
-        _send(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-        _send(
-            process,
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": "query", "arguments": {"select": {"kind": "graph"}}},
-            },
-        )
-        response = _message(process, timeout=10)
-    finally:
-        process.terminate()
-        process.wait(timeout=10)
 
-    result = json.loads(response["result"]["content"][0]["text"])
+    result = DocumentService(document).query({"select": {"kind": "graph"}})
+
     error = result["graph"]["errors"][0] if result["ok"] else result["error"]
     assert error["code"] == "SKETCH_PROFILE_UNSUPPORTED"
     assert error["reason"] == "self_intersecting"
