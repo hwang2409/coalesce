@@ -1,10 +1,22 @@
 import math
+from dataclasses import replace
 
 import pytest
 from build123d import import_step
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
 from test_mcp_vertical import run_server
 
+from coalesce import (
+    Extrude,
+    Fillet,
+    Graph,
+    GraphError,
+    HoleSurfaceSource,
+    Rectangle,
+    Reference,
+    Sketch,
+    regenerate,
+)
 from coalesce.graph import CircularHolePattern, Hole, LinearHolePattern
 from coalesce.hole import hole_positions
 
@@ -103,6 +115,54 @@ def test_pattern_expansion_has_exact_deterministic_centers_and_names():
     assert [position.point for position in hole_positions(linear)] == pytest.approx(
         [(-12 + index * 4.8, -8 + index * 6.4) for index in range(4)]
     )
+
+
+def patterned_graph(member: str) -> Graph:
+    graph = Graph()
+    graph.add(Sketch("plate_sketch", entities=[Rectangle("plate", 50, 50)]))
+    graph.add(Extrude("plate", sketch="plate_sketch", height=5))
+    graph.add(
+        Hole(
+            "holes",
+            target="plate",
+            diameter=3,
+            pattern=CircularHolePattern((0, 0), 12, 6, 0, "bolt"),
+        )
+    )
+    graph.add(
+        Fillet(
+            "round",
+            target="holes",
+            radius=0.25,
+            edges=[
+                Reference(
+                    "holes",
+                    "between(hole_wall,cap_end)",
+                    source=HoleSurfaceSource("holes", "hole_wall", member),
+                )
+            ],
+        )
+    )
+    return graph
+
+
+def test_member_reference_survives_radius_change_and_removed_member_fails_closed():
+    surviving = patterned_graph("bolt2")
+    regenerate(surviving)
+    surviving.nodes["holes"].pattern = replace(
+        surviving.nodes["holes"].pattern,
+        radius=10,
+    )
+    assert len(regenerate(surviving).shapes["round"].solids()) == 1
+
+    stale = patterned_graph("bolt6")
+    regenerate(stale)
+    stale.nodes["holes"].pattern = replace(stale.nodes["holes"].pattern, count=4)
+    with pytest.raises(GraphError) as caught:
+        regenerate(stale)
+    assert caught.value.error["code"] == "REFERENCE_FAILED"
+    assert caught.value.error["resolution"]["status"] == "EMPTY"
+    assert caught.value.error["resolution"]["reference"]["source"]["name"] == "bolt6"
 
 
 def plate_setup():
