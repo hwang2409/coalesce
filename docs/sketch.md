@@ -85,8 +85,9 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
 A constrained sketch can supply one closed non-construction profile to the existing
 `extrude` and `cut` features. Use the sketch id as the single `profileIds` value.
 Lines, arcs, and circles remain analytic; construction geometry is ignored. Open,
-self-intersecting, nested, and multiple loops are rejected with
-`SKETCH_PROFILE_UNSUPPORTED` and a structured `reason`.
+degenerate, self-intersecting, nested, and multiple loops are rejected with
+`SKETCH_PROFILE_UNSUPPORTED` and a structured `reason`. A profile is `degenerate`
+when a solved line or arc collapses within the scale-aware OCCT precision floor.
 
 This complete line-and-arc bracket example is sent unchanged through the real stdio
 server by the acceptance test:
