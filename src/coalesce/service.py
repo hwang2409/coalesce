@@ -1757,6 +1757,7 @@ def _node_kind(node: Any) -> str:
         "PcbBase": "pcb_base",
         "PcbLid": "pcb_lid",
         "PortCutout": "port_cutout",
+        "ScrewClosure": "screw_closure",
     }.get(type(node).__name__, type(node).__name__.lower())
 
 
@@ -2464,6 +2465,8 @@ def _kind(node: Any) -> str:
         return "pcb lid"
     if isinstance(node, PortCutout):
         return "port cutout"
+    if isinstance(node, ScrewClosure):
+        return "screw closure"
     if isinstance(node, BoardImport):
         return "board import"
     return type(node).__name__.lower()
@@ -2555,6 +2558,11 @@ def _enclosure_added(node: Any, result: RegenResult) -> str | None:
     if isinstance(node, PcbLid):
         lip = f", {_mm(node.lip_depth)} mm deep lip" if node.lip_depth else ""
         return f"{summary}: {_mm(node.thickness)} mm thick, {_mm(node.fit_gap)} mm fit gap{lip}"
+    if isinstance(node, ScrewClosure):
+        return (
+            f"{summary}: {len(node.points)} points, pilot {_mm(node.base_pilot_diameter)} mm, "
+            f"boss {_mm(node.boss_diameter)} mm, clearance {_mm(node.lid_clearance_diameter)} mm"
+        )
     if isinstance(node, PortCutout):
         port = result.metadata[node.id]
         width, height = (_mm(port["opening"][side]["value"]) for side in ("width", "height"))
@@ -2584,6 +2592,12 @@ def _added(node: Any, result: RegenResult) -> str:
 
 
 def _edited(old: Any, node: Any) -> str:
+    if isinstance(node, ScrewClosure):
+        return (
+            f"updated screw closure: {len(node.points)} points, "
+            f"pilot {_mm(node.base_pilot_diameter)} mm, boss {_mm(node.boss_diameter)} mm, "
+            f"clearance {_mm(node.lid_clearance_diameter)} mm"
+        )
     if isinstance(node, BoardImport):
         same = old.source_digest == node.source_digest
         return f"refreshed board {node.id}, source {'unchanged' if same else 'changed'}"

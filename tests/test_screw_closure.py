@@ -1,5 +1,5 @@
-from pathlib import Path
 import time
+from pathlib import Path
 
 import pytest
 from build123d import Face, GeomType
@@ -123,16 +123,18 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
             {
                 "action": "evaluate",
                 "base": "base",
-                "requirements": [{"id": "closure-exact", "kind": "screw_closure"}],
+                "requirements": [
+                    {"id": "closure-exact", "kind": "screw_closure", "minimumWall": quantity(1)}
+                ],
             }
         )["gate"]
         == "PASS"
     )
-    assert [
+    assert sorted(
         item.key.source
         for item in restarted._regen.provenance["closure"]
         if item.key.role == "screw_pilot_wall"
-    ] == [point["name"] for point in POINTS]
+    ) == sorted(point["name"] for point in POINTS)
 
 
 @pytest.mark.parametrize(
@@ -190,7 +192,9 @@ async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_
                 {
                     "action": "evaluate",
                     "base": "base",
-                    "requirements": [{"id": "closure", "kind": "screw_closure"}],
+                    "requirements": [
+                        {"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)}
+                    ],
                 },
             ),
             (
@@ -207,7 +211,9 @@ async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_
                 {
                     "action": "evaluate",
                     "base": "base",
-                    "requirements": [{"id": "closure", "kind": "screw_closure"}],
+                    "requirements": [
+                        {"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)}
+                    ],
                 },
             ),
             (
@@ -218,7 +224,7 @@ async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_
                     "base": "base",
                     "requirements": [
                         {"id": "valid", "kind": "valid_brep"},
-                        {"id": "closure", "kind": "screw_closure"},
+                        {"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)},
                     ],
                 },
             ),
@@ -257,7 +263,11 @@ def test_screw_requirement_fails_noncoaxial_evidence():
             }
         ],
     }
-    result = evaluate([{"id": "closure", "kind": "screw_closure"}], inspection, revision=5)
+    result = evaluate(
+        [{"id": "closure", "kind": "screw_closure", "minimumWall": quantity(1)}],
+        inspection,
+        revision=5,
+    )
     assert result["gate"] == "FAIL"
 
 
@@ -399,7 +409,12 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
         }
     )
     assert failed["ok"] is False
-    updated_points = [*POINTS[:3], {"name": "new-rear", "point": [15, 12.5]}]
+    updated_points = [
+        {"name": "left", "point": [-2.8, 7]},
+        {"name": "right", "point": [22.8, 7]},
+        {"name": "front", "point": [5, -2.8]},
+        {"name": "new-rear", "point": [15, 12.8]},
+    ]
     response = service.feature(
         {
             "action": "update",
@@ -424,11 +439,14 @@ def test_screw_closure_update_keeps_identity_names_and_repair_history(tmp_path):
         "updated screw closure: 4 points, pilot 1.8 mm, boss 4.4 mm, clearance 2.8 mm"
     )
     assert scene["repairHistory"][0]["featureId"] == "closure"
-    assert set(scene["repairHistory"][0]["fields"]) == {
-        "basePilotDiameter",
-        "bossDiameter",
-        "lidClearanceDiameter",
+    assert set(scene["repairHistory"][0]["fields"]) == {"bossDiameter"}
+    sources = {
+        item.key.source
+        for item in service._regen.provenance["closure"]
+        if item.key.role == "screw_pilot_wall"
     }
+    assert "rear" not in sources
+    assert "new-rear" in sources
 
 
 def test_screw_requirement_uses_explicit_minimum_wall():

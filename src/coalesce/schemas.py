@@ -910,13 +910,22 @@ CHECK_REQUIREMENT = {
                         "valid_brep",
                         "lid_interference",
                         "lid_outline_match",
-                        "screw_closure",
                         "clean_deliverables",
                         "clean_manufacturing_bodies",
                     ]
                 },
             },
             "required": ["id", "kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"const": "screw_closure"},
+                "minimumWall": POSITIVE_QUANTITY,
+            },
+            "required": ["id", "kind", "minimumWall"],
             "additionalProperties": False,
         },
         {
