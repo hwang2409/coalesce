@@ -1,9 +1,10 @@
 import math
 
 import pytest
-from build123d import import_step
+from build123d import Face, Location, import_step
 from test_constrained_profile import extrude_request, run_server, sketch_request
 
+from coalesce.constrained_profile import build_constrained_profile
 from coalesce.references import SketchSegmentSource
 from coalesce.service import DocumentService
 
@@ -149,6 +150,10 @@ async def test_two_closed_line_loops_keep_hole_through_step_round_trip(tmp_path)
     imported = import_step(target)
     assert imported.volume == pytest.approx((100 - 16) * 5)
     assert len(imported.faces()) == 10
+    service = DocumentService(path, warmup=False)
+    sketch = service._document.graph.nodes["bracket_profile"]
+    exact = build_constrained_profile(sketch.constrained, sketch.id, Location())
+    assert Face(exact.wire).area == pytest.approx(100)
 
 
 @pytest.mark.anyio
