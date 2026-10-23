@@ -162,6 +162,11 @@ async def test_two_closed_line_loops_keep_hole_through_step_round_trip(tmp_path)
     [
         ("touching", [("outer", 0, 5), ("hole", 3, 2)], ["hole", "outer"]),
         ("crossing", [("outer", 0, 5), ("crossing", 4, 2)], ["crossing", "outer"]),
+        (
+            "ambiguous_containment",
+            [("first", 0, 5), ("second", 0, 5)],
+            ["first", "second"],
+        ),
         ("multiple_outer", [("left", -6, 2), ("right", 6, 2)], ["left", "right"]),
         (
             "island",
