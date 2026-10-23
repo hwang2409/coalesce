@@ -271,6 +271,39 @@ async def test_unsupported_profiles_fail_extrude_atomically(tmp_path, reason, mo
 
 
 @pytest.mark.anyio
+async def test_single_solved_circle_extrudes_exactly_with_stable_segment_source(tmp_path):
+    model = {
+        "kind": "constrained",
+        "points": [{"id": "center", "x": 2, "y": 3}],
+        "circles": [{"id": "rim", "center": "center", "radius": 3}],
+        "dimensions": [
+            {"id": "radius", "kind": "radius", "entities": ["rim"], "value": 3}
+        ],
+        "constraints": [{"id": "fix-center", "kind": "fix", "entities": ["center"]}],
+    }
+    path = tmp_path / "circle.coalesce.json"
+
+    results = await run_server(
+        path,
+        [
+            ("sketch", sketch_request(model)),
+            ("feature", extrude_request()),
+            ("query", {"select": {"kind": "measurements"}}),
+        ],
+    )
+
+    assert all(result["ok"] is True for result in results)
+    assert results[2]["volume"]["value"] == pytest.approx(math.pi * 3**2 * 5)
+    service = DocumentService(path, warmup=False)
+    service.query({"select": {"kind": "measurements"}})
+    side = next(
+        item for item in service._regen.provenance["bracket"] if item.key.role == "side(rim)"
+    )
+    assert side.key.source.segment == "rim"
+    assert side.entity.geom_type is GeomType.CYLINDER
+
+
+@pytest.mark.anyio
 async def test_base_install_rejects_constrained_workflow_but_primitive_extrude_works(tmp_path):
     blocker = tmp_path / "without-planegcs"
     blocker.mkdir()
