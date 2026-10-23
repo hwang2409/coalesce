@@ -47,7 +47,7 @@ def same_point(
 def checked_face(wire: Wire, tolerance: float) -> Face:
     try:
         face = Face(wire)
-    except Standard_Failure as error:
+    except (Standard_Failure, ValueError) as error:
         raise InvalidProfile("self_intersecting") from error
     if not BRepCheck_Analyzer(wire.wrapped).IsValid() or not BRepCheck_Analyzer(
         face.wrapped
@@ -112,5 +112,7 @@ def build_outline_profile(
             )
         wire = Wire(builder.Wire())
         return ExactProfile(checked_face(wire, tolerance), wire, segments, topology)
-    except Standard_Failure as error:
+    except InvalidProfile:
+        raise
+    except (Standard_Failure, ValueError) as error:
         raise InvalidProfile("self_intersecting") from error

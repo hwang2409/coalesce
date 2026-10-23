@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 import pytest
-from build123d import GeomType, Location, import_step
+from build123d import Edge, GeomType, Location, import_step
 from test_mcp_cut_hole_circle import extrude
 from test_mcp_vertical import run_server
 
@@ -348,6 +348,21 @@ async def test_outline_point_ids_reject_ambiguous_segment_roles(tmp_path):
     assert schema_result["ok"] is False
     assert schema_result["error"]["code"] == "INVALID_PARAMETER"
     assert schema_result["error"]["field"] == "entities[0].points[3].id"
+
+
+def test_outline_profile_normalizes_build123d_value_error(monkeypatch):
+    def reject_spline(*_args, **_kwargs):
+        raise ValueError("kernel rejected spline")
+
+    monkeypatch.setattr(Edge, "make_spline", reject_spline)
+
+    with pytest.raises(InvalidProfile, match="self_intersecting"):
+        build_outline_profile(
+            "spline",
+            ((0, 0), (2, 0), (1, 2)),
+            ("a", "b", "c"),
+            Location(),
+        )
 
 
 def test_outline_profile_rejects_duplicate_generated_roles():
