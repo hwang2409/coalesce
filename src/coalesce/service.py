@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import queue
+import re
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, fields, replace
@@ -784,6 +785,12 @@ def _outline_entity(entity: dict[str, Any], index: int) -> Polyline | Spline:
                 "INVALID_PARAMETER",
                 "each outline point must be [x, y] or {id, x, y}",
                 field="points",
+            )
+        if re.fullmatch(r"[A-Za-z0-9_]+", point_id) is None:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "outline point ids may contain only ASCII letters, digits, and underscores",
+                field=f"points[{point_index}].id",
             )
         point_ids.append(point_id)
         points.append((_finite_number(x, "points"), _finite_number(y, "points")))

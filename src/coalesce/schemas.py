@@ -41,7 +41,7 @@ POINT_2D = {
         {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "minLength": 1},
+                "id": {"type": "string", "pattern": "^[A-Za-z0-9_]+$"},
                 "x": {"type": "number"},
                 "y": {"type": "number"},
             },

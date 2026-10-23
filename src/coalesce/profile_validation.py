@@ -97,13 +97,15 @@ def build_outline_profile(
         closed_ids = (*point_ids, point_ids[0])
         implicit_topology = (
             "__implicit__",
-            *(f"{x.hex()}:{y.hex()}" for x, y in points),
+            *(f"{float(x).hex()}:{float(y).hex()}" for x, y in points),
         )
         for (start, end), (start_id, end_id) in zip(
             pairwise(closed_points), pairwise(closed_ids), strict=True
         ):
             builder.Add(Edge.make_line((*start, 0), (*end, 0)).moved(location).wrapped)
             role = f"seg-{start_id}-{end_id}"
+            if role in segments:
+                raise InvalidProfile("duplicate_segment_role")
             segments[role] = Edge(builder.Edge())
             topology[role] = (
                 (start_id, end_id) if point_ids_explicit else implicit_topology
