@@ -328,7 +328,19 @@ async def test_polyline_reference_follows_explicit_point_ids(tmp_path):
     assert results[3]["ok"] is True and results[3]["revision"] == 4
     assert results[4]["ok"] is False and results[4]["revision"] == 4
     assert results[4]["error"]["code"] == "REFERENCE_FAILED"
-    assert results[4]["error"]["resolution"]["status"] == "EMPTY"
+    resolution = results[4]["error"]["resolution"]
+    assert resolution["status"] == "EMPTY"
+    assert resolution["sketchSegment"] == {
+        "sketch": "outline_sketch",
+        "entity": "outline",
+        "segment": "seg-a-b",
+        "storedTopology": ["a", "b"],
+        "currentTopology": None,
+        "segmentExists": False,
+    }
+    assert resolution["suggestion"] == (
+        "re-select the face on the updated profile, or keep the original endpoint ids"
+    )
 
 
 @pytest.mark.anyio

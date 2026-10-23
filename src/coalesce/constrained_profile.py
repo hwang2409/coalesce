@@ -239,22 +239,17 @@ def _topology(model: ConstrainedSketch) -> dict[str, tuple[str, ...]]:
 
 
 def _profile_points(solved: Mapping[str, object]) -> list[tuple[float, float]]:
-    points = [
-        point
-        for entity in solved.values()
-        if isinstance(entity, (SolvedLine, SolvedArc)) and not entity.construction
-        for point in (entity.start, entity.end)
-    ]
-    points.extend(
-        (circle.center[0] - circle.radius, circle.center[1] - circle.radius)
-        for circle in solved.values()
-        if isinstance(circle, SolvedCircle) and not circle.construction
-    )
-    points.extend(
-        (circle.center[0] + circle.radius, circle.center[1] + circle.radius)
-        for circle in solved.values()
-        if isinstance(circle, SolvedCircle) and not circle.construction
-    )
+    points: list[tuple[float, float]] = []
+    for entity in solved.values():
+        if isinstance(entity, (SolvedLine, SolvedArc)) and not entity.construction:
+            points.extend((entity.start, entity.end))
+        elif isinstance(entity, SolvedCircle) and not entity.construction:
+            points.extend(
+                (
+                    (entity.center[0] - entity.radius, entity.center[1] - entity.radius),
+                    (entity.center[0] + entity.radius, entity.center[1] + entity.radius),
+                )
+            )
     return points
 
 
