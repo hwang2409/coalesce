@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import io
+import os
+import struct
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+import coalesce.sketch_solver as solver_module
+from coalesce.service import DocumentService
+from coalesce.sketch_solver import (
+    MAX_FRAME_BYTES,
+    SketchSolverSession,
+    SolveRequest,
+    SolveStatus,
+    _write_message,
+)
+
+from test_constrained_sketch import (
+    create_request,
+    fake_planegcs,
+    rectangle_model,
+    update_request,
+)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_until(predicate, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def _script_child(tmp_path: Path, body: str) -> subprocess.Popen:
+    script = tmp_path / "child.py"
+    script.write_text(body)
+    return subprocess.Popen(
+        [sys.executable, str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+    )
+
+
+def test_document_service_reuses_one_solver_child_for_two_edits(tmp_path, monkeypatch):
+    pids = tmp_path / "pids"
+    fake = fake_planegcs(tmp_path / "fake", status="Success")
+    module = fake / "planegcs.py"
+    module.write_text(
+        module.read_text().replace(
+            "class SolveStatus", f"Path({str(pids)!r}).open('a').write(str(os.getpid()) + '\\n')\n\nclass SolveStatus"
+        )
+    )
+    monkeypatch.setenv("PYTHONPATH", str(fake))
+    service = DocumentService(tmp_path / "doc.coalesce.json", warmup=False)
+    try:
+        assert service.sketch(create_request(rectangle_model()))["ok"] is True
+        assert service.sketch(update_request(rectangle_model(width=32), 1, "update"))["ok"] is True
+        assert len(set(pids.read_text().splitlines())) == 1
+    finally:
+        service.close()
+    assert not _pid_exists(int(pids.read_text().splitlines()[0]))
+
+
+def test_concurrent_solver_calls_are_serialized(tmp_path, monkeypatch):
+    active = tmp_path / "active"
+    overlap = tmp_path / "overlap"
+    fake = fake_planegcs(tmp_path / "fake", status="Success", delay=0.1)
+    module = fake / "planegcs.py"
+    text = module.read_text().replace(
+        "time.sleep(0.1)",
+        f"\n        marker = Path({str(active)!r})\n        if marker.exists(): Path({str(overlap)!r}).write_text('overlap')\n        marker.write_text('active')\n        time.sleep(0.1)\n        marker.unlink()",
+    )
+    module.write_text(text)
+    monkeypatch.setenv("PYTHONPATH", str(fake))
+    session = SketchSolverSession(timeout=1)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(session.solve(SolveRequest()))) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        session.close()
+    assert [result.status for result in results] == [SolveStatus.FULLY_CONSTRAINED] * 2
+    assert not overlap.exists()
+
+
+@pytest.mark.parametrize("failure", ["crash", "malformed", "oversized", "timeout"])
+def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkeypatch, failure):
+    pid_file = tmp_path / "pid"
+    good_response = tmp_path / "response"
+    with good_response.open("wb") as stream:
+        _write_message(stream, ("result", solver_module.SolveResult(SolveStatus.FULLY_CONSTRAINED)))
+    if failure == "crash":
+        action = "os._exit(7)"
+    elif failure == "malformed":
+        action = "sys.stdout.buffer.write(b'bad'); sys.stdout.buffer.flush(); time.sleep(30)"
+    elif failure == "oversized":
+        action = f"sys.stdout.buffer.write(struct.pack('!Q', {MAX_FRAME_BYTES + 1})); sys.stdout.buffer.flush(); time.sleep(30)"
+    else:
+        action = "time.sleep(30)"
+    child = _script_child(
+        tmp_path,
+        f"import os, struct, sys, time\nfrom pathlib import Path\nPath({str(pid_file)!r}).write_text(str(os.getpid()))\nsys.stdin.buffer.read(1)\n{action}\n",
+    )
+    starts = [child]
+
+    def start():
+        if starts:
+            return starts.pop()
+        return _script_child(
+            tmp_path,
+            f"import sys\nsys.stdin.buffer.read(1)\nsys.stdout.buffer.write(open({str(good_response)!r}, 'rb').read()); sys.stdout.buffer.flush(); sys.stdin.buffer.read()\n",
+        )
+
+    monkeypatch.setattr(solver_module, "_start_solver_child", start)
+    session = SketchSolverSession(timeout=0.1)
+    try:
+        failed = session.solve(SolveRequest())
+        pid = int(pid_file.read_text())
+        assert failed.status is SolveStatus.DID_NOT_CONVERGE
+        assert _wait_until(lambda: not _pid_exists(pid))
+        assert session.solve(SolveRequest()).status is SolveStatus.FULLY_CONSTRAINED
+    finally:
+        session.close()
+
+
+def test_invalid_solver_timeout_is_clean_cli_error(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coalesce",
+            "--document",
+            str(tmp_path / "doc.coalesce.json"),
+            "--no-viewer",
+            "--sketch-solve-timeout",
+            "0.1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "--sketch-solve-timeout" in result.stderr
