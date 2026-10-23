@@ -12,6 +12,7 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, fields, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
@@ -78,6 +79,9 @@ from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
 from .schemas import SUPPORTED_REQUIREMENT_KINDS
 from .serialization import dumps, loads
+from .sketch_solver import DEFAULT_SOLVE_TIMEOUT_SECONDS, SketchSolverSession, solve_sketch
+
+_CONSTRAINED_SKETCH_SOLVE = ConstrainedSketch.solve
 
 if TYPE_CHECKING:
     from .regen import RegenResult
@@ -158,8 +162,10 @@ class _KernelLoader:
 _KERNEL_LOADER = _KernelLoader()
 
 
-def regenerate(graph: Any) -> RegenResult:
-    availability = _solve_constrained_sketches(graph)
+def regenerate(
+    graph: Any, solver: Callable[[Any], Any] = solve_sketch
+) -> RegenResult:
+    availability = _solve_constrained_sketches(graph, solver)
     if not availability.geometry_available:
         return regen_module.RegenResult(graph, {}, {}, [], availability=availability)
     result = regen_module.accept_regeneration(graph)
@@ -2021,23 +2027,31 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
     return RequestError("SKETCH_BRANCH_FLIP", message, diagnostics=result_payload(model))
 
 
-def _accept_constrained_sketch(model: ConstrainedSketch) -> None:
+def _accept_constrained_sketch(
+    model: ConstrainedSketch, solver: Callable[[Any], Any] = solve_sketch
+) -> None:
     try:
-        result = model.solve()
+        result = (
+            model.solve(solver)
+            if type(model).solve is _CONSTRAINED_SKETCH_SOLVE
+            else model.solve()
+        )
     except ImportError as error:
         raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
     if result.status.value not in {"under_constrained", "fully_constrained"}:
         raise _sketch_rejection(result, model)
 
 
-def _sketch_failures(graph: Any) -> dict[str, RequestError | GraphError]:
+def _sketch_failures(
+    graph: Any, solver: Callable[[Any], Any] = solve_sketch
+) -> dict[str, RequestError | GraphError]:
     failures = {}
     for node in graph.nodes.values():
         if not isinstance(node, Sketch):
             continue
         try:
             if node.constrained is not None:
-                _accept_constrained_sketch(node.constrained)
+                _accept_constrained_sketch(node.constrained, solver)
             else:
                 validate_sketch_profiles(node)
         except (RequestError, GraphError) as error:
@@ -2052,8 +2066,10 @@ def _sketch_failure(feature_id: str, error: RequestError | GraphError) -> Sketch
     return SketchFailure(feature_id, error.error["code"], str(error), details)
 
 
-def _solve_constrained_sketches(graph: Any) -> SolveAvailability:
-    failures = _sketch_failures(graph)
+def _solve_constrained_sketches(
+    graph: Any, solver: Callable[[Any], Any] = solve_sketch
+) -> SolveAvailability:
+    failures = _sketch_failures(graph, solver)
     failed = tuple(_sketch_failure(feature_id, error) for feature_id, error in failures.items())
     unavailable = []
     reported = set(failures)
@@ -2075,13 +2091,15 @@ def _apply_sketch(
     graph: Any,
     operation: SketchCreate | SketchUpdate | SketchDelete,
     committed: RegenResult | None,
+    *,
+    solver: Callable[[Any], Any] = solve_sketch,
 ) -> str | _DeleteResult:
     if isinstance(operation, SketchDelete):
         assert committed is not None
         return _apply_delete(graph, operation, committed)
     if isinstance(operation, SketchCreate):
         if operation.constrained is not None:
-            _accept_constrained_sketch(operation.constrained)
+            _accept_constrained_sketch(operation.constrained, solver)
         if operation.plane.kind != "origin":
             raise RequestError("INVALID_PARAMETER", "only origin planes are supported")
         graph.add(
@@ -2101,7 +2119,7 @@ def _apply_sketch(
         if operation.set.entities is not None:
             node.replace_entities(list(operation.set.entities))
         if operation.set.constrained is not None:
-            _accept_constrained_sketch(operation.set.constrained)
+            _accept_constrained_sketch(operation.set.constrained, solver)
             node.replace_constrained(operation.set.constrained)
     node = graph.nodes[operation.sketchId]
     validate_sketch(node)
@@ -3109,6 +3127,7 @@ class DocumentService:
         viewer_url: str | None = None,
         warmup: bool = True,
         kernel_loader: _KernelLoaderInterface | None = None,
+        sketch_solve_timeout: float = DEFAULT_SOLVE_TIMEOUT_SECONDS,
     ):
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
@@ -3118,6 +3137,7 @@ class DocumentService:
         self._viewer_url = viewer_url
         self._publisher = _ScenePublisher(scene_store) if scene_store is not None else None
         self._kernel_loader = kernel_loader or _KERNEL_LOADER
+        self._solver = SketchSolverSession(sketch_solve_timeout)
         self._warmup_started = False
         self._warmup_lock = threading.Lock()
         if warmup:
@@ -3140,7 +3160,7 @@ class DocumentService:
                 if self._regen is not None or self._graph_error is not None:
                     return
                 try:
-                    result = regenerate(self._document.graph)
+                    result = regenerate(self._document.graph, self._solver.solve)
                 except GraphError as error:
                     self._record_graph_error(error)
                     return
@@ -3195,7 +3215,7 @@ class DocumentService:
             if self._graph_error is not None:
                 raise self._graph_error
             try:
-                result = regenerate(self._document.graph)
+                result = regenerate(self._document.graph, self._solver.solve)
             except GraphError as error:
                 self._record_graph_error(error)
                 raise
@@ -3213,6 +3233,13 @@ class DocumentService:
             return None
         error = _availability_request_error(self._regen.availability)
         return self.error_response(operation, {}, error.code, str(error), **error.details)
+
+    def close(self) -> None:
+        self._solver.close()
+
+    @property
+    def sketch_solve_timeout(self) -> float:
+        return self._solver.timeout
 
     @property
     def revision(self) -> int:
@@ -3432,7 +3459,7 @@ class DocumentService:
         graph = loads(dumps(self._document.graph))
         applied = apply(graph, parsed, self._committed_regeneration(parsed))
         changed_id, changed_ids, deletion = _applied_result(applied)
-        result = regenerate(graph)
+        result = regenerate(graph, self._solver.solve)
         if not result.availability.geometry_available and not isinstance(
             parsed, (SketchCreate, SketchUpdate, SketchDelete)
         ):
@@ -3679,7 +3706,7 @@ class DocumentService:
             "sketch",
             payload,
             _parse_sketch,
-            _apply_sketch,
+            partial(_apply_sketch, solver=self._solver.solve),
             response,
         )
 

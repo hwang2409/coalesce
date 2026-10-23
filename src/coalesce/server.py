@@ -39,6 +39,8 @@ _TOOL_DESCRIPTIONS = {
 TOOLS_GUIDE = """# coalesce tools
 
 Start with `coalesce --document part.coalesce.json` or set `COALESCE_DOCUMENT`.
+Set `--sketch-solve-timeout SECONDS` or `COALESCE_SKETCH_SOLVE_TIMEOUT` to configure the
+bounded constrained-sketch solver (default 1 second; accepted range 0.5 through 120 seconds).
 coalesce owns one revisioned document. Start with `query` using `select.kind: revision`.
 Failures use the stable UPPER_SNAKE taxonomy in `docs/errors.md`. Every failure includes
 `code`, `message`, `operation`, `retryable`, and the unchanged `revision`; it includes
@@ -484,7 +486,8 @@ def create_server(service: DocumentService) -> Server:
         instructions=(
             "Read coalesce://docs/tools and query the current revision before mutations. "
             "Ask before guessing vague dimensions. Sketch centers use plane-local axes; "
-            "extrusions start at the sketch plane and follow its normal. Holes are global +Z."
+            "extrusions start at the sketch plane and follow its normal. Holes are global +Z. "
+            f"The constrained-sketch solve timeout is {service.sketch_solve_timeout:g} seconds."
         ),
     )
 
@@ -543,5 +546,8 @@ def create_server(service: DocumentService) -> Server:
 
 async def run_stdio(service: DocumentService) -> None:
     server = create_server(service)
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
+    try:
+        async with stdio_server() as (read, write):
+            await server.run(read, write, server.create_initialization_options())
+    finally:
+        service.close()

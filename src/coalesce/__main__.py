@@ -14,6 +14,11 @@ from pathlib import Path
 from .graph import GraphError
 from .server import run_stdio
 from .service import DocumentService, _graph_error_response
+from .sketch_solver import (
+    DEFAULT_SOLVE_TIMEOUT_SECONDS,
+    MAX_SOLVE_TIMEOUT_SECONDS,
+    MIN_SOLVE_TIMEOUT_SECONDS,
+)
 
 
 class _DocumentLoadFailure(Exception):
@@ -59,9 +64,26 @@ def _load_service(document: Path, **kwargs) -> DocumentService:
     raise _DocumentLoadFailure(0, failure) from None
 
 
-async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> None:
+def _sketch_solve_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number of seconds") from error
+    if not MIN_SOLVE_TIMEOUT_SECONDS <= timeout <= MAX_SOLVE_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"must be between {MIN_SOLVE_TIMEOUT_SECONDS:g} and "
+            f"{MAX_SOLVE_TIMEOUT_SECONDS:g} seconds"
+        )
+    return timeout
+
+
+async def _run(
+    document: Path, *, viewer_enabled: bool, open_browser: bool, sketch_solve_timeout: float
+) -> None:
     if not viewer_enabled:
-        service = await asyncio.to_thread(_load_service, document)
+        service = await asyncio.to_thread(
+            _load_service, document, sketch_solve_timeout=sketch_solve_timeout
+        )
         await run_stdio(service)
         return
 
@@ -75,6 +97,7 @@ async def _run(document: Path, *, viewer_enabled: bool, open_browser: bool) -> N
             document,
             scene_store=store,
             viewer_url=viewer.url,
+            sketch_solve_timeout=sketch_solve_timeout,
         )
         print(f"coalesce viewer: {viewer.url}", file=sys.stderr, flush=True)
         if open_browser:
@@ -91,6 +114,19 @@ def main() -> None:
         help="*.coalesce.json document path (or set COALESCE_DOCUMENT)",
     )
     parser.add_argument("--no-viewer", action="store_true", help="do not start the local viewer")
+    parser.add_argument(
+        "--sketch-solve-timeout",
+        type=_sketch_solve_timeout,
+        default=os.environ.get(
+            "COALESCE_SKETCH_SOLVE_TIMEOUT", str(DEFAULT_SOLVE_TIMEOUT_SECONDS)
+        ),
+        metavar="SECONDS",
+        help=(
+            "constrained sketch solve timeout in seconds, "
+            f"{MIN_SOLVE_TIMEOUT_SECONDS:g}..{MAX_SOLVE_TIMEOUT_SECONDS:g} "
+            "(or set COALESCE_SKETCH_SOLVE_TIMEOUT)"
+        ),
+    )
     parser.add_argument("--open", action="store_true", help="open the viewer in the default browser")
     arguments = parser.parse_args()
     if arguments.document is None:
@@ -104,6 +140,7 @@ def main() -> None:
                 arguments.document,
                 viewer_enabled=not arguments.no_viewer,
                 open_browser=arguments.open,
+                sketch_solve_timeout=arguments.sketch_solve_timeout,
             )
         )
     except _DocumentLoadFailure as error:

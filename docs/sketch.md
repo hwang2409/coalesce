@@ -1,6 +1,8 @@
 # constrained sketch solver
 
-Coalesce keeps constrained-sketch solving behind `src/coalesce/sketch_solver.py`. The base package does not import or require a solver.
+Coalesce keeps constrained-sketch solving behind `src/coalesce/sketch_solver.py`. The base package does not import or require a solver. Each `DocumentService` supervises one serialized solver child. It reuses that child for successful solves, kills and reaps it after a timeout or protocol failure, and starts a replacement only for the next solve. Server shutdown also kills and reaps the child.
+
+The solve bound defaults to 1 second. Configure it from 0.5 through 120 seconds with `--sketch-solve-timeout SECONDS` or `COALESCE_SKETCH_SOLVE_TIMEOUT`. The configured value appears in the MCP server instructions.
 
 ## install
 

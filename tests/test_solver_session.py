@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import io
 import os
-import struct
 import subprocess
 import sys
 import threading
@@ -10,6 +8,12 @@ import time
 from pathlib import Path
 
 import pytest
+from test_constrained_sketch import (
+    create_request,
+    fake_planegcs,
+    rectangle_model,
+    update_request,
+)
 
 import coalesce.sketch_solver as solver_module
 from coalesce.service import DocumentService
@@ -19,13 +23,6 @@ from coalesce.sketch_solver import (
     SolveRequest,
     SolveStatus,
     _write_message,
-)
-
-from test_constrained_sketch import (
-    create_request,
-    fake_planegcs,
-    rectangle_model,
-    update_request,
 )
 
 
@@ -55,23 +52,23 @@ def _script_child(tmp_path: Path, body: str) -> subprocess.Popen:
 
 
 def test_document_service_reuses_one_solver_child_for_two_edits(tmp_path, monkeypatch):
-    pids = tmp_path / "pids"
-    fake = fake_planegcs(tmp_path / "fake", status="Success")
-    module = fake / "planegcs.py"
-    module.write_text(
-        module.read_text().replace(
-            "class SolveStatus", f"Path({str(pids)!r}).open('a').write(str(os.getpid()) + '\\n')\n\nclass SolveStatus"
-        )
-    )
-    monkeypatch.setenv("PYTHONPATH", str(fake))
+    real_start = solver_module._start_solver_child
+    pids = []
+
+    def counted_start():
+        process = real_start()
+        pids.append(process.pid)
+        return process
+
+    monkeypatch.setattr(solver_module, "_start_solver_child", counted_start)
     service = DocumentService(tmp_path / "doc.coalesce.json", warmup=False)
     try:
         assert service.sketch(create_request(rectangle_model()))["ok"] is True
         assert service.sketch(update_request(rectangle_model(width=32), 1, "update"))["ok"] is True
-        assert len(set(pids.read_text().splitlines())) == 1
+        assert len(pids) == 1
     finally:
         service.close()
-    assert not _pid_exists(int(pids.read_text().splitlines()[0]))
+    assert not _pid_exists(pids[0])
 
 
 def test_concurrent_solver_calls_are_serialized(tmp_path, monkeypatch):
@@ -108,7 +105,7 @@ def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkey
     if failure == "crash":
         action = "os._exit(7)"
     elif failure == "malformed":
-        action = "sys.stdout.buffer.write(b'bad'); sys.stdout.buffer.flush(); time.sleep(30)"
+        action = "sys.stdout.buffer.write(struct.pack('!Q', 3) + b'bad'); sys.stdout.buffer.flush(); time.sleep(30)"
     elif failure == "oversized":
         action = f"sys.stdout.buffer.write(struct.pack('!Q', {MAX_FRAME_BYTES + 1})); sys.stdout.buffer.flush(); time.sleep(30)"
     else:
@@ -128,7 +125,7 @@ def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkey
         )
 
     monkeypatch.setattr(solver_module, "_start_solver_child", start)
-    session = SketchSolverSession(timeout=0.1)
+    session = SketchSolverSession(timeout=0.5)
     try:
         failed = session.solve(SolveRequest())
         pid = int(pid_file.read_text())
@@ -137,6 +134,22 @@ def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkey
         assert session.solve(SolveRequest()).status is SolveStatus.FULLY_CONSTRAINED
     finally:
         session.close()
+
+
+def test_missing_optional_dependency_reaps_child(tmp_path, monkeypatch):
+    pid_file = tmp_path / "pid"
+    response = tmp_path / "response"
+    with response.open("wb") as stream:
+        _write_message(stream, ("import_error", "install coalesce[sketch]"))
+    child = _script_child(
+        tmp_path,
+        f"import os, sys\nfrom pathlib import Path\nPath({str(pid_file)!r}).write_text(str(os.getpid()))\nsys.stdin.buffer.read(1)\nsys.stdout.buffer.write(open({str(response)!r}, 'rb').read()); sys.stdout.buffer.flush(); sys.stdin.buffer.read()\n",
+    )
+    monkeypatch.setattr(solver_module, "_start_solver_child", lambda: child)
+    session = SketchSolverSession()
+    with pytest.raises(ImportError, match="coalesce"):
+        session.solve(SolveRequest())
+    assert _wait_until(lambda: not _pid_exists(int(pid_file.read_text())))
 
 
 def test_invalid_solver_timeout_is_clean_cli_error(tmp_path):
