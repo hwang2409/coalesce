@@ -18,7 +18,7 @@ from mcp.client.stdio import stdio_client
 from test_mcp_vertical import FEATURE, SKETCH, call_server_tool, result_json
 from test_pcb_enclosure import base_request, import_request, standoffs_request
 from test_pcb_lid import lid_request
-from test_port_cutout import port_request
+from test_port_cutout import explicit_envelope, port_request
 from test_viewer_browser import playwright_module
 
 import coalesce.service as service_module
@@ -31,6 +31,7 @@ from coalesce.viewer.scene import REFERENCE_COLOR
 
 BROWSER_SMOKE = Path(__file__).with_name("mcp_viewer_smoke.mjs")
 ENCLOSURE_SMOKE = Path(__file__).with_name("mcp_viewer_enclosure_smoke.mjs")
+LID_SMOKE = Path(__file__).with_name("mcp_viewer_lid_smoke.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
 KICAD_MOVED_FIXTURE = Path(__file__).parent / "fixtures/kicad/features-moved.kicad_pcb"
 
@@ -553,6 +554,110 @@ def _enclosure_calls():
     ]
 
 
+def _stale_lid_calls():
+    outer = [{"feature": "base", "role": "outer_vertical", "cardinality": "exactly", "count": 4}]
+    return [
+        ("import", import_request(KICAD_FIXTURE)),
+        ("feature", base_request()),
+        ("feature", _edge_treatment("create", 2, "round-base", "base_round", "fillet", 1, outer, "base")),
+        ("feature", lid_request(revision=3, include_lip=False)),
+        ("feature", port_request(
+            revision=4,
+            envelope=explicit_envelope(width=4, height=1, bottom=0),
+        )),
+    ]
+
+
+@pytest.mark.anyio
+async def test_stale_lid_outline_is_in_scene_and_clears_in_browser(tmp_path, browser_module):
+    path = tmp_path / "stale-lid.coalesce.json"
+    errlog = (tmp_path / "stale-lid.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    screenshots = Path(
+        os.environ.get(
+            "LID_TRUTH_SCREENSHOTS",
+            Path.home() / ".zeta/scratch/coalesce/ux-shots-lid-truth",
+        )
+    )
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        for tool, arguments in _stale_lid_calls():
+            assert result_json(await session.call_tool(tool, arguments))["ok"] is True
+        parsed, headers = await asyncio.to_thread(_viewer_access, url)
+        scene = await asyncio.to_thread(_wait_for_scene, parsed, headers, 5, errlog)
+        outline = next(row for row in scene["fit"][0]["rows"] if row["id"].startswith("lid_outline:"))
+        assert outline.pop("partId").startswith("lid/")
+        assert outline == {
+            "id": "lid_outline:lid",
+            "label": "Lid outline",
+            "status": "FAIL",
+            "value": "the lid follows base_round, but port was added to the base after it",
+            "reason": "update the lid's outlineSource to port",
+            "evidence": {
+                "source": "base_round",
+                "legalSource": "port",
+                "areaDifference": {"value": 0.0, "unit": "mm^2"},
+                "bboxDifference": {"value": 0.0, "unit": "mm"},
+                "matches": False,
+                "reason": "outline source is stale: base_round != port",
+            },
+        }
+        driver = await asyncio.create_subprocess_exec(
+            "node", str(LID_SMOKE), browser_module, url, str(screenshots),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        )
+
+        async def step(name):
+            driver.stdin.write(f"{name}\n".encode())
+            await driver.stdin.drain()
+            return json.loads(await asyncio.wait_for(driver.stdout.readline(), timeout=60))
+
+        try:
+            stale = await step("stale")
+            updated = result_json(await session.call_tool("feature", {
+                "action": "update",
+                "expectedRevision": 5,
+                "requestId": "update-lid-outline",
+                "featureId": "lid",
+                "kind": "pcb_lid",
+                "set": {"outlineSource": {"featureId": "port"}},
+            }))
+            assert updated["revision"] == 6
+            cleared = await step("clear")
+            driver.stdin.write_eof()
+            assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
+        finally:
+            if driver.returncode is None:
+                driver.kill()
+                await driver.wait()
+
+    assert stale.pop("errors") == []
+    assert cleared.pop("errors") == []
+    for size in ("1280x800", "390x844"):
+        assert stale[size] == {
+            "status": "FAIL",
+            "label": "Lid outline",
+            "value": "the lid follows base_round, but port was added to the base after it",
+            "reason": "update the lid's outlineSource to port",
+            "focused": True,
+            "readable": True,
+        }
+        assert cleared[size] == {"count": 0}
+
+
 @pytest.mark.anyio
 async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
     """Every review step is scrolled into view and activated in the browser before it is asserted."""
@@ -613,9 +718,10 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         # a lip-less lid has no fit gap: neutral, last, and outside the counts
         assert fit["rows"][-1] == {"status": "N/A", "label": "Lid fit gap", "value": "the lid has no lip"}
         assert fit["visible"] is True
-        assert fit["count"] == "1 unknown, 2 pass, 3 measured only"
+        assert fit["count"] == "1 fail, 1 unknown, 2 pass, 3 measured only"
         # readable lines with units; ids and the payload only behind the closed raw disclosure
         assert evidence["lines"] == [
+            "Lid outline on lid: the lid follows port, but base_fillet was added to the base after it, fail",
             "Port J1 clears connector on base: J1: 5 × 3 mm on left wall, 0.5 mm clearance, unknown",
             "Wall thickness on base: 2 mm, measured only",
             "Floor thickness on base: 2 mm, measured only",
@@ -649,7 +755,7 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         }
         assert refreshed[size]["text"] == (
             "Refreshed board: J1 moved 2.0 mm, 3 mounting holes moved, "
-            "pcb lid, chamfer, standoffs and port cutout updated"
+            "standoffs and port cutout updated"
         )
         assert refreshed[size]["visible"] is True
         assert refreshed[size]["overflow"] == {"document": True, "change": True}

@@ -64,7 +64,7 @@ def test_fit_rows_for_a_measured_enclosure(tmp_path):
 
     assert list(found) == [
         "wall_thickness", "floor_thickness", "board_clearance", "standoffs",
-        "lid_interference:lid", "lid_fit_gap:lid", "port:port",
+        "lid_outline:lid", "lid_interference:lid", "lid_fit_gap:lid", "port:port",
     ]
     summary = {key: (row["status"], row["value"], row.get("reason")) for key, row in found.items()}
     assert summary == {
@@ -73,6 +73,11 @@ def test_fit_rows_for_a_measured_enclosure(tmp_path):
         "floor_thickness": ("MEASURED", "2 mm", "no requirement set"),
         "board_clearance": ("MEASURED", "1 mm min, all sides", "no requirement set"),
         "standoffs": ("PASS", "3 of 3 mounting holes", None),
+        "lid_outline:lid": (
+            "FAIL",
+            "the lid follows mounts, but port was added to the base after it",
+            "update the lid's outlineSource to port",
+        ),
         "lid_interference:lid": ("PASS", "none", None),
         "lid_fit_gap:lid": ("MEASURED", "0.25 mm", "no requirement set"),
         "port:port": ("PASS", "J1: 5 × 3 mm on left wall, 0.5 mm clearance", None),
@@ -83,6 +88,7 @@ def test_fit_rows_for_a_measured_enclosure(tmp_path):
         "floor_thickness": ids["base"],
         "board_clearance": ids["pcb reference"],
         "standoffs": ids["base"],
+        "lid_outline:lid": ids["lid"],
         "lid_interference:lid": ids["lid"],
         "lid_fit_gap:lid": ids["lid"],
         "port:port": ids["base"],
@@ -203,12 +209,13 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         fit = shown["actions"][0]
         assert fit["visible"] is True
         assert [row["status"] for row in fit["rows"]] == [
-            "FAIL", "UNKNOWN", "MEASURED ONLY", "MEASURED ONLY", "MEASURED ONLY", "PASS", "MEASURED ONLY",
+            "FAIL", "FAIL", "UNKNOWN", "MEASURED ONLY", "MEASURED ONLY", "MEASURED ONLY", "PASS",
+            "MEASURED ONLY",
         ]  # problems first
         assert fit["rows"][0]["text"] == "FAIL Standoffs 2 of 3 mounting holes no standoff at H1"
-        assert fit["rows"][2]["text"] == "MEASURED ONLY Wall thickness 2 mm · no requirement set"
+        assert fit["rows"][3]["text"] == "MEASURED ONLY Wall thickness 2 mm · no requirement set"
         # a measured value is no gate result, and the panel says so once
-        assert fit["count"] == "1 fail, 1 unknown, 1 pass, 4 measured only"
+        assert fit["count"] == "2 fail, 1 unknown, 1 pass, 4 measured only"
         assert fit["note"] == "Measured only values have no threshold and do not pass the fit gate."
         # the heading's title keeps one line, and no badge runs into its label
         assert fit["titleLines"] == 1
@@ -265,7 +272,7 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         # one line per row in words, with the part it was measured on; ids only in the raw record
         assert opened["evidence"][0] == "Standoffs on base: 2 of 3 mounting holes, fail"
         assert "Wall thickness on base: 2 mm, measured only" in opened["evidence"]
-        assert len(opened["evidence"]) == 7
+        assert len(opened["evidence"]) == 8
         assert not any("hole-" in line or "{" in line for line in opened["evidence"])
         assert (opened["rawOpen"], opened["raw"]) == (False, None)
         # focus moved on, the facts stay open: nothing below them jumped

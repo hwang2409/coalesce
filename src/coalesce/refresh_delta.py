@@ -171,6 +171,17 @@ def _outline_dimensions(board: Any) -> dict[str, float] | None:
     }
 
 
+def _lid_changed(
+    graph: Any,
+    node: PcbLid,
+    changed: set[str],
+    board_dimensions_changed: bool,
+) -> bool:
+    inputs = set(graph._dependencies(node)) - {node.outline_source}
+    # Any imported outline edit changes board dimensions; the persisted outline source is not consumed.
+    return board_dimensions_changed or bool(inputs & changed)
+
+
 def _feature_changed(
     before_graph: Any,
     after_graph: Any,
@@ -180,7 +191,14 @@ def _feature_changed(
     changed: set[str],
 ) -> bool:
     node = after_graph.nodes[feature_id]
-    # every feature changes when a feature it consumes changed
+    if isinstance(node, PcbLid):
+        return _lid_changed(
+            after_graph,
+            node,
+            changed,
+            board_dimensions_changed,
+        )
+    # every other feature changes when a feature it consumes changed
     if set(after_graph._dependencies(node)) & changed:
         return True
     if isinstance(node, Standoffs):
@@ -188,7 +206,7 @@ def _feature_changed(
     if isinstance(node, PortCutout):
         # the cutout also reads the board thickness directly
         return board_dimensions_changed or _port_cutout_changed(before_graph, after_graph, feature_id)
-    if isinstance(node, (PcbBase, PcbLid)):
+    if isinstance(node, PcbBase):
         return board_dimensions_changed
     return False
 
@@ -220,7 +238,12 @@ def refresh_delta(
     # inputs before consumers, so a consumer sees every changed input
     for node in after_graph.ordered():
         if node.id in affected and node.id in before_graph.nodes and _feature_changed(
-            before_graph, after_graph, node.id, mounting_holes, dimensions_changed, changed
+            before_graph,
+            after_graph,
+            node.id,
+            mounting_holes,
+            dimensions_changed,
+            changed,
         ):
             changed.add(node.id)
     dependent = [_kind_label(after_graph.nodes[feature_id]) for feature_id in sorted(changed)]
