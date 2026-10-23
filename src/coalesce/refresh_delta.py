@@ -324,10 +324,9 @@ def _dimension_labels(delta: dict[str, Any]) -> list[str]:
     return labels
 
 
-def _bounded_summary(labels: list[str]) -> str:
-    prefix = "refreshed board: "
+def bounded_summary(prefix: str, labels: list[str], *, default: str = "") -> str:
     if not labels:
-        return prefix + "source changed"
+        return prefix + default
     for shown in range(len(labels), -1, -1):
         items = labels[:shown]
         if omitted := len(labels) - shown:
@@ -345,4 +344,4 @@ def format_summary(delta: dict[str, Any], board_id: str = "") -> str:
         *_hole_labels(delta["mountingHoles"]),
         *_dependent_label(delta["dependentFeatures"]),
     ]
-    return _bounded_summary(labels)
+    return bounded_summary("refreshed board: ", labels, default="source changed")

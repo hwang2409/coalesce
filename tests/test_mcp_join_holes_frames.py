@@ -931,7 +931,7 @@ async def test_mixed_tangent_named_hole_is_atomic_and_names_tangent(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_all_named_holes_miss_with_whole_feature_error(tmp_path):
+async def test_all_named_holes_miss_reports_every_name(tmp_path):
     path = tmp_path / "all-miss-holes.coalesce.json"
     setup = await run_server(
         path,
@@ -985,7 +985,7 @@ async def test_all_named_holes_miss_with_whole_feature_error(tmp_path):
 
     assert result["error"]["code"] == "HOLE_NO_EFFECT"
     assert result["error"]["featureId"] == "holes"
-    assert "names" not in result["error"]
+    assert result["error"]["names"] == ["far-left", "far-right"]
     assert result["revision"] == 2
 
 

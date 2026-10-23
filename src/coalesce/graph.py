@@ -14,6 +14,8 @@ from .references import (
     ToolCapSource,
 )
 
+MAX_HOLE_COUNT = 64
+
 
 @dataclass
 class Parameter:
@@ -239,6 +241,27 @@ class HolePosition:
     point: tuple[float, float]
 
 
+@dataclass(frozen=True)
+class CircularHolePattern:
+    center: tuple[float, float]
+    radius: float
+    count: int
+    start_angle: float
+    name_prefix: str
+
+
+@dataclass(frozen=True)
+class LinearHolePattern:
+    start: tuple[float, float]
+    direction: tuple[float, float]
+    pitch: float
+    count: int
+    name_prefix: str
+
+
+HolePattern = CircularHolePattern | LinearHolePattern
+
+
 @dataclass
 class Hole(Feature):
     target: str = ""
@@ -246,6 +269,7 @@ class Hole(Feature):
     depth: float | None = None
     position: tuple[float, float] = (0.0, 0.0)
     positions: tuple[HolePosition, ...] = ()
+    pattern: HolePattern | None = None
 
 
 @dataclass

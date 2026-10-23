@@ -364,10 +364,18 @@ def _filter(candidates: list[Candidate], predicate: Filter) -> _FilterResult:
 
 
 def reference_matches_key(ref: Reference, key: ElementKey) -> bool:
+    source_matches = (
+        ref.source is None
+        or key.source == ref.source
+        or (
+            isinstance(key.source, tuple)
+            and any(source.source == ref.source for source in key.source)
+        )
+    )
     return (
         key.feature == ref.feature
         and key.role == ref.role
-        and (ref.source is None or key.source == ref.source)
+        and source_matches
         and (ref.body is None or key.body == ref.body)
     )
 

@@ -460,9 +460,12 @@ async def test_cycloidal_disc_documented_example_end_to_end(tmp_path):
     results = await run_server(tmp_path / "cycloidal-disc.coalesce.json", calls)
 
     assert all(result["ok"] is True for result in results)
+    assert results[2]["positionNames"] == [f"bolt{index}" for index in range(1, 7)]
     solid = import_step(target)
     assert solid.is_valid
     assert len(solid.solids()) == 1
+    cylinders = [face for face in solid.faces() if face.geom_type is GeomType.CYLINDER]
+    assert sorted(face.radius for face in cylinders) == pytest.approx([1.5] * 6 + [4])
     assert any(face.geom_type is GeomType.BSPLINE for face in solid.faces())
     spline = max(
         (edge for edge in solid.edges() if edge.geom_type is GeomType.BSPLINE),

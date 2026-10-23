@@ -7,12 +7,14 @@ if TYPE_CHECKING:
     from .graph import (
         Chamfer,
         Circle,
+        CircularHolePattern,
         Cut,
         Extrude,
         Fillet,
         Graph,
         GraphError,
         Hole,
+        LinearHolePattern,
         Parameter,
         PcbBase,
         PcbLid,
@@ -37,14 +39,16 @@ if TYPE_CHECKING:
     from .regen import RegenResult, regenerate
 
 __all__ = [
-    "BodySource", "Cardinality", "Chamfer", "Circle", "Cut", "Extrude", "Fillet", "Graph",
-    "GraphError", "Hole", "HoleSurfaceSource", "MaxAlong", "Normal", "Parameter",
+    "BodySource", "Cardinality", "Chamfer", "Circle", "CircularHolePattern", "Cut",
+    "Extrude", "Fillet", "Graph", "GraphError", "Hole", "HoleSurfaceSource",
+    "LinearHolePattern", "MaxAlong", "Normal", "Parameter",
     "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
     "Sketch", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
 ]
 
 _GRAPH_NAMES = {
-    "Chamfer", "Circle", "Cut", "Extrude", "Fillet", "Graph", "GraphError", "Hole", "Parameter",
+    "Chamfer", "Circle", "CircularHolePattern", "Cut", "Extrude", "Fillet", "Graph",
+    "GraphError", "Hole", "LinearHolePattern", "Parameter",
     "PcbBase", "PcbLid", "Plane", "Rectangle", "Sketch", "Standoffs",
 }
 _REFERENCE_NAMES = {
