@@ -1,6 +1,6 @@
 # seven-lobe cycloidal disc
 
-This example makes a 7-lobe cycloidal-drive disc, extrudes it by 5 mm, adds an 8 mm center bore, and exports STEP.
+This example makes a 7-lobe cycloidal-drive disc, extrudes it by 5 mm, adds six 3 mm bolt holes on a 12 mm bolt circle and an 8 mm center bore, and exports STEP.
 
 ## profile equations
 
@@ -80,21 +80,40 @@ calls = [
     ("feature", {
         "action": "create",
         "expectedRevision": 2,
+        "requestId": "bolt-holes",
+        "featureId": "bolt_holes",
+        "kind": "hole",
+        "parameters": {
+            "target": {"featureId": "cycloid_disc"},
+            "diameter": {"value": 3, "unit": "mm"},
+            "pattern": {
+                "kind": "circular",
+                "center": [0, 0],
+                "radius": {"value": 12, "unit": "mm"},
+                "count": 6,
+                "startAngle": {"value": 0, "unit": "deg"},
+                "namePrefix": "bolt",
+            },
+        },
+    }),
+    ("feature", {
+        "action": "create",
+        "expectedRevision": 3,
         "requestId": "center-bore",
         "featureId": "center_bore",
         "kind": "hole",
         "parameters": {
-            "target": {"featureId": "cycloid_disc"},
+            "target": {"featureId": "bolt_holes"},
             "diameter": {"value": 8, "unit": "mm"},
             "position": [0, 0],
         },
     }),
     ("export", {
-        "expectedRevision": 3,
+        "expectedRevision": 4,
         "partIds": ["center_bore"],
         "path": "/tmp/cycloidal-disc.step",
     }),
 ]
 ```
 
-The spline is one periodic analytic B-spline edge. Its extruded side is exported as a B-spline surface. The center bore is a separate feature, so the outline remains one simple outer loop.
+The spline is one periodic analytic B-spline edge. Its extruded side is exported as a B-spline surface. The six bolt centers are generated from the stored circular pattern, and the center bore is a separate feature, so the outline remains one simple outer loop.

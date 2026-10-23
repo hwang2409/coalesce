@@ -32,6 +32,7 @@ from .export import (
 )
 from .fit_summary import fit_summary, part_facts
 from .graph import (
+    MAX_HOLE_COUNT,
     MAX_OUTLINE_POINTS,
     MIN_OUTLINE_POINTS,
     BoardImport,
@@ -1097,8 +1098,6 @@ def _hole_point(value: Any, field: str) -> tuple[float, float]:
 
 
 def _hole_count(value: Any) -> int:
-    from .graph import MAX_HOLE_COUNT
-
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_HOLE_COUNT:
         raise RequestError(
             "INVALID_PARAMETER",
