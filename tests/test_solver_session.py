@@ -99,6 +99,7 @@ def test_concurrent_solver_calls_are_serialized(tmp_path, monkeypatch):
 @pytest.mark.parametrize("failure", ["crash", "malformed", "oversized", "timeout"])
 def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkeypatch, failure):
     pid_file = tmp_path / "pid"
+    restart_pid_file = tmp_path / "restart-pid"
     good_response = tmp_path / "response"
     with good_response.open("wb") as stream:
         _write_message(stream, ("result", solver_module.SolveResult(SolveStatus.FULLY_CONSTRAINED)))
@@ -121,7 +122,7 @@ def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkey
             return starts.pop()
         return _script_child(
             tmp_path,
-            f"import sys\nsys.stdin.buffer.read(1)\nsys.stdout.buffer.write(open({str(good_response)!r}, 'rb').read()); sys.stdout.buffer.flush(); sys.stdin.buffer.read()\n",
+            f"import os, sys\nfrom pathlib import Path\nPath({str(restart_pid_file)!r}).write_text(str(os.getpid()))\nsys.stdin.buffer.read(1)\nsys.stdout.buffer.write(open({str(good_response)!r}, 'rb').read()); sys.stdout.buffer.flush(); sys.stdin.buffer.read()\n",
         )
 
     monkeypatch.setattr(solver_module, "_start_solver_child", start)
@@ -134,6 +135,7 @@ def test_protocol_failure_kills_child_and_next_request_restarts(tmp_path, monkey
         assert session.solve(SolveRequest()).status is SolveStatus.FULLY_CONSTRAINED
     finally:
         session.close()
+    assert _wait_until(lambda: not _pid_exists(int(restart_pid_file.read_text())))
 
 
 def test_missing_optional_dependency_reaps_child(tmp_path, monkeypatch):
