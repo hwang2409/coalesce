@@ -25,6 +25,14 @@
       <p class="revision-meta" id="revision-meta">No committed geometry yet</p>
     </section>
 
+    <section class="repair-history" id="repair-history" hidden>
+      <details open>
+        <summary>Session history</summary>
+        <p>Failed requests are not document revisions.</p>
+        <ul id="repair-history-rows"></ul>
+      </details>
+    </section>
+
     <!-- measured on the as-built solids of this revision; a row focuses the part it is about -->
     <section class="inspection" id="inspection" aria-labelledby="inspection-title" hidden>
       <h2 id="inspection-title">Fit check <span class="unit" id="inspection-count"></span></h2>

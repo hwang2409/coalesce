@@ -950,7 +950,32 @@ function syncGizmo() {
   requestRender();
 }
 
+function formatQuantity({ value, unit }) {
+  return `${value} ${unit}`;
+}
+
+function showRepairHistory(repairs) {
+  const section = $('repair-history');
+  section.hidden = !repairs.length;
+  $('repair-history-rows').replaceChildren(...repairs.flatMap((repair) =>
+    Object.entries(repair.fields).map(([name, values]) => {
+      const row = document.createElement('li');
+      const feature = document.createElement('code');
+      feature.textContent = repair.featureId;
+      const field = document.createElement('span');
+      field.className = 'repair-field';
+      field.textContent = name;
+      const change = document.createElement('span');
+      change.className = 'repair-values';
+      change.textContent = `${formatQuantity(values.attempted)} → ${formatQuantity(values.accepted)}`;
+      row.append(feature, field, change);
+      return row;
+    })
+  ));
+}
+
 function showRevision(sceneData) {
+  showRepairHistory(sceneData.repairHistory ?? []);
   const label = $('revision');
   label.textContent = String(sceneData.revision);
   delete label.dataset.empty;
