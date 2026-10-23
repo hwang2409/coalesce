@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from typing import Any
 
@@ -17,6 +18,7 @@ from .graph import (
     PcbBase,
     PcbLid,
     PortCutout,
+    ScrewClosure,
     Standoffs,
 )
 from .lid_outline import capture_lid_outline, outline_geometry
@@ -54,6 +56,23 @@ def _size(shape: Shape) -> dict[str, Any]:
             strict=True,
         )
     }
+
+
+class IncompleteEvidence(Exception):
+    """A required exact face is missing from the regenerated provenance."""
+
+    def __init__(self, feature: str, role: str, count: int) -> None:
+        super().__init__(f"{feature} has {count} {role} faces, expected 1")
+        self.feature = feature
+        self.role = role
+        self.count = count
+
+
+def _single_face(result: Any, feature: str, role: str) -> Face:
+    faces = _faces(result, feature, role)
+    if len(faces) != 1:
+        raise IncompleteEvidence(feature, role, len(faces))
+    return faces[0]
 
 
 def _faces(result: Any, feature: str, role: str) -> list[Face]:
@@ -228,7 +247,9 @@ def _measure_standoff(
         "classification": classification,
         "measured": {
             "remainingVolume": {**_quantity(remaining.volume), "unit": "mm^3"},
-            "topZ": _quantity(remaining.bounding_box().max.Z) if remaining.volume > _TOLERANCE else None,
+            "topZ": _quantity(remaining.bounding_box().max.Z)
+            if remaining.volume > _TOLERANCE
+            else None,
         },
         "designed": {
             "bossDiameter": _quantity(node.boss_diameter),
@@ -249,9 +270,7 @@ def _standoff_items(
     return [
         _measure_standoff(node, holes_by_id[source], base_shape, floor_top, board_bottom)
         for node in nodes
-        for source in (
-            node.hole_ids if node.selection == "explicit" else tuple(holes_by_id)
-        )
+        for source in (node.hole_ids if node.selection == "explicit" else tuple(holes_by_id))
         if source in holes_by_id
     ]
 
@@ -274,7 +293,9 @@ def _standoffs(
         "count": len(items),
         "mountingHoleCount": len(holes),
         "holeIds": hole_ids,
-        "references": {hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")},
+        "references": {
+            hole["id"]: hole.get("reference") for hole in holes if hole.get("reference")
+        },
         "coveredHoleIds": [hole_id for hole_id in hole_ids if hole_id in intact],
         "uncoveredHoleIds": [hole_id for hole_id in hole_ids if hole_id not in intact],
         "items": items,
@@ -344,9 +365,7 @@ def _board_fit(
         "front": _optional_clearance(board_shape, base_part.shape, "Y", box.min.Y, -1),
         "back": _optional_clearance(board_shape, base_part.shape, "Y", box.max.Y, 1),
     }
-    interference = _interference(
-        board_shape, base_part.shape, [board_id, base_part.part_id]
-    )
+    interference = _interference(board_shape, base_part.shape, [board_id, base_part.part_id])
     reported = (
         dict.fromkeys(("left", "right", "front", "back"), 0.0)
         if interference is not None
@@ -407,7 +426,7 @@ def _lid_measurement(
     return measurement
 
 
-def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> bool:
+def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str, body: Any) -> bool:
     feature = terminal
     while feature != base:
         node = graph.nodes[feature]
@@ -415,7 +434,9 @@ def _has_outer_treatment(graph: Any, result: Any, base: str, terminal: str) -> b
             "outer" in reference.role for reference in node.edges
         ):
             return True
-        feature = result.predecessors.get(feature, base)
+        feature = result.body_predecessors.get(
+            (feature, body), result.predecessors.get(feature, base)
+        )
     return False
 
 
@@ -441,7 +462,7 @@ def _lid_outline_comparison(
     current: Any | None,
     has_outer_treatment: bool,
 ) -> LidOutlineComparison:
-    [top] = _faces(result, node.id, "top")
+    top = _single_face(result, node.id, "top")
     source = (
         _current_outline(result, node.outline_source)
         if node.outline_source is not None
@@ -472,22 +493,23 @@ def _lids(
     base: PcbBase,
     base_part: TerminalPart,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    nodes = [
-        node
-        for node in graph.ordered()
-        if isinstance(node, PcbLid) and node.base == base.id
-    ]
+    nodes = [node for node in graph.ordered() if isinstance(node, PcbLid) and node.base == base.id]
     if not nodes:
         return [], []
-    terminal = base_part.terminal_feature
-    has_outer_treatment = _has_outer_treatment(graph, result, base.id, terminal)
+    body_terminal = base_part.terminal_feature
+    terminal = (
+        body_terminal
+        if body_terminal in result.predecessors
+        else result.body_predecessors.get((body_terminal, base_part.source_body), body_terminal)
+    )
+    has_outer_treatment = _has_outer_treatment(
+        graph, result, base.id, body_terminal, base_part.source_body
+    )
     current = _current_outline(result, terminal)
     lids = []
     warnings = []
     for node in nodes:
-        comparison = _lid_outline_comparison(
-            result, node, terminal, current, has_outer_treatment
-        )
+        comparison = _lid_outline_comparison(result, node, terminal, current, has_outer_treatment)
         lids.append(_lid_measurement(result, parts, node, base_part, comparison))
         if _outline_is_stale(node, current, terminal, has_outer_treatment):
             warnings.append(_lid_warning(node, terminal))
@@ -688,6 +710,68 @@ def _warnings(
     return warnings
 
 
+def _closure_faces(result: Any, feature: str, role: str) -> dict[Any, Face]:
+    return {
+        item.key.source: item.entity
+        for item in result.provenance.get(feature, [])
+        if item.key.role == role and isinstance(item.entity, Face)
+    }
+
+
+def _axes_are_coaxial(
+    pilots: dict[Any, Face], clearances: dict[Any, Face], names: list[str]
+) -> bool:
+    def axis(face: Face) -> tuple[float, float]:
+        box = face.bounding_box()
+        return ((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2)
+
+    return set(pilots) == set(clearances) == set(names) and all(
+        math.dist(axis(pilots[name]), axis(clearances[name])) <= _TOLERANCE for name in names
+    )
+
+
+def _screw_closure_measurement(
+    result: Any, node: ScrewClosure, base_part: TerminalPart, lid_part: TerminalPart
+) -> dict[str, Any]:
+    bosses = _closure_faces(result, node.id, "screw_boss_side")
+    pilots = _closure_faces(result, node.id, "screw_pilot_wall")
+    clearances = _closure_faces(result, node.id, "screw_clearance_wall")
+    names = [point.name for point in node.points]
+    walls = [
+        bosses[name].radius - pilots[name].radius
+        for name in names
+        if name in bosses and name in pilots
+    ]
+    residual = (
+        _quantity(min(walls))
+        if len(walls) == len(names)
+        else {"status": "unknown", "reason": "boss or pilot wall evidence is missing"}
+    )
+    return {
+        "featureId": node.id,
+        "count": len(pilots),
+        "names": names,
+        "coaxial": _axes_are_coaxial(pilots, clearances, names),
+        "minimumResidualWall": residual,
+        "interference": {
+            "value": _common_volume(base_part.shape, lid_part.shape),
+            "unit": "mm^3",
+        },
+    }
+
+
+def _screw_closures(
+    graph: Any, result: Any, base: PcbBase, base_part: TerminalPart, lids: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    lid_parts = {item["featureId"]: item["partId"] for item in lids}
+    parts = {part.part_id: part for part in terminal_parts(result, role="manufacturing")}
+    return [
+        _screw_closure_measurement(result, node, base_part, parts[lid_parts[node.lid]])
+        for node in graph.ordered()
+        if isinstance(node, ScrewClosure) and node.base == base.id
+    ]
+
+
 def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
     base = graph.nodes.get(base_id)
     if not isinstance(base, PcbBase):
@@ -750,6 +834,7 @@ def inspect_enclosure(graph: Any, result: Any, base_id: str) -> dict[str, Any]:
         "standoffs": _standoffs(graph, result, base, board_shape, base_part.shape),
         "lids": lids,
         "ports": ports,
+        "screwClosures": _screw_closures(graph, result, base, base_part, lids),
         "assembled": {"bbox": _bbox(assembled), "size": _size(assembled)},
         "terminalParts": [
             {

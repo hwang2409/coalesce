@@ -209,6 +209,22 @@ class PortCutout(Feature):
     bottom_offset: float = 0
 
 
+@dataclass(frozen=True)
+class ScrewPoint:
+    name: str
+    point: tuple[float, float]
+
+
+@dataclass
+class ScrewClosure(Feature):
+    base: str = ""
+    lid: str = ""
+    points: tuple[ScrewPoint, ...] = ()
+    base_pilot_diameter: float = 1.6
+    boss_diameter: float = 4
+    lid_clearance_diameter: float = 2.4
+
+
 @dataclass
 class Cut(Feature):
     target: str = ""
@@ -395,6 +411,7 @@ class Graph:
                     "tool",
                     "board",
                     "base",
+                    "lid",
                     "outline_source",
                 )
             ),

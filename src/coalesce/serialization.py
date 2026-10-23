@@ -21,6 +21,8 @@ from .graph import (
     Polyline,
     PortCutout,
     Rectangle,
+    ScrewClosure,
+    ScrewPoint,
     Sketch,
     Spline,
     Standoffs,
@@ -48,6 +50,7 @@ _TYPES = {
         PcbBase,
         PcbLid,
         PortCutout,
+        ScrewClosure,
         Standoffs,
         Cut,
         Hole,
@@ -214,6 +217,13 @@ def _load_lid(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _load_screw_closure(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["points"] = tuple(
+        ScrewPoint(item["name"], tuple(item["point"])) for item in payload.get("points", [])
+    )
+    return payload
+
+
 def _load_hole(payload: dict[str, Any]) -> dict[str, Any]:
     payload["position"] = tuple(payload.get("position", (0, 0)))
     payload["positions"] = tuple(
@@ -232,6 +242,7 @@ _LOADERS = {
     Sketch: _sketch,
     Standoffs: _load_standoffs,
     PcbLid: _load_lid,
+    ScrewClosure: _load_screw_closure,
     Hole: _load_hole,
     Fillet: _load_treatment,
     Chamfer: _load_treatment,

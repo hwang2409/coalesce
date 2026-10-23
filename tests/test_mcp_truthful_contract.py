@@ -22,6 +22,7 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         "standoffs",
         "pcb_lid",
         "port_cutout",
+        "screw_closure",
     ]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
     assert "constant-radius fillet" in advertised
@@ -76,6 +77,7 @@ async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
         ("fillet", "fillet", {"radius": quantity}),
         ("chamfer", "chamfer", {"distance": quantity}),
         ("port_cutout", "port_cutout", {"clearance": quantity}),
+        ("screw_closure", "screw_closure", {"bossDiameter": quantity}),
     ]
 
     for feature_id, kind, changes in updates:
@@ -108,7 +110,10 @@ async def test_translated_plate_reports_bbox_placement_and_terminal_body_metrics
     sketch = {**SKETCH, "entities": [{**SKETCH["entities"][0]}]}
     sketch["entities"][0]["width"] = {"value": 60, "unit": "mm"}
     sketch["entities"][0]["height"] = {"value": 40, "unit": "mm"}
-    feature = {**FEATURE, "parameters": {**FEATURE["parameters"], "distance": {"value": 10, "unit": "mm"}}}
+    feature = {
+        **FEATURE,
+        "parameters": {**FEATURE["parameters"], "distance": {"value": 10, "unit": "mm"}},
+    }
     results = await run_server(
         path,
         [
@@ -210,6 +215,6 @@ def test_tools_guide_states_placement_cut_direction_no_guess_and_harness_setup()
     assert "explicit hole ids stay fixed" in guide
     assert "`selectionchanges`" in guide
     assert "import` the board, create `pcb_base`, create `standoffs`, create" in guide
-    assert "`pcb_lid`, create `port_cutout`, run `check`" in guide
-    assert "default_tools_approval_mode = \"approve\"" in TOOLS_GUIDE
+    assert "`pcb_lid`, optionally create `port_cutout`, create `screw_closure`" in guide
+    assert 'default_tools_approval_mode = "approve"' in TOOLS_GUIDE
     assert '"mcpServers"' in TOOLS_GUIDE

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .graph import BoardImport, PcbBase, PcbLid, PortCutout, Standoffs
+from .graph import BoardImport, PcbBase, PcbLid, PortCutout, ScrewClosure, Standoffs
 from .requirements import evaluate
 
 _LOG = logging.getLogger(__name__)
@@ -39,7 +39,9 @@ def _rule(requirement: dict[str, Any], inspection: dict[str, Any], revision: int
     return evaluate([requirement], inspection, revision)["results"][0]
 
 
-def _measured(row_id: str, label: str, measured: dict[str, Any], value: str, part_id: str) -> dict[str, Any]:
+def _measured(
+    row_id: str, label: str, measured: dict[str, Any], value: str, part_id: str
+) -> dict[str, Any]:
     """A value with no stated threshold; UNKNOWN when the inspection could not measure it."""
     if measured.get("status") == "unknown":
         return _row(row_id, label, "UNKNOWN", "not measured", part_id, measured, measured["reason"])
@@ -53,7 +55,10 @@ def _holes(board: BoardImport) -> dict[str, tuple[str | None, str, str]]:
     """
     from .enclosure_inspection import mounting_holes
 
-    library = {footprint["id"]: footprint["libraryId"] for footprint in board.mechanics.get("footprints", [])}
+    library = {
+        footprint["id"]: footprint["libraryId"]
+        for footprint in board.mechanics.get("footprints", [])
+    }
     return {
         hole["id"]: (
             hole["reference"],
@@ -82,16 +87,42 @@ def _board_row(inspection: dict[str, Any], board_part: str | None) -> dict[str, 
     label = "Board clearance"
     if cavity["boardInterference"]:
         volume = cavity["boardInterference"]["volume"]["value"]
-        return _row("board_clearance", label, "FAIL", "board overlaps base", board_part, evidence,
-                    f"{_mm(volume)} mm³ of the board is inside the base")
+        return _row(
+            "board_clearance",
+            label,
+            "FAIL",
+            "board overlaps base",
+            board_part,
+            evidence,
+            f"{_mm(volume)} mm³ of the board is inside the base",
+        )
     unknown = next((item for item in clearance.values() if item.get("status") == "unknown"), None)
     if unknown:
-        return _row("board_clearance", label, "UNKNOWN", "not measured", board_part, evidence, unknown["reason"])
+        return _row(
+            "board_clearance",
+            label,
+            "UNKNOWN",
+            "not measured",
+            board_part,
+            evidence,
+            unknown["reason"],
+        )
     values = {side: _mm(item["value"]) for side, item in clearance.items()}
     least = _mm(min(item["value"] for item in clearance.values()))
-    sides = "all sides" if set(values.values()) == {least} else ", ".join(f"{side} {value}" for side, value in values.items())
-    return _row("board_clearance", label, "MEASURED", f"{least} mm min, {sides}", board_part, evidence,
-                NO_REQUIREMENT)
+    sides = (
+        "all sides"
+        if set(values.values()) == {least}
+        else ", ".join(f"{side} {value}" for side, value in values.items())
+    )
+    return _row(
+        "board_clearance",
+        label,
+        "MEASURED",
+        f"{least} mm min, {sides}",
+        board_part,
+        evidence,
+        NO_REQUIREMENT,
+    )
 
 
 def _standoff_row(inspection: dict[str, Any], board: BoardImport, revision: int) -> dict[str, Any]:
@@ -99,17 +130,33 @@ def _standoff_row(inspection: dict[str, Any], board: BoardImport, revision: int)
     measured = result["measured"]
     total = len(inspection["standoffs"]["holeIds"])
     if result["status"] == "UNKNOWN":
-        return _row("standoffs", "Standoffs", "UNKNOWN", "not measured", inspection["base"]["partId"],
-                    measured, result["reason"])
+        return _row(
+            "standoffs",
+            "Standoffs",
+            "UNKNOWN",
+            "not measured",
+            inspection["base"]["partId"],
+            measured,
+            result["reason"],
+        )
     holes = _holes(board)
     missing = [
         reference or f"{name} at ({position}) mm"
-        for reference, name, position in (holes[hole_id] for hole_id in measured["uncoveredHoleIds"])
+        for reference, name, position in (
+            holes[hole_id] for hole_id in measured["uncoveredHoleIds"]
+        )
     ]
     covered = len(measured["coveredHoleIds"])
     reason = f"no standoff at {', '.join(missing)}" if missing else None
-    return _row("standoffs", "Standoffs", result["status"], f"{covered} of {total} mounting holes",
-                inspection["base"]["partId"], measured, reason)
+    return _row(
+        "standoffs",
+        "Standoffs",
+        result["status"],
+        f"{covered} of {total} mounting holes",
+        inspection["base"]["partId"],
+        measured,
+        reason,
+    )
 
 
 def _lid_outline_row(
@@ -151,15 +198,9 @@ def _lid_fit_row(lid: dict[str, Any], node: PcbLid) -> dict[str, Any]:
             None,
         )
     gap = lid["fitGap"]
-    low, high = (
-        (_mm(gap[end]["value"]) for end in ("min", "max"))
-        if "min" in gap
-        else ("", "")
-    )
+    low, high = (_mm(gap[end]["value"]) for end in ("min", "max")) if "min" in gap else ("", "")
     value = f"{low} mm" if low == high else f"{low}–{high} mm"
-    return _measured(
-        f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", gap, value, lid["partId"]
-    )
+    return _measured(f"lid_fit_gap:{lid['featureId']}", "Lid fit gap", gap, value, lid["partId"])
 
 
 def _one_lid_rows(
@@ -192,8 +233,17 @@ def _one_lid_rows(
 def _lid_rows(inspection: dict[str, Any], graph: Any, revision: int) -> list[dict[str, Any]]:
     if not inspection["lids"]:
         result = _rule({"id": "lid", "kind": "lid_interference"}, inspection, revision)
-        return [_row("lid", "Lid", "UNKNOWN", "not measured", inspection["base"]["partId"], result["measured"],
-                     result["reason"])]
+        return [
+            _row(
+                "lid",
+                "Lid",
+                "UNKNOWN",
+                "not measured",
+                inspection["base"]["partId"],
+                result["measured"],
+                result["reason"],
+            )
+        ]
     return [
         row
         for lid in inspection["lids"]
@@ -205,21 +255,74 @@ def _port_rows(inspection: dict[str, Any], revision: int) -> list[dict[str, Any]
     rows = []
     for port in inspection["ports"]:
         # clears the connector: the same rule as check port_clearance, at 0 mm
-        requirement = {"id": "port", "kind": "port_clearance", "threshold": {"value": 0, "unit": "mm"}}
+        requirement = {
+            "id": "port",
+            "kind": "port_clearance",
+            "threshold": {"value": 0, "unit": "mm"},
+        }
         result = _rule(requirement, {**inspection, "ports": [port]}, revision)
         opening = port["opening"]
-        width, height = (opening[f"{axis}Max"]["value"] - opening[f"{axis}Min"]["value"] for axis in "uv")
+        width, height = (
+            opening[f"{axis}Max"]["value"] - opening[f"{axis}Min"]["value"] for axis in "uv"
+        )
         clearance = port["clearance"]["min"]["value"]
         name = port["reference"] or port["footprintId"]
         value = f"{name}: {_mm(width)} × {_mm(height)} mm on {port['wall']} wall, {_mm(clearance)} mm clearance"
         reason = result.get("reason")
         if result["status"] == "FAIL":
-            reason = "the opening is blocked" if port["blocked"] else (
-                f"the opening is {_mm(-clearance)} mm smaller than the connector"
+            reason = (
+                "the opening is blocked"
+                if port["blocked"]
+                else (f"the opening is {_mm(-clearance)} mm smaller than the connector")
             )
-        rows.append(_row(f"port:{port['featureId']}", f"Port {name} clears connector", result["status"], value,
-                         inspection["base"]["partId"], [port], reason))
+        rows.append(
+            _row(
+                f"port:{port['featureId']}",
+                f"Port {name} clears connector",
+                result["status"],
+                value,
+                inspection["base"]["partId"],
+                [port],
+                reason,
+            )
+        )
     return rows
+
+
+def _screw_closure_row(
+    inspection: dict[str, Any], graph: Any, revision: int
+) -> dict[str, Any] | None:
+    closures = [node for node in graph.ordered() if isinstance(node, ScrewClosure)]
+    if not closures:
+        return None
+    node = closures[0]
+    minimum = (node.boss_diameter - node.base_pilot_diameter) / 2
+    result = _rule(
+        {
+            "id": "screw_closure",
+            "kind": "screw_closure",
+            "minimumWall": {"value": minimum, "unit": "mm"},
+        },
+        inspection,
+        revision,
+    )
+    measured = result["measured"]
+    wall = measured.get("minimumResidualWall", {}).get("value")
+    interference = measured.get("interference", {}).get("value")
+    value = (
+        f"{measured.get('count', 0)} points, {_mm(wall)} mm minimum wall, "
+        f"{'coaxial' if measured.get('coaxial') else 'not coaxial'}, "
+        f"{'no interference' if interference is not None and interference <= 1e-7 else 'interference'}"
+    )
+    return _row(
+        "screw_closure",
+        "Screw closure",
+        result["status"],
+        value,
+        inspection["base"]["partId"],
+        measured,
+        result.get("reason"),
+    )
 
 
 def _rows(result: Any, base: PcbBase, revision: int) -> list[dict[str, Any]]:
@@ -228,7 +331,11 @@ def _rows(result: Any, base: PcbBase, revision: int) -> list[dict[str, Any]]:
 
     inspection = enclosure_inspection.inspect_enclosure(result.graph, result, base.id)
     board_part = next(
-        (part.part_id for part in terminal_parts(result, role="reference") if part.source_body.feature == base.board),
+        (
+            part.part_id
+            for part in terminal_parts(result, role="reference")
+            if part.source_body.feature == base.board
+        ),
         None,
     )
     return [
@@ -236,6 +343,7 @@ def _rows(result: Any, base: PcbBase, revision: int) -> list[dict[str, Any]]:
         _board_row(inspection, board_part),
         _standoff_row(inspection, result.graph.nodes[base.board], revision),
         *_lid_rows(inspection, result.graph, revision),
+        *([closure] if (closure := _screw_closure_row(inspection, result.graph, revision)) else []),
         *_port_rows(inspection, revision),
     ]
 
@@ -248,8 +356,17 @@ def fit_summary(result: Any, revision: int) -> list[dict[str, Any]]:
             rows = _rows(result, base, revision)
         except Exception as error:  # noqa: BLE001 - a failed inspection is an UNKNOWN row, never a lost scene
             _LOG.exception("enclosure inspection for the viewer failed")
-            rows = [_row("inspection", "Enclosure inspection", "UNKNOWN", "not measured", None, None,
-                         f"the enclosure could not be inspected: {error}")]
+            rows = [
+                _row(
+                    "inspection",
+                    "Enclosure inspection",
+                    "UNKNOWN",
+                    "not measured",
+                    None,
+                    None,
+                    f"the enclosure could not be inspected: {error}",
+                )
+            ]
         summaries.append({"baseId": base.id, "rows": rows})
     return summaries
 
@@ -274,13 +391,22 @@ def _base_facts(result: Any, base: PcbBase) -> list[dict[str, Any]]:
     for node in result.graph.ordered():
         if isinstance(node, Standoffs) and node.target == base.id:
             count = len(selected_holes(node, result.graph.nodes[node.board]))
-            facts.append(_fact("Standoffs", f"{count} × ⌀{_mm(node.boss_diameter)} mm, "
-                                            f"pilot ⌀{_mm(node.pilot_diameter)} mm"))
+            facts.append(
+                _fact(
+                    "Standoffs",
+                    f"{count} × ⌀{_mm(node.boss_diameter)} mm, "
+                    f"pilot ⌀{_mm(node.pilot_diameter)} mm",
+                )
+            )
         elif isinstance(node, PortCutout) and node.base == base.id:
             port = result.metadata[node.id]
             width, height = (_mm(port["opening"][side]["value"]) for side in ("width", "height"))
-            facts.append(_fact(f"Port {port.get('reference') or port['footprintId']}",
-                               f"{width} × {height} mm, {port['wall']} wall"))
+            facts.append(
+                _fact(
+                    f"Port {port.get('reference') or port['footprintId']}",
+                    f"{width} × {height} mm, {port['wall']} wall",
+                )
+            )
     return facts
 
 
@@ -288,9 +414,14 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
     """What the committed features say about the part whose body ``source_feature`` made."""
     node = result.graph.nodes[source_feature]
     if isinstance(node, BoardImport):
-        holes = [f"{reference or name} at ({position})" for reference, name, position in _holes(node).values()]
+        holes = [
+            f"{reference or name} at ({position})"
+            for reference, name, position in _holes(node).values()
+        ]
         # the row's role line already says "Reference, not exported" on every width
-        return (_fact("Mounting holes", f"{len(holes)}: {', '.join(holes)} mm" if holes else "none"),)
+        return (
+            _fact("Mounting holes", f"{len(holes)}: {', '.join(holes)} mm" if holes else "none"),
+        )
     if isinstance(node, PcbBase):
         return tuple(_base_facts(result, node))
     if isinstance(node, PcbLid):

@@ -489,6 +489,40 @@ PORT_CUTOUT_PARAMETERS = {
     "required": ["base", "footprint", "wall", "clearance", "envelope"],
     "additionalProperties": False,
 }
+SCREW_POINT = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "point": POINT_2D,
+    },
+    "required": ["name", "point"],
+    "additionalProperties": False,
+}
+SCREW_CLOSURE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "base": FEATURE_TARGET,
+        "lid": FEATURE_TARGET,
+        "points": {
+            "type": "array",
+            "items": SCREW_POINT,
+            "minItems": 2,
+            "maxItems": 8,
+        },
+        "basePilotDiameter": POSITIVE_QUANTITY,
+        "bossDiameter": POSITIVE_QUANTITY,
+        "lidClearanceDiameter": POSITIVE_QUANTITY,
+    },
+    "required": [
+        "base",
+        "lid",
+        "points",
+        "basePilotDiameter",
+        "bossDiameter",
+        "lidClearanceDiameter",
+    ],
+    "additionalProperties": False,
+}
 STANDOFFS_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -512,6 +546,7 @@ FEATURE_PARAMETERS = {
         STANDOFFS_PARAMETERS,
         PCB_LID_PARAMETERS,
         PORT_CUTOUT_PARAMETERS,
+        SCREW_CLOSURE_PARAMETERS,
     ]
 }
 FEATURE_PROPERTIES = {
@@ -528,6 +563,7 @@ FEATURE_PROPERTIES = {
             "standoffs",
             "pcb_lid",
             "port_cutout",
+            "screw_closure",
         ]
     },
 }
@@ -605,6 +641,26 @@ PORT_CUTOUT_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+SCREW_CLOSURE_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        "points": SCREW_CLOSURE_PARAMETERS["properties"]["points"],
+        "basePilotDiameter": POSITIVE_QUANTITY,
+        "bossDiameter": POSITIVE_QUANTITY,
+        "lidClearanceDiameter": POSITIVE_QUANTITY,
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
+ENCLOSURE_BOSS_UPDATE_SET = {
+    "type": "object",
+    "properties": {
+        **STANDOFFS_UPDATE_SET["properties"],
+        **SCREW_CLOSURE_UPDATE_SET["properties"],
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
 PCB_LID_UPDATE_SET = {
     "type": "object",
     "properties": {
@@ -638,7 +694,7 @@ FEATURE_UPDATE_SCHEMA = {
                 TARGET_UPDATE_SET,
                 FILLET_UPDATE_SET,
                 PCB_BASE_UPDATE_SET,
-                STANDOFFS_UPDATE_SET,
+                ENCLOSURE_BOSS_UPDATE_SET,
                 PCB_LID_UPDATE_SET,
                 PORT_CUTOUT_ROOT_UPDATE_SET,
             ]
@@ -668,6 +724,7 @@ FEATURE_ACTION_SCHEMAS = {
             "standoffs": STANDOFFS_PARAMETERS,
             "pcb_lid": PCB_LID_PARAMETERS,
             "port_cutout": PORT_CUTOUT_PARAMETERS,
+            "screw_closure": SCREW_CLOSURE_PARAMETERS,
         }.items()
     },
 }
@@ -681,6 +738,7 @@ for kind, changes in {
     "standoffs": STANDOFFS_UPDATE_SET,
     "pcb_lid": PCB_LID_UPDATE_SET,
     "port_cutout": PORT_CUTOUT_UPDATE_SET,
+    "screw_closure": SCREW_CLOSURE_UPDATE_SET,
 }.items():
     FEATURE_ACTION_SCHEMAS[("update", kind)] = {
         **FEATURE_UPDATE_SCHEMA,
@@ -866,6 +924,16 @@ CHECK_REQUIREMENT = {
                 },
             },
             "required": ["id", "kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"const": "screw_closure"},
+                "minimumWall": POSITIVE_QUANTITY,
+            },
+            "required": ["id", "kind", "minimumWall"],
             "additionalProperties": False,
         },
         {

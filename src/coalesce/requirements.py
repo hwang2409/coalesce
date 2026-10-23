@@ -76,9 +76,7 @@ def _finish(
     reason: str | None = None,
 ) -> dict[str, Any]:
     if measured is None or measured == []:
-        return _unknown(
-            requirement, "required inspection evidence is missing", involved, revision
-        )
+        return _unknown(requirement, "required inspection evidence is missing", involved, revision)
     if isinstance(measured, dict) and "value" in measured and measured.get("unit") != "mm":
         return _unknown(
             requirement, "measurement is not in millimetres", involved, revision, measured
@@ -124,9 +122,11 @@ def _board_clearance(
         measured = list(clearance.values())
         values = [_value(item) for item in measured]
         value = min(values) if values and all(item is not None for item in values) else None
-        measured = {"value": value, "unit": "mm"} if value is not None else {
-            "status": "unknown", "reason": "one or more board sides could not be measured"
-        }
+        measured = (
+            {"value": value, "unit": "mm"}
+            if value is not None
+            else {"status": "unknown", "reason": "one or more board sides could not be measured"}
+        )
     else:
         measured = clearance.get(side)
     minimum = _value(requirement.get("threshold", {}))
@@ -134,7 +134,11 @@ def _board_clearance(
         return _threshold_unknown(requirement, involved, revision, measured)
     value = _value(measured) if isinstance(measured, dict) else None
     return _finish(
-        requirement, measured, requirement.get("threshold"), involved, revision,
+        requirement,
+        measured,
+        requirement.get("threshold"),
+        involved,
+        revision,
         "PASS" if value is not None and value >= minimum else "FAIL",
     )
 
@@ -142,11 +146,7 @@ def _board_clearance(
 def _thickness(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
-    key = (
-        "minimumWallThickness"
-        if requirement["kind"] == "wall_thickness"
-        else "floorThickness"
-    )
+    key = "minimumWallThickness" if requirement["kind"] == "wall_thickness" else "floorThickness"
     measured = inspection["base"].get(key)
     involved = [inspection["base"]["partId"]]
     minimum = _value(requirement.get("threshold", {}))
@@ -187,9 +187,7 @@ def _mounting_evidence(
         "uncoveredHoleIds": missing,
         "uncoveredHoleReferences": [references[item] for item in missing if item in references],
         "notRequiredHoleIds": not_required,
-        "notRequiredReferences": [
-            references[item] for item in not_required if item in references
-        ],
+        "notRequiredReferences": [references[item] for item in not_required if item in references],
         "unit": "holes",
     }
 
@@ -334,12 +332,9 @@ def _ports(
     ports = inspection["ports"]
     involved = [inspection["base"]["partId"]]
     if not ports or any(
-        warning["code"] == "CONNECTOR_HEIGHT_UNRESOLVED"
-        for warning in inspection["warnings"]
+        warning["code"] == "CONNECTOR_HEIGHT_UNRESOLVED" for warning in inspection["warnings"]
     ):
-        return _unknown(
-            requirement, "connector height or envelope is unknown", involved, revision
-        )
+        return _unknown(requirement, "connector height or envelope is unknown", involved, revision)
     measured = [
         {
             key: port[key]
@@ -368,6 +363,44 @@ def _ports(
         requirement,
         measured,
         requirement.get("threshold"),
+        involved,
+        revision,
+        "PASS" if passes else "FAIL",
+    )
+
+
+def _screw_closure(
+    requirement: dict[str, Any], inspection: dict[str, Any], revision: int
+) -> dict[str, Any]:
+    closures = inspection.get("screwClosures", [])
+    involved = [inspection["base"]["partId"], *[lid["partId"] for lid in inspection["lids"]]]
+    if len(closures) != 1:
+        return _unknown(
+            requirement, "exactly one screw_closure is required", involved, revision, closures
+        )
+    measured = closures[0]
+    residual = _value(measured.get("minimumResidualWall", {}))
+    minimum = _value(requirement.get("minimumWall", {}))
+    if minimum is None:
+        return _threshold_unknown(requirement, involved, revision, measured)
+    interference = measured.get("interference", {}).get("value")
+    passes = (
+        measured.get("count") == len(measured.get("names", []))
+        and measured.get("coaxial") is True
+        and residual is not None
+        and residual >= minimum
+        and interference is not None
+        and interference <= 1e-7
+    )
+    return _finish(
+        requirement,
+        measured,
+        {
+            "count": "all named points",
+            "coaxial": True,
+            "minimumWall": requirement["minimumWall"],
+            "interference": {"value": 0, "unit": "mm^3"},
+        },
         involved,
         revision,
         "PASS" if passes else "FAIL",
@@ -407,6 +440,7 @@ REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "lid_engagement": _engagement,
     "port_clearance": _ports,
     "connector_clearance": _ports,
+    "screw_closure": _screw_closure,
     "clean_deliverables": _clean,
     "clean_manufacturing_bodies": _clean,
 }
@@ -428,9 +462,7 @@ def evaluate(
     requirements: list[dict[str, Any]], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
     unknown = [
-        item.get("kind")
-        for item in requirements
-        if item.get("kind") not in REQUIREMENT_HANDLERS
+        item.get("kind") for item in requirements if item.get("kind") not in REQUIREMENT_HANDLERS
     ]
     if unknown:
         raise ValueError(
@@ -438,7 +470,6 @@ def evaluate(
             f"{unknown[0]}; supported kinds: {', '.join(SUPPORTED_REQUIREMENT_KINDS)}"
         )
     results = [
-        REQUIREMENT_HANDLERS[item["kind"]](item, inspection, revision)
-        for item in requirements
+        REQUIREMENT_HANDLERS[item["kind"]](item, inspection, revision) for item in requirements
     ]
     return {"gate": reduce_gate(results), "results": results}

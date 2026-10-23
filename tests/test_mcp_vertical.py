@@ -814,6 +814,7 @@ def test_unknown_feature_kind_and_invalid_geometry_are_safe(tmp_path):
         "standoffs",
         "pcb_lid",
         "port_cutout",
+        "screw_closure",
     ]
 
     failed = service.sketch(

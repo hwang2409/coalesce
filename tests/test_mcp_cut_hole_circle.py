@@ -116,6 +116,7 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
         "standoffs",
         "pcb_lid",
         "port_cutout",
+        "screw_closure",
     ]
     assert set(feature_schema["properties"]["set"]["oneOf"][0]["properties"]) == {"distance"}
     assert set(feature_schema["properties"]["set"]["oneOf"][1]["properties"]) == {"target"}

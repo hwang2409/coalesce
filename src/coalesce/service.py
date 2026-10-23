@@ -50,6 +50,8 @@ from .graph import (
     Polyline,
     PortCutout,
     Rectangle,
+    ScrewClosure,
+    ScrewPoint,
     Sketch,
     Spline,
     Standoffs,
@@ -89,6 +91,7 @@ _ALLOWED_FEATURE_KINDS = [
     "standoffs",
     "pcb_lid",
     "port_cutout",
+    "screw_closure",
 ]
 
 
@@ -392,6 +395,16 @@ class PortCutoutParameters:
 
 
 @dataclass(frozen=True)
+class ScrewClosureParameters:
+    base: FeatureTarget
+    lid: FeatureTarget
+    points: tuple[ScrewPoint, ...]
+    basePilotDiameter: float
+    bossDiameter: float
+    lidClearanceDiameter: float
+
+
+@dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
 
@@ -425,6 +438,14 @@ class PortCutoutChanges:
     wall: str | None = None
     clearance: float | None = None
     envelope: PortEnvelope | None = None
+
+
+@dataclass(frozen=True)
+class ScrewClosureChanges:
+    points: tuple[ScrewPoint, ...] | None = None
+    basePilotDiameter: float | None = None
+    bossDiameter: float | None = None
+    lidClearanceDiameter: float | None = None
 
 
 @dataclass(frozen=True)
@@ -557,6 +578,16 @@ class PortCutoutCreate(_FeatureCreate):
 
 
 @dataclass(frozen=True)
+class ScrewClosureCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: ScrewClosureParameters
+    kind: ClassVar[str] = "screw_closure"
+
+
+@dataclass(frozen=True)
 class ExtrudeUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -620,6 +651,20 @@ class PortCutoutUpdate(_Operation):
     featureId: str
     set: PortCutoutChanges
     kind: ClassVar[str] = "port_cutout"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
+class ScrewClosureUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: ScrewClosureChanges
+    kind: ClassVar[str] = "screw_closure"
 
     @classmethod
     def wire_fields(cls) -> set[str]:
@@ -700,6 +745,8 @@ MutationOperation = (
     | StandoffsCreate
     | PcbLidCreate
     | PortCutoutCreate
+    | ScrewClosureCreate
+    | ScrewClosureUpdate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
@@ -1333,6 +1380,94 @@ def _parse_port_cutout(
     )
 
 
+def _parse_screw_points(raw_points: Any, feature: str) -> tuple[ScrewPoint, ...]:
+    if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= 8:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "screw_closure requires 2 to 8 named points",
+            feature=feature,
+            parameter="points",
+        )
+    points = []
+    for item in raw_points:
+        name = item.get("name") if isinstance(item, dict) else None
+        point = item.get("point") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not name or not isinstance(point, list) or len(point) != 2:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "each screw_closure point requires a name and xy point",
+                feature=feature,
+                parameter="points",
+            )
+        points.append(ScrewPoint(name, tuple(_finite_number(value, "point") for value in point)))
+    if len({point.name for point in points}) != len(points):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "screw_closure point names must be unique",
+            feature=feature,
+            parameter="points",
+        )
+    return tuple(points)
+
+
+def _parse_screw_closure(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> ScrewClosureCreate | ScrewClosureUpdate:
+    feature = common["featureId"]
+    update = common["action"] is Action.UPDATE
+    values = payload.get("set" if update else "parameters", {})
+    if not isinstance(values, dict):
+        raise RequestError("INVALID_PARAMETER", "screw_closure values must be an object")
+    if update:
+        allowed = {"points", "basePilotDiameter", "bossDiameter", "lidClearanceDiameter"}
+        if not values or not set(values) <= allowed:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "screw_closure update requires points or a diameter",
+                feature=feature,
+            )
+        return ScrewClosureUpdate(
+            **common,
+            set=ScrewClosureChanges(
+                points=_parse_screw_points(values["points"], feature)
+                if "points" in values
+                else None,
+                basePilotDiameter=(
+                    _feature_quantity(values["basePilotDiameter"], "basePilotDiameter", feature)
+                    if "basePilotDiameter" in values
+                    else None
+                ),
+                bossDiameter=(
+                    _feature_quantity(values["bossDiameter"], "bossDiameter", feature)
+                    if "bossDiameter" in values
+                    else None
+                ),
+                lidClearanceDiameter=(
+                    _feature_quantity(
+                        values["lidClearanceDiameter"], "lidClearanceDiameter", feature
+                    )
+                    if "lidClearanceDiameter" in values
+                    else None
+                ),
+            ),
+        )
+    return ScrewClosureCreate(
+        **common,
+        parameters=ScrewClosureParameters(
+            base=FeatureTarget(values.get("base", {}).get("featureId")),
+            lid=FeatureTarget(values.get("lid", {}).get("featureId")),
+            points=_parse_screw_points(values.get("points"), feature),
+            basePilotDiameter=_feature_quantity(
+                values.get("basePilotDiameter"), "basePilotDiameter", feature
+            ),
+            bossDiameter=_feature_quantity(values.get("bossDiameter"), "bossDiameter", feature),
+            lidClearanceDiameter=_feature_quantity(
+                values.get("lidClearanceDiameter"), "lidClearanceDiameter", feature
+            ),
+        ),
+    )
+
+
 def _parse_feature(
     payload: dict[str, Any],
 ) -> (
@@ -1345,6 +1480,8 @@ def _parse_feature(
     | StandoffsCreate
     | PcbLidCreate
     | PortCutoutCreate
+    | ScrewClosureCreate
+    | ScrewClosureUpdate
     | ExtrudeUpdate
     | PcbBaseUpdate
     | StandoffsUpdate
@@ -1369,6 +1506,7 @@ def _parse_feature(
         "standoffs": _parse_standoffs,
         "pcb_lid": _parse_pcb_lid,
         "port_cutout": _parse_port_cutout,
+        "screw_closure": _parse_screw_closure,
     }.get(kind)
     if parser is None:
         raise RequestError(
@@ -1619,6 +1757,7 @@ def _node_kind(node: Any) -> str:
         "PcbBase": "pcb_base",
         "PcbLid": "pcb_lid",
         "PortCutout": "port_cutout",
+        "ScrewClosure": "screw_closure",
     }.get(type(node).__name__, type(node).__name__.lower())
 
 
@@ -1753,22 +1892,16 @@ def _sketch_failures(graph: Any) -> dict[str, RequestError | GraphError]:
     return failures
 
 
-def _sketch_failure(
-    feature_id: str, error: RequestError | GraphError
-) -> SketchFailure:
+def _sketch_failure(feature_id: str, error: RequestError | GraphError) -> SketchFailure:
     if isinstance(error, RequestError):
         return SketchFailure(feature_id, error.code, str(error), error.details)
-    details = {
-        key: value for key, value in error.error.items() if key not in {"code", "message"}
-    }
+    details = {key: value for key, value in error.error.items() if key not in {"code", "message"}}
     return SketchFailure(feature_id, error.error["code"], str(error), details)
 
 
 def _solve_constrained_sketches(graph: Any) -> SolveAvailability:
     failures = _sketch_failures(graph)
-    failed = tuple(
-        _sketch_failure(feature_id, error) for feature_id, error in failures.items()
-    )
+    failed = tuple(_sketch_failure(feature_id, error) for feature_id, error in failures.items())
     unavailable = []
     reported = set(failures)
     for feature_id in failures:
@@ -2181,6 +2314,79 @@ def _apply_port_cutout(graph: Any, operation: PortCutoutCreate | PortCutoutUpdat
     return _create_port_cutout(graph, operation)
 
 
+def _validate_screw_closure_diameters(
+    feature: str, pilot: float, boss: float, clearance: float
+) -> None:
+    if pilot >= boss:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "basePilotDiameter must be smaller than bossDiameter",
+            feature=feature,
+            parameter="basePilotDiameter",
+        )
+    if clearance <= pilot:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "lidClearanceDiameter must exceed basePilotDiameter",
+            feature=feature,
+            parameter="lidClearanceDiameter",
+        )
+
+
+def _apply_screw_closure(graph: Any, operation: ScrewClosureCreate | ScrewClosureUpdate) -> str:
+    if isinstance(operation, ScrewClosureUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, ScrewClosure):
+            raise RequestError("UNKNOWN_ID", f"unknown screw_closure: {operation.featureId}")
+        changes = operation.set
+        pilot = changes.basePilotDiameter or node.base_pilot_diameter
+        boss = changes.bossDiameter or node.boss_diameter
+        clearance = changes.lidClearanceDiameter or node.lid_clearance_diameter
+        _validate_screw_closure_diameters(operation.featureId, pilot, boss, clearance)
+        if changes.points is not None:
+            node.points = changes.points
+        node.base_pilot_diameter = pilot
+        node.boss_diameter = boss
+        node.lid_clearance_diameter = clearance
+        return operation.featureId
+
+    parameters = operation.parameters
+    base = graph.nodes.get(parameters.base.featureId)
+    lid = graph.nodes.get(parameters.lid.featureId)
+    if not isinstance(base, PcbBase):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "screw_closure base must reference a pcb_base",
+            feature=operation.featureId,
+            parameter="base",
+        )
+    if not isinstance(lid, PcbLid) or lid.base != base.id:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "screw_closure lid must reference a pcb_lid for its base",
+            feature=operation.featureId,
+            parameter="lid",
+        )
+    _validate_screw_closure_diameters(
+        operation.featureId,
+        parameters.basePilotDiameter,
+        parameters.bossDiameter,
+        parameters.lidClearanceDiameter,
+    )
+    graph.add(
+        ScrewClosure(
+            operation.featureId,
+            base=base.id,
+            lid=lid.id,
+            points=parameters.points,
+            base_pilot_diameter=parameters.basePilotDiameter,
+            boss_diameter=parameters.bossDiameter,
+            lid_clearance_diameter=parameters.lidClearanceDiameter,
+        )
+    )
+    return operation.featureId
+
+
 def _apply_feature(
     graph: Any, operation: MutationOperation, committed: RegenResult | None
 ) -> str | _DeleteResult:
@@ -2206,6 +2412,8 @@ def _apply_feature(
         PcbLidUpdate: _apply_pcb_lid,
         PortCutoutCreate: _apply_port_cutout,
         PortCutoutUpdate: _apply_port_cutout,
+        ScrewClosureCreate: _apply_screw_closure,
+        ScrewClosureUpdate: _apply_screw_closure,
     }[type(operation)]
     if isinstance(
         operation,
@@ -2257,6 +2465,8 @@ def _kind(node: Any) -> str:
         return "pcb lid"
     if isinstance(node, PortCutout):
         return "port cutout"
+    if isinstance(node, ScrewClosure):
+        return "screw closure"
     if isinstance(node, BoardImport):
         return "board import"
     return type(node).__name__.lower()
@@ -2278,12 +2488,15 @@ def _resolve_export_part(
     matches = [
         part
         for part in available
-        if requested_id in {feature["id"] for feature in _lineage(result, part.terminal_feature)}
+        if requested_id
+        in {feature["id"] for feature in _lineage(result, part.terminal_feature, part.source_body)}
     ]
     return matches[0] if len(matches) == 1 else None
 
 
-def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]:
+def _lineage(
+    result: RegenResult, feature_id: str, body: BodySource | None = None
+) -> tuple[dict[str, Any], ...]:
     """The features that built a terminal part, oldest first."""
     chain = []
     while feature_id:
@@ -2292,7 +2505,9 @@ def _lineage(result: RegenResult, feature_id: str) -> tuple[dict[str, Any], ...]
         if isinstance(node, Hole):
             entry["holes"] = _hole_names(node)
         chain.append(entry)
-        feature_id = result.predecessors.get(feature_id, "")
+        feature_id = result.body_predecessors.get(
+            (feature_id, body), result.predecessors.get(feature_id, "")
+        )
     return tuple(reversed(chain))
 
 
@@ -2343,6 +2558,11 @@ def _enclosure_added(node: Any, result: RegenResult) -> str | None:
     if isinstance(node, PcbLid):
         lip = f", {_mm(node.lip_depth)} mm deep lip" if node.lip_depth else ""
         return f"{summary}: {_mm(node.thickness)} mm thick, {_mm(node.fit_gap)} mm fit gap{lip}"
+    if isinstance(node, ScrewClosure):
+        return (
+            f"{summary}: {len(node.points)} points, pilot {_mm(node.base_pilot_diameter)} mm, "
+            f"boss {_mm(node.boss_diameter)} mm, clearance {_mm(node.lid_clearance_diameter)} mm"
+        )
     if isinstance(node, PortCutout):
         port = result.metadata[node.id]
         width, height = (_mm(port["opening"][side]["value"]) for side in ("width", "height"))
@@ -2372,6 +2592,12 @@ def _added(node: Any, result: RegenResult) -> str:
 
 
 def _edited(old: Any, node: Any) -> str:
+    if isinstance(node, ScrewClosure):
+        return (
+            f"updated screw closure: {len(node.points)} points, "
+            f"pilot {_mm(node.base_pilot_diameter)} mm, boss {_mm(node.boss_diameter)} mm, "
+            f"clearance {_mm(node.lid_clearance_diameter)} mm"
+        )
     if isinstance(node, BoardImport):
         same = old.source_digest == node.source_digest
         return f"refreshed board {node.id}, source {'unchanged' if same else 'changed'}"
@@ -2494,6 +2720,11 @@ def _edit_record(operation: MutationOperation) -> dict[str, Any] | None:
         "standoffs": {"bossDiameter": "bossDiameter", "pilotDiameter": "pilotDiameter"},
         "pcb_lid": {"thickness": "thickness", "fitGap": "fitGap"},
         "port_cutout": {"clearance": "clearance"},
+        "screw_closure": {
+            "basePilotDiameter": "basePilotDiameter",
+            "bossDiameter": "bossDiameter",
+            "lidClearanceDiameter": "lidClearanceDiameter",
+        },
     }.get(kind, {})
     fields = {
         public: {"value": value, "unit": "mm"}
@@ -2519,6 +2750,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     order = {feature: index for index, feature in enumerate(result.graph.nodes)}
     parts = terminal_parts(result, role=None)
     for part in sorted(parts, key=lambda p: (order[p.source_body.feature], p.part_id)):
+        features = _lineage(result, part.terminal_feature, part.source_body)
         yield ScenePart(
             part.part_id,
             part.shape,
@@ -2528,7 +2760,7 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
             terminal_feature=part.terminal_feature,
             area=part.shape.area,
             volume=part.shape.volume,
-            features=_lineage(result, part.terminal_feature),
+            features=features,
             facts=part_facts(result, part.source_body.feature),
         )
 
@@ -2770,7 +3002,8 @@ class DocumentService:
         parts = [
             part
             for part in terminal_parts(result)
-            if changed_id in {item["id"] for item in _lineage(result, part.terminal_feature)}
+            if changed_id
+            in {item["id"] for item in _lineage(result, part.terminal_feature, part.source_body)}
         ]
         for part in parts:
             try:
@@ -2830,7 +3063,11 @@ class DocumentService:
             affected = [
                 part.part_id
                 for part in terminal_parts(self._regen)
-                if related & {item["id"] for item in _lineage(self._regen, part.terminal_feature)}
+                if related
+                & {
+                    item["id"]
+                    for item in _lineage(self._regen, part.terminal_feature, part.source_body)
+                }
             ]
             if affected:
                 error["affectedParts"] = affected
@@ -3656,7 +3893,7 @@ class DocumentService:
         if not enclosure_requirements:
             return [], None
         try:
-            from .enclosure_inspection import inspect_enclosure
+            from .enclosure_inspection import IncompleteEvidence, inspect_enclosure
 
             inspection = inspect_enclosure(
                 self._document.graph, self._regen, payload.get("base", "base")
@@ -3677,7 +3914,19 @@ class DocumentService:
                 invalidHoleIds=error.invalid_hole_ids,
                 validHoles=error.valid_holes,
             )
-        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        except IncompleteEvidence as error:
+            return [], _safe_error(
+                self._document.revision,
+                None,
+                "INSPECTION_FAILED",
+                "enclosure inspection could not be completed",
+                operation="check",
+                reason="enclosure geometry evidence is incomplete",
+                feature=error.feature,
+                role=error.role,
+                faceCount=error.count,
+            )
+        except (KeyError, TypeError, RuntimeError) as error:
             return [], _safe_error(
                 self._document.revision,
                 None,
