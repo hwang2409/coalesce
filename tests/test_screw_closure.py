@@ -107,18 +107,30 @@ def test_screw_closure_builds_two_exact_parts_persists_and_checks(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("points", "point_name"),
+    ("point", "conflict"),
     [
-        ([*POINTS[:3], {"name": "bad", "point": [100, 100]}], "bad"),
-        ([*POINTS[:3], {"name": "rear-right", "point": [13, 6]}], "rear-right"),
+        ({"name": "off-floor", "point": [100, 100]}, "floor"),
+        ({"name": "through-wall", "point": [-1.5, 5]}, "wall"),
     ],
 )
-def test_invalid_screw_points_fail_atomically_with_point_name(tmp_path, points, point_name):
+def test_invalid_screw_points_fail_atomically_with_point_name(tmp_path, point, conflict):
     service = enclosure(tmp_path)
-    response = service.feature(closure_request(revision=3, points=points))
+    response = service.feature(closure_request(revision=3, points=[*POINTS[:3], point]))
     assert response["ok"] is False
     assert response["error"]["code"] == "INVALID_PARAMETER"
-    assert response["error"]["point"] == point_name
+    assert response["error"]["point"] == point["name"]
+    assert response["error"]["conflict"] == conflict
+    assert service.query({"select": {"kind": "revision"}})["revision"] == 3
+
+
+def test_overlapping_screw_points_fail_atomically(tmp_path):
+    service = enclosure(tmp_path)
+    point = {"name": "overlap", "point": [13, 6]}
+    response = service.feature(closure_request(revision=3, points=[*POINTS[:3], point]))
+    assert response["ok"] is False
+    assert response["error"]["code"] == "INVALID_PARAMETER"
+    assert response["error"]["point"] == "overlap"
+    assert response["error"]["conflict"] == "front-right"
     assert service.query({"select": {"kind": "revision"}})["revision"] == 3
 
 

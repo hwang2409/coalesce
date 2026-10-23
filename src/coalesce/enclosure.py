@@ -976,9 +976,19 @@ def _validate_closure_points(
             holes,
         )
     except GraphError as error:
-        point = error.error.pop("hole", None)
-        if point is not None:
-            error.error["point"] = point
+        name = error.error.pop("hole", None)
+        if name is not None:
+            error.error["point"] = name
+            screw = next(item for item in node.points if item.name == name)
+            disk = Face(
+                Wire.make_circle(node.boss_diameter / 2).moved(Location((*screw.point, 0)))
+            )
+            crosses_wall = _common_area(disk, cavity) > 1e-8
+            error.error["conflict"] = "wall" if crosses_wall else "floor"
+            if crosses_wall:
+                error.error["message"] = (
+                    f"screw_closure {node.id} point {name} crosses the base wall"
+                )
         raise
     for index, first in enumerate(node.points):
         for second in node.points[index + 1 :]:
