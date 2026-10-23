@@ -2915,8 +2915,9 @@ class DocumentService:
                 if replay is not None:
                     return replay
                 attempted_edit = _edit_record(parsed)
+                accepted_edit = attempted_edit if parsed.action == "update" else None
                 return self._commit_mutation(
-                    payload, parsed, body_hash, apply, response_fields, attempted_edit
+                    payload, parsed, body_hash, apply, response_fields, accepted_edit
                 )
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
                 return self._mutation_failure(operation, payload, error, attempted_edit)

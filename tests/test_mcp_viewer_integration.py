@@ -641,7 +641,12 @@ async def test_fillet_repair_history_over_real_stdio_and_browser(tmp_path, brows
         assert browser.returncode == 0, stderr.decode()
         shown = json.loads(stdout)
         assert shown["rows"] == 1
-        assert "Failed requests are not document revisions" in shown["history"]
+        assert "Session repair history" in shown["history"]
+        assert (
+            "Failed attempts are session-only and are not document revisions."
+            in shown["history"]
+        )
+        assert "Failed 1000 mm → accepted 1 mm" in shown["history"]
         assert shown["errors"] == []
 
     restart_log = (tmp_path / "restart.stderr").open("w+")

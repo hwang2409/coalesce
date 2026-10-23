@@ -967,7 +967,7 @@ function showRepairHistory(repairs) {
       field.textContent = name;
       const change = document.createElement('span');
       change.className = 'repair-values';
-      change.textContent = `${formatQuantity(values.attempted)} → ${formatQuantity(values.accepted)}`;
+      change.textContent = `Failed ${formatQuantity(values.attempted)} → accepted ${formatQuantity(values.accepted)}`;
       row.append(feature, field, change);
       return row;
     })

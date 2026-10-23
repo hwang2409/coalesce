@@ -363,7 +363,7 @@ class ViewerSceneStore:
         with self._changed:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
-            self._accept_edit(accepted_edit)
+            self._accept_edit(change, accepted_edit)
             scene["repairHistory"] = list(self._repair_history.values())
             self._scenes = {r: s for r, s in self._scenes.items() if r == self._revision}
             self._scenes[revision] = scene
@@ -400,15 +400,16 @@ class ViewerSceneStore:
             self._pending_edits.popitem(last=False)
         return edit
 
-    def _accept_edit(self, edit: dict | None) -> None:
-        edit = _bounded_edit(edit)
-        if edit is None:
+    def _accept_edit(self, change: dict | None, edit: dict | None) -> None:
+        feature_id = change.get("featureId") if change else None
+        if not isinstance(feature_id, str):
             return
-        attempted = self._pending_edits.pop(edit["featureId"], None)
-        repair = _repair(attempted, edit)
+        # A same-feature commit consumes the attempt; only overlapping update fields make a repair.
+        attempted = self._pending_edits.pop(feature_id, None)
+        edit = _bounded_edit(edit)
+        repair = _repair(attempted, edit) if edit and edit["featureId"] == feature_id else None
         if repair is None:
             return
-        feature_id = edit["featureId"]
         self._repair_history.pop(feature_id, None)
         self._repair_history[feature_id] = repair
         while len(self._repair_history) > MAX_REPAIR_FEATURES:

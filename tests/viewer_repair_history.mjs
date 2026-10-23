@@ -10,18 +10,18 @@ const errors = [];
 page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
 page.on('pageerror', (error) => errors.push(String(error)));
 await page.goto(url);
-await page.locator('#repair-history-rows').getByText('1000 mm → 1 mm').waitFor();
+await page.locator('#repair-history-rows').getByText('Failed 1000 mm → accepted 1 mm').waitFor();
 
 const summary = page.locator('#repair-history summary');
 await summary.focus();
 await page.keyboard.press('Enter');
 if (await page.locator('#repair-history-rows').isVisible()) throw new Error('keyboard did not close history');
 await page.keyboard.press('Enter');
-await page.locator('#repair-history-rows').getByText('1000 mm → 1 mm').waitFor();
+await page.locator('#repair-history-rows').getByText('Failed 1000 mm → accepted 1 mm').waitFor();
 await page.screenshot({ path: path.join(shots, 'repair-history-1280x800.png') });
 
 await page.reload();
-await page.locator('#repair-history-rows').getByText('1000 mm → 1 mm').waitFor();
+await page.locator('#repair-history-rows').getByText('Failed 1000 mm → accepted 1 mm').waitFor();
 if (await page.locator('#repair-history-rows li').count() !== 1) throw new Error('reload invented history');
 await page.setViewportSize({ width: 390, height: 844 });
 await page.locator('#repair-history').scrollIntoViewIfNeeded();
