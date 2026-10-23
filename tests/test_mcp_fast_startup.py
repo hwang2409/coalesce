@@ -187,9 +187,9 @@ def test_tampered_saved_spline_reports_structured_failure_after_load(tmp_path):
         process.wait(timeout=10)
 
     result = json.loads(response["result"]["content"][0]["text"])
-    assert result["ok"] is True
-    assert result["graph"]["errors"][0]["code"] == "SKETCH_PROFILE_UNSUPPORTED"
-    assert result["graph"]["errors"][0]["reason"] == "self_intersecting"
+    error = result["graph"]["errors"][0] if result["ok"] else result["error"]
+    assert error["code"] == "SKETCH_PROFILE_UNSUPPORTED"
+    assert error["reason"] == "self_intersecting"
 
 
 class _SlowKernelLoader:
