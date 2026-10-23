@@ -68,6 +68,33 @@ def pattern_update(*, request_id, revision, feature_id, kind, **changes):
     }
 
 
+def member_fillet(*, revision, name):
+    return {
+        "action": "create",
+        "expectedRevision": revision,
+        "requestId": "round-member",
+        "featureId": "round",
+        "kind": "fillet",
+        "parameters": {
+            "target": {"featureId": "holes"},
+            "edges": [
+                {
+                    "feature": "holes",
+                    "role": "between(hole_wall,cap_end)",
+                    "cardinality": "one",
+                    "source": {
+                        "kind": "hole_surface",
+                        "feature": "holes",
+                        "name": name,
+                        "surface": "hole_wall",
+                    },
+                }
+            ],
+            "radius": {"value": 0.25, "unit": "mm"},
+        },
+    }
+
+
 def reference_query(name):
     return (
         "query",
@@ -261,6 +288,54 @@ async def test_circular_pattern_updates_exact_intent_and_survives_restart_and_st
 
 
 @pytest.mark.anyio
+async def test_count_update_reports_moved_and_removed_pattern_members(tmp_path):
+    results = await run_server(
+        tmp_path / "selection-changes.coalesce.json",
+        [
+            *plate_setup(),
+            (
+                "feature",
+                pattern_hole(
+                    request_id="holes",
+                    revision=2,
+                    feature_id="holes",
+                    target="plate",
+                    pattern=circular_pattern(),
+                ),
+            ),
+            ("feature", member_fillet(revision=3, name="bolt2")),
+            (
+                "feature",
+                pattern_update(
+                    request_id="resize",
+                    revision=4,
+                    feature_id="holes",
+                    kind="circular",
+                    count=4,
+                ),
+            ),
+        ],
+    )
+
+    update = results[4]
+    assert update["selectionChanges"] == [
+        {
+            "featureId": "holes",
+            "selector": "pattern",
+            "holesMoved": [
+                {
+                    "name": "bolt2",
+                    "oldPosition": pytest.approx([6.0, 10.392304845]),
+                    "newPosition": pytest.approx([0.0, 12.0]),
+                },
+            ],
+            "holesAdded": [],
+            "holesRemoved": ["bolt5", "bolt6"],
+        }
+    ]
+
+
+@pytest.mark.anyio
 async def test_linear_pattern_normalizes_direction_and_updates_pitch_and_count(tmp_path):
     document = tmp_path / "linear.coalesce.json"
     results = await run_server(
@@ -315,6 +390,7 @@ async def test_linear_pattern_normalizes_direction_and_updates_pitch_and_count(t
         (circular_pattern(radius=0), "INVALID_PARAMETER", "pattern.radius"),
         (circular_pattern(radius=1, count=2), "HOLES_INTERSECT", ["bolt1", "bolt2"]),
         (circular_pattern(count=65), "INVALID_PARAMETER", "pattern.count"),
+        (circular_pattern(radius=40, count=2), "HOLE_NO_EFFECT", ["bolt1", "bolt2"]),
         (linear_pattern(direction=(0, 0)), "INVALID_PARAMETER", "pattern.direction"),
         (linear_pattern(pitch=50, count=2), "HOLE_NO_EFFECT", ["row2"]),
         (

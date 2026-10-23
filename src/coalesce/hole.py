@@ -164,7 +164,7 @@ def _validate_cutters(node: Hole, target: Shape, cutters: list[_NamedCutter]) ->
         for cutter in cutters
         if not _has_solid_common(target, cutter.shape)
     ]
-    if missing and len(missing) != len(cutters):
+    if missing:
         raise GraphError(
             "HOLE_NO_EFFECT",
             f"hole {node.id} has positions that remove no material",

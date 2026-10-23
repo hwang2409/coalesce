@@ -77,6 +77,6 @@ Update pattern intent without resending generated coordinates. The update kind m
 }
 ```
 
-A radius or pitch edit keeps each surviving member identity. A smaller count deletes trailing names. A stored fillet or chamfer reference to `bolt2` stays attached after a radius edit. A reference to removed `bolt6` resolves `EMPTY`; coalesce does not rebind it by member index or geometric proximity.
+Pattern member identity is its ordinal name. A surviving `<namePrefix>N` reference follows that member when circular count, radius, center, or start angle changes move it, or when linear pitch, start, or direction changes move it. In particular, changing a circular count re-spaces the surviving members and moves downstream fillets, chamfers, and cuts with their named members. A smaller count removes trailing members, so a reference to removed `bolt6` resolves `EMPTY`. Changing `namePrefix` makes every old reference stale. Coalesce never falls back to a generated index or the nearest shape. Use explicit named positions when a reference must stay at a fixed place.
 
 Pattern creation and update are atomic. Coalesce rejects overlapping members, members that remove no material, and members that break out of a body edge. Member-specific errors include `names` or `pairs`.

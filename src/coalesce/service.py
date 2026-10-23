@@ -1130,27 +1130,57 @@ def _direction(value: Any) -> tuple[float, float]:
     return x / length, y / length
 
 
+def _circular_hole_pattern(value: dict[str, Any]) -> CircularHolePattern:
+    return CircularHolePattern(
+        center=_hole_point(value.get("center"), "pattern.center"),
+        radius=_positive_quantity(value.get("radius"), "pattern.radius"),
+        count=_hole_count(value.get("count")),
+        start_angle=_angle(value.get("startAngle"), "pattern.startAngle"),
+        name_prefix=_name_prefix(value.get("namePrefix")),
+    )
+
+
+def _linear_hole_pattern(value: dict[str, Any]) -> LinearHolePattern:
+    return LinearHolePattern(
+        start=_hole_point(value.get("start"), "pattern.start"),
+        direction=_direction(value.get("direction")),
+        pitch=_positive_quantity(value.get("pitch"), "pattern.pitch"),
+        count=_hole_count(value.get("count")),
+        name_prefix=_name_prefix(value.get("namePrefix")),
+    )
+
+
 def _hole_pattern(value: Any) -> CircularHolePattern | LinearHolePattern:
     if not isinstance(value, dict):
         raise RequestError("INVALID_PARAMETER", "pattern must be an object", field="pattern")
-    kind = value.get("kind")
-    if kind == "circular":
-        return CircularHolePattern(
-            center=_hole_point(value.get("center"), "pattern.center"),
-            radius=_positive_quantity(value.get("radius"), "pattern.radius"),
-            count=_hole_count(value.get("count")),
-            start_angle=_angle(value.get("startAngle"), "pattern.startAngle"),
-            name_prefix=_name_prefix(value.get("namePrefix")),
-        )
-    if kind == "linear":
-        return LinearHolePattern(
-            start=_hole_point(value.get("start"), "pattern.start"),
-            direction=_direction(value.get("direction")),
-            pitch=_positive_quantity(value.get("pitch"), "pattern.pitch"),
-            count=_hole_count(value.get("count")),
-            name_prefix=_name_prefix(value.get("namePrefix")),
-        )
+    parsers = {"circular": _circular_hole_pattern, "linear": _linear_hole_pattern}
+    if parser := parsers.get(value.get("kind")):
+        return parser(value)
     raise RequestError("INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind")
+
+
+def _circular_hole_pattern_changes(value: dict[str, Any]) -> CircularHolePatternChanges:
+    return CircularHolePatternChanges(
+        center=_hole_point(value["center"], "pattern.center") if "center" in value else None,
+        radius=_positive_quantity(value["radius"], "pattern.radius") if "radius" in value else None,
+        count=_hole_count(value["count"]) if "count" in value else None,
+        start_angle=(
+            _angle(value["startAngle"], "pattern.startAngle")
+            if "startAngle" in value
+            else None
+        ),
+        name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
+    )
+
+
+def _linear_hole_pattern_changes(value: dict[str, Any]) -> LinearHolePatternChanges:
+    return LinearHolePatternChanges(
+        start=_hole_point(value["start"], "pattern.start") if "start" in value else None,
+        direction=_direction(value["direction"]) if "direction" in value else None,
+        pitch=_positive_quantity(value["pitch"], "pattern.pitch") if "pitch" in value else None,
+        count=_hole_count(value["count"]) if "count" in value else None,
+        name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
+    )
 
 
 def _hole_pattern_changes(
@@ -1158,35 +1188,12 @@ def _hole_pattern_changes(
 ) -> CircularHolePatternChanges | LinearHolePatternChanges:
     if not isinstance(value, dict):
         raise RequestError("INVALID_PARAMETER", "pattern must be an object", field="pattern")
-    kind = value.get("kind")
-    if kind == "circular":
-        return CircularHolePatternChanges(
-            center=_hole_point(value["center"], "pattern.center") if "center" in value else None,
-            radius=(
-                _positive_quantity(value["radius"], "pattern.radius")
-                if "radius" in value
-                else None
-            ),
-            count=_hole_count(value["count"]) if "count" in value else None,
-            start_angle=(
-                _angle(value["startAngle"], "pattern.startAngle")
-                if "startAngle" in value
-                else None
-            ),
-            name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
-        )
-    if kind == "linear":
-        return LinearHolePatternChanges(
-            start=_hole_point(value["start"], "pattern.start") if "start" in value else None,
-            direction=_direction(value["direction"]) if "direction" in value else None,
-            pitch=(
-                _positive_quantity(value["pitch"], "pattern.pitch")
-                if "pitch" in value
-                else None
-            ),
-            count=_hole_count(value["count"]) if "count" in value else None,
-            name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
-        )
+    parsers = {
+        "circular": _circular_hole_pattern_changes,
+        "linear": _linear_hole_pattern_changes,
+    }
+    if parser := parsers.get(value.get("kind")):
+        return parser(value)
     raise RequestError("INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind")
 
 
@@ -2221,38 +2228,43 @@ def _apply_cut(graph: Any, operation: CutCreate | CutUpdate) -> str:
     return operation.featureId
 
 
+def _apply_hole_update(graph: Any, operation: HoleUpdate) -> str:
+    node = graph.nodes.get(operation.featureId)
+    if not isinstance(node, Hole):
+        raise RequestError("UNKNOWN_ID", f"unknown hole: {operation.featureId}")
+    if operation.set.target is not None:
+        target = operation.set.target.featureId
+        _validate_body_target(graph, target, "hole")
+        node.target = target
+    if operation.set.pattern is None:
+        return operation.featureId
+    changes = operation.set.pattern
+    expected = (
+        CircularHolePattern
+        if isinstance(changes, CircularHolePatternChanges)
+        else LinearHolePattern
+    )
+    if not isinstance(node.pattern, expected):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "hole pattern update kind must match the stored pattern",
+            feature=operation.featureId,
+            field="pattern.kind",
+        )
+    node.pattern = replace(
+        node.pattern,
+        **{
+            field.name: getattr(changes, field.name)
+            for field in fields(changes)
+            if getattr(changes, field.name) is not None
+        },
+    )
+    return operation.featureId
+
+
 def _apply_hole(graph: Any, operation: HoleCreate | HoleUpdate) -> str:
     if isinstance(operation, HoleUpdate):
-        node = graph.nodes.get(operation.featureId)
-        if not isinstance(node, Hole):
-            raise RequestError("UNKNOWN_ID", f"unknown hole: {operation.featureId}")
-        if operation.set.target is not None:
-            target = operation.set.target.featureId
-            _validate_body_target(graph, target, "hole")
-            node.target = target
-        if operation.set.pattern is not None:
-            changes = operation.set.pattern
-            expected = (
-                CircularHolePattern
-                if isinstance(changes, CircularHolePatternChanges)
-                else LinearHolePattern
-            )
-            if not isinstance(node.pattern, expected):
-                raise RequestError(
-                    "INVALID_PARAMETER",
-                    "hole pattern update kind must match the stored pattern",
-                    feature=operation.featureId,
-                    field="pattern.kind",
-                )
-            node.pattern = replace(
-                node.pattern,
-                **{
-                    field.name: getattr(changes, field.name)
-                    for field in fields(changes)
-                    if getattr(changes, field.name) is not None
-                },
-            )
-        return operation.featureId
+        return _apply_hole_update(graph, operation)
     parameters = operation.parameters
     _validate_body_target(graph, parameters.target.featureId, "hole")
     graph.add(
@@ -2788,35 +2800,107 @@ def _edited(old: Any, node: Any) -> str:
     return f"{summary} {', '.join(edits)}" if edits else f"{summary}, no value changed"
 
 
-def _selection_snapshot(graph: Any) -> dict[str, list[str]]:
-    snapshot = {}
-    for node in graph.nodes.values():
-        if isinstance(node, Standoffs) and node.selection == "all_mounting":
-            board = graph.nodes.get(node.board)
-            if isinstance(board, BoardImport):
-                snapshot[node.id] = sorted(hole["id"] for hole in mounting_holes(board))
-    return snapshot
+def _referenced_hole_members(graph: Any, feature_id: str) -> set[str]:
+    return {
+        source.name
+        for node in graph.nodes.values()
+        if isinstance(node, (Fillet, Chamfer))
+        for reference in node.edges
+        if isinstance((source := reference.source), HoleSurfaceSource)
+        and source.feature == feature_id
+    }
+
+
+def _selection_state(graph: Any, node: Any) -> dict[str, Any] | None:
+    if isinstance(node, Standoffs) and node.selection == "all_mounting":
+        board = graph.nodes.get(node.board)
+        if isinstance(board, BoardImport):
+            return {
+                "selector": "all_mounting",
+                "positions": {hole["id"]: hole.get("position") for hole in mounting_holes(board)},
+            }
+    if isinstance(node, Hole) and node.pattern is not None:
+        from .hole import hole_positions
+
+        return {
+            "selector": "pattern",
+            "positions": {
+                position.name: list(position.point) for position in hole_positions(node)
+            },
+            "referenced": _referenced_hole_members(graph, node.id),
+        }
+    return None
+
+
+def _selection_snapshot(graph: Any) -> dict[str, dict[str, Any]]:
+    return {
+        node.id: state
+        for node in graph.nodes.values()
+        if (state := _selection_state(graph, node)) is not None
+    }
 
 
 def _selection_changes(
-    before: dict[str, list[str]], after: dict[str, list[str]]
+    before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
     changes = []
     # creating or deleting a selector feature is not churn; only a selector that existed
-    # before and after can gain or lose holes.
+    # before and after can gain, lose, or move holes.
     for feature_id in sorted(set(before) & set(after)):
-        added = sorted(set(after[feature_id]) - set(before[feature_id]))
-        removed = sorted(set(before[feature_id]) - set(after[feature_id]))
-        if added or removed:
-            changes.append(
+        old = before[feature_id]["positions"]
+        new = after[feature_id]["positions"]
+        added = sorted(set(new) - set(old))
+        removed = sorted(set(old) - set(new))
+        moved = (
+            [
                 {
-                    "featureId": feature_id,
-                    "selector": "all_mounting",
-                    "holesAdded": added,
-                    "holesRemoved": removed,
+                    "name": name,
+                    "oldPosition": old[name],
+                    "newPosition": new[name],
                 }
-            )
+                for name in sorted(
+                    set(old)
+                    & set(new)
+                    & (before[feature_id]["referenced"] | after[feature_id]["referenced"])
+                )
+                if math.dist(old[name], new[name]) > 1e-6
+            ]
+            if before[feature_id]["selector"] == "pattern"
+            else []
+        )
+        if added or removed or moved:
+            change = {
+                "featureId": feature_id,
+                "selector": before[feature_id]["selector"],
+                "holesAdded": added,
+                "holesRemoved": removed,
+            }
+            if moved:
+                change["holesMoved"] = moved
+            changes.append(change)
     return changes
+
+
+def _pattern_selection_summary(changes: list[dict[str, Any]]) -> str | None:
+    pattern = next((change for change in changes if change["selector"] == "pattern"), None)
+    if pattern is None:
+        return None
+    labels = []
+    moved = pattern.get("holesMoved", [])
+    if moved:
+        first = moved[0]
+        labels.append(
+            f"{first['name']} moved {_mm(tuple(first['oldPosition']))} → "
+            f"{_mm(tuple(first['newPosition']))}"
+        )
+        if len(moved) > 1:
+            labels.append(f"{len(moved) - 1} more moved")
+    for key, word in (("holesRemoved", "removed"), ("holesAdded", "added")):
+        names = pattern[key]
+        if names:
+            subject = " and ".join(names) if len(names) <= 3 else f"{len(names)} members"
+            labels.append(f"{subject} {word}")
+    return ", ".join(labels)
 
 
 def _is_board_refresh(operation: MutationOperation) -> bool:
@@ -3359,6 +3443,10 @@ class DocumentService:
         change = _mutation_change(
             deletion_change, before, result, changed_id, committed_result, delta
         )
+        selection_changes = _selection_changes(previous_selections, _selection_snapshot(graph))
+        if selection_summary := _pattern_selection_summary(selection_changes):
+            change["summary"] = change["summary"].removesuffix(", no value changed")
+            change["summary"] += f", {selection_summary}"
         response = {
             "ok": True,
             "revision": previous + 1,
@@ -3371,7 +3459,7 @@ class DocumentService:
                 "valid": result.availability.geometry_available,
             },
             "warnings": [],
-            "selectionChanges": _selection_changes(previous_selections, _selection_snapshot(graph)),
+            "selectionChanges": selection_changes,
             **deletion_fields,
             **response_fields(graph, result, changed_id),
             **refresh_fields,
