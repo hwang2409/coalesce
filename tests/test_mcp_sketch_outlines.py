@@ -34,7 +34,7 @@ def update_outline(kind, points, revision, request_id):
     }
 
 
-def fillet_segment(revision=2):
+def fillet_segment(segment="seg-0", revision=2):
     return {
         "action": "create",
         "expectedRevision": revision,
@@ -46,7 +46,7 @@ def fillet_segment(revision=2):
             "edges": [
                 {
                     "feature": "body",
-                    "role": "between(side(seg-0),cap_end)",
+                    "role": f"between(side({segment}),cap_end)",
                     "cardinality": "one",
                 }
             ],
@@ -94,6 +94,17 @@ async def test_closed_outline_extrude_volume(kind, points, expected_volume, segm
     assert results[0]["entitySegments"] == {"outline": segments}
     assert results[1]["ok"] is True
     assert results[2]["volume"]["value"] == pytest.approx(expected_volume, rel=5e-4)
+
+
+@pytest.mark.anyio
+async def test_outline_id_defaults_to_kind_and_position(tmp_path):
+    payload = outline_sketch("polyline", [[0, 0], [4, 0], [0, 3]])
+    del payload["entities"][0]["id"]
+
+    results = await run_server(tmp_path / "generated-id.coalesce.json", [("sketch", payload)])
+
+    assert results[0]["ok"] is True
+    assert results[0]["entitySegments"] == {"polyline-1": ["seg-0", "seg-1", "seg-2"]}
 
 
 @pytest.mark.anyio
@@ -179,15 +190,51 @@ def test_outline_point_bounds_and_finite_coordinates_are_rejected(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_polyline_reference_survives_same_count_and_is_stale_on_count_change(tmp_path):
+@pytest.mark.parametrize(
+    ("kind", "points", "changed", "inserted", "segment"),
+    [
+        (
+            "polyline",
+            [[-5, -5], [5, -5], [5, 5], [-5, 5]],
+            [[-6, -5], [6, -5], [5, 5], [-5, 5]],
+            [[-6, -5], [0, -6], [6, -5], [5, 5], [-5, 5]],
+            "seg-0",
+        ),
+        (
+            "spline",
+            [
+                [
+                    10 * math.cos(2 * math.pi * index / 12),
+                    10 * math.sin(2 * math.pi * index / 12),
+                ]
+                for index in range(12)
+            ],
+            [
+                [
+                    11 * math.cos(2 * math.pi * index / 12),
+                    10 * math.sin(2 * math.pi * index / 12),
+                ]
+                for index in range(12)
+            ],
+            [
+                [
+                    10 * math.cos(2 * math.pi * index / 13),
+                    10 * math.sin(2 * math.pi * index / 13),
+                ]
+                for index in range(13)
+            ],
+            "spline",
+        ),
+    ],
+)
+async def test_outline_reference_survives_same_count_and_is_stale_on_count_change(
+    kind, points, changed, inserted, segment, tmp_path
+):
     path = tmp_path / "references.coalesce.json"
-    square = [[-5, -5], [5, -5], [5, 5], [-5, 5]]
-    changed = [[-6, -5], [6, -5], [5, 5], [-5, 5]]
-    inserted = [[-6, -5], [0, -6], [6, -5], [5, 5], [-5, 5]]
     results = await run_server(
         path,
         [
-            ("sketch", outline_sketch("polyline", square)),
+            ("sketch", outline_sketch(kind, points)),
             (
                 "feature",
                 extrude(
@@ -199,9 +246,9 @@ async def test_polyline_reference_survives_same_count_and_is_stale_on_count_chan
                     distance=5,
                 ),
             ),
-            ("feature", fillet_segment()),
-            ("sketch", update_outline("polyline", changed, 3, "same-count")),
-            ("sketch", update_outline("polyline", inserted, 4, "new-count")),
+            ("feature", fillet_segment(segment)),
+            ("sketch", update_outline(kind, changed, 3, "same-count")),
+            ("sketch", update_outline(kind, inserted, 4, "new-count")),
         ],
     )
 

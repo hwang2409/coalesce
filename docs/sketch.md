@@ -87,7 +87,7 @@ Primitive sketches support two free-form closed outline kinds in addition to rec
 - `polyline` joins 3 to 2000 points with straight segments. Its edge roles are `seg-0`, `seg-1`, and so on, including the closing segment.
 - `spline` creates one periodic interpolating B-spline through 3 to 2000 points. It stays one analytic edge with the role `spline`; it is not polygonized.
 
-Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and self-intersections are rejected before the CAD kernel runs. Inner holes are separate cut or hole features.
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and self-intersections are rejected before the CAD kernel runs. Inner holes are separate cut or hole features. The `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
 
 This example creates and extrudes a triangular polyline:
 

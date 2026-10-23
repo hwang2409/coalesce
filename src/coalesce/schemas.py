@@ -83,7 +83,7 @@ def _outline_entity(kind: str) -> dict:
             },
             "closed": {"const": True},
         },
-        "required": ["id", "kind", "points", "closed"],
+        "required": ["kind", "points", "closed"],
         "additionalProperties": False,
     }
 

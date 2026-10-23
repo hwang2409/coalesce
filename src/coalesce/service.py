@@ -742,7 +742,11 @@ def _parse_import(payload: dict[str, Any]) -> BoardImportOperation | ImportDelet
     )
 
 
-def _outline_entity(entity: dict[str, Any]) -> Polyline | Spline:
+def _entity_id(entity: dict[str, Any], index: int) -> str:
+    return entity.get("id", f"{entity['kind']}-{index + 1}")
+
+
+def _outline_entity(entity: dict[str, Any], index: int) -> Polyline | Spline:
     kind = entity["kind"]
     if entity.get("closed") is not True:
         raise RequestError(
@@ -773,7 +777,7 @@ def _outline_entity(entity: dict[str, Any]) -> Polyline | Spline:
             "INVALID_PARAMETER", "each outline point must contain x and y", field="points"
         )
     entity_type = Polyline if kind == "polyline" else Spline
-    return entity_type(entity["id"], points)
+    return entity_type(_entity_id(entity, index), points)
 
 
 def _entities(payload: Any) -> tuple[Rectangle | Circle | Polyline | Spline, ...]:
@@ -781,7 +785,7 @@ def _entities(payload: Any) -> tuple[Rectangle | Circle | Polyline | Spline, ...
         raise RequestError("INVALID_PARAMETER", "entities must not be empty")
     parsed = []
     allowed = ["rectangle", "circle", "polyline", "spline"]
-    for entity in payload:
+    for index, entity in enumerate(payload):
         if not isinstance(entity, dict) or entity.get("kind") not in allowed:
             raise RequestError(
                 "INVALID_PARAMETER",
@@ -789,7 +793,7 @@ def _entities(payload: Any) -> tuple[Rectangle | Circle | Polyline | Spline, ...
                 allowedKinds=allowed,
             )
         if entity["kind"] in {"polyline", "spline"}:
-            parsed.append(_outline_entity(entity))
+            parsed.append(_outline_entity(entity, index))
             continue
         center = entity.get("center", [0, 0])
         common = {
@@ -2176,7 +2180,10 @@ def _entity_segments(entities: list[dict[str, Any]]) -> dict[str, list[str]]:
         "polyline": lambda entity: [f"seg-{index}" for index in range(len(entity["points"]))],
         "spline": lambda _entity: ["spline"],
     }
-    return {entity["id"]: segments[entity["kind"]](entity) for entity in entities}
+    return {
+        _entity_id(entity, index): segments[entity["kind"]](entity)
+        for index, entity in enumerate(entities)
+    }
 
 
 def _kind(node: Any) -> str:
