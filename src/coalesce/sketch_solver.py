@@ -635,6 +635,19 @@ def _validate(request: SolveRequest) -> SketchSolveError | None:
     if error:
         return error
 
+    error = _validate_equations(request, entity_types)
+    if error:
+        return error
+
+    error = _validate_tangent_endpoints(request)
+    if error:
+        return error
+    return _validate_landmarks(request)
+
+
+def _validate_equations(
+    request: SolveRequest, entity_types: Mapping[str, str]
+) -> SketchSolveError | None:
     for item in (*request.dimensions, *request.constraints):
         if not _match_signature(item.kind, item.entities, entity_types):
             kind = item.kind.value if isinstance(item.kind, StrEnum) else str(item.kind)
@@ -660,11 +673,7 @@ def _validate(request: SolveRequest) -> SketchSolveError | None:
                 f"dimension {dimension.id!r} must be positive",
                 constraint_ids=(dimension.id,),
             )
-
-    error = _validate_tangent_endpoints(request)
-    if error:
-        return error
-    return _validate_landmarks(request)
+    return None
 
 
 def _validate_structure(request: SolveRequest) -> SketchSolveError | None:
