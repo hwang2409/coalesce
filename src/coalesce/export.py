@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -481,17 +482,40 @@ def _write_private_file(path: Path, content: bytes) -> None:
         os.fsync(stream.fileno())
 
 
-def _new_directory_path(path: Path) -> Path:
+def _path_entries(path: Path) -> list[str]:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return []
+    if not stat.S_ISDIR(mode):
+        return [path.name]
+    try:
+        return sorted(entry.name for entry in path.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return [path.name]
+
+
+def _destination_state(path: Path) -> tuple[Path, bool, list[str]]:
     resolved, directory_fd = _open_directory(path)
     os.close(directory_fd)
-    if resolved.exists():
-        raise ExportFailure(
-            "EXPORT_PATH_EXISTS",
-            "export path already exists; separate-file export never overwrites",
-            path=str(resolved),
-            hint="choose a new path",
-        )
-    return resolved
+    try:
+        mode = resolved.lstat().st_mode
+    except FileNotFoundError:
+        return resolved, False, []
+    if not stat.S_ISDIR(mode):
+        raise _existing_directory_failure(resolved, [resolved.name])
+    return resolved, True, _path_entries(resolved)
+
+
+def _existing_directory_failure(path: Path, entries: list[str]) -> ExportFailure:
+    return ExportFailure(
+        "EXPORT_PATH_EXISTS",
+        "export path is not an empty real directory; choose an empty or new directory",
+        path=str(path),
+        entries=entries[:20],
+        truncated=len(entries) > 20,
+        hint="choose an empty or new directory",
+    )
 
 
 def _rename_new_directory(source: Path, destination: Path) -> None:
@@ -502,9 +526,6 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
         result = renamex(source_bytes, destination_bytes, 0x00000004)  # RENAME_EXCL
     elif renameat2 := getattr(libc, "renameat2", None):
         result = renameat2(-100, source_bytes, -100, destination_bytes, 1)  # RENAME_NOREPLACE
-    elif os.name == "nt":
-        os.rename(source, destination)
-        return
     else:
         raise OSError(errno.ENOTSUP, "exclusive directory rename is unavailable")
     if result == 0:
@@ -515,11 +536,22 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
     raise OSError(error_number, os.strerror(error_number), destination)
 
 
+def _sync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _publish_prepared_parts(
     path: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
-) -> Path:
-    """Publish already-prepared bytes as one complete sibling-built directory."""
-    destination = _new_directory_path(path)
+) -> tuple[Path, list[dict[str, str]]]:
+    """Publish prepared bytes with one atomic sibling-directory handoff."""
+    destination, existed, entries = _destination_state(path)
+    if entries:
+        raise _existing_directory_failure(destination, entries)
+
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
     )
@@ -528,38 +560,22 @@ def _publish_prepared_parts(
         for item in prepared:
             _write_private_file(temporary / item["file"], item["_content"])
         _write_private_file(temporary / "manifest.json", manifest_bytes)
-        temporary_fd = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        _sync_directory(temporary)
         try:
-            os.fsync(temporary_fd)
-        finally:
-            os.close(temporary_fd)
-        if destination.exists():
-            raise ExportFailure(
-                "EXPORT_PATH_EXISTS",
-                "export path already exists; separate-file export never overwrites",
-                path=str(destination),
-                hint="choose a new path",
-            )
-        try:
-            _rename_new_directory(temporary, destination)
-        except FileExistsError as error:
-            raise ExportFailure(
-                "EXPORT_PATH_EXISTS",
-                "export path already exists; separate-file export never overwrites",
-                path=str(destination),
-                hint="choose a new path",
-            ) from error
+            if existed:
+                os.rename(temporary, destination)
+            else:
+                _rename_new_directory(temporary, destination)
+        except OSError as error:
+            if error.errno in {errno.EEXIST, errno.ENOTDIR, errno.ENOTEMPTY}:
+                raise _existing_directory_failure(
+                    destination, _path_entries(destination)
+                ) from error
+            raise
         published = True
-        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
     except ExportFailure:
         raise
     except OSError as error:
-        if published and destination.is_dir():
-            shutil.rmtree(destination)
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
             "separate-file export could not be published",
@@ -567,9 +583,18 @@ def _publish_prepared_parts(
             hint="check the target parent and retry with a new path",
         ) from error
     finally:
-        if temporary.exists():
+        if not published and temporary.exists():
             shutil.rmtree(temporary)
-    return destination
+
+    warnings = []
+    try:
+        _sync_directory(destination.parent)
+    except OSError:
+        warnings.append({
+            "code": "EXPORT_DURABILITY_UNCONFIRMED",
+            "message": "files are published, but their durability on disk is not confirmed",
+        })
+    return destination, warnings
 
 
 def export_parts_separately(
@@ -587,12 +612,14 @@ def export_parts_separately(
     manifest_bytes = (
         json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode()
-    destination = _publish_prepared_parts(path, prepared, manifest_bytes)
-    return {
-        "path": str(destination),
-        "partIds": [part["partId"] for part in prepared],
-        "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
-    }
+    # build every result field before the rename: no failure may follow the commit point
+    part_ids = [part["partId"] for part in prepared]
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    destination, warnings = _publish_prepared_parts(path, prepared, manifest_bytes)
+    result = {"path": str(destination), "partIds": part_ids, "manifestSha256": manifest_sha256}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
