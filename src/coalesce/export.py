@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -481,17 +482,34 @@ def _write_private_file(path: Path, content: bytes) -> None:
         os.fsync(stream.fileno())
 
 
-def _new_directory_path(path: Path) -> Path:
+def _destination_state(path: Path) -> tuple[Path, list[str]]:
     resolved, directory_fd = _open_directory(path)
     os.close(directory_fd)
-    if resolved.exists():
+    try:
+        mode = resolved.lstat().st_mode
+    except FileNotFoundError:
+        return resolved, []
+    if not stat.S_ISDIR(mode):
         raise ExportFailure(
             "EXPORT_PATH_EXISTS",
-            "export path already exists; separate-file export never overwrites",
+            "export path already exists; separate-file export never overwrites; "
+            "choose an empty or new directory",
             path=str(resolved),
-            hint="choose a new path",
+            entries=[resolved.name],
+            hint="choose an empty or new directory",
         )
-    return resolved
+    return resolved, sorted(entry.name for entry in resolved.iterdir())
+
+
+def _existing_directory_failure(path: Path, entries: list[str]) -> ExportFailure:
+    return ExportFailure(
+        "EXPORT_PATH_EXISTS",
+        "export directory is not empty; choose an empty or new directory",
+        path=str(path),
+        entries=entries[:20],
+        truncated=len(entries) > 20,
+        hint="choose an empty or new directory",
+    )
 
 
 def _rename_new_directory(source: Path, destination: Path) -> None:
@@ -515,11 +533,72 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
     raise OSError(error_number, os.strerror(error_number), destination)
 
 
+def _unexpected_entries(destination: Path, created: list[Path]) -> list[str]:
+    created_names = {path.name for path in created}
+    return sorted(entry.name for entry in destination.iterdir() if entry.name not in created_names)
+
+
+def _sync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _remove_created(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _publish_existing_directory(
+    destination: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
+) -> Path:
+    created: list[Path] = []
+    published = False
+    contents = [(item["file"], item["_content"]) for item in prepared]
+    contents.append(("manifest.json", manifest_bytes))
+    try:
+        for name, content in contents:
+            if unexpected := _unexpected_entries(destination, created):
+                raise _existing_directory_failure(destination, unexpected)
+            target = destination / name
+            _write_private_file(target, content)
+            created.append(target)
+        if unexpected := _unexpected_entries(destination, created):
+            raise _existing_directory_failure(destination, unexpected)
+        _sync_directory(destination)
+        published = True
+    except FileExistsError as error:
+        raise _existing_directory_failure(destination, _unexpected_entries(destination, created)) from error
+    except ExportFailure:
+        raise
+    except OSError as error:
+        raise ExportFailure(
+            "EXPORT_WRITE_FAILED",
+            "separate-file export could not be published",
+            path=str(destination),
+            hint="check the target parent and retry with a new path",
+        ) from error
+    finally:
+        if not published:
+            _remove_created(created)
+    return destination
+
+
 def _publish_prepared_parts(
     path: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
 ) -> Path:
-    """Publish already-prepared bytes as one complete sibling-built directory."""
-    destination = _new_directory_path(path)
+    """Publish prepared bytes into an empty target or a new directory."""
+    destination, entries = _destination_state(path)
+    if entries:
+        raise _existing_directory_failure(destination, entries)
+    if destination.exists():
+        return _publish_existing_directory(destination, prepared, manifest_bytes)
+
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
     )
@@ -533,13 +612,6 @@ def _publish_prepared_parts(
             os.fsync(temporary_fd)
         finally:
             os.close(temporary_fd)
-        if destination.exists():
-            raise ExportFailure(
-                "EXPORT_PATH_EXISTS",
-                "export path already exists; separate-file export never overwrites",
-                path=str(destination),
-                hint="choose a new path",
-            )
         try:
             _rename_new_directory(temporary, destination)
         except FileExistsError as error:
@@ -547,7 +619,7 @@ def _publish_prepared_parts(
                 "EXPORT_PATH_EXISTS",
                 "export path already exists; separate-file export never overwrites",
                 path=str(destination),
-                hint="choose a new path",
+                hint="choose an empty or new directory",
             ) from error
         published = True
         directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)

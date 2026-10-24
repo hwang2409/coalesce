@@ -95,6 +95,8 @@ async def test_real_stdio_separate_export_writes_two_parts_and_deterministic_man
     document = tmp_path / "stdio-handoff.coalesce.json"
     first = tmp_path / "delivery-one"
     second = tmp_path / "delivery-two"
+    first.mkdir()
+    second.mkdir()
     calls = [
         ("import", import_request(FIXTURES / "features.kicad_pcb")),
         ("feature", base_request()),
@@ -191,7 +193,7 @@ def test_exclusive_directory_rename_never_replaces_an_existing_directory(tmp_pat
     assert (destination / "keep.txt").read_text() == "keep"
 
 
-def test_existing_destination_is_structured_error_and_unchanged(tmp_path):
+def test_existing_destination_with_unrelated_file_is_structured_error_and_unchanged(tmp_path):
     service = _service(tmp_path)
     destination = tmp_path / "delivery"
     destination.mkdir()
@@ -205,6 +207,45 @@ def test_existing_destination_is_structured_error_and_unchanged(tmp_path):
     assert sentinel.read_text() == "keep"
     assert sorted(tmp_path.iterdir()) == before
     assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+@pytest.mark.parametrize("entry_name", ["keep.txt", ".hidden"])
+def test_existing_destination_entry_is_structured_error_and_unchanged(tmp_path, entry_name):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    destination.mkdir()
+    entry = destination / entry_name
+    entry.write_text("keep")
+
+    response = service.export(_separate(destination))
+
+    assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
+    assert "choose an empty or new directory" in response["error"]["message"]
+    assert response["error"]["entries"] == [entry_name]
+    assert entry.read_text() == "keep"
+    assert list(destination.iterdir()) == [entry]
+
+
+def test_existing_empty_destination_is_atomic_when_file_appears(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    destination.mkdir()
+    original = export_module._write_private_file
+    raced = False
+
+    def race(path, content):
+        nonlocal raced
+        if not raced:
+            raced = True
+            (destination / "race.txt").write_text("keep")
+        return original(path, content)
+
+    monkeypatch.setattr(export_module, "_write_private_file", race)
+    response = service.export(_separate(destination))
+
+    assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
+    assert (destination / "race.txt").read_text() == "keep"
+    assert sorted(path.name for path in destination.iterdir()) == ["race.txt"]
 
 
 def test_validation_failure_publishes_nothing_and_leaves_no_sibling_temp(tmp_path, monkeypatch):
