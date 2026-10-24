@@ -2022,9 +2022,12 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
     message = messages.get(
         result.status.value, ("INVALID_PARAMETER", "invalid constrained sketch input")
     )[1]
+    entity_ids = {
+        entity.id for entity in (*model.points, *model.lines, *model.arcs, *model.circles)
+    }
     details = {
         "diagnostics": result_payload(model),
-        **diagnostic_geometry_details(result),
+        **diagnostic_geometry_details(result, entity_ids),
     }
     if result.status.value == "invalid_input":
         return RequestError("INVALID_PARAMETER", message, **details)

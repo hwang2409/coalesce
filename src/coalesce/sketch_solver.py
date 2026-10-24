@@ -1121,7 +1121,9 @@ def _diagnostic_entity_payload(entity: SolvedEntity) -> dict[str, object]:
     }
 
 
-def diagnostic_geometry_details(result: SolveResult) -> dict[str, object]:
+def diagnostic_geometry_details(
+    result: SolveResult, allowed_entity_ids: set[str]
+) -> dict[str, object]:
     if not result.diagnostic_entities:
         return {}
     geometry = {
@@ -1129,7 +1131,7 @@ def diagnostic_geometry_details(result: SolveResult) -> dict[str, object]:
         "entities": {
             entity_id: _diagnostic_entity_payload(entity)
             for entity_id, entity in sorted(result.diagnostic_entities.items())
-            if _solved_entity_is_finite(entity)
+            if entity_id in allowed_entity_ids and _solved_entity_is_finite(entity)
         },
     }
     if not geometry["entities"]:
