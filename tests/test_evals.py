@@ -511,6 +511,34 @@ def test_runner_feature_edit_requires_runner_state_and_one_in_place_update(tmp_p
     assert recreated["status"] == "fail"
 
 
+def test_constrained_update_uses_runner_owned_profile(tmp_path):
+    from coalesce.service import DocumentService
+    from evals.golden.constrained_common import plate_model, sketch_update
+    from evals.run import build_before_state
+
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    document = tmp_path / "model.coalesce.json"
+    facts = tmp_path / "before-state.json"
+    build_before_state(
+        "constrained-sketch-update-after-extrusion", document, fixtures, facts
+    )
+    task = next(
+        task
+        for task in load_tasks(Path("evals/tasks"))
+        if task["id"] == "constrained-sketch-update-after-extrusion"
+    )
+    check = next(check for check in task["checks"] if check["kind"] == "runner_feature_edit")
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    assert check_task({"checks": [check]}, document, steps, facts)[0]["status"] == "fail"
+
+    name, request = sketch_update(plate_model(4), "test-valid-update")
+    result = getattr(DocumentService(document, warmup=False), name)(request)
+    assert result["ok"] is True
+    assert check_task({"checks": [check]}, document, steps, facts)[0]["status"] == "pass"
+
+
 def test_runner_feature_edit_fails_without_runner_facts(tmp_path):
     check, document, _facts = _staged_screw_pattern(tmp_path)
     steps = tmp_path / "steps"

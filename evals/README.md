@@ -46,6 +46,6 @@ These tasks bind every STEP solid back to one persisted manufacturing part. The 
 starts from a runner-built screw-closed enclosure with a three-member, 6 mm lid pattern. It
 checks that the agent updates the runner's `lid_pattern` feature exactly once, plus the complete
 reimported lid hole set and final document state. The constrained tasks check the reimported
-bounding box and inner-loop hole plus the exact saved radius dimension.
-`constrained-sketch-update-after-extrusion` requires a valid saved sketch update after the
-extrusion; it does not claim that a rejected update occurred.
+bounding box and inner-loop hole plus the exact saved radius dimension. The update task starts
+from a runner-built 3 mm sketch and extrusion, then requires one saved update of that same
+`profile` to 4 mm; it does not claim that a rejected update occurred.

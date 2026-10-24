@@ -197,9 +197,31 @@ def _build_screw_closure_pattern_edit(document, fixture_dir):
     }
 
 
+def _build_constrained_sketch_update(document, _fixture_dir):
+    from coalesce.service import DocumentService
+
+    from .golden.constrained_common import extrude, plate_model, sketch_create
+
+    service = DocumentService(document, warmup=False)
+    for name, request in (sketch_create(plate_model(3)), extrude()):
+        _require_ok(getattr(service, name)(request))
+    payload = json.loads(document.read_text())
+    feature = next(node for node in payload["graph"]["nodes"] if node["id"] == "profile")
+    return {
+        "revision": service.revision,
+        "featureId": feature["id"],
+        "feature": feature,
+        "receiptFeatureIds": [
+            receipt.get("response", {}).get("changedFeatureIds")
+            for receipt in payload.get("receipts", [])
+        ],
+    }
+
+
 _BEFORE_STATE_BUILDERS = {
     "pcb-change": _build_pcb_change,
     "screw-closure-pattern-edit": _build_screw_closure_pattern_edit,
+    "constrained-sketch-update-after-extrusion": _build_constrained_sketch_update,
 }
 
 
