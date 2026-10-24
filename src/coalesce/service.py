@@ -3276,6 +3276,10 @@ class DocumentService:
         return self._solver.timeout
 
     @property
+    def viewer_url(self) -> str | None:
+        return self._viewer_url
+
+    @property
     def revision(self) -> int:
         return self._document.revision
 

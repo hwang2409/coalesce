@@ -13,6 +13,8 @@ ERROR_REGISTRY = {
     "DUPLICATE_ID": ErrorDefinition("request"),
     "DUPLICATE_ENTITY_ID": ErrorDefinition("request"),
     "UNKNOWN_ID": ErrorDefinition("request"),
+    "RESOURCE_NOT_FOUND": ErrorDefinition("request"),
+    "RESOURCE_UNAVAILABLE": ErrorDefinition("request"),
     "UNKNOWN_PLANE": ErrorDefinition("request"),
     "NON_FINITE_VALUE": ErrorDefinition("request"),
     "INVALID_CIRCLE_RADIUS": ErrorDefinition("request"),

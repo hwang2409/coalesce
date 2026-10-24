@@ -16,6 +16,8 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from .resources import listed_resources, package_version
+from .resources import read_resource as read_packaged_resource
 from .schemas import (
     ACTION_SCHEMAS,
     FEATURE_ACTION_SCHEMAS,
@@ -47,6 +49,13 @@ Failures use the stable UPPER_SNAKE taxonomy in `docs/errors.md`. Every failure 
 `featureId` and `affectedParts` when known. Retry only revision conflicts. Use
 `limits`, `alternatives`, or `legalTargets` only when present: the real edit path proved
 those remedies. Never parse `message` or `kernelMessage` to choose a recovery.
+
+## resources
+
+List resources to discover the complete catalog. Read `coalesce://docs/index` for stable
+URIs, `coalesce://session/capabilities` for runtime support, and
+`coalesce://docs/tools` for this guide. Resource reads do not change the document.
+
 Use `import` create with an explicit absolute local `kicad_pcb` path to persist a
 `BoardImport` snapshot. The source must be a readable regular file of 16 MiB or less.
 The import stores the resolved path, SHA-256 digest, parser version, stable mechanics ids,
@@ -479,10 +488,22 @@ async def _call_tool(
         return _tool_result(failure)
 
 
+def _read_resource(service: DocumentService, uri: str):
+    if uri == "coalesce://docs/tools":
+        return TOOLS_GUIDE
+    if uri == "coalesce://examples/plate":
+        return PLATE_EXAMPLE
+    return read_packaged_resource(
+        uri,
+        sketch_solve_timeout=service.sketch_solve_timeout,
+        viewer_url=service.viewer_url,
+    )
+
+
 def create_server(service: DocumentService) -> Server:
     server = Server(
         "coalesce",
-        version="0.1.0",
+        version=package_version(),
         instructions=(
             "Read coalesce://docs/tools and query the current revision before mutations. "
             "Ask before guessing vague dimensions. Sketch centers use plane-local axes; "
@@ -517,29 +538,11 @@ def create_server(service: DocumentService) -> Server:
 
     @server.list_resources()
     async def list_resources() -> list[types.Resource]:
-        return [
-            types.Resource(
-                name="coalesce tool guide",
-                uri="coalesce://docs/tools",
-                description="Short usage guide for the revisioned modeling tools.",
-                mimeType="text/markdown",
-            ),
-            types.Resource(
-                name="coalesce plate example",
-                uri="coalesce://examples/plate",
-                description="A complete rectangle and extrude workflow.",
-                mimeType="text/markdown",
-            ),
-        ]
+        return listed_resources()
 
     @server.read_resource()
     async def read_resource(uri):
-        value = str(uri)
-        if value == "coalesce://docs/tools":
-            return TOOLS_GUIDE
-        if value == "coalesce://examples/plate":
-            return PLATE_EXAMPLE
-        raise ValueError("unknown coalesce resource")
+        return await anyio.to_thread.run_sync(_read_resource, service, str(uri))
 
     return server
 
