@@ -26,14 +26,25 @@ def build_calls(source):
     calls += [feature(6,"lid_chamfer","chamfer",{"target":{"featureId":"lid"},"edges":[{"feature":"lid","role":"between(edge,top)","cardinality":"exactly","count":4}],"distance":q(1)},"golden-chamfer")]
     return calls
 
-async def run(document, calls):
+async def run(document, calls, *, require_ok=True):
     server = StdioServerParameters(command="coalesce", args=["--document",str(document)], env={**os.environ,"PYTHONUNBUFFERED":"1"})
     async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
         await session.initialize(); results=[]
         for name, args in calls:
             result=await session.call_tool(name,args); data=result.structuredContent; results.append(data)
-            if not data.get("ok",False): raise RuntimeError(f"{name} failed: {data}")
+            if require_ok and not data.get("ok",False): raise RuntimeError(f"{name} failed: {data}")
         return results
+
+def score_artifact(out, task, document, revision, before_state=None):
+    measured=asyncio.run(run(document,[("query",{"select":{"kind":"measurements"}})]))[0]
+    for index, part in enumerate(measured["parts"]):
+        asyncio.run(run(document,[("export",{"expectedRevision":revision,"partIds":[part["partId"]],"path":str((out/"steps"/f"part-{index}.step").resolve())})]))
+    from evals.checks import check_task
+    task=json.loads((ROOT/"evals"/"tasks"/f"{task}.json").read_text()); checks=check_task(task,document,out/"steps",before_state)
+    (out/"golden-results.json").write_text(json.dumps(checks,indent=2,default=str))
+    failed=[x for x in checks if x["status"]!="pass"]
+    if failed: raise RuntimeError(f"golden checks failed: {failed}")
+    return checks
 
 def finish_artifact(out, task, calls):
     out.mkdir(parents=True,exist_ok=True); (out/"steps").mkdir(exist_ok=True); (out/"fixtures").mkdir(exist_ok=True)
@@ -41,12 +52,4 @@ def finish_artifact(out, task, calls):
     document=out/"model.coalesce.json"; results=asyncio.run(run(document,calls)); revision=results[-1]["revision"]
     valid=asyncio.run(run(document,[("check",{"action":"evaluate","revision":revision,"requirements":[{"id":"valid","kind":"valid_brep"}]})]))
     if valid[0]["results"][0]["status"]!="PASS": raise RuntimeError(valid)
-    measured=asyncio.run(run(document,[("query",{"select":{"kind":"measurements"}})]))[0]
-    for index, part in enumerate(measured["parts"]):
-        asyncio.run(run(document,[("export",{"expectedRevision":revision,"partIds":[part["partId"]],"path":str((out/"steps"/f"part-{index}.step").resolve())})]))
-    from evals.checks import check_task
-    task=json.loads((ROOT/"evals"/"tasks"/f"{task}.json").read_text()); checks=check_task(task,document,out/"steps")
-    (out/"golden-results.json").write_text(json.dumps(checks,indent=2,default=str))
-    failed=[x for x in checks if x["status"]!="pass"]
-    if failed: raise RuntimeError(f"golden checks failed: {failed}")
-    return checks
+    return score_artifact(out, task, document, revision)

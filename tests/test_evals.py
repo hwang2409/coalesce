@@ -456,6 +456,107 @@ def _change_wall(document, feature_id="base"):
     assert result["ok"] is True
 
 
+def _staged_screw_pattern(tmp_path):
+    from evals.run import build_before_state
+
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "features.kicad_pcb").write_bytes(
+        Path("evals/fixtures/features.kicad_pcb").read_bytes()
+    )
+    document = tmp_path / "model.coalesce.json"
+    facts = tmp_path / "before-state.json"
+    build_before_state("screw-closure-pattern-edit", document, fixtures, facts)
+    task = next(
+        task
+        for task in load_tasks(Path("evals/tasks"))
+        if task["id"] == "screw-closure-pattern-edit"
+    )
+    check = next(check for check in task["checks"] if check["kind"] == "runner_feature_edit")
+    return check, document, facts
+
+
+def _update_lid_pattern(document, revision, change):
+    from coalesce.service import DocumentService
+
+    return DocumentService(document, warmup=False).feature({
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": f"test-pattern-edit-{revision}",
+        "featureId": "lid_pattern",
+        "kind": "hole",
+        "set": {"pattern": {"kind": "linear", **change}},
+    })
+
+
+def test_runner_feature_edit_requires_runner_state_and_in_place_updates(tmp_path):
+    check, document, facts = _staged_screw_pattern(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    unchanged = check_task({"checks": [check]}, document, steps, facts)[0]
+    assert unchanged["status"] == "fail"
+
+    change = {"pitch": {"value": 5, "unit": "mm"}, "count": 4}
+    assert _update_lid_pattern(document, 6, change)["ok"] is True
+    updated = check_task({"checks": [check]}, document, steps, facts)[0]
+    assert updated["status"] == "pass"
+
+    payload = json.loads(document.read_text())
+    payload["revision"] += 1
+    payload["receipts"].append(
+        {"response": {"changedFeatureIds": ["lid_pattern"], "deleted": [{"id": "lid_pattern"}]}}
+    )
+    document.write_text(json.dumps(payload))
+    recreated = check_task({"checks": [check]}, document, steps, facts)[0]
+    assert recreated["status"] == "fail"
+
+
+def test_runner_feature_edit_accepts_two_in_place_updates(tmp_path):
+    check, document, facts = _staged_screw_pattern(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    assert _update_lid_pattern(document, 6, {"count": 4})["ok"] is True
+    assert _update_lid_pattern(document, 7, {"pitch": {"value": 5, "unit": "mm"}})["ok"] is True
+    assert check_task({"checks": [check]}, document, steps, facts)[0]["status"] == "pass"
+
+
+def test_constrained_update_uses_runner_owned_profile(tmp_path):
+    from coalesce.service import DocumentService
+    from evals.golden.constrained_common import plate_model, sketch_update
+    from evals.run import build_before_state
+
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    document = tmp_path / "model.coalesce.json"
+    facts = tmp_path / "before-state.json"
+    build_before_state(
+        "constrained-sketch-update-after-extrusion", document, fixtures, facts
+    )
+    task = next(
+        task
+        for task in load_tasks(Path("evals/tasks"))
+        if task["id"] == "constrained-sketch-update-after-extrusion"
+    )
+    check = next(check for check in task["checks"] if check["kind"] == "runner_feature_edit")
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    assert check_task({"checks": [check]}, document, steps, facts)[0]["status"] == "fail"
+
+    name, request = sketch_update(plate_model(4), "test-valid-update")
+    result = getattr(DocumentService(document, warmup=False), name)(request)
+    assert result["ok"] is True
+    assert check_task({"checks": [check]}, document, steps, facts)[0]["status"] == "pass"
+
+
+def test_runner_feature_edit_fails_without_runner_facts(tmp_path):
+    check, document, _facts = _staged_screw_pattern(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    result = check_task({"checks": [check]}, document, steps)[0]
+    assert result["status"] == "fail"
+    assert result["reason"] == "runner before-state facts are missing"
+
+
 def test_pcb_change_unchanged_before_state_fails(tmp_path):
     task, document, facts = _staged_pcb_change(tmp_path)
     results = check_task(task, document, tmp_path / "steps", facts)
@@ -905,9 +1006,73 @@ def test_checks_pass_fail_unknown(tmp_path):
     assert [result["status"] for result in results] == ["pass", "fail", "unknown"]
 
 
+def test_document_state_requires_exact_revision_feature_values_and_receipt_order(tmp_path):
+    document = tmp_path / "model.coalesce.json"
+    document.write_text(json.dumps({
+        "revision": 3,
+        "graph": {"nodes": [{"id": "profile", "type": "Sketch", "value": 4}]},
+        "receipts": [
+            {"response": {"changedFeatureIds": ["profile"]}},
+            {"response": {"changedFeatureIds": ["plate"]}},
+            {"response": {"changedFeatureIds": ["profile"]}},
+        ],
+    }))
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    expected = {
+        "kind": "document_state",
+        "revision": 3,
+        "features": {"profile": {"type": "Sketch", "value": 4}},
+        "receiptFeatureIds": [["profile"], ["plate"], ["profile"]],
+    }
+
+    assert check_task({"checks": [expected]}, document, steps)[0]["status"] == "pass"
+    changed = {**expected, "features": {"profile": {"value": 5}}}
+    assert check_task({"checks": [changed]}, document, steps)[0]["status"] == "fail"
+
+
+def test_part_hole_positions_selects_terminal_feature_and_requires_exact_set(
+    tmp_path, monkeypatch
+):
+    from build123d import Align, Box, Cylinder, Pos, export_step
+
+    from evals.checks import ArtifactContext, _single_solid_metrics
+
+    shape = Box(30, 20, 4, align=(Align.MIN, Align.MIN, Align.MIN))
+    for x in (5, 15, 25):
+        shape -= Pos(x, 10, 0) * Cylinder(1.5, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    step = steps / "plate.step"
+    export_step(shape, step)
+    monkeypatch.setattr(
+        ArtifactContext,
+        "measurements",
+        property(lambda _self: {"parts": [{"partId": "plate", "terminalFeatureId": "holes"}]}),
+    )
+    monkeypatch.setattr(
+        ArtifactContext,
+        "document_parts",
+        property(lambda _self: {"plate": _single_solid_metrics(step)}),
+    )
+    check = {
+        "kind": "part_hole_positions",
+        "feature": "holes",
+        "holes": [
+            {"position": [x, 10], "diameter": [2.9, 3.1]} for x in (5, 15, 25)
+        ],
+    }
+
+    passed = check_task({"checks": [check]}, _document(tmp_path / "model.json"), steps)[0]
+    assert passed["status"] == "pass"
+    check["holes"].pop()
+    failed = check_task({"checks": [check]}, _document(tmp_path / "model.json"), steps)[0]
+    assert failed["status"] == "fail"
+
+
 def test_task_files_load_and_validate():
     tasks = load_tasks(Path("evals/tasks"))
-    assert len(tasks) == 8
+    assert len(tasks) == 11
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 

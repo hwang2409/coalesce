@@ -33,3 +33,6 @@ jobs:
           uv run python -m evals.golden.pcb_change "$out/change"
           uv run python -m evals.golden.pcb_edge_treatments "$out/edge"
           uv run python -m evals.golden.pcb_refresh_treatments "$out/refresh"
+          uv run python -m evals.golden.screw_closure_pattern_edit "$out/closure-pattern"
+          uv run --extra sketch python -m evals.golden.constrained_inner_loop "$out/inner-loop"
+          uv run --extra sketch python -m evals.golden.constrained_sketch_update_after_extrusion "$out/sketch-update"

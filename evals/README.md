@@ -32,3 +32,20 @@ the `edge_treatment` check compares the complete set of fillet and chamfer featu
 
 
 Each hard task is admitted only with a passing golden artifact generated through the real MCP path. The hard tier is admitted on this branch with golden scripts under `evals/golden/` and artifacts generated through the stdio MCP server. Base fillets use the public `outer_vertical` edge role; lid top chamfers use `between(edge,top)`. `pcb-refresh-treatments` uses the replacement absolute `path` on import refresh and checks that stable feature identities, moved board features, and treatments survive. The three goldens run in CI with `uv run python -m evals.golden.pcb_change <out>`, `uv run python -m evals.golden.pcb_edge_treatments <out>`, and `uv run python -m evals.golden.pcb_refresh_treatments <out>`; each command must exit successfully with every recorded check passing. Goldens use fixtures from `evals/fixtures`.
+
+The merged product surface adds three hard tasks: `screw-closure-pattern-edit`,
+`constrained-inner-loop`, and `constrained-sketch-update-after-extrusion`. Their real-MCP goldens run in CI with:
+
+```bash
+uv run python -m evals.golden.screw_closure_pattern_edit <out>
+uv run --extra sketch python -m evals.golden.constrained_inner_loop <out>
+uv run --extra sketch python -m evals.golden.constrained_sketch_update_after_extrusion <out>
+```
+
+These tasks bind every STEP solid back to one persisted manufacturing part. The closure task
+starts from a runner-built screw-closed enclosure with a three-member, 6 mm lid pattern. It
+checks that the agent updates the runner's `lid_pattern` feature exactly once, plus the complete
+reimported lid hole set and final document state. The constrained tasks check the reimported
+bounding box and inner-loop hole plus the exact saved radius dimension. The update task starts
+from a runner-built 3 mm sketch and extrusion, then requires one saved update of that same
+`profile` to 4 mm; it does not claim that a rejected update occurred.
