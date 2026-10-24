@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from mcp import McpError, types
 
-from coalesce import requirements, resources, schemas
+from coalesce import resources, schemas
 from coalesce.server import TOOLS_GUIDE, create_server
 from coalesce.service import DocumentService
 
@@ -137,14 +137,13 @@ def test_missing_packaged_guide_returns_registered_resource_error(monkeypatch):
         )
 
     assert raised.value.error.data == {
-        "code": "RESOURCE_NOT_FOUND",
+        "code": "RESOURCE_UNAVAILABLE",
         "uri": "coalesce://docs/vision",
     }
 
 
 def test_session_capabilities_follow_dispatch_registries(monkeypatch):
     monkeypatch.setitem(schemas.FEATURE_ACTION_SCHEMAS, ("create", "probe_feature"), {})
-    monkeypatch.setitem(requirements.REQUIREMENT_HANDLERS, "probe_check", lambda *_args: {})
 
     [result] = resources.read_resource(
         "coalesce://session/capabilities", sketch_solve_timeout=1.0, viewer_url=None
@@ -152,7 +151,10 @@ def test_session_capabilities_follow_dispatch_registries(monkeypatch):
     capabilities = json.loads(result.content)
 
     assert "probe_feature" in capabilities["featureKinds"]
-    assert "probe_check" in capabilities["checkKinds"]
+    assert capabilities["checkKinds"] == list(schemas.SUPPORTED_REQUIREMENT_KINDS)
+    assert schemas.CHECK_REQUIREMENT["properties"]["kind"]["enum"] == list(
+        schemas.SUPPORTED_REQUIREMENT_KINDS
+    )
 
 
 def test_built_wheel_serves_resources_over_stdio_outside_repo(tmp_path):

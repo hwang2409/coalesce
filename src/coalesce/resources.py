@@ -12,7 +12,7 @@ from pathlib import Path
 from mcp import McpError, types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
-from . import requirements, schemas
+from . import schemas
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,26 @@ def _guide_bytes(path: str) -> bytes:
     return (Path(__file__).parents[2] / "docs" / path).read_bytes()
 
 
+def _session_capabilities(
+    *, sketch_solve_timeout: float, viewer_url: str | None
+) -> dict[str, object]:
+    return {
+        "version": package_version(),
+        "sketchSolveTimeoutSeconds": sketch_solve_timeout,
+        "optionalSolver": {
+            "name": "planegcs",
+            "available": importlib.util.find_spec("planegcs") is not None,
+        },
+        "viewerUrl": viewer_url,
+        "featureKinds": sorted(
+            kind
+            for action, kind in schemas.FEATURE_ACTION_SCHEMAS
+            if action == "create" and kind is not None
+        ),
+        "checkKinds": list(schemas.SUPPORTED_REQUIREMENT_KINDS),
+    }
+
+
 def read_resource(
     uri: str, *, sketch_solve_timeout: float, viewer_url: str | None
 ) -> list[ReadResourceContents]:
@@ -98,7 +118,7 @@ def read_resource(
         try:
             content = _guide_bytes(guide.path).decode("utf-8")
         except (OSError, UnicodeError):
-            raise _resource_not_found(uri) from None
+            raise _resource_unavailable(uri) from None
         return [ReadResourceContents(content, "text/markdown")]
     if uri == INDEX_URI:
         content = json.dumps(
@@ -117,25 +137,23 @@ def read_resource(
         return [ReadResourceContents(content, "application/json")]
     if uri == SESSION_URI:
         content = json.dumps(
-            {
-                "version": package_version(),
-                "sketchSolveTimeoutSeconds": sketch_solve_timeout,
-                "optionalSolver": {
-                    "name": "planegcs",
-                    "available": importlib.util.find_spec("planegcs") is not None,
-                },
-                "viewerUrl": viewer_url,
-                "featureKinds": sorted(
-                    kind
-                    for action, kind in schemas.FEATURE_ACTION_SCHEMAS
-                    if action == "create" and kind is not None
-                ),
-                "checkKinds": sorted({"valid_brep", *requirements.REQUIREMENT_HANDLERS}),
-            },
+            _session_capabilities(
+                sketch_solve_timeout=sketch_solve_timeout, viewer_url=viewer_url
+            ),
             indent=2,
         )
         return [ReadResourceContents(content, "application/json")]
     raise _resource_not_found(uri)
+
+
+def _resource_unavailable(uri: str) -> McpError:
+    return McpError(
+        types.ErrorData(
+            code=types.INTERNAL_ERROR,
+            message=f"coalesce packaged resource is unavailable: {uri}",
+            data={"code": "RESOURCE_UNAVAILABLE", "uri": uri},
+        )
+    )
 
 
 def _resource_not_found(uri: str) -> McpError:
