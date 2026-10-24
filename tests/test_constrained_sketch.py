@@ -94,6 +94,23 @@ def fixed_pair_model(distance: float) -> dict:
     }
 
 
+def non_converging_model() -> dict:
+    return {
+        "kind": "constrained",
+        "points": [{"id": "origin", "x": 0, "y": 0}, {"id": "far", "x": 1, "y": 0}],
+        "lines": [{"id": "edge", "start": "origin", "end": "far"}],
+        "dimensions": [
+            {
+                "id": "extreme-distance",
+                "kind": "distance",
+                "entities": ["origin", "far"],
+                "value": 1e100,
+            }
+        ],
+        "constraints": [{"id": "fix-origin", "kind": "fix", "entities": ["origin"]}],
+    }
+
+
 def branch_flip_model() -> dict:
     return {
         "kind": "constrained",
@@ -375,6 +392,8 @@ async def test_rejected_updates_leave_revision_and_file_unchanged(tmp_path, mode
     assert rejected["ok"] is False
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == code
+    if code == "SKETCH_BRANCH_FLIP":
+        assert "diagnosticGeometry" not in rejected["error"]
     assert path.read_bytes() == saved
 
 
@@ -572,6 +591,102 @@ async def test_did_not_converge_update_is_atomic(tmp_path):
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
     assert path.read_bytes() == saved
+
+
+@pytest.mark.anyio
+async def test_real_stdio_non_convergence_returns_uncommitted_geometry_and_keeps_state(tmp_path):
+    path = tmp_path / "diagnostic.coalesce.json"
+    exported = tmp_path / "previous.step"
+    create = create_request(rectangle_model())
+    extrude = {
+        "action": "create",
+        "expectedRevision": 1,
+        "requestId": "extrude",
+        "featureId": "body",
+        "kind": "extrude",
+        "parameters": {
+            "profile": {"sketchId": "profile", "profileIds": ["profile"]},
+            "distance": {"value": 5, "unit": "mm"},
+            "operation": "new_body",
+            "direction": "normal",
+        },
+    }
+    accepted = await run_server(path, [("sketch", create), ("feature", extrude)])
+    saved = path.read_bytes()
+
+    rejected, queried, checked, published = await run_server(
+        path,
+        [
+            ("sketch", update_request(non_converging_model(), 2, "non-converging")),
+            ("query", {"select": {"kind": "graph"}}),
+            ("check", {"action": "evaluate", "revision": 2}),
+            (
+                "export",
+                {"action": "publish", "expectedRevision": 2, "path": str(exported)},
+            ),
+        ],
+    )
+
+    assert [result["revision"] for result in accepted] == [1, 2]
+    assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+    diagnostic = rejected["error"]["diagnosticGeometry"]
+    assert diagnostic["accepted"] is False
+    assert set(diagnostic["entities"]) == {"origin", "far", "edge"}
+    assert all(
+        isinstance(value, (int, float))
+        for entity in diagnostic["entities"].values()
+        for key, value in entity.items()
+        if key != "kind" and not isinstance(value, list)
+    )
+    assert rejected["revision"] == queried["revision"] == checked["revision"] == 2
+    assert graph_sketch(queried)["constrained"]["solved"]["status"] == "fully_constrained"
+    assert checked["ok"] is True
+    assert published["ok"] is True
+    assert exported.is_file()
+    assert path.read_bytes() == saved
+
+
+def test_failed_solve_geometry_keeps_stable_constraint_ids_and_is_response_only(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(
+        tmp_path / "failed-diagnostics.coalesce.json", scene_store=store, warmup=False
+    )
+    try:
+        assert service.sketch(create_request(rectangle_model()))["ok"] is True
+        scene_revision = store.current_revision
+        redundant = service.sketch(update_request(fixed_pair_model(5), 1, "redundant"))
+        conflicting = service.sketch(update_request(fixed_pair_model(10), 1, "conflicting"))
+    finally:
+        service.close()
+
+    assert redundant["error"]["diagnostics"]["diagnostics"]["redundantConstraints"] == [
+        "fix-q"
+    ]
+    assert conflicting["error"]["diagnostics"]["diagnostics"]["conflictingConstraints"] == [
+        "distance-10",
+        "fix-p",
+        "fix-q",
+    ]
+    for rejected in (redundant, conflicting):
+        assert rejected["error"]["diagnosticGeometry"]["accepted"] is False
+        assert rejected["revision"] == 1
+    assert store.current_revision == scene_revision == 1
+
+
+def test_diagnostic_geometry_over_cap_is_dropped_with_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(sketch_solver_module, "MAX_DIAGNOSTIC_GEOMETRY_BYTES", 80)
+    service = DocumentService(tmp_path / "diagnostic-cap.coalesce.json", warmup=False)
+    try:
+        result = service.sketch(create_request(fixed_pair_model(10)))
+    finally:
+        service.close()
+
+    error = result["error"]
+    assert "diagnosticGeometry" not in error
+    assert error["diagnosticGeometryOmitted"] == {
+        "reason": "payload_too_large",
+        "limitBytes": 80,
+    }
 
 
 def test_check_uses_one_locked_snapshot_while_repair_commits(tmp_path, monkeypatch):
