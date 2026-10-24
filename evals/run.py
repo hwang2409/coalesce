@@ -116,7 +116,91 @@ def _build_pcb_change(document, fixture_dir):
     }
 
 
-_BEFORE_STATE_BUILDERS = {"pcb-change": _build_pcb_change}
+def _build_screw_closure_pattern_edit(document, fixture_dir):
+    from coalesce.service import DocumentService
+
+    service = DocumentService(document, warmup=False)
+    _require_ok(service.import_board({
+        "action": "create",
+        "expectedRevision": 0,
+        "requestId": "eval-import-board",
+        "assetId": "board",
+        "format": "kicad_pcb",
+        "path": str((fixture_dir / "features.kicad_pcb").resolve()),
+    }))
+    features = [
+        ("base", "pcb_base", {
+            "board": {"featureId": "board"},
+            "wallThickness": _quantity(2),
+            "floorThickness": _quantity(2),
+            "clearance": _quantity(5),
+            "wallHeightAboveBoard": _quantity(4),
+            "boardSeatHeight": _quantity(1),
+        }),
+        ("mounts", "standoffs", {
+            "target": {"featureId": "base"},
+            "board": {"featureId": "board"},
+            "selection": {"mode": "all_mounting"},
+            "bossDiameter": _quantity(5),
+            "pilotDiameter": _quantity(1),
+        }),
+        ("lid", "pcb_lid", {
+            "base": {"featureId": "base"},
+            "thickness": _quantity(2),
+            "fitGap": _quantity(0.25),
+        }),
+        ("closure", "screw_closure", {
+            "base": {"featureId": "base"},
+            "lid": {"featureId": "lid"},
+            "points": [
+                {"name": "left", "point": [-2.5, 7]},
+                {"name": "right", "point": [22.5, 7]},
+                {"name": "front", "point": [5, -2.5]},
+                {"name": "rear", "point": [15, 12.5]},
+            ],
+            "basePilotDiameter": _quantity(1.6),
+            "bossDiameter": _quantity(4),
+            "lidClearanceDiameter": _quantity(2.4),
+        }),
+        ("lid_pattern", "hole", {
+            "target": {"featureId": "lid"},
+            "diameter": _quantity(3),
+            "pattern": {
+                "kind": "linear",
+                "start": [2, 2],
+                "direction": [1, 0],
+                "pitch": _quantity(6),
+                "count": 3,
+                "namePrefix": "vent",
+            },
+        }),
+    ]
+    for revision, (feature_id, kind, parameters) in enumerate(features, start=1):
+        _require_ok(service.feature({
+            "action": "create",
+            "expectedRevision": revision,
+            "requestId": f"eval-create-{feature_id}",
+            "featureId": feature_id,
+            "kind": kind,
+            "parameters": parameters,
+        }))
+    payload = json.loads(document.read_text())
+    feature = next(node for node in payload["graph"]["nodes"] if node["id"] == "lid_pattern")
+    return {
+        "revision": service.revision,
+        "featureId": feature["id"],
+        "feature": feature,
+        "receiptFeatureIds": [
+            receipt.get("response", {}).get("changedFeatureIds")
+            for receipt in payload.get("receipts", [])
+        ],
+    }
+
+
+_BEFORE_STATE_BUILDERS = {
+    "pcb-change": _build_pcb_change,
+    "screw-closure-pattern-edit": _build_screw_closure_pattern_edit,
+}
 
 
 def build_before_state(name, document, fixture_dir, facts_path):

@@ -35,12 +35,12 @@ async def run(document, calls, *, require_ok=True):
             if require_ok and not data.get("ok",False): raise RuntimeError(f"{name} failed: {data}")
         return results
 
-def score_artifact(out, task, document, revision):
+def score_artifact(out, task, document, revision, before_state=None):
     measured=asyncio.run(run(document,[("query",{"select":{"kind":"measurements"}})]))[0]
     for index, part in enumerate(measured["parts"]):
         asyncio.run(run(document,[("export",{"expectedRevision":revision,"partIds":[part["partId"]],"path":str((out/"steps"/f"part-{index}.step").resolve())})]))
     from evals.checks import check_task
-    task=json.loads((ROOT/"evals"/"tasks"/f"{task}.json").read_text()); checks=check_task(task,document,out/"steps")
+    task=json.loads((ROOT/"evals"/"tasks"/f"{task}.json").read_text()); checks=check_task(task,document,out/"steps",before_state)
     (out/"golden-results.json").write_text(json.dumps(checks,indent=2,default=str))
     failed=[x for x in checks if x["status"]!="pass"]
     if failed: raise RuntimeError(f"golden checks failed: {failed}")

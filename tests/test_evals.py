@@ -456,6 +456,70 @@ def _change_wall(document, feature_id="base"):
     assert result["ok"] is True
 
 
+def _staged_screw_pattern(tmp_path):
+    from evals.run import build_before_state
+
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "features.kicad_pcb").write_bytes(
+        Path("evals/fixtures/features.kicad_pcb").read_bytes()
+    )
+    document = tmp_path / "model.coalesce.json"
+    facts = tmp_path / "before-state.json"
+    build_before_state("screw-closure-pattern-edit", document, fixtures, facts)
+    task = next(
+        task
+        for task in load_tasks(Path("evals/tasks"))
+        if task["id"] == "screw-closure-pattern-edit"
+    )
+    check = next(check for check in task["checks"] if check["kind"] == "runner_feature_edit")
+    return check, document, facts
+
+
+def test_runner_feature_edit_requires_runner_state_and_one_in_place_update(tmp_path):
+    from coalesce.service import DocumentService
+
+    check, document, facts = _staged_screw_pattern(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    unchanged = check_task({"checks": [check]}, document, steps, facts)[0]
+    assert unchanged["status"] == "fail"
+
+    result = DocumentService(document, warmup=False).feature({
+        "action": "update",
+        "expectedRevision": 6,
+        "requestId": "test-pattern-edit",
+        "featureId": "lid_pattern",
+        "kind": "hole",
+        "set": {
+            "pattern": {
+                "kind": "linear",
+                "pitch": {"value": 5, "unit": "mm"},
+                "count": 4,
+            }
+        },
+    })
+    assert result["ok"] is True
+    updated = check_task({"checks": [check]}, document, steps, facts)[0]
+    assert updated["status"] == "pass"
+
+    payload = json.loads(document.read_text())
+    payload["revision"] += 1
+    payload["receipts"].append({"response": {"changedFeatureIds": ["lid_pattern"]}})
+    document.write_text(json.dumps(payload))
+    recreated = check_task({"checks": [check]}, document, steps, facts)[0]
+    assert recreated["status"] == "fail"
+
+
+def test_runner_feature_edit_fails_without_runner_facts(tmp_path):
+    check, document, _facts = _staged_screw_pattern(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    result = check_task({"checks": [check]}, document, steps)[0]
+    assert result["status"] == "fail"
+    assert result["reason"] == "runner before-state facts are missing"
+
+
 def test_pcb_change_unchanged_before_state_fails(tmp_path):
     task, document, facts = _staged_pcb_change(tmp_path)
     results = check_task(task, document, tmp_path / "steps", facts)

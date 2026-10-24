@@ -447,6 +447,36 @@ def _document_state(check, context):
     )
 
 
+def _runner_feature_edit(check, context):
+    if context.before_state is None or not context.before_state.is_file():
+        return _result(check, "fail", reason="runner before-state facts are missing")
+    before = json.loads(context.before_state.read_text())
+    payload = context.document_payload
+    feature_id = check["feature"]
+    nodes = {node.get("id"): node for node in payload.get("graph", {}).get("nodes", [])}
+    receipts = [
+        receipt.get("response", {}).get("changedFeatureIds")
+        for receipt in payload.get("receipts", [])
+    ]
+    before_receipts = before.get("receiptFeatureIds", [])
+    passed = (
+        before.get("featureId") == feature_id
+        and _contains(before.get("feature"), check["before"])
+        and payload.get("revision") == before.get("revision", -1) + 1
+        and feature_id in nodes
+        and receipts == [*before_receipts, [feature_id]]
+    )
+    return _result(
+        check,
+        "pass" if passed else "fail",
+        actual={
+            "beforeFeatureId": before.get("featureId"),
+            "revision": payload.get("revision"),
+            "receiptFeatureIds": receipts,
+        },
+    )
+
+
 def _range_result(check, value):
     if value is None or (isinstance(value, dict) and value.get("status") == "unknown"):
         return _result(check, "unknown")
@@ -590,27 +620,19 @@ def _requirement_gate(check, context):
 TARGET_GRAPH_TYPES = {"pcb_base": "PcbBase", "pcb_lid": "PcbLid"}
 
 
-def _edge_treatment(check, context):
-    graph = context.service.query({"select": {"kind": "graph"}})
-    if graph.get("ok") is not True:
-        return _result(check, "unknown", reason="graph query failed")
-
-    expected = check.get("treatments", [check])
-    if any(not item.get("edgeRole") for item in expected):
-        return _result(check, "fail", reason="expected edge role is missing")
-
-    nodes = graph.get("graph", {}).get("nodes", [])
-
+def _resolve_treatment_targets(check, expected, nodes):
     targets = {}
     for item in expected:
         target = item["target"]
         graph_type = TARGET_GRAPH_TYPES.get(target)
         if graph_type is None:
-            return _result(check, "fail", reason=f"unknown semantic target {target!r}", target=target)
+            return None, _result(
+                check, "fail", reason=f"unknown semantic target {target!r}", target=target
+            )
         matches = [node.get("id") for node in nodes if node.get("type") == graph_type]
         if len(matches) != 1:
             count = "no" if not matches else str(len(matches))
-            return _result(
+            return None, _result(
                 check,
                 "fail",
                 reason=f"semantic target {target!r} resolved to {count} features; expected exactly one",
@@ -618,62 +640,94 @@ def _edge_treatment(check, context):
                 matches=matches,
             )
         targets[target] = matches[0]
+    return targets, None
 
-    def normalize(node):
-        kind = node.get("type", "").lower()
-        amount = _quantity(node.get("radius" if kind == "fillet" else "distance"))
-        roles = tuple(sorted({
-            edge.get("role") for edge in node.get("edges", [])
-            if isinstance(edge, dict) and edge.get("role")
-        }))
-        return kind, node.get("target"), amount, roles
 
-    actual = [normalize(node) for node in nodes
-              if node.get("type", "").lower() in {"fillet", "chamfer"}]
-    wanted = [
-        (item["feature"], targets[item["target"]], item["amount"], (item["edgeRole"],))
-        for item in expected
-    ]
-    exact = len(actual) == len(wanted) and all(
+def _normalize_treatment(node):
+    kind = node.get("type", "").lower()
+    amount = _quantity(node.get("radius" if kind == "fillet" else "distance"))
+    roles = tuple(sorted({
+        edge.get("role") for edge in node.get("edges", [])
+        if isinstance(edge, dict) and edge.get("role")
+    }))
+    return kind, node.get("target"), amount, roles
+
+
+def _same_treatments(actual, wanted):
+    return len(actual) == len(wanted) and all(
         left[:2] == right[:2]
         and math.isclose(left[2], right[2], rel_tol=1e-7, abs_tol=1e-6)
         and left[3] == right[3]
         for left, right in zip(sorted(actual), sorted(wanted))
     )
-    return _result(check, "pass" if exact else "fail", actual=actual)
+
+
+def _edge_treatment(check, context):
+    graph = context.service.query({"select": {"kind": "graph"}})
+    if graph.get("ok") is not True:
+        return _result(check, "unknown", reason="graph query failed")
+    expected = check.get("treatments", [check])
+    if any(not item.get("edgeRole") for item in expected):
+        return _result(check, "fail", reason="expected edge role is missing")
+    nodes = graph.get("graph", {}).get("nodes", [])
+    targets, failure = _resolve_treatment_targets(check, expected, nodes)
+    if failure:
+        return failure
+    actual = [
+        _normalize_treatment(node)
+        for node in nodes
+        if node.get("type", "").lower() in {"fillet", "chamfer"}
+    ]
+    wanted = [
+        (item["feature"], targets[item["target"]], item["amount"], (item["edgeRole"],))
+        for item in expected
+    ]
+    return _result(check, "pass" if _same_treatments(actual, wanted) else "fail", actual=actual)
+
+
+def _references_resolve(check, context):
+    _ = context.service
+    return _result(check, "pass")
+
+
+def _wall_thickness(check, _context, inspected):
+    return _range_result(check, inspected.get("base", {}).get("minimumWallThickness"))
+
+
+def _board_clearance(check, _context, inspected):
+    clearances = inspected.get("cavity", {}).get("boardClearance", {}).values()
+    values = [_quantity(value) for value in clearances]
+    return _range_result(check, min(values) if values and None not in values else None)
+
+
+def _with_inspection(handler):
+    return lambda check, context: handler(check, context.inspection)
+
+
+def _with_context_and_inspection(handler):
+    return lambda check, context: handler(check, context, context.inspection)
+
+
+_ENCLOSURE_CHECKS = {
+    "document_state": _document_state,
+    "runner_feature_edit": _runner_feature_edit,
+    "references_resolve": _references_resolve,
+    "edge_treatment": _edge_treatment,
+    "requirement_gate": _requirement_gate,
+    "board_refresh": _board_refresh,
+    "wall_thickness": _with_context_and_inspection(_wall_thickness),
+    "board_clearance": _with_context_and_inspection(_board_clearance),
+    "port_opening_clears_connector": _with_inspection(_port_clearance),
+    "lid_fit_gap": _with_inspection(_lid_fit),
+    "enclosure_parts": _with_inspection(_enclosure_parts),
+    "standoffs_at_mounting_holes": _with_inspection(_standoffs),
+    "edit_survival": _with_context_and_inspection(_edit_survival),
+}
 
 
 def _enclosure_check(check, context):
-    kind = check["kind"]
-    if kind == "document_state":
-        return _document_state(check, context)
-    if kind == "references_resolve":
-        _ = context.service
-        return _result(check, "pass")
-    if kind == "edge_treatment":
-        return _edge_treatment(check, context)
-    if kind == "requirement_gate":
-        return _requirement_gate(check, context)
-    if kind == "board_refresh":
-        return _board_refresh(check, context)
-    inspected = context.inspection
-    if kind == "wall_thickness":
-        return _range_result(check, inspected.get("base", {}).get("minimumWallThickness"))
-    if kind == "board_clearance":
-        clearances = inspected.get("cavity", {}).get("boardClearance", {}).values()
-        values = [_quantity(value) for value in clearances]
-        return _range_result(check, min(values) if values and None not in values else None)
-    if kind == "port_opening_clears_connector":
-        return _port_clearance(check, inspected)
-    if kind == "lid_fit_gap":
-        return _lid_fit(check, inspected)
-    if kind == "enclosure_parts":
-        return _enclosure_parts(check, inspected)
-    if kind == "standoffs_at_mounting_holes":
-        return _standoffs(check, inspected)
-    if kind == "edit_survival":
-        return _edit_survival(check, context, inspected)
-    return None
+    handler = _ENCLOSURE_CHECKS.get(check["kind"])
+    return handler(check, context) if handler else None
 
 
 def check_task(

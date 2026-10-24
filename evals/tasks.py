@@ -11,30 +11,57 @@ EXPECTED_GEOMETRY = {
 }
 
 
+def _validate_expected_geometry(path, check):
+    field = EXPECTED_GEOMETRY[check["kind"]]
+    if not check.get(field):
+        raise ValueError(f"invalid {field} in {path}: expected geometry must be non-empty")
+
+
+def _validate_hole_positions(path, check):
+    if not check.get("diameter"):
+        raise ValueError(f"invalid diameter in {path}: expected geometry must be non-empty")
+
+
+def _validate_part_hole_positions(path, check):
+    if not check.get("feature") or any(
+        not hole.get("position") or not hole.get("diameter") for hole in check["holes"]
+    ):
+        raise ValueError(f"invalid part hole geometry in {path}")
+
+
+def _validate_document_state(path, check):
+    if not all(field in check for field in ("revision", "features", "receiptFeatureIds")):
+        raise ValueError(f"invalid document state in {path}")
+
+
+def _validate_port_opening(path, check):
+    if not all(check.get(field) for field in ("reference", "wall")):
+        raise ValueError(f"invalid port identity in {path}")
+
+
+def _validate_runner_feature_edit(path, check):
+    if not check.get("feature") or not check.get("before"):
+        raise ValueError(f"invalid runner feature edit in {path}")
+
+
+_CHECK_VALIDATORS = {
+    "bbox": (_validate_expected_geometry,),
+    "hole_positions": (_validate_expected_geometry, _validate_hole_positions),
+    "part_hole_positions": (_validate_expected_geometry, _validate_part_hole_positions),
+    "document_state": (_validate_document_state,),
+    "port_opening_clears_connector": (_validate_port_opening,),
+    "runner_feature_edit": (_validate_runner_feature_edit,),
+}
+
+
 def _validate_checks(path: Path, checks: object) -> None:
     if not isinstance(checks, list):
         raise TypeError(f"invalid checks in {path}")
     if not checks:
         raise ValueError(f"invalid checks in {path}: checks must be non-empty")
     for check in checks:
-        field = EXPECTED_GEOMETRY.get(check.get("kind"))
-        if field and not check.get(field):
-            raise ValueError(f"invalid {field} in {path}: expected geometry must be non-empty")
-        if check.get("kind") == "hole_positions" and not check.get("diameter"):
-            raise ValueError(f"invalid diameter in {path}: expected geometry must be non-empty")
-        if check.get("kind") == "part_hole_positions" and (
-            not check.get("feature")
-            or any(not hole.get("position") or not hole.get("diameter") for hole in check["holes"])
-        ):
-            raise ValueError(f"invalid part hole geometry in {path}")
-        if check.get("kind") == "document_state" and not all(
-            field in check for field in ("revision", "features", "receiptFeatureIds")
-        ):
-            raise ValueError(f"invalid document state in {path}")
-        if check.get("kind") == "port_opening_clears_connector" and not all(
-            check.get(field) for field in ("reference", "wall")
-        ):
-            raise ValueError(f"invalid port identity in {path}")
+        for validate in _CHECK_VALIDATORS.get(check.get("kind"), ()):
+            validate(path, check)
 
 
 def load_tasks(directory: Path) -> list[dict]:
