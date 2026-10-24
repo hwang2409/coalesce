@@ -170,7 +170,9 @@ async def test_tool_list_serializes_valid_design_intent_examples(tmp_path):
     assert "the inline `sketch` schema includes a complete dimension-driven inner-loop update" not in serialized
     assert "chain each returned revision" in serialized
     revolve_profile = tools["feature"]["inputSchema"]["properties"]["parameters"]
-    assert "one outer loop only" in json.dumps(revolve_profile).lower()
+    profile_text = json.dumps(revolve_profile).lower()
+    assert "unique subset of known profile ids" in profile_text
+    assert "selecting one outer loop only" in profile_text
     assert "coalesce://docs/hole" in serialized
 
 

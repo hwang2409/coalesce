@@ -357,6 +357,26 @@ def test_explicit_profile_subset_is_stored_in_graph_order(tmp_path):
     assert body["profile_ids"] == ["left", "right"]
 
 
+def test_duplicate_profile_ids_are_named(tmp_path):
+    service = DocumentService(tmp_path / "duplicate-profile-id.coalesce.json")
+    assert service.sketch(_primitive_sketch([_outline("left", 0)]))["ok"]
+
+    result = service.feature(
+        extrude(
+            request_id="duplicate",
+            revision=1,
+            feature_id="body",
+            sketch_id="profiles",
+            profile_ids=["left", "left"],
+            distance=2,
+        )
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["duplicateProfileIds"] == ["left"]
+    assert result["error"]["unknownProfileIds"] == []
+
+
 def test_unknown_profile_ids_are_named(tmp_path):
     service = DocumentService(tmp_path / "unknown-profile-id.coalesce.json")
     assert service.sketch(
