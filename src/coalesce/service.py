@@ -9,6 +9,7 @@ import math
 import queue
 import re
 import threading
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, fields, replace
 from enum import Enum
@@ -2267,6 +2268,16 @@ def _updated_dimensions(
     return replace(model, dimensions=dimensions, solved=None)
 
 
+def _stored_generated_profile_ids(
+    feature: Any, sketch_id: str, generated_ids: set[str]
+) -> list[str]:
+    if not isinstance(feature, (Extrude, Revolve)) or feature.sketch != sketch_id:
+        return []
+    return [
+        profile_id for profile_id in feature.profile_ids or () if profile_id in generated_ids
+    ]
+
+
 def _stale_generated_profile_references(
     graph: Any, sketch: Sketch, entities: tuple[Rectangle | Circle | Polyline | Spline, ...]
 ) -> None:
@@ -2276,11 +2287,7 @@ def _stale_generated_profile_references(
         entity.id for entity in sketch.entities if not getattr(entity, "id_explicit", True)
     }
     for feature in graph.nodes.values():
-        if not isinstance(feature, (Extrude, Revolve)) or feature.sketch != sketch.id:
-            continue
-        stale_ids = [
-            profile_id for profile_id in feature.profile_ids or () if profile_id in generated_ids
-        ]
+        stale_ids = _stored_generated_profile_ids(feature, sketch.id, generated_ids)
         if stale_ids:
             raise GraphError(
                 "REFERENCE_FAILED",
@@ -2372,26 +2379,29 @@ def _sketch_profile_ids(sketch: Sketch) -> tuple[str, ...]:
 MAX_EXPECTED_PROFILE_IDS = 20
 
 
-def _resolved_profile_ids(profile: ExtrudeProfile, sketch: Sketch) -> tuple[str, ...]:
-    expected = _sketch_profile_ids(sketch)
-    if profile.profileIds is None:
-        return expected
-    received = profile.profileIds
+def _profile_id_problems(
+    received: tuple[str, ...], expected: tuple[str, ...]
+) -> tuple[list[str], list[str]]:
     expected_set = set(expected)
+    counts = Counter(received)
     unknown = list(dict.fromkeys(profile_id for profile_id in received if profile_id not in expected_set))
-    duplicates = list(
-        dict.fromkeys(profile_id for profile_id in received if received.count(profile_id) > 1)
-    )
-    if not unknown and not duplicates:
-        selected = set(received)
-        return tuple(profile_id for profile_id in expected if profile_id in selected)
-    shown = expected[:MAX_EXPECTED_PROFILE_IDS]
+    duplicates = [profile_id for profile_id, count in counts.items() if count > 1]
+    return unknown, duplicates
+
+
+def _invalid_profile_ids(
+    sketch: Sketch,
+    expected: tuple[str, ...],
+    unknown: list[str],
+    duplicates: list[str],
+) -> RequestError:
     problems = []
     if unknown:
         problems.append(f"unknown ids {json.dumps(unknown, separators=(',', ':'))}")
     if duplicates:
         problems.append(f"duplicate ids {json.dumps(duplicates, separators=(',', ':'))}")
-    raise RequestError(
+    shown = expected[:MAX_EXPECTED_PROFILE_IDS]
+    return RequestError(
         "INVALID_PARAMETER",
         f"profileIds must be a unique subset of the profile ids for sketch '{sketch.id}'; "
         f"{'; '.join(problems)}. omit profileIds to use all closed loops in graph order.",
@@ -2400,6 +2410,17 @@ def _resolved_profile_ids(profile: ExtrudeProfile, sketch: Sketch) -> tuple[str,
         unknownProfileIds=unknown,
         duplicateProfileIds=duplicates,
     )
+
+
+def _resolved_profile_ids(profile: ExtrudeProfile, sketch: Sketch) -> tuple[str, ...]:
+    expected = _sketch_profile_ids(sketch)
+    if profile.profileIds is None:
+        return expected
+    unknown, duplicates = _profile_id_problems(profile.profileIds, expected)
+    if unknown or duplicates:
+        raise _invalid_profile_ids(sketch, expected, unknown, duplicates)
+    selected = set(profile.profileIds)
+    return tuple(profile_id for profile_id in expected if profile_id in selected)
 
 
 def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
