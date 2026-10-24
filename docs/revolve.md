@@ -22,7 +22,7 @@
 
 - use exactly one primitive profile or one solved constrained-sketch outer loop.
 - inner loops and multiple profiles are rejected. offset one outer profile from the axis to make a bore.
-- the profile must stay on one side of the axis. it can include a complete straight boundary segment on the axis; this common shaft edge generates no face and has no selectable role.
+- the profile must stay on one side of the axis. a complete straight boundary segment within `1e-7 mm` of the axis counts as lying on the axis, generates no face, and has no selectable role. a near-axis segment farther than `1e-7 mm` from the axis keeps its side face.
 - point-only axis contact, curved axis contact, and axis crossing are rejected.
 - only `new_body`, 360 degrees, and local `x` or `y` are supported.
 - acceptance includes one-solid validation and a STEP write/reimport comparison. any failure leaves the document bytes and revision unchanged.

@@ -3123,6 +3123,23 @@ def _edit_record(operation: MutationOperation) -> dict[str, Any] | None:
     }
 
 
+def _step_validation_feature_ids(
+    operation: MutationOperation, result: RegenResult, changed_id: str
+) -> set[str]:
+    if isinstance(operation, SketchUpdate):
+        return {
+            node.id
+            for node in result.graph.nodes.values()
+            if isinstance(node, Revolve) and node.sketch == operation.sketchId
+        }
+    if isinstance(
+        operation,
+        (RevolveCreate, FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate),
+    ):
+        return {changed_id}
+    return set()
+
+
 def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
     from .viewer import ScenePart
 
@@ -3395,17 +3412,8 @@ class DocumentService:
     def _validate_treatment_parts(
         operation: MutationOperation, result: RegenResult, changed_id: str
     ) -> None:
-        validated_features = {changed_id}
-        if isinstance(operation, SketchUpdate):
-            validated_features = {
-                node.id
-                for node in result.graph.nodes.values()
-                if isinstance(node, Revolve) and node.sketch == operation.sketchId
-            }
-        elif not isinstance(
-            operation,
-            (RevolveCreate, FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate),
-        ):
+        validated_features = _step_validation_feature_ids(operation, result, changed_id)
+        if not validated_features:
             return
         parts = [
             part

@@ -165,6 +165,50 @@ def test_fixed_constrained_profile_revolves_with_line_ids(tmp_path):
     assert any("side(edge" in item["role"] for item in roles)
 
 
+def test_sketch_update_axis_crossing_names_first_revolve_and_is_atomic(tmp_path):
+    document = tmp_path / "axis-update.coalesce.json"
+    service = DocumentService(document, warmup=False)
+    assert service.sketch(polyline_sketch(PULLEY))["ok"]
+    assert service.feature(revolve())["ok"]
+    assert service.feature(
+        revolve(revision=2, request_id="second-revolve", feature_id="second")
+    )["ok"]
+    roles = service.query({"select": {"kind": "edge_roles", "id": "part"}})["roles"]
+    before = document.read_bytes()
+
+    crossing = polyline_sketch([[0, -2], [10, -2], [10, 6], [0, 6]])
+    result = service.sketch(
+        {
+            "action": "update",
+            "expectedRevision": 3,
+            "requestId": "cross-axis",
+            "sketchId": "profile",
+            "set": {"entities": crossing["entities"]},
+        }
+    )
+
+    assert result["error"]["code"] == "REVOLVE_AXIS_CROSSING"
+    assert result["error"]["featureId"] == "part"
+    assert result["error"]["sketchId"] == "profile"
+    assert result["revision"] == 3
+    assert document.read_bytes() == before
+    restarted = DocumentService(document, warmup=False)
+    assert restarted.query({"select": {"kind": "edge_roles", "id": "part"}})["roles"] == roles
+
+
+def test_axis_tolerance_controls_axis_side_face(tmp_path):
+    roles = {}
+    for offset in (1e-9, 2e-7):
+        service = DocumentService(tmp_path / f"axis-{offset}.coalesce.json", warmup=False)
+        points = [[0, offset], [10, offset], [10, 5], [0, 5]]
+        assert service.sketch(polyline_sketch(points))["ok"]
+        assert service.feature(revolve())["ok"]
+        roles[offset] = {item.key.role for item in service._regen.provenance["part"]}
+
+    assert "side(seg-p0-p1)" not in roles[1e-9]
+    assert "side(seg-p0-p1)" in roles[2e-7]
+
+
 def test_axis_crossing_multiple_profiles_and_kernel_failure_are_atomic(tmp_path, monkeypatch):
     document = tmp_path / "atomic.coalesce.json"
     service = DocumentService(document, warmup=False)

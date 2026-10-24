@@ -65,7 +65,9 @@ def _edge_lies_on_axis(edge: Edge, axis: str) -> bool:
     )
 
 
-def _validate_axis(profile: _RevolutionProfile, axis: str, sketch: str) -> set[str]:
+def _validate_axis(
+    profile: _RevolutionProfile, axis: str, sketch_id: str, feature_id: str
+) -> set[str]:
     bounds = profile.face.bounding_box()
     minimum, maximum = (
         (float(bounds.min.Y), float(bounds.max.Y))
@@ -76,7 +78,8 @@ def _validate_axis(profile: _RevolutionProfile, axis: str, sketch: str) -> set[s
         raise GraphError(
             "REVOLVE_AXIS_CROSSING",
             f"revolve profile {profile.entity_id} crosses the local {axis} axis",
-            sketch=sketch,
+            feature=feature_id,
+            sketchId=sketch_id,
             profile=profile.entity_id,
             axis=axis,
         )
@@ -88,7 +91,8 @@ def _validate_axis(profile: _RevolutionProfile, axis: str, sketch: str) -> set[s
         raise GraphError(
             "REVOLVE_AXIS_CONTACT",
             f"revolve profile {profile.entity_id} may touch the local {axis} axis only along a straight segment",
-            sketch=sketch,
+            feature=feature_id,
+            sketchId=sketch_id,
             profile=profile.entity_id,
             axis=axis,
         )
@@ -185,7 +189,7 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
             axis=node.axis,
         )
     local = _profile_for_revolution(sketch, Location())
-    axis_segments = _validate_axis(local, node.axis, sketch.id)
+    axis_segments = _validate_axis(local, node.axis, sketch.id, node.id)
     location = sketch_location(sketch)
     profile = _profile_for_revolution(sketch, location)
     maker, shape = _make_revolution(node, profile, location)
