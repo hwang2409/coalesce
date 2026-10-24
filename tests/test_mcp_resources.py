@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from jsonschema import validate
 from mcp import McpError, types
 
 from coalesce import resources, schemas
@@ -124,6 +125,78 @@ async def test_resource_read_does_not_block_event_loop_on_document_lock(tmp_path
     thread.join()
     assert len(ticks) == 5
     assert ticks[0] < 0.2
+
+
+@pytest.mark.anyio
+async def test_tool_list_serializes_valid_design_intent_examples(tmp_path):
+    server = create_server(DocumentService(tmp_path / "recipes.coalesce.json", warmup=False))
+    result = await server.request_handlers[types.ListToolsRequest](types.ListToolsRequest())
+    snapshot = json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
+    tools = {tool["name"]: tool for tool in snapshot["tools"]}
+
+    for name in ("sketch", "feature"):
+        schema = tools[name]["inputSchema"]
+        assert schema["examples"]
+        for example in schema["examples"]:
+            validate(example, schema)
+
+    sketch_example = tools["sketch"]["inputSchema"]["examples"][0]
+    feature_example = tools["feature"]["inputSchema"]["examples"][0]
+    constrained = sketch_example["constrained"]
+    assert sum(item["kind"] == "fix" for item in constrained["constraints"]) == 1
+    assert {item["id"] for item in constrained["dimensions"]} >= {
+        "width",
+        "height",
+        "opening-radius",
+    }
+    assert feature_example["parameters"]["profile"] == {
+        "sketchId": "profile",
+        "profileIds": ["profile"],
+    }
+
+    call = server.request_handlers[types.CallToolRequest]
+    for name, example in (("sketch", sketch_example), ("feature", feature_example)):
+        result = await call(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(name=name, arguments=example)
+            )
+        )
+        assert result.root.isError is False
+
+    serialized = json.dumps(snapshot).lower()
+    assert "fixing every point" in serialized
+    assert "opening-radius" in serialized
+    assert "inner loops become holes" in serialized
+    assert "the inline `sketch` schema includes a complete dimension-driven inner-loop update" not in serialized
+    assert "chain each returned revision" in serialized
+    revolve_profile = tools["feature"]["inputSchema"]["properties"]["parameters"]
+    assert "one outer loop only" in json.dumps(revolve_profile).lower()
+    assert "coalesce://docs/hole" in serialized
+
+
+def test_packaged_guides_match_inline_design_intent_recipes():
+    [sketch] = resources.read_resource(
+        "coalesce://docs/sketch", sketch_solve_timeout=1.0, viewer_url=None
+    )
+    [hole] = resources.read_resource(
+        "coalesce://docs/hole", sketch_solve_timeout=1.0, viewer_url=None
+    )
+
+    assert "fully_constrained` with zero degrees of freedom" in sketch.content
+    assert "no editable driving dimensions" in sketch.content
+    assert "same point, entity,\ndimension, and constraint ids" in sketch.content
+    assert "set `profileIds` to `[<sketch id>]`" in sketch.content
+    # profileIds belongs to extrude only; every mention of cut must use tool.sketchId
+    for paragraph in sketch.content.split("\n\n"):
+        if "`cut`" in paragraph and "profileIds" in paragraph:
+            assert "`tool`" in paragraph and "sketchId" in paragraph, paragraph
+    assert 'set `tool` to `{"sketchId": "<sketch id>"}`' in sketch.content
+    assert "For primitive outlines, inner holes are separate cut or hole features" in sketch.content
+    assert "inline `sketch` schema includes a complete dimension-driven inner-loop update" not in sketch.content
+    assert "keep the existing `featureId`" in hole.content
+    assert "For example:" in hole.content
+    assert "inline `feature` schema includes this update recipe" not in hole.content
+    assert "chain the returned revision" in hole.content
 
 
 def test_missing_packaged_guide_returns_registered_resource_error(monkeypatch):

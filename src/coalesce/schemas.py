@@ -94,6 +94,7 @@ def _outline_entity(kind: str) -> dict:
                 "items": POINT_2D,
                 "minItems": MIN_OUTLINE_POINTS,
                 "maxItems": MAX_OUTLINE_POINTS,
+                "description": "Use explicit point ids when an outline may be edited or referenced; array-point identity follows list position.",
             },
             "closed": {"const": True},
         },
@@ -105,7 +106,13 @@ def _outline_entity(kind: str) -> dict:
 POLYLINE = _outline_entity("polyline")
 SPLINE = _outline_entity("spline")
 SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE, POLYLINE, SPLINE]}
-CONSTRAINED_SKETCH = CONSTRAINED_SKETCH_SCHEMA
+CONSTRAINED_SKETCH = {
+    **CONSTRAINED_SKETCH_SCHEMA,
+    "description": (
+        "Use dimensions for editable values. Fixing every point can report fully_constrained "
+        "with zero dof but no editable driving dimensions"
+    ),
+}
 DIRECTION = {
     "type": "array",
     "items": {"type": "number"},
@@ -196,7 +203,11 @@ REFERENCE = {
 }
 
 MUTATION_PROPERTIES = {
-    "expectedRevision": {"type": "integer", "minimum": 0},
+    "expectedRevision": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Chain each returned revision",
+    },
     "requestId": {"type": "string", "minLength": 1},
 }
 SKETCH_PROPERTIES = {
@@ -255,6 +266,47 @@ SKETCH_UPDATE_SCHEMA = {
     "required": ["action", *SKETCH_PROPERTIES, "set"],
     "additionalProperties": False,
 }
+SKETCH_EXAMPLES = [
+    {
+        "action": "create",
+        "expectedRevision": 0,
+        "requestId": "create-profile",
+        "sketchId": "profile",
+        "plane": {"kind": "origin", "name": "XY"},
+        "constrained": {
+            "kind": "constrained",
+            "points": [
+                {"id": "p0", "x": 0, "y": 0},
+                {"id": "p1", "x": 40, "y": 0},
+                {"id": "p2", "x": 40, "y": 30},
+                {"id": "p3", "x": 0, "y": 30},
+                {"id": "c", "x": 20, "y": 15},
+            ],
+            "lines": [
+                {"id": "e0", "start": "p0", "end": "p1"},
+                {"id": "e1", "start": "p1", "end": "p2"},
+                {"id": "e2", "start": "p2", "end": "p3"},
+                {"id": "e3", "start": "p3", "end": "p0"},
+            ],
+            "circles": [{"id": "opening", "center": "c", "radius": 4}],
+            "dimensions": [
+                {"id": "width", "kind": "distance", "entities": ["p0", "p1"], "value": 40},
+                {"id": "height", "kind": "distance", "entities": ["p0", "p3"], "value": 30},
+                {"id": "center-left", "kind": "distance", "entities": ["p0", "c"], "value": 25},
+                {"id": "center-right", "kind": "distance", "entities": ["p1", "c"], "value": 25},
+                {"id": "opening-radius", "kind": "radius", "entities": ["opening"], "value": 4},
+            ],
+            "constraints": [
+                {"id": "anchor", "kind": "fix", "entities": ["p0"]},
+                {"id": "bottom", "kind": "horizontal", "entities": ["e0"]},
+                {"id": "right", "kind": "vertical", "entities": ["e1"]},
+                {"id": "top", "kind": "horizontal", "entities": ["e2"]},
+                {"id": "left", "kind": "vertical", "entities": ["e3"]},
+            ],
+        },
+    }
+]
+
 SKETCH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -280,13 +332,19 @@ SKETCH_SCHEMA = {
     },
     "required": ["action", *SKETCH_PROPERTIES],
     "additionalProperties": False,
+    "examples": SKETCH_EXAMPLES,
 }
 
 PROFILE = {
     "type": "object",
     "properties": {
         "sketchId": {"type": "string"},
-        "profileIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "profileIds": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "description": "for extrude, a constrained sketch's id selects all loops (inner loops become holes); revolve accepts one outer loop only",
+        },
     },
     "required": ["sketchId", "profileIds"],
     "additionalProperties": False,
@@ -816,6 +874,21 @@ FEATURE_SCHEMA = {
     },
     "required": ["action", *MUTATION_PROPERTIES, "featureId"],
     "additionalProperties": False,
+    "examples": [
+        {
+            "action": "create",
+            "expectedRevision": 1,
+            "requestId": "extrude-profile",
+            "featureId": "plate",
+            "kind": "extrude",
+            "parameters": {
+                "profile": {"sketchId": "profile", "profileIds": ["profile"]},
+                "distance": {"value": 5, "unit": "mm"},
+                "operation": "new_body",
+                "direction": "normal",
+            },
+        }
+    ],
 }
 IMPORT_PROPERTIES = {
     **MUTATION_PROPERTIES,
