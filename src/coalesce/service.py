@@ -2395,11 +2395,13 @@ def _invalid_profile_ids(
     unknown: list[str],
     duplicates: list[str],
 ) -> RequestError:
+    shown_unknown = unknown[:MAX_EXPECTED_PROFILE_IDS]
+    shown_duplicates = duplicates[:MAX_EXPECTED_PROFILE_IDS]
     problems = []
-    if unknown:
-        problems.append(f"unknown ids {json.dumps(unknown, separators=(',', ':'))}")
-    if duplicates:
-        problems.append(f"duplicate ids {json.dumps(duplicates, separators=(',', ':'))}")
+    if shown_unknown:
+        problems.append(f"unknown ids {json.dumps(shown_unknown, separators=(',', ':'))}")
+    if shown_duplicates:
+        problems.append(f"duplicate ids {json.dumps(shown_duplicates, separators=(',', ':'))}")
     shown = expected[:MAX_EXPECTED_PROFILE_IDS]
     return RequestError(
         "INVALID_PARAMETER",
@@ -2407,8 +2409,10 @@ def _invalid_profile_ids(
         f"{'; '.join(problems)}. omit profileIds to use all closed loops in graph order.",
         expectedProfileIds=list(shown),
         expectedProfileIdsTruncated=len(expected) > len(shown),
-        unknownProfileIds=unknown,
-        duplicateProfileIds=duplicates,
+        unknownProfileIds=shown_unknown,
+        unknownProfileIdsTruncated=len(unknown) > len(shown_unknown),
+        duplicateProfileIds=shown_duplicates,
+        duplicateProfileIdsTruncated=len(duplicates) > len(shown_duplicates),
     )
 
 

@@ -398,3 +398,32 @@ def test_unknown_profile_ids_are_named(tmp_path):
     assert result["error"]["expectedProfileIds"] == ["left", "right"]
     assert result["error"]["unknownProfileIds"] == ["missing", "also_missing"]
     assert "omit profileIds to use all closed loops in graph order." in result["error"]["message"]
+
+
+def test_unknown_and_duplicate_profile_ids_are_bounded(tmp_path):
+    service = DocumentService(tmp_path / "bounded-profile-ids.coalesce.json")
+    assert service.sketch(
+        _primitive_sketch([_outline("left", 0), _outline("right", 10)])
+    )["ok"]
+    unknown = [f"missing-{index}" for index in range(100)]
+    duplicates = [f"dup-{index}" for index in range(100)]
+
+    result = service.feature(
+        extrude(
+            request_id="bounded",
+            revision=1,
+            feature_id="body",
+            sketch_id="profiles",
+            profile_ids=unknown + duplicates + duplicates,
+            distance=2,
+        )
+    )
+
+    error = result["error"]
+    assert error["code"] == "INVALID_PARAMETER"
+    assert len(error["unknownProfileIds"]) == 20
+    assert error["unknownProfileIdsTruncated"] is True
+    assert len(error["duplicateProfileIds"]) == 20
+    assert error["duplicateProfileIdsTruncated"] is True
+    assert "missing-20" not in error["message"]
+    assert len(error["message"]) < 1500
