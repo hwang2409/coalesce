@@ -139,8 +139,9 @@ See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a co
 ## exact closed profile extrusion
 
 A constrained sketch can supply one outer closed non-construction loop and directly
-contained inner loops to the existing `extrude` and `cut` features. Use the sketch id
-as the single `profileIds` value. Inner loops become holes. Lines, arcs, and circles
+contained inner loops to the existing `extrude` and `cut` features. For `extrude`, use the
+sketch id as the single `profileIds` value; for `cut`, set `tool` to `{"sketchId": "<sketch id>"}`.
+Inner loops become holes. Lines, arcs, and circles
 remain analytic; construction geometry is ignored. Loop containment is derived from
 the exact solved faces, not entity order. Open, degenerate, self-intersecting,
 touching, crossing, ambiguous, multiple-outer, and three-level island profiles are

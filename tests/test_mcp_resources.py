@@ -186,6 +186,10 @@ def test_packaged_guides_match_inline_design_intent_recipes():
     assert "no editable driving dimensions" in sketch.content
     assert "same point, entity,\ndimension, and constraint ids" in sketch.content
     assert "set `profileIds` to `[<sketch id>]`" in sketch.content
+    # profileIds belongs to extrude only; every mention of cut must use tool.sketchId
+    for paragraph in sketch.content.split("\n\n"):
+        if "`cut`" in paragraph and "profileIds" in paragraph:
+            assert "`tool`" in paragraph and "sketchId" in paragraph, paragraph
     assert 'set `tool` to `{"sketchId": "<sketch id>"}`' in sketch.content
     assert "For primitive outlines, inner holes are separate cut or hole features" in sketch.content
     assert "inline `sketch` schema includes a complete dimension-driven inner-loop update" not in sketch.content
