@@ -35,7 +35,7 @@ _TOOL_DESCRIPTIONS = {
     "feature": "Supports constant-radius fillet and symmetric one-distance chamfer; two-distance not supported. Holes use global +Z; plane normals are XY +Z, XZ -Y, YZ +X. Finite cuts use negative sketch normal for flip=false and positive sketch normal for flip=true; through-all is bidirectional. Routes: extrude/cut/fillet/chamfer -> coalesce://docs/tools; revolve -> coalesce://docs/revolve; hole/pattern -> coalesce://docs/hole; pcb_base/standoffs/pcb_lid/port_cutout/screw_closure -> coalesce://docs/enclosure; board refresh -> coalesce://docs/refresh.",
     "query": "Read one feature, the graph, revision, exact mm metrics, inspect a PCB enclosure, list selectable edge roles, or resolve a typed reference. Use select.kind edge_roles with id before choosing treatment edges. Call select.kind enclosure before reporting enclosure dimensions.",
     "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, board-edge clearance, mounting coverage, lid interference, fit, exact lid_outline_match, screw_closure alignment and residual wall, connector clearance, and clean manufacturing bodies. board_clearance accepts side left, right, front, back, or all and a minimum mm threshold. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
-    "export": "Preflight or publish selected terminal manufacturing parts at the current expectedRevision. action=preflight is read-only and validates each part in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate builds one labeled STEP per part plus a deterministic manifest in a private sibling directory, then renames it once to an explicit absolute new path. BoardImport reference geometry is never included and no mode overwrites.",
+    "export": "Preflight or publish selected terminal manufacturing parts at the current expectedRevision. action=preflight is read-only and validates each part in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate requires a POSIX system (macOS or Linux) and atomically publishes one labeled STEP per part plus a deterministic manifest at a new path or over an empty real directory; other targets are rejected with a bounded listing. BoardImport reference geometry is never included.",
 }
 
 TOOLS_GUIDE = """# coalesce tools
@@ -197,10 +197,17 @@ creation returns `EXPORT_WRITE_FAILED` with `path`, `expectedSha256`, and `expec
 the file at path may be incomplete; coalesce leaves it in place; delete it yourself or export to a new path.
 There is no automatic retry or replay. Geometry and STEP
 product-label preservation are reported separately. With `mode: separate`, export validates each
-part independently, writes one label-derived `.step` file and deterministic `manifest.json` in a
-private sibling directory on the destination filesystem, then publishes the directory with one
-rename to a path that must not exist. Validation or write failure removes the sibling directory and
-publishes nothing. The manifest records revision, mm units, selected part ids, labels, files,
+part independently and stages every label-derived `.step` file plus deterministic `manifest.json`
+in a private sibling directory. Separate STEP export requires a POSIX system (macOS or Linux).
+One rename publishes the complete set at a new path or replaces an existing empty real directory;
+if an entry appears first, publication fails with `EXPORT_PATH_EXISTS` and a bounded, sorted entry
+list. A file, symlink, or non-empty directory is never replaced or followed. Replacing an empty
+directory gives the export a new inode, mode, and owner; a process whose working directory was
+inside the old directory keeps that old, now-unlinked directory. Validation or a write failure
+before the rename publishes nothing. A parent-directory sync failure after the rename returns
+success with `EXPORT_DURABILITY_UNCONFIRMED`: the files are published, but their durability on disk
+is not confirmed. The manifest records revision,
+mm units, selected part ids, labels, files,
 SHA-256 hashes, imported-board source digests, requirement results, and unknowns. Separate export
 also sets `ready: false` for `UNKNOWN` or failed requirements. Domain failures have `ok: false` and a
 stable code.
