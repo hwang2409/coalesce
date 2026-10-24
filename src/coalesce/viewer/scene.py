@@ -380,10 +380,17 @@ class ViewerSceneStore:
         """Mark a failed edit attempt; the last good scene stays current."""
         with self._changed:
             attempted_edit = self._track_attempt(attempted_edit)
+            transient = {
+                key: error[key]
+                for key in ("diagnosticGeometry", "diagnosticGeometryOmitted")
+                if key in error
+            }
+            display_error = {key: value for key, value in error.items() if key not in transient}
             self._failure = {
                 "revision": self._revision,
                 "featureIds": list(feature_ids),
-                "error": error,
+                "error": display_error,
+                **transient,
                 **({"attemptedEdit": attempted_edit} if attempted_edit else {}),
             }
             self._version += 1

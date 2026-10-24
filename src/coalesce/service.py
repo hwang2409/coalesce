@@ -1768,6 +1768,8 @@ def _viewer_error(error: dict[str, Any]) -> dict[str, Any]:
         "kernelMessage",
         "failedFeatureIds",
         "unavailableFeatureIds",
+        "diagnosticGeometry",
+        "diagnosticGeometryOmitted",
     )
     return {key: error[key] for key in fields if key in error}
 
@@ -3403,11 +3405,32 @@ class DocumentService:
             return
         feature_id = payload.get("featureId") or payload.get("sketchId") or payload.get("assetId")
         error = result["error"]
+        viewer_error = _viewer_error(error)
+        if "diagnosticGeometry" in viewer_error and isinstance(feature_id, str):
+            viewer_error["diagnosticGeometry"] = {
+                **viewer_error["diagnosticGeometry"],
+                "frame": self._diagnostic_frame(payload, feature_id),
+            }
         self._publisher.publish_failure(
             [feature_id] if isinstance(feature_id, str) else [],
-            _viewer_error(error),
+            viewer_error,
             attempted_edit,
         )
+
+    def _diagnostic_frame(self, payload: dict[str, Any], sketch_id: str) -> dict[str, list[float]]:
+        if payload.get("action") == "create":
+            plane = _sketch_plane(payload)
+            sketch = Sketch(sketch_id, plane=Plane(plane.name, plane.offset))
+        else:
+            accepted = self._document.graph.nodes[sketch_id]
+            position = payload.get("set", {}).get("position", accepted.position)
+            sketch = Sketch(
+                sketch_id,
+                plane=accepted.plane,
+                position=tuple(position),
+                rotation=accepted.rotation,
+            )
+        return self._frame(sketch)
 
     def _mutation_request(
         self,

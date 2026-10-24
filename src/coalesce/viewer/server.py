@@ -212,13 +212,27 @@ class _Handler(BaseHTTPRequestHandler):
                         self.wfile.flush()
                         idle = 0
                     continue
+                first_snapshot = version is None
                 version, revision, failure = self.viewer.store.snapshot()
-                out, sent = _pending_events(revision, failure, sent)
+                visible_failure = _without_diagnostic_geometry(failure) if first_snapshot else failure
+                out, sent = _pending_events(revision, visible_failure, sent)
+                if first_snapshot:
+                    sent = (revision, failure)
                 if out:
                     self.wfile.write(out)
                     self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+
+def _without_diagnostic_geometry(failure: dict | None) -> dict | None:
+    if failure is None:
+        return None
+    return {
+        key: value
+        for key, value in failure.items()
+        if key not in {"diagnosticGeometry", "diagnosticGeometryOmitted"}
+    }
 
 
 def _pending_events(revision, failure, sent):
