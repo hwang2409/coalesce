@@ -9,7 +9,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .graph import BoardImport, Extrude, PcbBase, PcbLid, PortCutout, ScrewClosure, Standoffs
+from .graph import (
+    BoardImport,
+    Extrude,
+    PcbBase,
+    PcbLid,
+    PortCutout,
+    Revolve,
+    ScrewClosure,
+    Standoffs,
+)
 from .requirements import evaluate
 
 _LOG = logging.getLogger(__name__)
@@ -433,6 +442,62 @@ def _opening_facts(result: Any, node: Extrude) -> tuple[dict[str, Any], ...]:
     return (_fact(label, ", ".join(openings)),)
 
 
+def _parallel_side_radii(profile: Any, node: Revolve, side_roles: set[str]) -> list[float]:
+    from build123d import GeomType
+
+    from .revolution import _AXIS_TOLERANCE
+
+    radii = set()
+    for segment, edge in profile.segments.items():
+        if edge.geom_type is not GeomType.LINE or f"side({segment})" not in side_roles:
+            continue
+        ordinates = [
+            float(vertex.center().Y if node.axis == "x" else vertex.center().X)
+            for vertex in edge.vertices()
+        ]
+        if max(ordinates) - min(ordinates) <= _AXIS_TOLERANCE:
+            radii.add(round(abs(ordinates[0]), 9))
+    return sorted(radius for radius in radii if radius > _AXIS_TOLERANCE)
+
+
+def _revolve_geometry(result: Any, node: Revolve) -> tuple[float | None, list[float]]:
+    from build123d import Location
+
+    from .revolution import _AXIS_TOLERANCE, _profile_for_revolution
+
+    profile = _profile_for_revolution(result.graph.nodes[node.sketch], Location())
+    side_roles = {candidate.key.role for candidate in result.provenance[node.id]}
+    radii = _parallel_side_radii(profile, node, side_roles)
+    bounds = profile.face.bounding_box()
+    minimum, maximum = (
+        (float(bounds.min.Y), float(bounds.max.Y))
+        if node.axis == "x"
+        else (float(bounds.min.X), float(bounds.max.X))
+    )
+    touches_axis = minimum <= _AXIS_TOLERANCE and maximum >= -_AXIS_TOLERANCE
+    bore = radii.pop(0) if radii and not touches_axis else None
+    return bore, radii
+
+
+def _diameter_fact(radii: list[float]) -> str | None:
+    if not radii:
+        return None
+    if len(radii) > 3:
+        return f"{len(radii)} diameters"
+    label = "Diameter" if len(radii) == 1 else "Diameters"
+    return f"{label} " + ", ".join(f"Ø{_mm(2 * radius)}" for radius in radii) + " mm"
+
+
+def _revolve_fact(result: Any, node: Revolve) -> dict[str, Any]:
+    bore, radii = _revolve_geometry(result, node)
+    details = [f"360° about sketch {node.sketch}"]
+    if bore is not None:
+        details.append(f"Bore Ø{_mm(2 * bore)} mm")
+    if diameters := _diameter_fact(radii):
+        details.append(diameters)
+    return _fact("Revolved", ". ".join(details))
+
+
 def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
     """What the committed features say about the part whose body ``source_feature`` made."""
     node = result.graph.nodes[source_feature]
@@ -449,6 +514,8 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
         return tuple(_base_facts(result, node))
     if isinstance(node, Extrude):
         return _opening_facts(result, node)
+    if isinstance(node, Revolve):
+        return (_revolve_fact(result, node),)
     if isinstance(node, PcbLid):
         if node.lip_depth is None or node.lip_width is None:
             # the fit gap only spaces a lip from the walls; a slab lid has none to report

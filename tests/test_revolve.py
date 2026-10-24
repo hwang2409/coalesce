@@ -6,9 +6,11 @@ import pytest
 from build123d import GeomType, import_step
 from OCP.BRepCheck import BRepCheck_Analyzer
 from test_mcp_vertical import run_server
+from test_viewer_review_flow import call, module, open_driver, wait_for  # noqa: F401
 
 import coalesce.revolution as revolution_module
 from coalesce.service import DocumentService
+from coalesce.viewer import ViewerSceneStore, ViewerServer
 
 
 def polyline_sketch(points, *, revision=0, request_id="sketch", sketch_id="profile"):
@@ -42,6 +44,50 @@ def revolve(*, revision=1, request_id="revolve", feature_id="part", sketch_id="p
 
 SHAFT = [[0, 0], [30, 0], [30, 5], [20, 5], [20, 10], [0, 10]]
 PULLEY = [[0, 4], [30, 4], [30, 8], [20, 8], [20, 14], [0, 14]]
+
+
+@pytest.mark.parametrize(
+    ("name", "points", "fact"),
+    [
+        ("shaft", SHAFT, "360° about sketch profile. Diameters Ø10, Ø20 mm"),
+        (
+            "pulley",
+            PULLEY,
+            "360° about sketch profile. Bore Ø8 mm. Diameters Ø16, Ø28 mm",
+        ),
+    ],
+)
+def test_revolved_part_facts_use_exact_profile_geometry(tmp_path, name, points, fact):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / f"{name}.coalesce.json", scene_store=store)
+
+    assert call(service, "sketch", polyline_sketch(points))["ok"]
+    assert call(service, "feature", revolve(feature_id=name))["ok"]
+    [part] = wait_for(store, 2)["parts"]
+
+    assert part["facts"] == [{"label": "Revolved", "value": fact}]
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_pulley_revolve_facts_render_in_real_browser(module, viewport, tmp_path):  # noqa: F811
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "pulley.coalesce.json", scene_store=store)
+    server = ViewerServer(store)
+    driver, step = open_driver(module, server.url, viewport)
+    try:
+        step("empty", wait={"ready": True})
+        assert call(service, "sketch", polyline_sketch(PULLEY))["ok"]
+        assert call(service, "feature", revolve(feature_id="pulley"))["ok"]
+        wait_for(store, 2)
+        shown = step("pulley-facts", wait={"revision": 2}, do=[{"tapPart": 0}])
+        text = " ".join(shown["parts"][0].split())
+        assert "Revolved 360° about sketch profile" in text
+        assert "Bore Ø8 mm" in text
+        driver.stdin.close()
+        assert driver.wait(timeout=30) == 0
+    finally:
+        driver.kill()
+        server.close()
 
 
 @pytest.mark.anyio
