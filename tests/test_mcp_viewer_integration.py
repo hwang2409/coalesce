@@ -1364,7 +1364,11 @@ def _rejected_sketch_request(model: dict, request_id: str) -> dict:
         "expectedRevision": 2,
         "requestId": request_id,
         "sketchId": "rejected",
-        "plane": {"kind": "origin", "name": "XY"},
+        "plane": {
+            "kind": "origin",
+            "name": "XZ",
+            "offset": {"value": 4, "unit": "mm"},
+        },
         "constrained": model,
     }
 
@@ -1522,7 +1526,7 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
 
     assert restarted == {
         "labelVisible": False,
-        "diagnostic": {"entityCount": 0, "kinds": []},
+        "diagnostic": {"entityCount": 0, "kinds": [], "frame": None},
         "failureVisible": False,
         "errors": [],
     }
@@ -1532,6 +1536,12 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
         assert first["diagnostic"] == {
             "entityCount": 7,
             "kinds": ["arc", "circle", "line", "point", "point", "point", "point"],
+            "frame": {
+                "origin": [0, -4, 0],
+                "normal": [0, -1, 0],
+                "xAxis": [1, 0, 0],
+                "yAxis": [0, 0, 1],
+            },
         }
         assert first["label"] == "Rejected sketch — not accepted"
         assert "Rejected sketch — not accepted" in first["alert"]
@@ -1545,12 +1555,16 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
         assert omitted["omitted"][size]["errors"] == []
         assert reloaded["reloaded"][size] == {
             "labelVisible": False,
-            "diagnostic": {"entityCount": 0, "kinds": []},
+            "diagnostic": {"entityCount": 0, "kinds": [], "frame": None},
             "failureVisible": True,
             "errors": [],
         }
         assert repaired["repaired"][size]["labelVisible"] is False
-        assert repaired["repaired"][size]["diagnostic"] == {"entityCount": 0, "kinds": []}
+        assert repaired["repaired"][size]["diagnostic"] == {
+            "entityCount": 0,
+            "kinds": [],
+            "frame": None,
+        }
         assert repaired["repaired"][size]["keyboardFocus"] == "BUTTON"
         assert "Revision 3" in repaired["repaired"][size]["description"]
         assert repaired["repaired"][size]["errors"] == []

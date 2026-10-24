@@ -1051,6 +1051,7 @@ const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 function clearDiagnostic() {
   clearGroup(diagnostic, { ownsGeometry: true });
+  delete diagnostic.userData.frame;
   $('rejected-label').hidden = true;
   $('diagnostic-omitted').hidden = true;
   describeView();
@@ -1058,8 +1059,8 @@ function clearDiagnostic() {
 }
 
 function diagnosticPoints(entity) {
-  if (entity.kind === 'point') return [[entity.x, entity.y, 0]];
-  if (entity.kind === 'line') return [[...entity.start, 0], [...entity.end, 0]];
+  if (entity.kind === 'point') return [[entity.x, entity.y]];
+  if (entity.kind === 'line') return [entity.start, entity.end];
   const segments = entity.kind === 'circle' ? 64 : 48;
   let start = entity.kind === 'circle' ? 0 : entity.startAngle;
   let end = entity.kind === 'circle' ? Math.PI * 2 : entity.endAngle;
@@ -1067,15 +1068,22 @@ function diagnosticPoints(entity) {
   return Array.from({ length: segments + 1 }, (_, index) => {
     const angle = start + (end - start) * index / segments;
     return [entity.center[0] + Math.cos(angle) * entity.radius,
-      entity.center[1] + Math.sin(angle) * entity.radius, 0];
+      entity.center[1] + Math.sin(angle) * entity.radius];
   });
+}
+
+function diagnosticPoint([x, y], frame) {
+  return new THREE.Vector3(...frame.origin)
+    .addScaledVector(new THREE.Vector3(...frame.xAxis), x)
+    .addScaledVector(new THREE.Vector3(...frame.yAxis), y);
 }
 
 function showDiagnostic(geometry) {
   clearDiagnostic();
   if (!geometry || geometry.accepted !== false) return;
+  diagnostic.userData.frame = geometry.frame;
   for (const [id, entity] of Object.entries(geometry.entities)) {
-    const points = diagnosticPoints(entity).map((point) => new THREE.Vector3(...point));
+    const points = diagnosticPoints(entity).map((point) => diagnosticPoint(point, geometry.frame));
     const shape = new THREE.BufferGeometry().setFromPoints(points);
     let object;
     if (entity.kind === 'point') {
@@ -1283,6 +1291,7 @@ window.coalesceViewer = {
     return {
       entityCount: diagnostic.children.length,
       kinds: diagnostic.children.map((child) => child.userData.kind).sort(),
+      frame: diagnostic.userData.frame ?? null,
     };
   },
 };
