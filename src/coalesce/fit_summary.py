@@ -490,7 +490,7 @@ def _diameter_fact(radii: list[float]) -> str | None:
 
 def _revolve_fact(result: Any, node: Revolve) -> dict[str, Any]:
     bore, radii = _revolve_geometry(result, node)
-    details = [f"360° about sketch {node.sketch}"]
+    details = [f"360° about the {node.axis.upper()} axis of sketch {node.sketch}"]
     if bore is not None:
         details.append(f"Bore Ø{_mm(2 * bore)} mm")
     if diameters := _diameter_fact(radii):

@@ -49,11 +49,11 @@ PULLEY = [[0, 4], [30, 4], [30, 8], [20, 8], [20, 14], [0, 14]]
 @pytest.mark.parametrize(
     ("name", "points", "fact"),
     [
-        ("shaft", SHAFT, "360° about sketch profile. Diameters Ø10, Ø20 mm"),
+        ("shaft", SHAFT, "360° about the X axis of sketch profile. Diameters Ø10, Ø20 mm"),
         (
             "pulley",
             PULLEY,
-            "360° about sketch profile. Bore Ø8 mm. Diameters Ø16, Ø28 mm",
+            "360° about the X axis of sketch profile. Bore Ø8 mm. Diameters Ø16, Ø28 mm",
         ),
     ],
 )
@@ -81,7 +81,7 @@ def test_pulley_revolve_facts_render_in_real_browser(module, viewport, tmp_path)
         wait_for(store, 2)
         shown = step("pulley-facts", wait={"revision": 2}, do=[{"tapPart": 0}])
         text = " ".join(shown["parts"][0].split())
-        assert "Revolved 360° about sketch profile" in text
+        assert "Revolved 360° about the X axis of sketch profile" in text
         assert "Bore Ø8 mm" in text
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
