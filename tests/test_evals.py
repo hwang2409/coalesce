@@ -1072,7 +1072,7 @@ def test_part_hole_positions_selects_terminal_feature_and_requires_exact_set(
 
 def test_task_files_load_and_validate():
     tasks = load_tasks(Path("evals/tasks"))
-    assert len(tasks) == 11
+    assert len(tasks) == 12
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 
