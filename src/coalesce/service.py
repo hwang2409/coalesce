@@ -905,6 +905,7 @@ def _outline_entity(entity: dict[str, Any], index: int) -> Polyline | Spline:
         tuple(points),
         point_ids=tuple(point_ids),
         point_ids_explicit=point_ids_explicit,
+        id_explicit="id" in entity,
     )
 
 
@@ -2266,6 +2267,34 @@ def _updated_dimensions(
     return replace(model, dimensions=dimensions, solved=None)
 
 
+def _stale_generated_profile_references(
+    graph: Any, sketch: Sketch, entities: tuple[Rectangle | Circle | Polyline | Spline, ...]
+) -> None:
+    if list(entities) == sketch.entities:
+        return
+    generated_ids = {
+        entity.id for entity in sketch.entities if not getattr(entity, "id_explicit", True)
+    }
+    for feature in graph.nodes.values():
+        if not isinstance(feature, (Extrude, Revolve)) or feature.sketch != sketch.id:
+            continue
+        stale_ids = [
+            profile_id for profile_id in feature.profile_ids or () if profile_id in generated_ids
+        ]
+        if stale_ids:
+            raise GraphError(
+                "REFERENCE_FAILED",
+                f"{feature.__class__.__name__.lower()} {feature.id} has stale generated profile ids "
+                f"{stale_ids} for sketch {sketch.id}; give the outlines explicit ids to keep "
+                "profile references across entity edits",
+                feature=feature.id,
+                sketch=sketch.id,
+                staleProfileIds=stale_ids,
+                resolution={"status": "EMPTY"},
+                hint="give the outlines explicit ids to keep profile references across entity edits",
+            )
+
+
 def _apply_sketch_update(
     node: Sketch, changes: SketchChanges, solver: Callable[[Any], Any]
 ) -> None:
@@ -2316,6 +2345,8 @@ def _apply_sketch(
         node = graph.nodes.get(operation.sketchId)
         if not isinstance(node, Sketch):
             raise RequestError("UNKNOWN_ID", f"unknown sketch: {operation.sketchId}")
+        if operation.set.entities is not None:
+            _stale_generated_profile_references(graph, node, operation.set.entities)
         _apply_sketch_update(node, operation.set, solver)
     node = graph.nodes[operation.sketchId]
     validate_sketch(node)
@@ -2345,21 +2376,29 @@ def _resolved_profile_ids(profile: ExtrudeProfile, sketch: Sketch) -> tuple[str,
     expected = _sketch_profile_ids(sketch)
     if profile.profileIds is None:
         return expected
-    if profile.profileIds == expected:
-        return expected
-    shown = expected[:MAX_EXPECTED_PROFILE_IDS]
-    expected_text = (
-        json.dumps(expected, separators=(",", ":"))
-        if len(expected) == len(shown)
-        else f"all {len(expected)} profiles in graph order"
+    received = profile.profileIds
+    expected_set = set(expected)
+    unknown = list(dict.fromkeys(profile_id for profile_id in received if profile_id not in expected_set))
+    duplicates = list(
+        dict.fromkeys(profile_id for profile_id in received if received.count(profile_id) > 1)
     )
-    received_json = json.dumps(profile.profileIds, separators=(",", ":"))
+    if not unknown and not duplicates:
+        selected = set(received)
+        return tuple(profile_id for profile_id in expected if profile_id in selected)
+    shown = expected[:MAX_EXPECTED_PROFILE_IDS]
+    problems = []
+    if unknown:
+        problems.append(f"unknown ids {json.dumps(unknown, separators=(',', ':'))}")
+    if duplicates:
+        problems.append(f"duplicate ids {json.dumps(duplicates, separators=(',', ':'))}")
     raise RequestError(
         "INVALID_PARAMETER",
-        f"profileIds must equal {expected_text} for sketch '{sketch.id}'; received "
-        f"{received_json}. omit profileIds to use all closed loops.",
+        f"profileIds must be a unique subset of the profile ids for sketch '{sketch.id}'; "
+        f"{'; '.join(problems)}. omit profileIds to use all closed loops in graph order.",
         expectedProfileIds=list(shown),
         expectedProfileIdsTruncated=len(expected) > len(shown),
+        unknownProfileIds=unknown,
+        duplicateProfileIds=duplicates,
     )
 
 
@@ -2403,15 +2442,14 @@ def _apply_revolve(graph: Any, operation: RevolveCreate) -> str:
     sketch = graph.nodes.get(parameters.profile.sketchId)
     if not isinstance(sketch, Sketch):
         raise RequestError("UNKNOWN_ID", "revolve profile sketch does not exist")
-    expected_profiles = _sketch_profile_ids(sketch)
-    if len(expected_profiles) != 1:
+    profile_ids = _resolved_profile_ids(parameters.profile, sketch)
+    if len(profile_ids) != 1:
         raise GraphError(
             "REVOLVE_MULTIPLE_PROFILES",
-            f"revolve sketch {sketch.id} must contain exactly one profile",
+            f"revolve sketch {sketch.id} must select exactly one profile",
             sketch=sketch.id,
-            profileCount=len(expected_profiles),
+            profileCount=len(profile_ids),
         )
-    profile_ids = _resolved_profile_ids(parameters.profile, sketch)
     graph.add(
         Revolve(
             operation.featureId,

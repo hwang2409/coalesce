@@ -352,7 +352,9 @@ def test_axis_crossing_multiple_profiles_and_kernel_failure_are_atomic(tmp_path,
     )
     assert multiple.sketch(request)["ok"]
     before = multiple_document.read_bytes()
-    result = multiple.feature(revolve())
+    multiple_request = revolve()
+    del multiple_request["parameters"]["profile"]["profileIds"]
+    result = multiple.feature(multiple_request)
     assert result["error"]["code"] == "REVOLVE_MULTIPLE_PROFILES"
     assert result["revision"] == 1 and multiple_document.read_bytes() == before
 

@@ -127,7 +127,7 @@ Primitive sketches support two free-form closed outline kinds in addition to rec
 
 A point can be `[x, y]` or `{"id": "corner", "x": x, "y": y}`. References follow point ids. Array points get default ids `p0`, `p1`, and so on by list position, so reordering or rotating that list moves the ids to different coordinates. Give points explicit ids if you will reorder them.
 
-Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. For primitive outlines, inner holes are separate cut or hole features; for constrained sketches, use the single-sketch route above. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. For primitive outlines, inner holes are separate cut or hole features; for constrained sketches, use the single-sketch route above. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`. These default ids are positional. If an extrusion or revolution stores one, any later entity-list change is rejected atomically with `REFERENCE_FAILED`; give outlines explicit ids to keep profile references across entity edits. Explicit ids continue to follow their entities across reorder and remove-and-append edits.
 
 This example creates and extrudes a triangular polyline:
 

@@ -85,7 +85,9 @@ def _reference(payload: dict[str, Any]) -> Reference:
     return Reference(**value)
 
 
-def _primitive_entity(raw_entity: dict[str, Any]) -> Rectangle | Circle | Polyline | Spline:
+def _primitive_entity(
+    raw_entity: dict[str, Any], index: int
+) -> Rectangle | Circle | Polyline | Spline:
     entity = dict(raw_entity)
     entity_type = _TYPES.get(entity.pop("type", None))
     if entity_type not in (Rectangle, Circle, Polyline, Spline):
@@ -93,6 +95,10 @@ def _primitive_entity(raw_entity: dict[str, Any]) -> Rectangle | Circle | Polyli
     if entity_type in (Polyline, Spline):
         entity["points"] = tuple(tuple(point) for point in entity["points"])
         entity["point_ids"] = tuple(entity.get("point_ids", ()))
+        entity.setdefault(
+            "id_explicit",
+            entity["id"] != f"{entity_type.__name__.lower()}-{index + 1}",
+        )
     else:
         entity["position"] = tuple(entity.get("position", (0, 0)))
     return entity_type(**entity)
@@ -108,7 +114,8 @@ def _sketch(payload: dict[str, Any]) -> dict[str, Any]:
         payload["constrained"] = constrained_from_payload(constrained)
         return payload
     payload["entities"] = [
-        _primitive_entity(entity) for entity in payload.get("entities", [])
+        _primitive_entity(entity, index)
+        for index, entity in enumerate(payload.get("entities", []))
     ]
     return payload
 

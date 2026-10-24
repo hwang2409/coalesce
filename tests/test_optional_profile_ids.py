@@ -105,9 +105,9 @@ async def test_wrong_constrained_profile_ids_return_expected_ids(tmp_path, recei
 
     assert result["error"]["code"] == "INVALID_PARAMETER"
     assert result["error"]["expectedProfileIds"] == ["profile"]
-    assert result["error"]["message"] == (
-        f'profileIds must equal ["profile"] for sketch \'profile\'; received '
-        f'{json.dumps(received, separators=(",", ":"))}. omit profileIds to use all closed loops.'
+    assert result["error"]["unknownProfileIds"] == received
+    assert result["error"]["message"].endswith(
+        "omit profileIds to use all closed loops in graph order."
     )
 
 
@@ -145,7 +145,10 @@ def test_wrong_primitive_profile_ids_return_bounded_graph_order(tmp_path):
 
     assert error["expectedProfileIds"] == [entity["id"] for entity in entities[:20]]
     assert error["expectedProfileIdsTruncated"] is True
-    assert "must equal all 25 profiles in graph order" in error["message"]
+    assert error["unknownProfileIds"] == ["guess"]
+    assert error["message"].endswith(
+        "omit profileIds to use all closed loops in graph order."
+    )
 
 
 @pytest.mark.anyio
@@ -207,3 +210,171 @@ async def test_revolve_omission_is_allowed_for_one_profile_and_schema_is_true(tm
     validate(request, feature_schema)
     profile_text = json.dumps(feature_schema["properties"]["parameters"]).lower()
     assert "omit" in profile_text and "one outer loop" in profile_text
+
+
+def _outline(entity_id=None, x=0):
+    entity = {
+        "kind": "polyline",
+        "points": [[x, 0], [x + 2, 0], [x + 1, 2]],
+        "closed": True,
+    }
+    if entity_id is not None:
+        entity["id"] = entity_id
+    return entity
+
+
+def _primitive_sketch(entities, *, action="create", revision=0, request_id="sketch"):
+    payload = {
+        "action": action,
+        "expectedRevision": revision,
+        "requestId": request_id,
+        "sketchId": "profiles",
+    }
+    if action == "create":
+        payload.update(
+            {
+                "plane": {"kind": "origin", "name": "XY"},
+                "entities": entities,
+            }
+        )
+    else:
+        payload["set"] = {"entities": entities}
+    return payload
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        [_outline(x=10), _outline(x=20)],
+        [_outline(x=10), _outline(x=0)],
+    ],
+    ids=["remove-and-append", "reorder"],
+)
+def test_generated_profile_ids_go_stale_when_entities_change(tmp_path, changed):
+    document = tmp_path / "stale-profile-ids.coalesce.json"
+    service = DocumentService(document)
+    original = [_outline(x=0), _outline(x=10)]
+    assert service.sketch(_primitive_sketch(original))["ok"]
+    assert service.feature(
+        extrude(
+            request_id="extrude",
+            revision=1,
+            feature_id="body",
+            sketch_id="profiles",
+            profile_ids=["polyline-1", "polyline-2"],
+            distance=2,
+        )
+    )["ok"]
+    before = document.read_bytes()
+    service = DocumentService(document)
+
+    result = service.sketch(
+        _primitive_sketch(changed, action="update", revision=2, request_id="edit")
+    )
+
+    assert result["ok"] is False
+    assert result["revision"] == 2
+    assert result["error"]["code"] == "REFERENCE_FAILED"
+    assert result["error"]["featureId"] == "body"
+    assert result["error"]["sketch"] == "profiles"
+    assert result["error"]["staleProfileIds"] == ["polyline-1", "polyline-2"]
+    assert "give the outlines explicit ids" in result["error"]["message"]
+    assert document.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        [_outline("right", 10), _outline("replacement", 20)],
+        [_outline("right", 10), _outline("left", 0)],
+    ],
+    ids=["remove-and-append", "reorder"],
+)
+def test_explicit_profile_id_follows_entity_edits(tmp_path, changed):
+    document = tmp_path / "explicit-profile-ids.coalesce.json"
+    service = DocumentService(document)
+    original = [_outline("left", 0), _outline("right", 10)]
+    assert service.sketch(_primitive_sketch(original))["ok"]
+    assert service.feature(
+        extrude(
+            request_id="extrude",
+            revision=1,
+            feature_id="body",
+            sketch_id="profiles",
+            profile_ids=["right"],
+            distance=2,
+        )
+    )["ok"]
+    service = DocumentService(document)
+
+    result = service.sketch(
+        _primitive_sketch(changed, action="update", revision=2, request_id="edit")
+    )
+
+    assert result["ok"] is True
+    graph = service.query({"select": {"kind": "graph"}})["graph"]["nodes"]
+    body = next(node for node in graph if node["id"] == "body")
+    assert body["profile_ids"] == ["right"]
+
+
+def test_revolve_generated_profile_id_goes_stale_when_entities_change(tmp_path):
+    document = tmp_path / "stale-revolve-profile-id.coalesce.json"
+    service = DocumentService(document)
+    assert service.sketch(_primitive_sketch([_outline(x=0)]))["ok"]
+    request = revolve(feature_id="turned", sketch_id="profiles")
+    request["parameters"]["profile"]["profileIds"] = ["polyline-1"]
+    assert service.feature(request)["ok"]
+
+    result = service.sketch(
+        _primitive_sketch([_outline(x=1)], action="update", revision=2, request_id="edit")
+    )
+
+    assert result["error"]["code"] == "REFERENCE_FAILED"
+    assert result["error"]["featureId"] == "turned"
+    assert result["error"]["staleProfileIds"] == ["polyline-1"]
+
+
+def test_explicit_profile_subset_is_stored_in_graph_order(tmp_path):
+    document = tmp_path / "profile-subset.coalesce.json"
+    service = DocumentService(document)
+    entities = [_outline("left", 0), _outline("middle", 10), _outline("right", 20)]
+    assert service.sketch(_primitive_sketch(entities))["ok"]
+
+    result = service.feature(
+        extrude(
+            request_id="subset",
+            revision=1,
+            feature_id="body",
+            sketch_id="profiles",
+            profile_ids=["right", "left"],
+            distance=2,
+        )
+    )
+
+    assert result["ok"] is True
+    graph = service.query({"select": {"kind": "graph"}})["graph"]["nodes"]
+    body = next(node for node in graph if node["id"] == "body")
+    assert body["profile_ids"] == ["left", "right"]
+
+
+def test_unknown_profile_ids_are_named(tmp_path):
+    service = DocumentService(tmp_path / "unknown-profile-id.coalesce.json")
+    assert service.sketch(
+        _primitive_sketch([_outline("left", 0), _outline("right", 10)])
+    )["ok"]
+
+    result = service.feature(
+        extrude(
+            request_id="unknown",
+            revision=1,
+            feature_id="body",
+            sketch_id="profiles",
+            profile_ids=["missing", "also_missing"],
+            distance=2,
+        )
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["expectedProfileIds"] == ["left", "right"]
+    assert result["error"]["unknownProfileIds"] == ["missing", "also_missing"]
+    assert "omit profileIds to use all closed loops in graph order." in result["error"]["message"]
