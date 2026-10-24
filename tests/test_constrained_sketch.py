@@ -684,6 +684,29 @@ def test_diagnostic_geometry_over_cap_is_dropped_with_reason(tmp_path, monkeypat
     }
 
 
+def _diagnostic_points(count: int) -> SolveResult:
+    entities = {
+        f"p{index:04d}": sketch_solver_module.SolvedPoint(index + 0.123456, -index - 0.654321)
+        for index in range(count)
+    }
+    return SolveResult(SolveStatus.DID_NOT_CONVERGE, diagnostic_entities=entities)
+
+
+def test_diagnostic_geometry_uses_the_real_64_kib_cap():
+    small = _diagnostic_points(300)
+    large = _diagnostic_points(2000)
+
+    kept = sketch_solver_module.diagnostic_geometry_details(small, set(small.diagnostic_entities))
+    dropped = sketch_solver_module.diagnostic_geometry_details(large, set(large.diagnostic_entities))
+
+    assert len(kept["diagnosticGeometry"]["entities"]) == 300
+    assert "diagnosticGeometry" not in dropped
+    assert dropped["diagnosticGeometryOmitted"] == {
+        "reason": "payload_too_large",
+        "limitBytes": 65536,
+    }
+
+
 def test_check_uses_one_locked_snapshot_while_repair_commits(tmp_path, monkeypatch):
     service = DocumentService(tmp_path / "atomic-check.coalesce.json", warmup=False)
     service._document.graph.add(
