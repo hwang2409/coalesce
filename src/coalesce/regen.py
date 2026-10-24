@@ -835,12 +835,14 @@ def _apply_revolve(
     shapes: dict[str, Shape],
     states: dict[str, list[Candidate]],
     provenance: dict[str, list[Candidate]],
+    metadata: dict[str, dict],
     lineage: BodyLineage,
 ) -> None:
     result = revolve_sketch(node, graph.nodes[node.sketch])
     shapes[node.id] = result.shape
     states[node.id] = result.candidates
     provenance[node.id] = result.candidates
+    metadata[node.id] = result.metadata
     lineage.create(node.id, result.shape, result.candidates)
 
 
@@ -988,7 +990,7 @@ def _regenerate(graph: Graph) -> RegenResult:
                 lineage,
             )
         elif isinstance(node, Revolve):
-            _apply_revolve(node, graph, shapes, states, provenance, lineage)
+            _apply_revolve(node, graph, shapes, states, provenance, metadata, lineage)
         elif isinstance(node, Cut):
             _apply_cut(node, graph, shapes, states, removed_material, lineage)
         elif isinstance(node, Hole):

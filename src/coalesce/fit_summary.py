@@ -9,7 +9,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .graph import BoardImport, Extrude, PcbBase, PcbLid, PortCutout, ScrewClosure, Standoffs
+from .graph import (
+    BoardImport,
+    Extrude,
+    PcbBase,
+    PcbLid,
+    PortCutout,
+    Revolve,
+    ScrewClosure,
+    Standoffs,
+)
 from .requirements import evaluate
 
 _LOG = logging.getLogger(__name__)
@@ -433,6 +442,29 @@ def _opening_facts(result: Any, node: Extrude) -> tuple[dict[str, Any], ...]:
     return (_fact(label, ", ".join(openings)),)
 
 
+def _diameter_fact(values: list[float], singular: str, plural: str) -> str | None:
+    # exact values are rounded once, here; equal displayed values count once
+    shown = list(dict.fromkeys(_mm(value) for value in sorted(values)))
+    if not shown:
+        return None
+    if len(shown) > 3:
+        return f"{len(shown)} {plural.lower()}"
+    label = singular if len(shown) == 1 else plural
+    return f"{label} " + ", ".join(f"Ø{value}" for value in shown) + " mm"
+
+
+def _revolve_fact(result: Any, node: Revolve) -> dict[str, Any]:
+    dimensions = result.metadata.get(node.id, {})
+    details = [f"360° about the {node.axis.upper()} axis of sketch {node.sketch}"]
+    if bores := _diameter_fact(dimensions.get("bores", []), "Bore", "Bores"):
+        details.append(bores)
+    if outer := _diameter_fact(
+        dimensions.get("outerDiameters", []), "Outer diameter", "Outer diameters"
+    ):
+        details.append(outer)
+    return _fact("Revolved", ". ".join(details))
+
+
 def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
     """What the committed features say about the part whose body ``source_feature`` made."""
     node = result.graph.nodes[source_feature]
@@ -449,6 +481,8 @@ def part_facts(result: Any, source_feature: str) -> tuple[dict[str, Any], ...]:
         return tuple(_base_facts(result, node))
     if isinstance(node, Extrude):
         return _opening_facts(result, node)
+    if isinstance(node, Revolve):
+        return (_revolve_fact(result, node),)
     if isinstance(node, PcbLid):
         if node.lip_depth is None or node.lip_width is None:
             # the fit gap only spaces a lip from the walls; a slab lid has none to report
