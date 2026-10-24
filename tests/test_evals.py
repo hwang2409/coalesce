@@ -476,39 +476,48 @@ def _staged_screw_pattern(tmp_path):
     return check, document, facts
 
 
-def test_runner_feature_edit_requires_runner_state_and_one_in_place_update(tmp_path):
+def _update_lid_pattern(document, revision, change):
     from coalesce.service import DocumentService
 
+    return DocumentService(document, warmup=False).feature({
+        "action": "update",
+        "expectedRevision": revision,
+        "requestId": f"test-pattern-edit-{revision}",
+        "featureId": "lid_pattern",
+        "kind": "hole",
+        "set": {"pattern": {"kind": "linear", **change}},
+    })
+
+
+def test_runner_feature_edit_requires_runner_state_and_in_place_updates(tmp_path):
     check, document, facts = _staged_screw_pattern(tmp_path)
     steps = tmp_path / "steps"
     steps.mkdir()
     unchanged = check_task({"checks": [check]}, document, steps, facts)[0]
     assert unchanged["status"] == "fail"
 
-    result = DocumentService(document, warmup=False).feature({
-        "action": "update",
-        "expectedRevision": 6,
-        "requestId": "test-pattern-edit",
-        "featureId": "lid_pattern",
-        "kind": "hole",
-        "set": {
-            "pattern": {
-                "kind": "linear",
-                "pitch": {"value": 5, "unit": "mm"},
-                "count": 4,
-            }
-        },
-    })
-    assert result["ok"] is True
+    change = {"pitch": {"value": 5, "unit": "mm"}, "count": 4}
+    assert _update_lid_pattern(document, 6, change)["ok"] is True
     updated = check_task({"checks": [check]}, document, steps, facts)[0]
     assert updated["status"] == "pass"
 
     payload = json.loads(document.read_text())
     payload["revision"] += 1
-    payload["receipts"].append({"response": {"changedFeatureIds": ["lid_pattern"]}})
+    payload["receipts"].append(
+        {"response": {"changedFeatureIds": ["lid_pattern"], "deleted": [{"id": "lid_pattern"}]}}
+    )
     document.write_text(json.dumps(payload))
     recreated = check_task({"checks": [check]}, document, steps, facts)[0]
     assert recreated["status"] == "fail"
+
+
+def test_runner_feature_edit_accepts_two_in_place_updates(tmp_path):
+    check, document, facts = _staged_screw_pattern(tmp_path)
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    assert _update_lid_pattern(document, 6, {"count": 4})["ok"] is True
+    assert _update_lid_pattern(document, 7, {"pitch": {"value": 5, "unit": "mm"}})["ok"] is True
+    assert check_task({"checks": [check]}, document, steps, facts)[0]["status"] == "pass"
 
 
 def test_constrained_update_uses_runner_owned_profile(tmp_path):

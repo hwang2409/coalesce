@@ -431,10 +431,11 @@ def _document_state(check, context):
         receipt.get("response", {}).get("changedFeatureIds")
         for receipt in payload.get("receipts", [])
     ]
+    # edit tasks leave revision and receipt history to runner_feature_edit
     passed = (
-        payload.get("revision") == check.get("revision")
+        check.get("revision", payload.get("revision")) == payload.get("revision")
         and _contains(actual_features, expected_features)
-        and actual_receipts == check.get("receiptFeatureIds")
+        and check.get("receiptFeatureIds", actual_receipts) == actual_receipts
     )
     return _result(
         check,
@@ -448,23 +449,28 @@ def _document_state(check, context):
 
 
 def _runner_feature_edit(check, context):
+    """The agent changed the runner's own feature in place: one or more updates, no delete."""
     if context.before_state is None or not context.before_state.is_file():
         return _result(check, "fail", reason="runner before-state facts are missing")
     before = json.loads(context.before_state.read_text())
     payload = context.document_payload
     feature_id = check["feature"]
     nodes = {node.get("id"): node for node in payload.get("graph", {}).get("nodes", [])}
-    receipts = [
-        receipt.get("response", {}).get("changedFeatureIds")
-        for receipt in payload.get("receipts", [])
-    ]
+    responses = [receipt.get("response", {}) for receipt in payload.get("receipts", [])]
+    receipts = [response.get("changedFeatureIds") for response in responses]
     before_receipts = before.get("receiptFeatureIds", [])
+    edits = responses[len(before_receipts):]
     passed = (
         before.get("featureId") == feature_id
         and _contains(before.get("feature"), check["before"])
-        and payload.get("revision") == before.get("revision", -1) + 1
         and feature_id in nodes
-        and receipts == [*before_receipts, [feature_id]]
+        and receipts[: len(before_receipts)] == before_receipts
+        and bool(edits)
+        and all(
+            edit.get("changedFeatureIds") == [feature_id] and "deleted" not in edit
+            for edit in edits
+        )
+        and payload.get("revision") == before.get("revision", -1) + len(edits)
     )
     return _result(
         check,

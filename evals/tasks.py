@@ -30,7 +30,7 @@ def _validate_part_hole_positions(path, check):
 
 
 def _validate_document_state(path, check):
-    if not all(field in check for field in ("revision", "features", "receiptFeatureIds")):
+    if "features" not in check:
         raise ValueError(f"invalid document state in {path}")
 
 
