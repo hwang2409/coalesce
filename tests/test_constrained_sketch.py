@@ -671,8 +671,16 @@ def test_failed_solve_geometry_keeps_stable_constraint_ids_and_is_response_only(
     assert failure["revision"] == 1
     assert failure["diagnosticGeometry"]["accepted"] is False
     assert failure["error"]["code"] == "SKETCH_CONFLICTING"
-    assert store.scene(1)["revision"] == 1
+    accepted_scene = store.scene(1)
+    assert accepted_scene["revision"] == 1
+    assert "diagnosticGeometry" not in accepted_scene
+    assert all(part["mesh"]["id"] for part in accepted_scene["parts"])
     assert store.current_revision == scene_revision == 1
+
+    store.publish(2, [])
+    _, accepted_revision, cleared_failure = store.snapshot()
+    assert accepted_revision == 2
+    assert cleared_failure is None
 
 
 def test_diagnostic_geometry_over_cap_is_dropped_with_reason(tmp_path, monkeypatch):

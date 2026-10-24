@@ -37,6 +37,7 @@ SCREW_SMOKE = Path(__file__).with_name("mcp_viewer_screw_smoke.mjs")
 REPAIR_HISTORY_SMOKE = Path(__file__).with_name("viewer_repair_history.mjs")
 LID_SMOKE = Path(__file__).with_name("mcp_viewer_lid_smoke.mjs")
 REJECTED_SKETCH_SMOKE = Path(__file__).with_name("rejected_sketch_overlay.mjs")
+REJECTED_SKETCH_RESTART = Path(__file__).with_name("rejected_sketch_restart.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
 KICAD_MOVED_FIXTURE = Path(__file__).parent / "fixtures/kicad/features-moved.kicad_pcb"
 
@@ -1492,6 +1493,39 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
                 driver.kill()
                 await driver.wait()
 
+    restart_log = (tmp_path / "rejected-overlay-restart.stderr").open("w+")
+    async with stdio_client(parameters, errlog=restart_log) as (read, write), ClientSession(
+        read, write
+    ) as restarted_session:
+        await restarted_session.initialize()
+        restarted_graph = result_json(
+            await restarted_session.call_tool("query", {"select": {"kind": "graph"}})
+        )
+        assert restarted_graph["revision"] == 3
+        restart_log.seek(0)
+        restart_url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in restart_log.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        restart_driver = await asyncio.create_subprocess_exec(
+            "node",
+            str(REJECTED_SKETCH_RESTART),
+            browser_module,
+            restart_url,
+            stdout=asyncio.subprocess.PIPE,
+        )
+        restarted = json.loads(
+            (await asyncio.wait_for(restart_driver.stdout.read(), timeout=60)).decode()
+        )
+        assert await asyncio.wait_for(restart_driver.wait(), timeout=15) == 0
+
+    assert restarted == {
+        "labelVisible": False,
+        "diagnostic": {"entityCount": 0, "kinds": []},
+        "failureVisible": False,
+        "errors": [],
+    }
     for size in ("1280x800", "390x844"):
         first = shown["rejected"][size]
         assert first["revision"] == 2

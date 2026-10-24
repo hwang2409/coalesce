@@ -36,8 +36,10 @@ controls.enableDamping = false;
 controls.addEventListener('change', () => { markUserMoved(); requestRender(); });
 
 const model = new THREE.Group();
+const diagnostic = new THREE.Group();
 const helpers = new THREE.Group();
-scene.add(helpers, model);
+diagnostic.renderOrder = 20;
+scene.add(helpers, model, diagnostic);
 
 // corner axes, drawn into their own small viewport
 const gizmoScene = new THREE.Scene();
@@ -152,8 +154,9 @@ function describeView() {
   const at = mode === 'section' ? ` at ${section.axis.toUpperCase()} = ${formatMm(Number(section.position.toFixed(1)))} mm` : '';
   const shown = MODE_TEXT[mode] ? ` Shown ${MODE_TEXT[mode]}${at}; the model is unchanged.` : '';
   const showing = selected ? ` Showing ${partTitle(selected.partId)}, other parts faded.` : '';
+  const rejected = diagnostic.children.length ? ' Rejected sketch — not accepted; shown as a dashed red overlay.' : '';
   $('view-description').textContent = parts.length
-    ? `Revision ${current.revision}, ${framing}.${change}${shown}${showing} `
+    ? `Revision ${current.revision}, ${framing}.${change}${shown}${showing}${rejected} `
       + partTitles(parts).map((title, i) => [`${title}, ${formatSize(parts[i])} mm`, partDetail(parts[i])].filter(Boolean).join(', ')).join('; ') + '.'
     : 'No parts to show.';
 }
@@ -171,6 +174,7 @@ function visibleBox() {
   const box = new THREE.Box3();
   // a part's surface, as placed by its group: a section's cut face quad is larger than the part
   for (const child of model.children) if (child.visible) box.expandByObject(surfaceOf(child));
+  if (diagnostic.children.length) box.expandByObject(diagnostic);
   if (box.isEmpty() && current) {
     box.min.fromArray(current.bbox.min);
     box.max.fromArray(current.bbox.max);
@@ -1045,8 +1049,55 @@ function repair({ code, message, hint }, feature) {
 }
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
+function clearDiagnostic() {
+  clearGroup(diagnostic, { ownsGeometry: true });
+  $('rejected-label').hidden = true;
+  $('diagnostic-omitted').hidden = true;
+  describeView();
+  requestRender();
+}
+
+function diagnosticPoints(entity) {
+  if (entity.kind === 'point') return [[entity.x, entity.y, 0]];
+  if (entity.kind === 'line') return [[...entity.start, 0], [...entity.end, 0]];
+  const segments = entity.kind === 'circle' ? 64 : 48;
+  let start = entity.kind === 'circle' ? 0 : entity.startAngle;
+  let end = entity.kind === 'circle' ? Math.PI * 2 : entity.endAngle;
+  while (end <= start) end += Math.PI * 2;
+  return Array.from({ length: segments + 1 }, (_, index) => {
+    const angle = start + (end - start) * index / segments;
+    return [entity.center[0] + Math.cos(angle) * entity.radius,
+      entity.center[1] + Math.sin(angle) * entity.radius, 0];
+  });
+}
+
+function showDiagnostic(geometry) {
+  clearDiagnostic();
+  if (!geometry || geometry.accepted !== false) return;
+  for (const [id, entity] of Object.entries(geometry.entities)) {
+    const points = diagnosticPoints(entity).map((point) => new THREE.Vector3(...point));
+    const shape = new THREE.BufferGeometry().setFromPoints(points);
+    let object;
+    if (entity.kind === 'point') {
+      object = new THREE.Points(shape, new THREE.PointsMaterial({ color: 0xb42318, size: 8, sizeAttenuation: false, depthTest: false }));
+    } else {
+      object = new THREE.Line(shape, new THREE.LineDashedMaterial({ color: 0xb42318, dashSize: 1.2, gapSize: 0.7, depthTest: false }));
+      object.computeLineDistances();
+    }
+    object.name = id;
+    object.userData.kind = entity.kind;
+    object.renderOrder = 20;
+    diagnostic.add(object);
+  }
+  $('rejected-label').hidden = false;
+  if (diagnostic.children.length) applyView(activeView);
+  describeView();
+  requestRender();
+}
+
 function showFailure() {
   showStatus();
+  clearDiagnostic();
   if (!failure) return;
   $('failure-title').textContent = failure.revision == null
     ? 'Last edit failed. There is no good revision yet.'
@@ -1064,6 +1115,8 @@ function showFailure() {
   $('failure-message').textContent = failure.error.message;
   $('failure-kernel').hidden = !failure.error.kernelMessage;
   $('failure-kernel').textContent = failure.error.kernelMessage ? `Kernel: ${failure.error.kernelMessage}` : '';
+  showDiagnostic(failure.diagnosticGeometry);
+  $('diagnostic-omitted').hidden = !failure.diagnosticGeometryOmitted;
 }
 
 // loads run one at a time, then catch up to the newest announced revision,
@@ -1179,6 +1232,7 @@ async function session(init = {}) {
 function listen() {
   const events = new EventSource('/events');
   events.addEventListener('open', () => {
+    clearDiagnostic();
     setLink('live', 'Live');
     if (!current) notice('Waiting for the first revision',
       'Geometry appears here after your agent commits its first edit. This page updates by itself.');
@@ -1191,6 +1245,7 @@ function listen() {
   events.addEventListener('revision', (event) => {
     const { revision } = JSON.parse(event.data);
     failure = null;
+    clearDiagnostic();
     showFailure();
     loadRevision(revision);
   });
@@ -1224,6 +1279,12 @@ async function lost() {
 window.coalesceViewer = {
   get revision() { return current?.revision ?? null; },
   get failure() { return failure; },
+  get diagnostic() {
+    return {
+      entityCount: diagnostic.children.length,
+      kinds: diagnostic.children.map((child) => child.userData.kind).sort(),
+    };
+  },
 };
 if (window.coalesceDebug === true) {
   // read-only gpu counters for the browser stress test; a test sets the flag before load
