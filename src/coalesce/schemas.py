@@ -257,10 +257,23 @@ SKETCH_UPDATE_SCHEMA = {
                 "position": POINT_3D,
                 "entities": {"type": "array", "items": SKETCH_ENTITY, "minItems": 1},
                 "constrained": CONSTRAINED_SKETCH,
+                "dimensionValues": {
+                    "type": "object",
+                    "description": "Update driving dimensions by stable id.",
+                    "additionalProperties": {"type": "number"},
+                    "minProperties": 1,
+                },
             },
             "additionalProperties": False,
             "minProperties": 1,
-            "not": {"required": ["entities", "constrained"]},
+            "not": {
+                "anyOf": [
+                    {"required": ["entities", "constrained"]},
+                    {"required": ["dimensionValues", "position"]},
+                    {"required": ["dimensionValues", "entities"]},
+                    {"required": ["dimensionValues", "constrained"]},
+                ]
+            },
         },
     },
     "required": ["action", *SKETCH_PROPERTIES, "set"],
@@ -304,7 +317,14 @@ SKETCH_EXAMPLES = [
                 {"id": "left", "kind": "vertical", "entities": ["e3"]},
             ],
         },
-    }
+    },
+    {
+        "action": "update",
+        "expectedRevision": 2,
+        "requestId": "resize-opening",
+        "sketchId": "profile",
+        "set": {"dimensionValues": {"opening-radius": 4}},
+    },
 ]
 
 SKETCH_SCHEMA = {
@@ -312,7 +332,7 @@ SKETCH_SCHEMA = {
     "properties": {
         "action": {
             "enum": ["create", "update", "delete"],
-            "description": "Use create with plane and entities, update to change it, or delete to remove it. Delete fails when features use the sketch unless cascade is true.",
+            "description": "Create, update, or delete a sketch. Delete fails when features use it unless cascade is true.",
         },
         **SKETCH_PROPERTIES,
         "plane": {

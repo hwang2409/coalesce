@@ -46,6 +46,7 @@ The merged product surface adds three hard tasks: `screw-closure-pattern-edit`,
 uv run python -m evals.golden.screw_closure_pattern_edit <out>
 uv run --extra sketch python -m evals.golden.constrained_inner_loop <out>
 uv run --extra sketch python -m evals.golden.constrained_sketch_update_after_extrusion <out>
+uv run --extra sketch python -m evals.golden.constrained_sketch_dimension_update_after_extrusion <out>
 uv run python -m evals.golden.revolve_shaft_edit <out>
 ```
 

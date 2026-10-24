@@ -82,6 +82,7 @@ from .schemas import FEATURE_KIND_SCHEMAS, SUPPORTED_REQUIREMENT_KINDS
 from .serialization import dumps, loads
 from .sketch_solver import (
     DEFAULT_SOLVE_TIMEOUT_SECONDS,
+    Dimension,
     SketchSolverSession,
     diagnostic_geometry_details,
     solve_sketch,
@@ -297,6 +298,7 @@ class SketchChanges:
     position: tuple[float, float, float] | None
     entities: tuple[Rectangle | Circle | Polyline | Spline, ...] | None
     constrained: ConstrainedSketch | None = None
+    dimension_values: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -995,6 +997,23 @@ def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
     if not isinstance(changes, dict) or not changes:
         raise RequestError("INVALID_PARAMETER", "update set must not be empty")
     position = changes.get("position")
+    dimension_values = changes.get("dimensionValues")
+    if "dimensionValues" in changes and (
+        not isinstance(dimension_values, dict) or not dimension_values
+    ):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "dimensionValues must be a JSON object with at least one entry",
+            field="dimensionValues",
+        )
+    if isinstance(dimension_values, dict) and any(
+        isinstance(value, bool) for value in dimension_values.values()
+    ):
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "dimensionValues values must be finite numbers",
+            field="dimensionValues",
+        )
     return SketchUpdate(
         **_sketch_common(payload),
         set=SketchChanges(
@@ -1006,6 +1025,14 @@ def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
             entities=_entities(changes["entities"]) if "entities" in changes else None,
             constrained=(
                 _constrained_sketch(changes["constrained"]) if "constrained" in changes else None
+            ),
+            dimension_values=(
+                {
+                    dimension_id: _finite_number(value, f"dimensionValues.{dimension_id}")
+                    for dimension_id, value in dimension_values.items()
+                }
+                if dimension_values is not None
+                else None
             ),
         ),
     )
@@ -2151,6 +2178,103 @@ def _solve_constrained_sketches(
     return SolveAvailability(solved, failed, tuple(unavailable))
 
 
+_MAX_VALID_DIMENSION_IDS = 50
+
+
+def _updated_dimension(
+    dimension_id: str,
+    value: float,
+    dimensions: dict[str, Dimension],
+    driving_ids: list[str],
+) -> Dimension:
+    dimension = dimensions.get(dimension_id)
+    if dimension is None:
+        valid = driving_ids[:_MAX_VALID_DIMENSION_IDS]
+        raise RequestError(
+            "UNKNOWN_ID",
+            f"unknown sketch dimension: {dimension_id}; valid driving dimension ids: {valid}",
+            dimensionId=dimension_id,
+            validDrivingDimensionIds=valid,
+            validDrivingDimensionCount=len(driving_ids),
+            validDrivingDimensionIdsTruncated=len(driving_ids) > len(valid),
+        )
+    if not dimension.driving:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"sketch dimension is reference-only: {dimension_id}",
+            field=f"dimensionValues.{dimension_id}",
+            dimensionId=dimension_id,
+        )
+    if dimension.kind.value in {"distance", "radius", "diameter"} and value <= 0:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            f"{dimension.kind.value} dimension must be positive: {dimension_id}",
+            field=f"dimensionValues.{dimension_id}",
+            dimensionId=dimension_id,
+        )
+    return replace(dimension, value=value)
+
+
+def _updated_dimensions(
+    model: ConstrainedSketch, values: dict[str, float]
+) -> ConstrainedSketch:
+    dimensions = {dimension.id: dimension for dimension in model.dimensions}
+    driving_ids = sorted(dimension.id for dimension in model.dimensions if dimension.driving)
+    for dimension_id, value in values.items():
+        dimensions[dimension_id] = _updated_dimension(
+            dimension_id, value, dimensions, driving_ids
+        )
+    circular_radii = {
+        dimension.entities[0]: (
+            dimension.value / 2 if dimension.kind.value == "diameter" else dimension.value
+        )
+        for dimension in dimensions.values()
+        if dimension.id in values
+        and dimension.kind.value in {"radius", "diameter"}
+        and len(dimension.entities) == 1
+    }
+    return replace(
+        model,
+        arcs=tuple(
+            replace(arc, radius=circular_radii[arc.id])
+            if arc.id in circular_radii
+            else arc
+            for arc in model.arcs
+        ),
+        circles=tuple(
+            replace(circle, radius=circular_radii[circle.id])
+            if circle.id in circular_radii
+            else circle
+            for circle in model.circles
+        ),
+        dimensions=tuple(dimensions[dimension.id] for dimension in model.dimensions),
+        solved=None,
+    )
+
+
+def _apply_sketch_update(
+    node: Sketch, changes: SketchChanges, solver: Callable[[Any], Any]
+) -> None:
+    if changes.position is not None:
+        node.position = changes.position
+    if changes.entities is not None:
+        node.replace_entities(list(changes.entities))
+    if changes.constrained is not None:
+        _accept_constrained_sketch(changes.constrained, solver)
+        node.replace_constrained(changes.constrained)
+    if changes.dimension_values is None:
+        return
+    if node.constrained is None:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "dimensionValues requires a constrained sketch",
+            field="dimensionValues",
+        )
+    constrained = _updated_dimensions(node.constrained, changes.dimension_values)
+    _accept_constrained_sketch(constrained, solver)
+    node.replace_constrained(constrained)
+
+
 def _apply_sketch(
     graph: Any,
     operation: SketchCreate | SketchUpdate | SketchDelete,
@@ -2178,13 +2302,7 @@ def _apply_sketch(
         node = graph.nodes.get(operation.sketchId)
         if not isinstance(node, Sketch):
             raise RequestError("UNKNOWN_ID", f"unknown sketch: {operation.sketchId}")
-        if operation.set.position is not None:
-            node.position = operation.set.position
-        if operation.set.entities is not None:
-            node.replace_entities(list(operation.set.entities))
-        if operation.set.constrained is not None:
-            _accept_constrained_sketch(operation.set.constrained, solver)
-            node.replace_constrained(operation.set.constrained)
+        _apply_sketch_update(node, operation.set, solver)
     node = graph.nodes[operation.sketchId]
     validate_sketch(node)
     validate_sketch_profiles(node)

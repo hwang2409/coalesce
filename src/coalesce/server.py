@@ -436,6 +436,13 @@ async def _schema_failure(
     if name == "feature" and arguments.get("action") == "update":
         error = _prefer_unknown_field(error)
     details = _schema_error_details(name, arguments, error)
+    message = schema_error_message(error)
+    if name == "sketch" and isinstance(arguments.get("set"), str):
+        message = (
+            'set must be a JSON object, not a JSON-encoded string; send "set": '
+            '{"constrained": {...}} or "set": {"dimensionValues": {...}} without surrounding '
+            'quotes (field: set)'
+        )
     failure = await anyio.to_thread.run_sync(
         partial(
             _stateful_error,
@@ -443,7 +450,7 @@ async def _schema_failure(
             name,
             arguments,
             "INVALID_PARAMETER",
-            schema_error_message(error),
+            message,
             details,
             publish=name in ("sketch", "feature"),
         )

@@ -93,8 +93,19 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
 A solve status describes geometric freedom, not edit quality. Fixing every point can return
 `fully_constrained` with zero degrees of freedom, but it leaves no editable driving dimensions.
 Fix only the anchors that define placement. Give dimensions stable ids for sizes that will change,
-such as `opening-radius`, and update the dimension value instead of replacing point coordinates.
-Because `set.constrained` replaces the full constrained definition, resend the same point, entity,
+such as `opening-radius`. Update only those driving values by id:
+
+```json
+{"action":"update","expectedRevision":2,"requestId":"resize-opening","sketchId":"profile","set":{"dimensionValues":{"opening-radius":4}}}
+```
+
+The update preserves every entity, constraint, and dimension id, then solves and regenerates all
+downstream features atomically. Values must be finite; lengths, radii, and diameters must be
+positive. Unknown ids return a bounded, sorted list of valid driving dimension ids, and reference
+dimensions cannot be updated. A failed solve leaves the revision and document unchanged.
+
+Full replacement through `set.constrained` remains accepted. It replaces the constrained definition.
+Resend the same point, entity,
 dimension, and constraint ids with the changed value.
 
 For an outer loop with directly contained inner loops, send all loops in one constrained sketch.
