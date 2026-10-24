@@ -144,7 +144,14 @@ def _sketch_payload(node: Sketch, _payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _profile_feature_payload(node: Extrude | Revolve, payload: dict[str, Any]) -> dict[str, Any]:
+    if node.profile_ids is None:
+        payload.pop("profile_ids")
+    return payload
+
+
 def _extrude_payload(node: Extrude, payload: dict[str, Any]) -> dict[str, Any]:
+    payload = _profile_feature_payload(node, payload)
     if node.operation == "new_body":
         payload.pop("operation")
         if node.target is None:
@@ -197,6 +204,7 @@ _SERIALIZERS = {
     BoardImport: _board_payload,
     Sketch: _sketch_payload,
     Extrude: _extrude_payload,
+    Revolve: _profile_feature_payload,
     PcbLid: _lid_payload,
     Hole: _hole_payload,
     Fillet: _treatment_payload,
@@ -224,6 +232,12 @@ def _load_board(payload: dict[str, Any]) -> dict[str, Any]:
     payload["source_path"] = payload.pop("sourcePath")
     payload["source_digest"] = payload.pop("sourceDigest")
     payload["parser_version"] = payload.pop("parserVersion")
+    return payload
+
+
+def _load_profile_feature(payload: dict[str, Any]) -> dict[str, Any]:
+    if "profile_ids" in payload:
+        payload["profile_ids"] = tuple(payload["profile_ids"])
     return payload
 
 
@@ -293,6 +307,8 @@ def _load_treatment(payload: dict[str, Any]) -> dict[str, Any]:
 _LOADERS = {
     BoardImport: _load_board,
     Sketch: _sketch,
+    Extrude: _load_profile_feature,
+    Revolve: _load_profile_feature,
     Standoffs: _load_standoffs,
     PcbLid: _load_lid,
     ScrewClosure: _load_screw_closure,

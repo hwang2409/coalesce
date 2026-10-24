@@ -363,10 +363,10 @@ PROFILE = {
             "type": "array",
             "items": {"type": "string"},
             "minItems": 1,
-            "description": "for extrude, a constrained sketch's id selects all loops (inner loops become holes); revolve accepts one outer loop only",
+            "description": "optional: omit to use all closed loops in graph order; constrained sketches resolve to [sketchId] (inner loops become holes); revolve requires one outer loop only",
         },
     },
-    "required": ["sketchId", "profileIds"],
+    "required": ["sketchId"],
     "additionalProperties": False,
 }
 REVOLVE_PARAMETERS = {

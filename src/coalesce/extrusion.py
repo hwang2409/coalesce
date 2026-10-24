@@ -11,7 +11,17 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Vec
 
 from .constrained_profile import build_constrained_profile
-from .graph import Circle, Extrude, GraphError, Polyline, Rectangle, Sketch, Spline, validate_sketch
+from .graph import (
+    Circle,
+    Extrude,
+    GraphError,
+    Polyline,
+    PrimitiveEntity,
+    Rectangle,
+    Sketch,
+    Spline,
+    validate_sketch,
+)
 from .profile_validation import build_outline_profile
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
@@ -169,8 +179,10 @@ def _pair_error(
     )
 
 
-def _organize_profiles(sketch: Sketch, location: Location) -> list[_Profile]:
-    profiles = [_profile(entity, location) for entity in sketch.entities]
+def _organize_profiles(
+    sketch: Sketch, entities: list[PrimitiveEntity], location: Location
+) -> list[_Profile]:
+    profiles = [_profile(entity, location) for entity in entities]
     containers: list[list[int]] = [[] for _ in profiles]
     for left_index, left in enumerate(profiles):
         for right_index in range(left_index + 1, len(profiles)):
@@ -270,6 +282,21 @@ def _extrude_region(
     return final_shape(prism.Shape()), faces
 
 
+def _selected_entities(node: Extrude, sketch: Sketch) -> list[PrimitiveEntity]:
+    if node.profile_ids is None:
+        return sketch.entities
+    selected = set(node.profile_ids)
+    entities = [entity for entity in sketch.entities if entity.id in selected]
+    if len(entities) != len(selected):
+        raise GraphError(
+            "INVALID_PARAMETER",
+            f"extrude {node.id} refers to missing sketch profiles",
+            feature=node.id,
+            expectedProfileIds=list(node.profile_ids),
+        )
+    return entities
+
+
 def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
     if not sketch.entities and sketch.constrained is None:
         raise ValueError(f"sketch {sketch.id} has no entities")
@@ -277,6 +304,13 @@ def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
     location = sketch_location(sketch)
     direction = BuildPlane(location).z_dir * node.height
     if sketch.constrained is not None:
+        if node.profile_ids not in (None, (sketch.id,)):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                f"extrude {node.id} refers to a missing constrained profile",
+                feature=node.id,
+                expectedProfileIds=[sketch.id],
+            )
         exact = build_constrained_profile(sketch.constrained, sketch.id, location)
         profiles = [
             _Profile(
@@ -289,7 +323,7 @@ def extrude_sketch(node: Extrude, sketch: Sketch) -> ExtrusionResult:
         ]
         regions = [(exact.face, profiles)]
     else:
-        profiles = _organize_profiles(sketch, location)
+        profiles = _organize_profiles(sketch, _selected_entities(node, sketch), location)
         regions = _regions(profiles)
     shapes: list[Shape] = []
     faces: list[Candidate] = []

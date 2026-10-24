@@ -35,8 +35,17 @@ class _RevolutionProfile:
     topology: dict[str, tuple[str, ...]]
 
 
-def _profile_for_revolution(sketch: Sketch, location: Location) -> _RevolutionProfile:
+def _profile_for_revolution(
+    sketch: Sketch, location: Location, profile_ids: tuple[str, ...] | None
+) -> _RevolutionProfile:
     if sketch.constrained is not None:
+        if profile_ids not in (None, (sketch.id,)):
+            raise GraphError(
+                "INVALID_PARAMETER",
+                "revolve refers to a missing constrained profile",
+                sketch=sketch.id,
+                expectedProfileIds=[sketch.id],
+            )
         exact = build_constrained_profile(sketch.constrained, sketch.id, location)
         if len(exact.face.wires()) != 1:
             raise GraphError(
@@ -45,14 +54,16 @@ def _profile_for_revolution(sketch: Sketch, location: Location) -> _RevolutionPr
                 sketch=sketch.id,
             )
         return _RevolutionProfile(exact.id, exact.face, exact.segments, exact.segment_topology)
-    if len(sketch.entities) != 1:
+    selected_ids = profile_ids or tuple(entity.id for entity in sketch.entities)
+    entities = [entity for entity in sketch.entities if entity.id in selected_ids]
+    if len(entities) != 1 or len(selected_ids) != 1:
         raise GraphError(
             "REVOLVE_MULTIPLE_PROFILES",
-            f"revolve sketch {sketch.id} must contain exactly one profile",
+            f"revolve sketch {sketch.id} must contain exactly one selected profile",
             sketch=sketch.id,
-            profileCount=len(sketch.entities),
+            profileCount=len(entities),
         )
-    exact = _profile(sketch.entities[0], location)
+    exact = _profile(entities[0], location)
     return _RevolutionProfile(exact.entity_id, exact.face, exact.segments, exact.segment_topology)
 
 
@@ -209,10 +220,10 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
             operation=node.operation,
             axis=node.axis,
         )
-    local = _profile_for_revolution(sketch, Location())
+    local = _profile_for_revolution(sketch, Location(), node.profile_ids)
     axis_segments = _validate_axis(local, node.axis, sketch.id, node.id)
     location = sketch_location(sketch)
-    profile = _profile_for_revolution(sketch, location)
+    profile = _profile_for_revolution(sketch, location, node.profile_ids)
     maker, shape = _make_revolution(node, profile, location)
     _validate_result(node, shape)
     faces = _face_candidates(node, sketch, profile, maker, axis_segments)

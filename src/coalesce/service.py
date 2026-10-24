@@ -304,7 +304,7 @@ class SketchChanges:
 @dataclass(frozen=True)
 class ExtrudeProfile:
     sketchId: str
-    profileIds: tuple[str, ...]
+    profileIds: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -1073,7 +1073,9 @@ def _parse_extrude(
         parameters=ExtrudeParameters(
             profile=ExtrudeProfile(
                 sketchId=profile.get("sketchId"),
-                profileIds=tuple(profile.get("profileIds", [])),
+                profileIds=(
+                    tuple(profile["profileIds"]) if "profileIds" in profile else None
+                ),
             ),
             distance=_positive_quantity(parameters.get("distance"), "distance"),
             operation=parameters.get("operation"),
@@ -1104,7 +1106,9 @@ def _parse_revolve(payload: dict[str, Any], common: dict[str, Any]) -> RevolveCr
         parameters=RevolveParameters(
             profile=ExtrudeProfile(
                 sketchId=profile.get("sketchId"),
-                profileIds=tuple(profile.get("profileIds", [])),
+                profileIds=(
+                    tuple(profile["profileIds"]) if "profileIds" in profile else None
+                ),
             ),
             axis=parameters["axis"],
             operation=parameters["operation"],
@@ -2326,6 +2330,39 @@ def _validate_body_target(graph: Any, target: str | None, operation: str) -> Non
         raise RequestError("INVALID_PARAMETER", f"{operation} target must produce a body")
 
 
+def _sketch_profile_ids(sketch: Sketch) -> tuple[str, ...]:
+    return (
+        (sketch.id,)
+        if sketch.constrained is not None
+        else tuple(entity.id for entity in sketch.entities)
+    )
+
+
+MAX_EXPECTED_PROFILE_IDS = 20
+
+
+def _resolved_profile_ids(profile: ExtrudeProfile, sketch: Sketch) -> tuple[str, ...]:
+    expected = _sketch_profile_ids(sketch)
+    if profile.profileIds is None:
+        return expected
+    if profile.profileIds == expected:
+        return expected
+    shown = expected[:MAX_EXPECTED_PROFILE_IDS]
+    expected_text = (
+        json.dumps(expected, separators=(",", ":"))
+        if len(expected) == len(shown)
+        else f"all {len(expected)} profiles in graph order"
+    )
+    received_json = json.dumps(profile.profileIds, separators=(",", ":"))
+    raise RequestError(
+        "INVALID_PARAMETER",
+        f"profileIds must equal {expected_text} for sketch '{sketch.id}'; received "
+        f"{received_json}. omit profileIds to use all closed loops.",
+        expectedProfileIds=list(shown),
+        expectedProfileIdsTruncated=len(expected) > len(shown),
+    )
+
+
 def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     if isinstance(operation, ExtrudeUpdate):
         node = graph.nodes.get(operation.featureId)
@@ -2347,14 +2384,7 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     sketch = graph.nodes.get(parameters.profile.sketchId)
     if not isinstance(sketch, Sketch):
         raise RequestError("UNKNOWN_ID", "extrude profile sketch does not exist")
-    expected_profiles = (
-        [sketch.id] if sketch.constrained is not None else [entity.id for entity in sketch.entities]
-    )
-    if list(parameters.profile.profileIds) != expected_profiles:
-        raise RequestError(
-            "INVALID_PARAMETER",
-            "profileIds must list all sketch profiles in graph order",
-        )
+    profile_ids = _resolved_profile_ids(parameters.profile, sketch)
     graph.add(
         Extrude(
             operation.featureId,
@@ -2362,6 +2392,7 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
             height=parameters.distance,
             operation=parameters.operation,
             target=target,
+            profile_ids=profile_ids,
         )
     )
     return operation.featureId
@@ -2372,9 +2403,7 @@ def _apply_revolve(graph: Any, operation: RevolveCreate) -> str:
     sketch = graph.nodes.get(parameters.profile.sketchId)
     if not isinstance(sketch, Sketch):
         raise RequestError("UNKNOWN_ID", "revolve profile sketch does not exist")
-    expected_profiles = (
-        [sketch.id] if sketch.constrained is not None else [entity.id for entity in sketch.entities]
-    )
+    expected_profiles = _sketch_profile_ids(sketch)
     if len(expected_profiles) != 1:
         raise GraphError(
             "REVOLVE_MULTIPLE_PROFILES",
@@ -2382,17 +2411,14 @@ def _apply_revolve(graph: Any, operation: RevolveCreate) -> str:
             sketch=sketch.id,
             profileCount=len(expected_profiles),
         )
-    if list(parameters.profile.profileIds) != expected_profiles:
-        raise RequestError(
-            "INVALID_PARAMETER",
-            "profileIds must list the one sketch profile in graph order",
-        )
+    profile_ids = _resolved_profile_ids(parameters.profile, sketch)
     graph.add(
         Revolve(
             operation.featureId,
             sketch=sketch.id,
             axis=parameters.axis,
             operation=parameters.operation,
+            profile_ids=profile_ids,
         )
     )
     return operation.featureId

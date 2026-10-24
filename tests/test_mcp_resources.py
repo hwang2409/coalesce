@@ -185,7 +185,8 @@ def test_packaged_guides_match_inline_design_intent_recipes():
     assert "fully_constrained` with zero degrees of freedom" in sketch.content
     assert "no editable driving dimensions" in sketch.content
     assert "same point, entity,\ndimension, and constraint ids" in sketch.content
-    assert "set `profileIds` to `[<sketch id>]`" in sketch.content
+    assert "omit `profileIds`; inner loops become holes" in sketch.content
+    assert "stores the\nresolved `[<sketch id>]` value" in sketch.content
     # profileIds belongs to extrude only; every mention of cut must use tool.sketchId
     for paragraph in sketch.content.split("\n\n"):
         if "`cut`" in paragraph and "profileIds" in paragraph:

@@ -166,6 +166,7 @@ class Extrude(Feature):
     height: float = 1
     operation: str = "new_body"
     target: str | None = None
+    profile_ids: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -173,6 +174,7 @@ class Revolve(Feature):
     sketch: str = ""
     axis: str = "x"
     operation: str = "new_body"
+    profile_ids: tuple[str, ...] | None = None
 
 
 @dataclass

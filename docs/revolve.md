@@ -10,7 +10,7 @@
   "featureId": "pulley",
   "kind": "revolve",
   "parameters": {
-    "profile": {"sketchId": "pulley_profile", "profileIds": ["outline"]},
+    "profile": {"sketchId": "pulley_profile"},
     "axis": "x",
     "angle": {"value": 360, "unit": "deg"},
     "operation": "new_body"
@@ -20,7 +20,7 @@
 
 ## supported scope
 
-- use exactly one primitive profile or one solved constrained-sketch outer loop.
+- use exactly one primitive profile or one solved constrained-sketch outer loop. omit `profileIds` to select it; an explicit one-id list remains valid.
 - inner loops and multiple profiles are rejected. offset one outer profile from the axis to make a bore.
 - the profile must stay on one side of the axis. a complete straight boundary segment within `1e-7 mm` of the axis counts as lying on the axis, generates no face, and has no selectable role. a near-axis segment farther than `1e-7 mm` from the axis keeps its side face.
 - point-only axis contact, curved axis contact, and axis crossing are rejected.
