@@ -1771,7 +1771,16 @@ def _viewer_error(error: dict[str, Any]) -> dict[str, Any]:
         "diagnosticGeometry",
         "diagnosticGeometryOmitted",
     )
-    return {key: error[key] for key in fields if key in error}
+    viewer_error = {key: error[key] for key in fields if key in error}
+    diagnostics = error.get("diagnostics", {}).get("diagnostics", {})
+    for key in ("redundantConstraints", "conflictingConstraints"):
+        constraint_ids = diagnostics.get(key, [])
+        if constraint_ids:
+            viewer_error[key] = [
+                *constraint_ids[:5],
+                *([f"+{len(constraint_ids) - 5} more"] if len(constraint_ids) > 5 else []),
+            ]
+    return viewer_error
 
 
 def _availability_request_error(availability: SolveAvailability) -> RequestError:

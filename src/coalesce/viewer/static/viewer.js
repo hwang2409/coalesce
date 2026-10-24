@@ -1033,8 +1033,14 @@ const VERIFIED_REPAIR_CODES = new Set([
   'UNIT_MISMATCH', 'INVALID_PARAMETER', 'REVISION_CONFLICT', 'UNKNOWN_ID',
   'DUPLICATE_ID', 'CYCLE', 'TARGET_ALREADY_CONSUMED',
 ]);
-function repair({ code, message, hint }, feature) {
+function repair({ code, message, hint, redundantConstraints, conflictingConstraints }, feature) {
   if (hint) return `${capitalize(message)}. Ask your agent to ${hint}.`;
+  if (code === 'SKETCH_REDUNDANT' && redundantConstraints?.length) {
+    return `Sketch ${feature} rejected: redundant constraints ${redundantConstraints.join(', ')}`;
+  }
+  if (code === 'SKETCH_CONFLICTING' && conflictingConstraints?.length) {
+    return `Sketch ${feature} rejected: conflicting constraints ${conflictingConstraints.join(', ')}`;
+  }
   if (!VERIFIED_REPAIR_CODES.has(code)) {
     return `${feature} failed: ${message}. The last good model is still shown.`;
   }

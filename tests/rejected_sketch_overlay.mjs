@@ -34,6 +34,7 @@ async function resultFor({ page, errors, name }, expectedKinds, screenshot) {
     diagnostic: window.coalesceViewer.diagnostic,
     label: document.getElementById('rejected-label').textContent,
     alert: document.getElementById('failure').innerText,
+    constraintMarkup: document.getElementById('failure-repair').querySelectorAll('*').length,
     ariaLabel: document.getElementById('view').getAttribute('aria-describedby'),
   }));
   result.errors = errors.splice(0);
@@ -43,8 +44,18 @@ async function resultFor({ page, errors, name }, expectedKinds, screenshot) {
 console.log(JSON.stringify({ ready: true }));
 await commands.next();
 const rejected = {};
-for (const entry of pages) rejected[entry.name] = await resultFor(entry, ['point', 'point', 'point', 'point', 'line', 'arc', 'circle'], 'rejected');
+for (const entry of pages) rejected[entry.name] = await resultFor(entry, ['point', 'point', 'point', 'point', 'point', 'point', 'point', 'line', 'arc', 'circle'], 'rejected-wording');
 console.log(JSON.stringify({ rejected }));
+
+await commands.next();
+const htmlId = {};
+for (const entry of pages) htmlId[entry.name] = await resultFor(entry, ['point']);
+console.log(JSON.stringify({ htmlId }));
+
+await commands.next();
+const conflicting = {};
+for (const entry of pages) conflicting[entry.name] = await resultFor(entry, ['point', 'point', 'line']);
+console.log(JSON.stringify({ conflicting }));
 
 await commands.next();
 const large = {};
