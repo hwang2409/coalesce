@@ -992,28 +992,33 @@ def _parse_constrained_sketch_create(payload: dict[str, Any]) -> SketchCreate:
     )
 
 
-def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
-    changes = payload.get("set")
-    if not isinstance(changes, dict) or not changes:
-        raise RequestError("INVALID_PARAMETER", "update set must not be empty")
-    position = changes.get("position")
-    dimension_values = changes.get("dimensionValues")
-    if "dimensionValues" in changes and (
-        not isinstance(dimension_values, dict) or not dimension_values
-    ):
+def _parse_dimension_values(changes: dict[str, Any]) -> dict[str, float] | None:
+    if "dimensionValues" not in changes:
+        return None
+    values = changes["dimensionValues"]
+    if not isinstance(values, dict) or not values:
         raise RequestError(
             "INVALID_PARAMETER",
             "dimensionValues must be a JSON object with at least one entry",
             field="dimensionValues",
         )
-    if isinstance(dimension_values, dict) and any(
-        isinstance(value, bool) for value in dimension_values.values()
-    ):
+    if any(isinstance(value, bool) for value in values.values()):
         raise RequestError(
             "INVALID_PARAMETER",
             "dimensionValues values must be finite numbers",
             field="dimensionValues",
         )
+    return {
+        dimension_id: _finite_number(value, f"dimensionValues.{dimension_id}")
+        for dimension_id, value in values.items()
+    }
+
+
+def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
+    changes = payload.get("set")
+    if not isinstance(changes, dict) or not changes:
+        raise RequestError("INVALID_PARAMETER", "update set must not be empty")
+    position = changes.get("position")
     return SketchUpdate(
         **_sketch_common(payload),
         set=SketchChanges(
@@ -1026,14 +1031,7 @@ def _parse_sketch_update(payload: dict[str, Any]) -> SketchUpdate:
             constrained=(
                 _constrained_sketch(changes["constrained"]) if "constrained" in changes else None
             ),
-            dimension_values=(
-                {
-                    dimension_id: _finite_number(value, f"dimensionValues.{dimension_id}")
-                    for dimension_id, value in dimension_values.items()
-                }
-                if dimension_values is not None
-                else None
-            ),
+            dimension_values=_parse_dimension_values(changes),
         ),
     )
 
@@ -2215,21 +2213,27 @@ def _updated_dimension(
     return replace(dimension, value=value)
 
 
-def _updated_dimensions(
+def _replace_dimension_values(
     model: ConstrainedSketch, values: dict[str, float]
-) -> ConstrainedSketch:
+) -> tuple[Dimension, ...]:
     dimensions = {dimension.id: dimension for dimension in model.dimensions}
     driving_ids = sorted(dimension.id for dimension in model.dimensions if dimension.driving)
     for dimension_id, value in values.items():
         dimensions[dimension_id] = _updated_dimension(
             dimension_id, value, dimensions, driving_ids
         )
+    return tuple(dimensions[dimension.id] for dimension in model.dimensions)
+
+
+def _updated_circular_seeds(
+    model: ConstrainedSketch, dimensions: tuple[Dimension, ...], updated_ids: set[str]
+) -> ConstrainedSketch:
     circular_radii = {
         dimension.entities[0]: (
             dimension.value / 2 if dimension.kind.value == "diameter" else dimension.value
         )
-        for dimension in dimensions.values()
-        if dimension.id in values
+        for dimension in dimensions
+        if dimension.id in updated_ids
         and dimension.kind.value in {"radius", "diameter"}
         and len(dimension.entities) == 1
     }
@@ -2247,9 +2251,15 @@ def _updated_dimensions(
             else circle
             for circle in model.circles
         ),
-        dimensions=tuple(dimensions[dimension.id] for dimension in model.dimensions),
-        solved=None,
     )
+
+
+def _updated_dimensions(
+    model: ConstrainedSketch, values: dict[str, float]
+) -> ConstrainedSketch:
+    dimensions = _replace_dimension_values(model, values)
+    model = _updated_circular_seeds(model, dimensions, set(values))
+    return replace(model, dimensions=dimensions, solved=None)
 
 
 def _apply_sketch_update(

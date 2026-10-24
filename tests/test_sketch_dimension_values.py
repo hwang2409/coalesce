@@ -1,15 +1,33 @@
 import json
+import math
 
 import pytest
-from jsonschema import validate
+from jsonschema import ValidationError, validate
 from mcp import types
 from test_constrained_sketch import graph_sketch, run_server
-from test_mcp_vertical import call_server_tool
+from test_mcp_vertical import SKETCH, call_server_tool
 
 from coalesce.constrained_sketch import ConstrainedSketch
+from coalesce.graph import Sketch
 from coalesce.server import create_server
-from coalesce.service import DocumentService
-from coalesce.sketch_solver import SolvedCircle, SolveResult, SolveStatus
+from coalesce.service import (
+    DocumentService,
+    RequestError,
+    SketchChanges,
+    _apply_sketch_update,
+    _parse_sketch_update,
+    _updated_dimensions,
+)
+from coalesce.sketch_solver import (
+    Circle,
+    Dimension,
+    DimensionKind,
+    OPERAND_SIGNATURES,
+    Point,
+    SolvedCircle,
+    SolveResult,
+    SolveStatus,
+)
 from evals.golden.common import score_artifact
 from evals.golden.constrained_common import extrude, plate_model, sketch_create
 from evals.run import build_before_state
@@ -157,6 +175,89 @@ async def test_dimension_update_rejects_unknown_reference_and_non_positive_value
     assert path.read_bytes() == saved
 
 
+@pytest.mark.parametrize(
+    "dimension_values",
+    [
+        {},
+        {"opening-radius": True},
+        {"opening-radius": False},
+    ],
+)
+def test_dimension_value_parser_rejects_empty_objects_and_booleans(dimension_values):
+    payload = dimension_update()
+    payload["set"]["dimensionValues"] = dimension_values
+
+    with pytest.raises(RequestError, match="dimensionValues"):
+        _parse_sketch_update(payload)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "extra_keys",
+    [
+        ("position",),
+        ("entities",),
+        ("constrained",),
+        ("position", "entities"),
+        ("position", "constrained"),
+        ("entities", "constrained"),
+        ("position", "entities", "constrained"),
+    ],
+)
+async def test_dimension_values_is_exclusive_with_every_other_update_shape(tmp_path, extra_keys):
+    server = create_server(DocumentService(tmp_path / "schema.coalesce.json", warmup=False))
+    listed = await server.request_handlers[types.ListToolsRequest](types.ListToolsRequest())
+    schema = next(tool for tool in listed.root.tools if tool.name == "sketch").inputSchema
+    values = {
+        "position": [0, 0, 0],
+        "entities": SKETCH["entities"],
+        "constrained": plate_model(3),
+    }
+    payload = dimension_update()
+    payload["set"].update({key: values[key] for key in extra_keys})
+
+    with pytest.raises(ValidationError):
+        validate(payload, schema)
+
+
+def test_multi_dimension_update_replaces_all_values_before_one_solve():
+    model = ConstrainedSketch(
+        points=(Point("center", 0, 0),),
+        circles=(Circle("opening", "center", 3),),
+        dimensions=(
+            Dimension("radius", DimensionKind.RADIUS, ("opening",), 3),
+            Dimension("diameter", DimensionKind.DIAMETER, ("opening",), 6),
+        ),
+    )
+    sketch = Sketch("profile", constrained=model)
+    solved_values = []
+
+    def solve_once(request):
+        solved_values.append({dimension.id: dimension.value for dimension in request.dimensions})
+        assert request.circles[0].radius == 4
+        return SolveResult(SolveStatus.UNDER_CONSTRAINED)
+
+    _apply_sketch_update(
+        sketch,
+        SketchChanges(None, None, dimension_values={"radius": 4, "diameter": 8}),
+        solve_once,
+    )
+
+    assert solved_values == [{"radius": 4, "diameter": 8}]
+
+
+@pytest.mark.parametrize("value", [-math.pi / 2, 0, 2 * math.pi, 100])
+def test_angle_dimension_updates_use_unbounded_signed_radians(value):
+    assert OPERAND_SIGNATURES[DimensionKind.ANGLE][0].value_unit == "radians"
+    model = ConstrainedSketch(
+        dimensions=(Dimension("angle", DimensionKind.ANGLE, ("first", "second"), 1),)
+    )
+
+    updated = _updated_dimensions(model, {"angle": value})
+
+    assert updated.dimensions[0].value == value
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("status", "code"),
@@ -226,6 +327,12 @@ async def test_dimension_update_is_published_in_schema_with_staged_example(tmp_p
     serialized = json.dumps(schema)
     assert '"dimensionValues"' in serialized
     assert '"opening-radius": 4' in serialized
+    sketch_tool = next(tool for tool in snapshot["tools"] if tool["name"] == "sketch")
+    assert sketch_tool["description"] == (
+        "Create/update/delete profiles. set.entities or set.constrained replaces the full "
+        "definition; set.dimensionValues changes only the named driving dimensions. "
+        "See coalesce://docs/sketch."
+    )
 
 
 def test_dimension_update_passes_staged_eval_checks(tmp_path):
