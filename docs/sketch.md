@@ -88,6 +88,23 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
   "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
 ```
 
+## design intent and edits
+
+A solve status describes geometric freedom, not edit quality. Fixing every point can return
+`fully_constrained` with zero degrees of freedom, but it leaves no editable driving dimensions.
+Fix only the anchors that define placement. Give dimensions stable ids for sizes that will change,
+such as `opening-radius`, and update the dimension value instead of replacing point coordinates.
+Because `set.constrained` replaces the full constrained definition, resend the same point, entity,
+dimension, and constraint ids with the changed value.
+
+For an outer loop with directly contained inner loops, send all loops in one constrained sketch.
+To extrude it, set `profileIds` to `[<sketch id>]`; this selects all loops, and inner loops become holes.
+To cut it, set `tool` to `{"sketchId": "<sketch id>"}`.
+
+Query the current revision before the first mutation. Each successful mutation returns the next
+revision; use it as the following call's `expectedRevision` and use a new `requestId`. Keep the
+same `sketchId` when editing a sketch so downstream features regenerate from that identity.
+
 ## primitive closed outlines
 
 Primitive sketches support two free-form closed outline kinds in addition to rectangles and circles:
@@ -97,7 +114,7 @@ Primitive sketches support two free-form closed outline kinds in addition to rec
 
 A point can be `[x, y]` or `{"id": "corner", "x": x, "y": y}`. References follow point ids. Array points get default ids `p0`, `p1`, and so on by list position, so reordering or rotating that list moves the ids to different coordinates. Give points explicit ids if you will reorder them.
 
-Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. Inner holes are separate cut or hole features. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. For primitive outlines, inner holes are separate cut or hole features; for constrained sketches, use the single-sketch route above. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
 
 This example creates and extrudes a triangular polyline:
 
@@ -122,8 +139,9 @@ See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a co
 ## exact closed profile extrusion
 
 A constrained sketch can supply one outer closed non-construction loop and directly
-contained inner loops to the existing `extrude` and `cut` features. Use the sketch id
-as the single `profileIds` value. Inner loops become holes. Lines, arcs, and circles
+contained inner loops to the existing `extrude` and `cut` features. For `extrude`, use the
+sketch id as the single `profileIds` value; for `cut`, set `tool` to `{"sketchId": "<sketch id>"}`.
+Inner loops become holes. Lines, arcs, and circles
 remain analytic; construction geometry is ignored. Loop containment is derived from
 the exact solved faces, not entity order. Open, degenerate, self-intersecting,
 touching, crossing, ambiguous, multiple-outer, and three-level island profiles are
