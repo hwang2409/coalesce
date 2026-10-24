@@ -95,23 +95,6 @@ def fixed_pair_model(distance: float) -> dict:
     }
 
 
-def non_converging_model() -> dict:
-    return {
-        "kind": "constrained",
-        "points": [{"id": "origin", "x": 0, "y": 0}, {"id": "far", "x": 1, "y": 0}],
-        "lines": [{"id": "edge", "start": "origin", "end": "far"}],
-        "dimensions": [
-            {
-                "id": "extreme-distance",
-                "kind": "distance",
-                "entities": ["origin", "far"],
-                "value": 1e100,
-            }
-        ],
-        "constraints": [{"id": "fix-origin", "kind": "fix", "entities": ["origin"]}],
-    }
-
-
 def branch_flip_model() -> dict:
     return {
         "kind": "constrained",
@@ -622,7 +605,7 @@ async def test_real_stdio_non_convergence_returns_uncommitted_geometry_and_keeps
     rejected, queried, checked, published = await run_server(
         path,
         [
-            ("sketch", update_request(non_converging_model(), 2, "non-converging")),
+            ("sketch", update_request(rectangle_model(width=1e100), 2, "non-converging")),
             ("query", {"select": {"kind": "graph"}}),
             ("check", {"action": "evaluate", "revision": 2}),
             (
@@ -636,7 +619,10 @@ async def test_real_stdio_non_convergence_returns_uncommitted_geometry_and_keeps
     assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
     diagnostic = rejected["error"]["diagnosticGeometry"]
     assert diagnostic["accepted"] is False
-    assert set(diagnostic["entities"]) == {"origin", "far", "edge"}
+    assert set(diagnostic["entities"]) == {
+        *(f"p{index}" for index in range(8)),
+        *(f"line{index}" for index in range(4)),
+    }
     numbers = [
         number
         for entity in diagnostic["entities"].values()
