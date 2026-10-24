@@ -446,6 +446,26 @@ def _calls_block(markdown, namespace):
     return namespace["calls"]
 
 
+def assert_cycloidal_disc_step(path, bolt_count):
+    solid = import_step(path)
+    assert solid.is_valid
+    assert len(solid.solids()) == 1
+    cylinders = [face for face in solid.faces() if face.geom_type is GeomType.CYLINDER]
+    assert sorted(face.radius for face in cylinders) == pytest.approx([1.5] * bolt_count + [4])
+    assert any(face.geom_type is GeomType.BSPLINE for face in solid.faces())
+    spline = max(
+        (edge for edge in solid.edges() if edge.geom_type is GeomType.BSPLINE),
+        key=lambda edge: edge.length,
+    )
+    samples = [spline.position_at(index / 2000) for index in range(2000)]
+    radii = [math.hypot(point.X, point.Y) for point in samples]
+    maxima = sum(
+        radii[index] > radii[index - 1] and radii[index] > radii[(index + 1) % len(radii)]
+        for index in range(len(radii))
+    )
+    assert maxima == 7
+
+
 @pytest.mark.anyio
 async def test_cycloidal_disc_documented_example_end_to_end(tmp_path):
     markdown = (DOCS / "examples/cycloidal-disc.md").read_text()
@@ -461,20 +481,4 @@ async def test_cycloidal_disc_documented_example_end_to_end(tmp_path):
 
     assert all(result["ok"] is True for result in results)
     assert results[2]["positionNames"] == [f"bolt{index}" for index in range(1, 7)]
-    solid = import_step(target)
-    assert solid.is_valid
-    assert len(solid.solids()) == 1
-    cylinders = [face for face in solid.faces() if face.geom_type is GeomType.CYLINDER]
-    assert sorted(face.radius for face in cylinders) == pytest.approx([1.5] * 6 + [4])
-    assert any(face.geom_type is GeomType.BSPLINE for face in solid.faces())
-    spline = max(
-        (edge for edge in solid.edges() if edge.geom_type is GeomType.BSPLINE),
-        key=lambda edge: edge.length,
-    )
-    samples = [spline.position_at(index / 2000) for index in range(2000)]
-    radii = [math.hypot(point.X, point.Y) for point in samples]
-    maxima = sum(
-        radii[index] > radii[index - 1] and radii[index] > radii[(index + 1) % len(radii)]
-        for index in range(len(radii))
-    )
-    assert maxima == 7
+    assert_cycloidal_disc_step(target, 6)
