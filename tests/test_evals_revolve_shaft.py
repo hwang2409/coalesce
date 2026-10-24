@@ -88,7 +88,7 @@ def test_revolve_shaft_golden_runs_through_stdio(tmp_path):
     ],
 )
 def test_revolve_shaft_mutations_fail_closed(tmp_path, mutation):
-    from build123d import Box, export_step
+    from build123d import Align, Box, Cylinder, Rot, export_step
 
     document, before, steps = _artifact(tmp_path)
     payload = json.loads(document.read_text())
@@ -106,7 +106,8 @@ def test_revolve_shaft_mutations_fail_closed(tmp_path, mutation):
         payload["graph"]["nodes"] = [node for node in nodes if node["id"] != "shoulder_fillet"]
         document.write_text(json.dumps(payload))
     elif mutation == "wrong cylinder radius":
-        export_step(Box(30, 14, 14), steps / "shaft.step")
+        wrong = Rot(0, 90, 0) * Cylinder(7, 30, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        export_step(wrong, steps / "shaft.step")
     elif mutation == "extra solid":
         export_step(Box(1, 1, 1), steps / "extra.step")
 
