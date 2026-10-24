@@ -508,3 +508,22 @@ def test_write_failure_publishes_nothing_and_leaves_no_sibling_temp(tmp_path, mo
     assert all(temporary.parent == destination.parent for temporary in temporary_parents)
     assert not destination.exists()
     assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_result_failure_cannot_follow_the_rename(tmp_path, monkeypatch, existing):
+    destination = tmp_path / "delivery"
+    if existing:
+        destination.mkdir()
+    prepared = [{"partId": "one", "status": "passed", "file": "one.step", "_content": b"one"}]
+
+    def broken_sha256(_data):
+        raise RuntimeError("injected result failure")
+
+    monkeypatch.setattr(export_module.hashlib, "sha256", broken_sha256)
+    with pytest.raises(RuntimeError):
+        export_module.export_parts_separately(destination, prepared, {"parts": []})
+
+    # the failure happens before the commit point, so nothing is published
+    assert (list(destination.iterdir()) == []) if existing else not destination.exists()
+    assert not list(tmp_path.glob(".delivery.tmp-*"))

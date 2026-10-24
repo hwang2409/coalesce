@@ -612,13 +612,14 @@ def export_parts_separately(
     manifest_bytes = (
         json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode()
+    # build every result field before the rename: no failure may follow the commit point
+    part_ids = [part["partId"] for part in prepared]
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     destination, warnings = _publish_prepared_parts(path, prepared, manifest_bytes)
-    return {
-        "path": str(destination),
-        "partIds": [part["partId"] for part in prepared],
-        "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        **({"warnings": warnings} if warnings else {}),
-    }
+    result = {"path": str(destination), "partIds": part_ids, "manifestSha256": manifest_sha256}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
