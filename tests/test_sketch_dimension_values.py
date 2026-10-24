@@ -329,9 +329,8 @@ async def test_dimension_update_is_published_in_schema_with_staged_example(tmp_p
     assert '"opening-radius": 4' in serialized
     sketch_tool = next(tool for tool in snapshot["tools"] if tool["name"] == "sketch")
     assert sketch_tool["description"] == (
-        "Create/update/delete profiles. set.entities or set.constrained replaces the full "
-        "definition; set.dimensionValues changes only the named driving dimensions. "
-        "See coalesce://docs/sketch."
+        "set.entities/set.constrained replace full definition; set.dimensionValues changes only "
+        "named driving dimensions"
     )
 
 
