@@ -13,7 +13,8 @@ EXPECTED_GEOMETRY = {
 
 def _validate_expected_geometry(path, check):
     field = EXPECTED_GEOMETRY[check["kind"]]
-    if not check.get(field):
+    has_bounds = check["kind"] == "bbox" and check.get("min") and check.get("max")
+    if not check.get(field) and not has_bounds:
         raise ValueError(f"invalid {field} in {path}: expected geometry must be non-empty")
 
 
@@ -32,6 +33,13 @@ def _validate_part_hole_positions(path, check):
 def _validate_document_state(path, check):
     if "features" not in check:
         raise ValueError(f"invalid document state in {path}")
+    if "featureIds" in check and not check["featureIds"]:
+        raise ValueError(f"invalid exact feature ids in {path}")
+
+
+def _validate_cylinder_radii(path, check):
+    if not check.get("radii"):
+        raise ValueError(f"invalid cylinder radii in {path}: expected radii must be non-empty")
 
 
 def _validate_port_opening(path, check):
@@ -51,6 +59,7 @@ _CHECK_VALIDATORS = {
     "document_state": (_validate_document_state,),
     "port_opening_clears_connector": (_validate_port_opening,),
     "runner_feature_edit": (_validate_runner_feature_edit,),
+    "cylinder_radii": (_validate_cylinder_radii,),
 }
 
 

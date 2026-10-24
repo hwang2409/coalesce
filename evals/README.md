@@ -40,6 +40,7 @@ The merged product surface adds three hard tasks: `screw-closure-pattern-edit`,
 uv run python -m evals.golden.screw_closure_pattern_edit <out>
 uv run --extra sketch python -m evals.golden.constrained_inner_loop <out>
 uv run --extra sketch python -m evals.golden.constrained_sketch_update_after_extrusion <out>
+uv run python -m evals.golden.revolve_shaft_edit <out>
 ```
 
 These tasks bind every STEP solid back to one persisted manufacturing part. The closure task
@@ -48,4 +49,8 @@ checks that the agent updates the runner's `lid_pattern` feature exactly once, p
 reimported lid hole set and final document state. The constrained tasks check the reimported
 bounding box and inner-loop hole plus the exact saved radius dimension. The update task starts
 from a runner-built 3 mm sketch and extrusion, then requires one saved update of that same
-`profile` to 4 mm; it does not claim that a rejected update occurred.
+`profile` to 4 mm; it does not claim that a rejected update occurred. `revolve-shaft-edit`
+starts from a runner-built full-360 stepped shaft and shoulder fillet, then requires an in-place
+12 to 16 mm profile edit. It preserves the profile point ids and downstream feature identities,
+checks the exact feature set and fillet intent, and reads exact `GeomType.CYLINDER` radii from
+the exported STEP topology without curvature sampling.

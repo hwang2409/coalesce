@@ -197,6 +197,30 @@ def _build_screw_closure_pattern_edit(document, fixture_dir):
     }
 
 
+def _build_revolve_shaft_edit(document, _fixture_dir):
+    from coalesce.service import DocumentService
+
+    from .golden.revolve_shaft_common import stage_shaft
+
+    service = DocumentService(document, warmup=False)
+    stage_shaft(service)
+    payload = json.loads(document.read_text())
+    nodes = {node["id"]: node for node in payload["graph"]["nodes"]}
+    return {
+        "revision": service.revision,
+        "featureId": "profile",
+        "feature": nodes["profile"],
+        "preservedFeatures": {
+            feature_id: nodes[feature_id]
+            for feature_id in ("shaft", "shoulder_fillet")
+        },
+        "receiptFeatureIds": [
+            receipt.get("response", {}).get("changedFeatureIds")
+            for receipt in payload.get("receipts", [])
+        ],
+    }
+
+
 def _build_constrained_sketch_update(document, _fixture_dir):
     from coalesce.service import DocumentService
 
@@ -222,6 +246,7 @@ _BEFORE_STATE_BUILDERS = {
     "pcb-change": _build_pcb_change,
     "screw-closure-pattern-edit": _build_screw_closure_pattern_edit,
     "constrained-sketch-update-after-extrusion": _build_constrained_sketch_update,
+    "revolve-shaft-edit": _build_revolve_shaft_edit,
 }
 
 
