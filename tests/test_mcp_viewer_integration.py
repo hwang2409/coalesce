@@ -1338,6 +1338,9 @@ def _rejected_geometry_model(point_count: int | None = None) -> dict:
             {"id": "line-end", "x": 10, "y": 0},
             {"id": "arc-end", "x": 0, "y": 10},
             {"id": "circle-center", "x": 20, "y": 20},
+            {"id": "spare-1", "x": 30, "y": 0},
+            {"id": "spare-2", "x": 40, "y": 0},
+            {"id": "spare-3", "x": 50, "y": 0},
         ],
         "lines": [{"id": "line", "start": "origin", "end": "line-end"}],
         "arcs": [{
@@ -1352,8 +1355,48 @@ def _rejected_geometry_model(point_count: int | None = None) -> dict:
         "circles": [{"id": "circle", "center": "circle-center", "radius": 3}],
         "dimensions": [],
         "constraints": [
-            {"id": "fix", "kind": "fix", "entities": ["origin"]},
-            {"id": "fix-again", "kind": "fix", "entities": ["origin"]},
+            constraint
+            for point, constraint_id in zip(
+                ("origin", "line-end", "arc-end", "circle-center", "spare-1", "spare-2", "spare-3"),
+                ("fix-origin", "fix-line-end", "fix-arc-end", "fix-circle-center", "fix-spare-1", "fix-spare-2", "fix-spare-3"),
+                strict=True,
+            )
+            for constraint in (
+                {"id": constraint_id, "kind": "fix", "entities": [point]},
+                {"id": f"duplicate-{point}", "kind": "fix", "entities": [point]},
+            )
+        ],
+    }
+
+
+def _html_id_rejected_model() -> dict:
+    return {
+        "kind": "constrained",
+        "points": [{"id": "p", "x": 0, "y": 0}],
+        "lines": [],
+        "arcs": [],
+        "circles": [],
+        "dimensions": [],
+        "constraints": [
+            {"id": "<b>x</b>-1", "kind": "fix", "entities": ["p"]},
+            {"id": "<b>x</b>-2", "kind": "fix", "entities": ["p"]},
+        ],
+    }
+
+
+def _conflicting_rejected_model() -> dict:
+    return {
+        "kind": "constrained",
+        "points": [{"id": "p", "x": 0, "y": 0}, {"id": "q", "x": 5, "y": 0}],
+        "lines": [{"id": "edge", "start": "p", "end": "q"}],
+        "arcs": [],
+        "circles": [],
+        "dimensions": [
+            {"id": "distance-10", "kind": "distance", "entities": ["p", "q"], "value": 10}
+        ],
+        "constraints": [
+            {"id": "fix-p", "kind": "fix", "entities": ["p"]},
+            {"id": "fix-q", "kind": "fix", "entities": ["q"]},
         ],
     }
 
@@ -1456,9 +1499,27 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
             )
             assert rejected["revision"] == 2
             assert set(rejected["error"]["diagnosticGeometry"]["entities"]) == {
-                "origin", "line-end", "arc-end", "circle-center", "line", "arc", "circle"
+                "origin", "line-end", "arc-end", "circle-center", "spare-1", "spare-2", "spare-3",
+                "line", "arc", "circle",
             }
             shown = await advance()
+
+            html_result = result_json(
+                await session.call_tool(
+                    "sketch", _rejected_sketch_request(_html_id_rejected_model(), "html-id")
+                )
+            )
+            assert html_result["error"]["code"] == "SKETCH_REDUNDANT"
+            html_id = await advance()
+
+            conflicting_result = result_json(
+                await session.call_tool(
+                    "sketch",
+                    _rejected_sketch_request(_conflicting_rejected_model(), "conflicting"),
+                )
+            )
+            assert conflicting_result["error"]["code"] == "SKETCH_CONFLICTING"
+            conflicting = await advance()
 
             queried = result_json(await session.call_tool("query", {"select": {"kind": "graph"}}))
             checked = result_json(await session.call_tool("check", {"action": "evaluate", "revision": 2}))
@@ -1534,8 +1595,10 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
         first = shown["rejected"][size]
         assert first["revision"] == 2
         assert first["diagnostic"] == {
-            "entityCount": 7,
-            "kinds": ["arc", "circle", "line", "point", "point", "point", "point"],
+            "entityCount": 10,
+            "kinds": [
+                "arc", "circle", "line", "point", "point", "point", "point", "point", "point", "point"
+            ],
             "frame": {
                 "origin": [0, -4, 0],
                 "normal": [0, -1, 0],
@@ -1545,8 +1608,19 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
         }
         assert first["label"] == "Rejected sketch — not accepted"
         assert "Rejected sketch — not accepted" in first["alert"]
+        assert (
+            "Sketch rejected rejected: redundant constraints duplicate-origin, fix-arc-end, "
+            "fix-circle-center, fix-line-end, fix-origin, +3 more"
+        ) in first["alert"]
+        assert "Sketch rejected rejected: redundant constraints <b>x</b>" in html_id["htmlId"][size]["alert"]
+        assert html_id["htmlId"][size]["constraintMarkup"] == 0
+        assert html_id["htmlId"][size]["errors"] == []
         assert first["keyboardFocus"] == "BUTTON"
         assert first["errors"] == []
+        assert (
+            "Sketch rejected rejected: conflicting constraints distance-10, fix-p, fix-q"
+        ) in conflicting["conflicting"][size]["alert"]
+        assert conflicting["conflicting"][size]["errors"] == []
         assert large["large"][size]["diagnostic"]["entityCount"] == 300
         assert large["large"][size]["errors"] == []
         assert omitted["omitted"][size]["revision"] == 2
