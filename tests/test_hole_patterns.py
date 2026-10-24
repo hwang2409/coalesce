@@ -336,6 +336,32 @@ async def test_count_update_reports_moved_and_removed_pattern_members(tmp_path):
     ]
 
 
+def test_pattern_change_summary_rounds_axis_aligned_circular_positions():
+    positions = [
+        [10 * math.cos(math.radians(angle)), 10 * math.sin(math.radians(angle))]
+        for angle in (90, 180, 270)
+    ]
+    changes = [
+        {
+            "selector": "pattern",
+            "holesAdded": [],
+            "holesRemoved": [],
+            "holesMoved": [
+                {"name": "bolt2", "oldPosition": positions[0], "newPosition": positions[1]},
+                {"name": "bolt3", "oldPosition": positions[1], "newPosition": positions[2]},
+            ],
+        }
+    ]
+
+    summary = _pattern_selection_summary(changes, "edited hole holes")
+
+    assert summary == (
+        "edited hole holes, bolt2 moved (0, 10) → (-10, 0), "
+        "bolt3 moved (-10, 0) → (0, -10)"
+    )
+    assert len(summary) <= 160
+
+
 def test_pattern_change_summary_is_bounded_with_long_member_names():
     name_prefix = "p" * 140
     moved = [

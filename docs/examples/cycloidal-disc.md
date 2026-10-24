@@ -2,6 +2,20 @@
 
 This example makes a 7-lobe cycloidal-drive disc, extrudes it by 5 mm, adds six 3 mm bolt holes on a 12 mm bolt circle and an 8 mm center bore, and exports STEP.
 
+## run the demo
+
+From a clean checkout, run:
+
+```bash
+uv run --extra sketch python examples/cycloidal_disc_demo.py --out /tmp/cycloidal-disc-demo --screenshots
+```
+
+The output directory contains the revisioned `.coalesce.json` document, `transcript.json` with every public MCP resource and tool call, and the final `cycloidal-disc.step`. If a launchable Playwright Chromium is available, it also contains pre-edit and post-edit viewer screenshots at 1280×800 and 390×844. Without Playwright, the command prints a clear skip message and completes the CAD workflow.
+
+### what you will see
+
+The live viewer first shows the accepted seven-lobe disc with six bolt holes and a center bore. The demo then edits the bolt-circle radius and count in place. The final model has four repositioned bolt holes; `selectionChanges` in the transcript names the tracked moved hole and the two removed holes. The same transcript records the `valid_brep` check, fresh-process export preflight, and STEP publication.
+
 ## profile equations
 
 Let:

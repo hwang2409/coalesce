@@ -2750,8 +2750,9 @@ def _lineage(
 
 def _mm(value: float | tuple[float, ...]) -> str:
     if isinstance(value, tuple):
-        return "(" + ", ".join(f"{c:g}" for c in value) + ")"
-    return f"{value:g}"
+        return "(" + ", ".join(_mm(coordinate) for coordinate in value) + ")"
+    rounded = round(value, 6)
+    return f"{0 if rounded == 0 else rounded:g}"
 
 
 # the fields the update tools change, as the human reads them: a word, and old -> new values
