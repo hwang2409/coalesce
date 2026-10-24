@@ -382,15 +382,28 @@ class SketchSolverSession:
             )
         self.timeout = timeout
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._termination_lock = threading.Lock()
+        self._closed = False
         self._process: subprocess.Popen | None = None
 
     def solve(self, request: SolveRequest) -> SolveResult:
         with self._lock:
-            process = self._process
-            if process is None or process.poll() is not None:
-                if process is not None:
-                    self._stop(process)
-                process = self._process = _start_solver_child()
+            stale_process = None
+            with self._state_lock:
+                if self._closed:
+                    return _solver_failed("the server is shutting down")
+                process = self._process
+                if process is not None and process.poll() is not None:
+                    stale_process = process
+                    self._process = process = None
+            if stale_process is not None:
+                self._terminate(stale_process)
+            if process is None:
+                with self._state_lock:
+                    if self._closed:
+                        return _solver_failed("the server is shutting down")
+                    process = self._process = _start_solver_child()
             messages: queue.Queue[Any] = queue.Queue(maxsize=1)
             try:
                 assert process.stdin is not None
@@ -430,13 +443,23 @@ class SketchSolverSession:
                 return _solver_failed("the sketch solver process exited unexpectedly")
 
     def close(self) -> None:
-        with self._lock:
-            if self._process is not None:
-                self._stop(self._process)
+        with self._state_lock:
+            self._closed = True
+            process = self._process
+        if process is not None:
+            self._stop(process)
 
     def _stop(self, process: subprocess.Popen) -> None:
-        if self._process is process:
-            self._process = None
+        with self._termination_lock:
+            with self._state_lock:
+                if self._process is not process:
+                    return
+            self._terminate(process)
+            with self._state_lock:
+                if self._process is process:
+                    self._process = None
+
+    def _terminate(self, process: subprocess.Popen) -> None:
         lifetime_fd = getattr(process, "_coalesce_lifetime_fd", None)
         if lifetime_fd is not None:
             with suppress(OSError):

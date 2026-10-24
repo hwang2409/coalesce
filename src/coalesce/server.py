@@ -550,4 +550,5 @@ async def run_stdio(service: DocumentService) -> None:
         async with stdio_server() as (read, write):
             await server.run(read, write, server.create_initialization_options())
     finally:
-        service.close()
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(service.close)

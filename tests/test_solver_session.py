@@ -5,8 +5,10 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 import pytest
 from test_constrained_sketch import (
     create_request,
@@ -15,8 +17,9 @@ from test_constrained_sketch import (
     update_request,
 )
 
+import coalesce.server as server_module
 import coalesce.sketch_solver as solver_module
-from coalesce.server import TOOLS_GUIDE, create_server
+from coalesce.server import TOOLS_GUIDE, create_server, run_stdio
 from coalesce.service import DocumentService
 from coalesce.sketch_solver import (
     MAX_FRAME_BYTES,
@@ -146,6 +149,7 @@ def test_solver_failure_preserves_accepted_document(tmp_path, monkeypatch, failu
     assert service.sketch(create_request(rectangle_model()))["ok"] is True
     saved = path.read_bytes()
     service.close()
+    service = DocumentService(path, warmup=False, sketch_solve_timeout=0.5)
     pid_file = tmp_path / "atomic-pid"
     actions = {
         "crash": "os._exit(7)",
@@ -169,6 +173,147 @@ def test_solver_failure_preserves_accepted_document(tmp_path, monkeypatch, failu
     )
     assert path.read_bytes() == saved
     assert _wait_until(lambda: not _pid_exists(int(pid_file.read_text())))
+
+
+def test_solve_after_close_does_not_start_another_child(tmp_path, monkeypatch):
+    response = tmp_path / "response"
+    with response.open("wb") as stream:
+        _write_message(stream, ("result", solver_module.SolveResult(SolveStatus.FULLY_CONSTRAINED)))
+    pids = []
+
+    def start():
+        child = _script_child(
+            tmp_path,
+            f"import sys\nsys.stdin.buffer.read(1)\nsys.stdout.buffer.write(open({str(response)!r}, 'rb').read()); sys.stdout.buffer.flush()\n",
+        )
+        pids.append(child.pid)
+        return child
+
+    monkeypatch.setattr(solver_module, "_start_solver_child", start)
+    session = SketchSolverSession()
+    session.close()
+
+    result = session.solve(SolveRequest())
+
+    assert result.errors[0].code == "SOLVER_FAILED"
+    assert "shutting down" in result.errors[0].message
+    assert pids == []
+
+
+def test_close_interrupts_hung_solve_without_restarting(tmp_path, monkeypatch):
+    pid_file = tmp_path / "hung-pid"
+    child = _script_child(
+        tmp_path,
+        f"import os, sys, time\nfrom pathlib import Path\nPath({str(pid_file)!r}).write_text(str(os.getpid()))\nsys.stdin.buffer.read(1)\ntime.sleep(30)\n",
+    )
+    starts = []
+
+    def start():
+        starts.append(child.pid)
+        return child
+
+    monkeypatch.setattr(solver_module, "_start_solver_child", start)
+    session = SketchSolverSession(timeout=120)
+    result = []
+    solve_thread = threading.Thread(target=lambda: result.append(session.solve(SolveRequest())))
+    solve_thread.start()
+    assert _wait_until(pid_file.exists)
+
+    started = time.monotonic()
+    close_thread = threading.Thread(target=session.close)
+    close_thread.start()
+    try:
+        close_thread.join(timeout=1)
+        assert not close_thread.is_alive()
+        elapsed = time.monotonic() - started
+        assert elapsed < 1
+        solve_thread.join(timeout=1)
+        assert not solve_thread.is_alive()
+        assert result[0].errors[0].code == "SOLVER_FAILED"
+        assert starts == [child.pid]
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+        solve_thread.join(timeout=1)
+        close_thread.join(timeout=1)
+
+
+def test_close_before_delayed_startup_regeneration_never_starts_child(tmp_path, monkeypatch):
+    class DelayedLoader:
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def start(self):
+            self.started.set()
+
+        def wait(self):
+            self.release.wait()
+
+    loader = DelayedLoader()
+    service = DocumentService(
+        tmp_path / "delayed.coalesce.json", warmup=False, kernel_loader=loader
+    )
+    regeneration_done = threading.Event()
+    starts = []
+
+    def regenerate(_graph):
+        try:
+            return service._solver.solve(SolveRequest())
+        finally:
+            regeneration_done.set()
+
+    monkeypatch.setattr(service, "_regenerate", regenerate)
+
+    def unexpected_start():
+        starts.append("started")
+        raise RuntimeError("solver child started after close")
+
+    monkeypatch.setattr(solver_module, "_start_solver_child", unexpected_start)
+    service.start_kernel_warmup()
+    assert loader.started.wait(1)
+
+    service.close()
+    loader.release.set()
+
+    assert regeneration_done.wait(1)
+    assert starts == []
+
+
+@pytest.mark.anyio
+async def test_run_stdio_close_does_not_block_event_loop(monkeypatch):
+    close_finished = []
+    heartbeat = []
+
+    class Service:
+        def close(self):
+            time.sleep(0.3)
+            close_finished.append(time.monotonic())
+
+    class Server:
+        def create_initialization_options(self):
+            return None
+
+        async def run(self, _read, _write, _options):
+            return None
+
+    @asynccontextmanager
+    async def fake_stdio_server():
+        yield object(), object()
+
+    monkeypatch.setattr(server_module, "create_server", lambda _service: Server())
+    monkeypatch.setattr(server_module, "stdio_server", fake_stdio_server)
+
+    async def record_heartbeat():
+        await anyio.sleep(0.05)
+        heartbeat.append(time.monotonic())
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(run_stdio, Service())
+        tasks.start_soon(record_heartbeat)
+
+    assert heartbeat[0] < close_finished[0]
 
 
 def test_missing_optional_dependency_reaps_child(tmp_path, monkeypatch):
