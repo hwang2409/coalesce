@@ -9,20 +9,21 @@ from test_mcp_vertical import run_server
 from test_viewer_review_flow import call, module, open_driver, wait_for  # noqa: F401
 
 import coalesce.revolution as revolution_module
-from coalesce.service import DocumentService
+from coalesce.fit_summary import _diameter_fact
+from coalesce.service import DocumentService, _scene_parts
 from coalesce.viewer import ViewerSceneStore, ViewerServer
 
 
-def polyline_sketch(points, *, revision=0, request_id="sketch", sketch_id="profile"):
+def polyline_sketch(
+    points, *, revision=0, request_id="sketch", sketch_id="profile", kind="polyline"
+):
     return {
         "action": "create",
         "expectedRevision": revision,
         "requestId": request_id,
         "sketchId": sketch_id,
         "plane": {"kind": "origin", "name": "XY"},
-        "entities": [
-            {"id": "outline", "kind": "polyline", "points": points, "closed": True}
-        ],
+        "entities": [{"id": "outline", "kind": kind, "points": points, "closed": True}],
     }
 
 
@@ -44,28 +45,100 @@ def revolve(*, revision=1, request_id="revolve", feature_id="part", sketch_id="p
 
 SHAFT = [[0, 0], [30, 0], [30, 5], [20, 5], [20, 10], [0, 10]]
 PULLEY = [[0, 4], [30, 4], [30, 8], [20, 8], [20, 14], [0, 14]]
+CONICAL_INNER = [[0, 4], [30, 6], [30, 14], [0, 14]]
+COUNTERBORE = [[0, 4], [20, 4], [20, 6], [30, 6], [30, 14], [0, 14]]
+OUTSIDE_GROOVE = [
+    [0, 4],
+    [30, 4],
+    [30, 14],
+    [20, 14],
+    [20, 12],
+    [10, 12],
+    [10, 14],
+    [0, 14],
+]
+CHAMFERED_INNER = [[0, 4], [5, 6], [30, 6], [30, 14], [0, 14]]
 
 
 @pytest.mark.parametrize(
-    ("name", "points", "fact"),
+    ("name", "points", "kind", "fact"),
     [
-        ("shaft", SHAFT, "360° about the X axis of sketch profile. Diameters Ø10, Ø20 mm"),
+        (
+            "conical-inner",
+            CONICAL_INNER,
+            "polyline",
+            "360° about the X axis of sketch profile. Outer diameter Ø28 mm",
+        ),
+        (
+            "counterbore",
+            COUNTERBORE,
+            "polyline",
+            "360° about the X axis of sketch profile. Bores Ø8, Ø12 mm. Outer diameter Ø28 mm",
+        ),
+        (
+            "outside-groove",
+            OUTSIDE_GROOVE,
+            "polyline",
+            "360° about the X axis of sketch profile. Bore Ø8 mm. Outer diameters Ø24, Ø28 mm",
+        ),
+        (
+            "chamfered-inner",
+            CHAMFERED_INNER,
+            "polyline",
+            "360° about the X axis of sketch profile. Bore Ø12 mm. Outer diameter Ø28 mm",
+        ),
+        (
+            "spline",
+            [[0, 10], [10, 4], [30, 10], [10, 16]],
+            "spline",
+            "360° about the X axis of sketch profile",
+        ),
+        (
+            "shaft",
+            SHAFT,
+            "polyline",
+            "360° about the X axis of sketch profile. Outer diameters Ø10, Ø20 mm",
+        ),
         (
             "pulley",
             PULLEY,
-            "360° about the X axis of sketch profile. Bore Ø8 mm. Diameters Ø16, Ø28 mm",
+            "polyline",
+            "360° about the X axis of sketch profile. Bore Ø8 mm. Outer diameters Ø16, Ø28 mm",
         ),
     ],
 )
-def test_revolved_part_facts_use_exact_profile_geometry(tmp_path, name, points, fact):
+def test_revolved_part_facts_use_exact_profile_geometry(tmp_path, name, points, kind, fact):
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / f"{name}.coalesce.json", scene_store=store)
 
-    assert call(service, "sketch", polyline_sketch(points))["ok"]
+    assert call(service, "sketch", polyline_sketch(points, kind=kind))["ok"]
     assert call(service, "feature", revolve(feature_id=name))["ok"]
     [part] = wait_for(store, 2)["parts"]
 
     assert part["facts"] == [{"label": "Revolved", "value": fact}]
+
+
+def test_revolve_dimension_counts_replace_long_value_lists():
+    assert _diameter_fact([2, 4, 6, 8], "Bore", "Bores") == "4 bores"
+    assert (
+        _diameter_fact([2, 4, 6, 8], "Outer diameter", "Outer diameters")
+        == "4 outer diameters"
+    )
+
+
+def test_revolve_scene_publication_does_not_rebuild_profile(tmp_path, monkeypatch):
+    service = DocumentService(tmp_path / "publication.coalesce.json", warmup=False)
+    assert service.sketch(polyline_sketch(PULLEY))["ok"]
+    assert service.feature(revolve(feature_id="pulley"))["ok"]
+
+    def unexpected_profile_build(*_args, **_kwargs):
+        raise RuntimeError("profile rebuilt during scene publication")
+
+    monkeypatch.setattr(revolution_module, "_profile_for_revolution", unexpected_profile_build)
+    store = ViewerSceneStore()
+    store.publish(1, _scene_parts(service._regen))
+
+    assert store.snapshot()[1] == 1
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
@@ -83,6 +156,7 @@ def test_pulley_revolve_facts_render_in_real_browser(module, viewport, tmp_path)
         text = " ".join(shown["parts"][0].split())
         assert "Revolved 360° about the X axis of sketch profile" in text
         assert "Bore Ø8 mm" in text
+        assert "Outer diameters Ø16, Ø28 mm" in text
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:

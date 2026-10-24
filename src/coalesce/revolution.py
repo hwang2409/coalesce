@@ -24,6 +24,7 @@ _AXIS_TOLERANCE = 1e-7
 class RevolutionResult:
     shape: Shape
     candidates: list[Candidate]
+    metadata: dict[str, list[float]]
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,26 @@ def _generated_face(node: Revolve, maker, segment: str, edge: Edge, on_axis: boo
     return generated[0]
 
 
+def _profile_diameters(profile: _RevolutionProfile, axis: str) -> dict[str, list[float]]:
+    orientation = 1 if profile.face.normal_at().Z > 0 else -1
+    dimensions: dict[str, set[float]] = {"bores": set(), "outerDiameters": set()}
+    for edge in profile.segments.values():
+        if edge.geom_type is not GeomType.LINE:
+            continue
+        vertices = edge.vertices()
+        ordinates = [_ordinate(vertex.center(), axis) for vertex in vertices]
+        if max(ordinates) - min(ordinates) > _AXIS_TOLERANCE:
+            continue
+        ordinate = ordinates[0]
+        if abs(ordinate) <= _AXIS_TOLERANCE:
+            continue
+        tangent = edge.tangent_at(0)
+        material_direction = orientation * (tangent.X if axis == "x" else -tangent.Y)
+        kind = "bores" if ordinate * material_direction > 0 else "outerDiameters"
+        dimensions[kind].add(round(2 * abs(ordinate), 9))
+    return {kind: sorted(values) for kind, values in dimensions.items()}
+
+
 def _face_candidates(node: Revolve, sketch: Sketch, profile: _RevolutionProfile, maker, axis_segments: set[str]) -> list[Candidate]:
     body = BodySource(node.id, profile.entity_id)
     faces = []
@@ -195,4 +216,5 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
     maker, shape = _make_revolution(node, profile, location)
     _validate_result(node, shape)
     faces = _face_candidates(node, sketch, profile, maker, axis_segments)
-    return RevolutionResult(shape, [*faces, *derive_edge_candidates(node.id, shape, faces)])
+    candidates = [*faces, *derive_edge_candidates(node.id, shape, faces)]
+    return RevolutionResult(shape, candidates, _profile_diameters(local, node.axis))
