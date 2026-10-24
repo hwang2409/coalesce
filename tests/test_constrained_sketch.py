@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import shutil
 import signal
@@ -418,6 +419,7 @@ async def test_missing_solver_extra_is_structured_and_primitive_still_works(tmp_
     assert constrained["revision"] == 0
     assert constrained["error"]["code"] == "SKETCH_SOLVER_UNAVAILABLE"
     assert "coalesce[sketch]" in constrained["error"]["message"]
+    assert "diagnosticGeometry" not in constrained["error"]
     assert primitive["ok"] is True
     assert primitive["revision"] == 1
 
@@ -517,6 +519,7 @@ async def test_malformed_constrained_payload_is_invalid_parameter(tmp_path, chan
     assert result["ok"] is False
     assert result["error"]["code"] == "INVALID_PARAMETER"
     assert result["error"]["field"] == field
+    assert "diagnosticGeometry" not in result["error"]
 
 
 @pytest.mark.anyio
@@ -569,6 +572,7 @@ def test_solver_process_failures_only_expose_registered_codes(tmp_path, monkeypa
         return []
 
     assert set(codes(result)) <= set(ERROR_REGISTRY)
+    assert "diagnosticGeometry" not in result["error"]
 
 
 @pytest.mark.anyio
@@ -590,6 +594,7 @@ async def test_did_not_converge_update_is_atomic(tmp_path):
     assert rejected["ok"] is False
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+    assert "diagnosticGeometry" not in rejected["error"]
     assert path.read_bytes() == saved
 
 
@@ -632,12 +637,15 @@ async def test_real_stdio_non_convergence_returns_uncommitted_geometry_and_keeps
     diagnostic = rejected["error"]["diagnosticGeometry"]
     assert diagnostic["accepted"] is False
     assert set(diagnostic["entities"]) == {"origin", "far", "edge"}
-    assert all(
-        isinstance(value, (int, float))
+    numbers = [
+        number
         for entity in diagnostic["entities"].values()
-        for key, value in entity.items()
-        if key != "kind" and not isinstance(value, list)
-    )
+        for value in entity.values()
+        if not isinstance(value, (str, bool))
+        for number in (value if isinstance(value, list) else [value])
+    ]
+    assert all(math.isfinite(number) for number in numbers)
+    assert all(number == round(number, 6) for number in numbers)
     assert rejected["revision"] == queried["revision"] == checked["revision"] == 2
     assert graph_sketch(queried)["constrained"]["solved"]["status"] == "fully_constrained"
     assert checked["ok"] is True
@@ -653,6 +661,7 @@ def test_failed_solve_geometry_keeps_stable_constraint_ids_and_is_response_only(
     )
     try:
         assert service.sketch(create_request(rectangle_model()))["ok"] is True
+        assert store.wait_for_change(0, 3)
         scene_revision = store.current_revision
         redundant = service.sketch(update_request(fixed_pair_model(5), 1, "redundant"))
         conflicting = service.sketch(update_request(fixed_pair_model(10), 1, "conflicting"))

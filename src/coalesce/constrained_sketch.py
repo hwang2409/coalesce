@@ -373,6 +373,7 @@ def result_payload(model: ConstrainedSketch) -> dict[str, Any]:
         "entities": {
             key: {"kind": type(entity).__name__, **entity.__dict__}
             for key, entity in result.entities.items()
+            if result.status in {SolveStatus.UNDER_CONSTRAINED, SolveStatus.FULLY_CONSTRAINED}
         },
         "landmarks": dict(result.landmarks),
         "diagnostics": {

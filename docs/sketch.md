@@ -32,6 +32,12 @@ Call `solve_sketch()` with coalesce-owned points, lines, arcs, circles, dimensio
 
 A successful numeric solve is not enough to accept geometry. Callers that edit a sketch must provide branch landmarks from the last accepted result. The seam fails closed if a landmark changes sign or becomes too close to zero.
 
+### failed-solve diagnostic geometry
+
+A redundant, conflicting, or non-converged edit can return the solver's finite last iterate as `error.diagnosticGeometry`. The object always contains `accepted: false`; its `entities` are keyed by the stable ids from that request. It is response-only diagnostic data, not CAD geometry. Coalesce never stores it in the document, publishes it as a viewer scene revision, uses it as a reference or check input, or exports it.
+
+Coordinates are rounded to six decimal places. The response contains no more entities than the request and is limited to 64 KiB by `MAX_DIAGNOSTIC_GEOMETRY_BYTES`. If it exceeds that limit, `diagnosticGeometry` is absent and `diagnosticGeometryOmitted` reports `payload_too_large` and the byte limit. A branch flip, malformed input, missing solver dependency, solver crash or protocol failure, timeout, or non-finite last iterate has no `diagnosticGeometry`. Redundant and conflicting constraint ids remain in the normal solve diagnostics.
+
 ### geometry conventions
 
 Line and angle direction follows each line's ordered `start` → `end` points. An `Arc` names its center, start point, and end point in that order. Arc angles use radians. The arc starts at `start_angle` and sweeps counterclockwise to `end_angle`; its sweep must be more than zero and less than `2π`. A positive angle dimension rotates counterclockwise from its first directed line to its second; a negative value rotates clockwise.
