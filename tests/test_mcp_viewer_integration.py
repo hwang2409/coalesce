@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import re
 import shutil
@@ -35,6 +36,7 @@ ENCLOSURE_SMOKE = Path(__file__).with_name("mcp_viewer_enclosure_smoke.mjs")
 SCREW_SMOKE = Path(__file__).with_name("mcp_viewer_screw_smoke.mjs")
 REPAIR_HISTORY_SMOKE = Path(__file__).with_name("viewer_repair_history.mjs")
 LID_SMOKE = Path(__file__).with_name("mcp_viewer_lid_smoke.mjs")
+REJECTED_SKETCH_SMOKE = Path(__file__).with_name("rejected_sketch_overlay.mjs")
 KICAD_FIXTURE = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
 KICAD_MOVED_FIXTURE = Path(__file__).parent / "fixtures/kicad/features-moved.kicad_pcb"
 
@@ -1309,3 +1311,211 @@ def test_single_body_part_is_labelled_by_its_feature(tmp_path):
     boss = next(part for part in parts if part["label"] == "boss_extrude")
     assert boss["partId"] == "boss_extrude/boss"
     assert boss["terminalFeatureId"] == "boss_extrude"
+
+
+def _rejected_geometry_model(point_count: int | None = None) -> dict:
+    if point_count is not None:
+        return {
+            "kind": "constrained",
+            "points": [
+                {"id": f"p{index:04d}", "x": index * 0.1, "y": -(index % 20)}
+                for index in range(point_count)
+            ],
+            "lines": [],
+            "arcs": [],
+            "circles": [],
+            "dimensions": [],
+            "constraints": [
+                {"id": "fix", "kind": "fix", "entities": ["p0000"]},
+                {"id": "fix-again", "kind": "fix", "entities": ["p0000"]},
+            ],
+        }
+    return {
+        "kind": "constrained",
+        "points": [
+            {"id": "origin", "x": 0, "y": 0},
+            {"id": "line-end", "x": 10, "y": 0},
+            {"id": "arc-end", "x": 0, "y": 10},
+            {"id": "circle-center", "x": 20, "y": 20},
+        ],
+        "lines": [{"id": "line", "start": "origin", "end": "line-end"}],
+        "arcs": [{
+            "id": "arc",
+            "center": "origin",
+            "start": "line-end",
+            "end": "arc-end",
+            "radius": 10,
+            "start_angle": 0,
+            "end_angle": math.pi / 2,
+        }],
+        "circles": [{"id": "circle", "center": "circle-center", "radius": 3}],
+        "dimensions": [],
+        "constraints": [
+            {"id": "fix", "kind": "fix", "entities": ["origin"]},
+            {"id": "fix-again", "kind": "fix", "entities": ["origin"]},
+        ],
+    }
+
+
+def _rejected_sketch_request(model: dict, request_id: str) -> dict:
+    return {
+        "action": "create",
+        "expectedRevision": 2,
+        "requestId": request_id,
+        "sketchId": "rejected",
+        "plane": {"kind": "origin", "name": "XY"},
+        "constrained": model,
+    }
+
+
+@pytest.mark.anyio
+async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_path, browser_module):
+    path = tmp_path / "rejected-overlay.coalesce.json"
+    exported = tmp_path / "accepted.step"
+    errlog = (tmp_path / "rejected-overlay.stderr").open("w+")
+    parameters = StdioServerParameters(
+        command=shutil.which("coalesce") or "coalesce",
+        args=["--document", str(path)],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    screenshots = Path(
+        os.environ.get(
+            "REJECTED_OVERLAY_SCREENSHOTS",
+            Path.home() / ".zeta/scratch/coalesce/ux-shots-rejected-overlay",
+        )
+    )
+    screenshots.mkdir(parents=True, exist_ok=True)
+
+    async with stdio_client(parameters, errlog=errlog) as (read, write), ClientSession(
+        read, write
+    ) as session:
+        await session.initialize()
+        errlog.seek(0)
+        url = next(
+            line.removeprefix("coalesce viewer: ")
+            for line in errlog.read().splitlines()
+            if line.startswith("coalesce viewer: ")
+        )
+        base = {
+            "action": "create",
+            "expectedRevision": 0,
+            "requestId": "base",
+            "sketchId": "base",
+            "plane": {"kind": "origin", "name": "XY"},
+            "entities": [{
+                "id": "outline",
+                "kind": "rectangle",
+                "width": {"value": 10, "unit": "mm"},
+                "height": {"value": 8, "unit": "mm"},
+            }],
+        }
+        extrude = {
+            "action": "create",
+            "expectedRevision": 1,
+            "requestId": "body",
+            "featureId": "body",
+            "kind": "extrude",
+            "parameters": {
+                "profile": {"sketchId": "base", "profileIds": ["outline"]},
+                "distance": {"value": 5, "unit": "mm"},
+                "operation": "new_body",
+                "direction": "normal",
+            },
+        }
+        assert result_json(await session.call_tool("sketch", base))["revision"] == 1
+        assert result_json(await session.call_tool("feature", extrude))["revision"] == 2
+        driver = await asyncio.create_subprocess_exec(
+            "node",
+            str(REJECTED_SKETCH_SMOKE),
+            browser_module,
+            url,
+            str(screenshots),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+        )
+
+        async def answer():
+            return json.loads(await asyncio.wait_for(driver.stdout.readline(), timeout=60))
+
+        async def advance():
+            driver.stdin.write(b"next\n")
+            await driver.stdin.drain()
+            return await answer()
+
+        try:
+            assert await answer() == {"ready": True}
+            rejected = result_json(
+                await session.call_tool(
+                    "sketch", _rejected_sketch_request(_rejected_geometry_model(), "all-kinds")
+                )
+            )
+            assert rejected["revision"] == 2
+            assert set(rejected["error"]["diagnosticGeometry"]["entities"]) == {
+                "origin", "line-end", "arc-end", "circle-center", "line", "arc", "circle"
+            }
+            shown = await advance()
+
+            queried = result_json(await session.call_tool("query", {"select": {"kind": "graph"}}))
+            checked = result_json(await session.call_tool("check", {"action": "evaluate", "revision": 2}))
+            published = result_json(await session.call_tool("export", {
+                "action": "publish", "expectedRevision": 2, "path": str(exported)
+            }))
+            assert queried["revision"] == checked["revision"] == published["revision"] == 2
+            assert exported.is_file()
+
+            large_result = result_json(
+                await session.call_tool(
+                    "sketch",
+                    _rejected_sketch_request(_rejected_geometry_model(300), "bounded-large"),
+                )
+            )
+            assert len(large_result["error"]["diagnosticGeometry"]["entities"]) == 300
+            large = await advance()
+
+            omitted_result = result_json(
+                await session.call_tool(
+                    "sketch",
+                    _rejected_sketch_request(_rejected_geometry_model(2000), "over-cap"),
+                )
+            )
+            assert omitted_result["error"]["diagnosticGeometryOmitted"]["limitBytes"] == 65536
+            omitted = await advance()
+            reloaded = await advance()
+
+            repair = {**base, "expectedRevision": 2, "requestId": "repair", "sketchId": "rejected"}
+            assert result_json(await session.call_tool("sketch", repair))["revision"] == 3
+            repaired = await advance()
+            driver.stdin.write_eof()
+            assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
+        finally:
+            if driver.returncode is None:
+                driver.kill()
+                await driver.wait()
+
+    for size in ("1280x800", "390x844"):
+        first = shown["rejected"][size]
+        assert first["revision"] == 2
+        assert first["diagnostic"] == {
+            "entityCount": 7,
+            "kinds": ["arc", "circle", "line", "point", "point", "point", "point"],
+        }
+        assert first["label"] == "Rejected sketch — not accepted"
+        assert "Rejected sketch — not accepted" in first["alert"]
+        assert first["errors"] == []
+        assert large["large"][size]["diagnostic"]["entityCount"] == 300
+        assert large["large"][size]["errors"] == []
+        assert omitted["omitted"][size]["revision"] == 2
+        assert omitted["omitted"][size]["labelVisible"] is False
+        assert "Preview too large" in omitted["omitted"][size]["failure"]
+        assert omitted["omitted"][size]["errors"] == []
+        assert reloaded["reloaded"][size] == {
+            "labelVisible": False,
+            "diagnostic": {"entityCount": 0, "kinds": []},
+            "failureVisible": True,
+            "errors": [],
+        }
+        assert repaired["repaired"][size]["labelVisible"] is False
+        assert repaired["repaired"][size]["diagnostic"] == {"entityCount": 0, "kinds": []}
+        assert repaired["repaired"][size]["keyboardFocus"] == "BUTTON"
+        assert "Revision 3" in repaired["repaired"][size]["description"]
+        assert repaired["repaired"][size]["errors"] == []

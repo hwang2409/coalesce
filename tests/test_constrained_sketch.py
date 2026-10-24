@@ -665,6 +665,13 @@ def test_failed_solve_geometry_keeps_stable_constraint_ids_and_is_response_only(
     for rejected in (redundant, conflicting):
         assert rejected["error"]["diagnosticGeometry"]["accepted"] is False
         assert rejected["revision"] == 1
+    assert store.wait_for_change(1, 3)
+    _, failure_revision, failure = store.snapshot()
+    assert failure_revision == scene_revision == 1
+    assert failure["revision"] == 1
+    assert failure["diagnosticGeometry"]["accepted"] is False
+    assert failure["error"]["code"] == "SKETCH_CONFLICTING"
+    assert store.scene(1)["revision"] == 1
     assert store.current_revision == scene_revision == 1
 
 
