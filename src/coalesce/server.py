@@ -16,6 +16,8 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from .resources import listed_resources, package_version
+from .resources import read_resource as read_packaged_resource
 from .schemas import (
     ACTION_SCHEMAS,
     FEATURE_ACTION_SCHEMAS,
@@ -482,7 +484,7 @@ async def _call_tool(
 def create_server(service: DocumentService) -> Server:
     server = Server(
         "coalesce",
-        version="0.1.0",
+        version=package_version(),
         instructions=(
             "Read coalesce://docs/tools and query the current revision before mutations. "
             "Ask before guessing vague dimensions. Sketch centers use plane-local axes; "
@@ -530,6 +532,7 @@ def create_server(service: DocumentService) -> Server:
                 description="A complete rectangle and extrude workflow.",
                 mimeType="text/markdown",
             ),
+            *listed_resources(),
         ]
 
     @server.read_resource()
@@ -539,7 +542,11 @@ def create_server(service: DocumentService) -> Server:
             return TOOLS_GUIDE
         if value == "coalesce://examples/plate":
             return PLATE_EXAMPLE
-        raise ValueError("unknown coalesce resource")
+        return read_packaged_resource(
+            value,
+            sketch_solve_timeout=service.sketch_solve_timeout,
+            viewer_url=service.query({"select": {"kind": "server"}})["viewerUrl"],
+        )
 
     return server
 

@@ -22,6 +22,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/coalesce"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"docs/vision.md" = "coalesce/guides/vision.md"
+"docs/errors.md" = "coalesce/guides/errors.md"
+"docs/sketch.md" = "coalesce/guides/sketch.md"
+"docs/hole.md" = "coalesce/guides/hole.md"
+"docs/enclosures.md" = "coalesce/guides/enclosures.md"
+"docs/refresh.md" = "coalesce/guides/refresh.md"
+"docs/examples/cycloidal-disc.md" = "coalesce/guides/examples/cycloidal-disc.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
