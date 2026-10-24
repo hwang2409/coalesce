@@ -98,8 +98,8 @@ Because `set.constrained` replaces the full constrained definition, resend the s
 dimension, and constraint ids with the changed value.
 
 For an outer loop with directly contained inner loops, send all loops in one constrained sketch.
-Extrude or cut it with the sketch id as the only `profileIds` value; the inner loops become holes.
-The inline `sketch` schema includes a complete dimension-driven inner-loop update.
+To extrude it, set `profileIds` to `[<sketch id>]`; this selects all loops, and inner loops become holes.
+To cut it, set `tool` to `{"sketchId": "<sketch id>"}`.
 
 Query the current revision before the first mutation. Each successful mutation returns the next
 revision; use it as the following call's `expectedRevision` and use a new `requestId`. Keep the
@@ -114,7 +114,7 @@ Primitive sketches support two free-form closed outline kinds in addition to rec
 
 A point can be `[x, y]` or `{"id": "corner", "x": x, "y": y}`. References follow point ids. Array points get default ids `p0`, `p1`, and so on by list position, so reordering or rotating that list moves the ids to different coordinates. Give points explicit ids if you will reorder them.
 
-Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. Inner holes are separate cut or hole features. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. For primitive outlines, inner holes are separate cut or hole features; for constrained sketches, use the single-sketch route above. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
 
 This example creates and extrudes a triangular polyline:
 

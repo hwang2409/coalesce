@@ -166,8 +166,11 @@ async def test_tool_list_serializes_valid_design_intent_examples(tmp_path):
     serialized = json.dumps(snapshot).lower()
     assert "fixing every point" in serialized
     assert "opening-radius" in serialized
-    assert "outer plus inner loops as holes" in serialized
+    assert "inner loops become holes" in serialized
+    assert "the inline `sketch` schema includes a complete dimension-driven inner-loop update" not in serialized
     assert "chain each returned revision" in serialized
+    revolve_profile = tools["feature"]["inputSchema"]["properties"]["parameters"]
+    assert "one outer loop only" in json.dumps(revolve_profile).lower()
     assert "coalesce://docs/hole" in serialized
 
 
@@ -182,8 +185,13 @@ def test_packaged_guides_match_inline_design_intent_recipes():
     assert "fully_constrained` with zero degrees of freedom" in sketch.content
     assert "no editable driving dimensions" in sketch.content
     assert "same point, entity,\ndimension, and constraint ids" in sketch.content
-    assert "sketch id as the only `profileIds` value" in sketch.content
+    assert "set `profileIds` to `[<sketch id>]`" in sketch.content
+    assert 'set `tool` to `{"sketchId": "<sketch id>"}`' in sketch.content
+    assert "For primitive outlines, inner holes are separate cut or hole features" in sketch.content
+    assert "inline `sketch` schema includes a complete dimension-driven inner-loop update" not in sketch.content
     assert "keep the existing `featureId`" in hole.content
+    assert "For example:" in hole.content
+    assert "inline `feature` schema includes this update recipe" not in hole.content
     assert "chain the returned revision" in hole.content
 
 

@@ -343,7 +343,7 @@ PROFILE = {
             "type": "array",
             "items": {"type": "string"},
             "minItems": 1,
-            "description": "for a constrained sketch, the profile id that selects all its loops (outer plus inner loops as holes) is the sketch id itself",
+            "description": "for extrude, a constrained sketch's id selects all loops (inner loops become holes); revolve accepts one outer loop only",
         },
     },
     "required": ["sketchId", "profileIds"],
