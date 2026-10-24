@@ -1,13 +1,17 @@
+import asyncio
 import importlib.util
 import json
 import subprocess
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
 from mcp import McpError, types
 
-from coalesce.server import create_server
+from coalesce import requirements, resources, schemas
+from coalesce.server import TOOLS_GUIDE, create_server
 from coalesce.service import DocumentService
 
 GUIDES = {
@@ -31,7 +35,13 @@ async def test_resource_catalog_reads_canonical_guides_and_session(tmp_path):
     resources = listed.root.resources
     uris = {str(resource.uri) for resource in resources}
 
-    assert {*GUIDES, "coalesce://docs/index", "coalesce://session/capabilities"} <= uris
+    assert {
+        *GUIDES,
+        "coalesce://docs/index",
+        "coalesce://docs/tools",
+        "coalesce://examples/plate",
+        "coalesce://session/capabilities",
+    } == uris
 
     read = server.request_handlers[types.ReadResourceRequest]
     for uri, path in GUIDES.items():
@@ -54,6 +64,16 @@ async def test_resource_catalog_reads_canonical_guides_and_session(tmp_path):
     assert "extrude" in session["featureKinds"]
     assert "valid_brep" in session["checkKinds"]
 
+    index_result = await read(
+        types.ReadResourceRequest(
+            params=types.ReadResourceRequestParams(uri="coalesce://docs/index")
+        )
+    )
+    index = json.loads(index_result.root.contents[0].text)
+    assert {item["uri"] for item in index["resources"]} == uris
+    assert "coalesce://" in index["uriScheme"]
+    assert "coalesce://docs/tools" in TOOLS_GUIDE
+
     with pytest.raises(McpError) as raised:
         await read(
             types.ReadResourceRequest(
@@ -65,6 +85,74 @@ async def test_resource_catalog_reads_canonical_guides_and_session(tmp_path):
         "code": "RESOURCE_NOT_FOUND",
         "uri": "coalesce://docs/unknown",
     }
+
+
+@pytest.mark.anyio
+async def test_resource_read_does_not_block_event_loop_on_document_lock(tmp_path):
+    service = DocumentService(tmp_path / "locked.coalesce.json", warmup=False)
+    server = create_server(service)
+    read = server.request_handlers[types.ReadResourceRequest]
+    lock_held = threading.Event()
+
+    def hold_lock():
+        with service._lock:
+            lock_held.set()
+            time.sleep(0.4)
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert lock_held.wait(timeout=1)
+
+    ticks = []
+    started = time.monotonic()
+
+    async def heartbeat():
+        for _ in range(5):
+            await asyncio.sleep(0.05)
+            ticks.append(time.monotonic() - started)
+
+    await asyncio.gather(
+        heartbeat(),
+        read(
+            types.ReadResourceRequest(
+                params=types.ReadResourceRequestParams(uri="coalesce://session/capabilities")
+            )
+        ),
+    )
+    assert thread.is_alive()
+    thread.join()
+    assert len(ticks) == 5
+    assert ticks[0] < 0.2
+
+
+def test_missing_packaged_guide_returns_registered_resource_error(monkeypatch):
+    def missing_guide(_path):
+        raise FileNotFoundError("removed from scratch install")
+
+    monkeypatch.setattr(resources, "_guide_bytes", missing_guide)
+
+    with pytest.raises(McpError) as raised:
+        resources.read_resource(
+            "coalesce://docs/vision", sketch_solve_timeout=1.0, viewer_url=None
+        )
+
+    assert raised.value.error.data == {
+        "code": "RESOURCE_NOT_FOUND",
+        "uri": "coalesce://docs/vision",
+    }
+
+
+def test_session_capabilities_follow_dispatch_registries(monkeypatch):
+    monkeypatch.setitem(schemas.FEATURE_ACTION_SCHEMAS, ("create", "probe_feature"), {})
+    monkeypatch.setitem(requirements.REQUIREMENT_HANDLERS, "probe_check", lambda *_args: {})
+
+    [result] = resources.read_resource(
+        "coalesce://session/capabilities", sketch_solve_timeout=1.0, viewer_url=None
+    )
+    capabilities = json.loads(result.content)
+
+    assert "probe_feature" in capabilities["featureKinds"]
+    assert "probe_check" in capabilities["checkKinds"]
 
 
 def test_built_wheel_serves_resources_over_stdio_outside_repo(tmp_path):

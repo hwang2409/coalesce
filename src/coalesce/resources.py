@@ -12,7 +12,7 @@ from pathlib import Path
 from mcp import McpError, types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
-from .schemas import SUPPORTED_REQUIREMENT_KINDS, TOOL_SCHEMAS
+from . import requirements, schemas
 
 
 @dataclass(frozen=True)
@@ -41,36 +41,46 @@ GUIDES = (
 INDEX_URI = "coalesce://docs/index"
 SESSION_URI = "coalesce://session/capabilities"
 
+RESOURCE_CATALOG = (
+    Guide("coalesce guide index", INDEX_URI, "", "Stable URIs for all coalesce resources."),
+    Guide(
+        "coalesce session capabilities",
+        SESSION_URI,
+        "",
+        "Version, runtime configuration, and supported modeling kinds.",
+    ),
+    Guide(
+        "coalesce tool guide",
+        "coalesce://docs/tools",
+        "",
+        "Short usage guide for the revisioned modeling tools.",
+    ),
+    Guide(
+        "coalesce plate example",
+        "coalesce://examples/plate",
+        "",
+        "A complete rectangle and extrude workflow.",
+    ),
+    *GUIDES,
+)
+
 
 def package_version() -> str:
     return version("coalesce")
 
 
 def listed_resources() -> list[types.Resource]:
-    resources = [
+    return [
         types.Resource(
-            name="coalesce guide index",
-            uri=INDEX_URI,
-            description="Stable URIs for the packaged coalesce guides.",
-            mimeType="application/json",
-        ),
-        types.Resource(
-            name="coalesce session capabilities",
-            uri=SESSION_URI,
-            description="Version, runtime configuration, and supported modeling kinds.",
-            mimeType="application/json",
-        ),
-    ]
-    resources.extend(
-        types.Resource(
-            name=guide.name,
-            uri=guide.uri,
-            description=guide.description,
-            mimeType="text/markdown",
+            name=item.name,
+            uri=item.uri,
+            description=item.description,
+            mimeType=(
+                "application/json" if item.uri in {INDEX_URI, SESSION_URI} else "text/markdown"
+            ),
         )
-        for guide in GUIDES
-    )
-    return resources
+        for item in RESOURCE_CATALOG
+    ]
 
 
 def _guide_bytes(path: str) -> bytes:
@@ -85,15 +95,22 @@ def read_resource(
 ) -> list[ReadResourceContents]:
     guide = next((item for item in GUIDES if item.uri == uri), None)
     if guide is not None:
-        content = _guide_bytes(guide.path).decode("utf-8")
+        try:
+            content = _guide_bytes(guide.path).decode("utf-8")
+        except (OSError, UnicodeError):
+            raise _resource_not_found(uri) from None
         return [ReadResourceContents(content, "text/markdown")]
     if uri == INDEX_URI:
         content = json.dumps(
             {
-                "guides": [
+                "uriScheme": (
+                    "coalesce:// uses docs for guides, examples for complete workflows, "
+                    "and session for runtime capabilities."
+                ),
+                "resources": [
                     {"name": item.name, "uri": item.uri, "description": item.description}
-                    for item in GUIDES
-                ]
+                    for item in RESOURCE_CATALOG
+                ],
             },
             indent=2,
         )
@@ -108,16 +125,24 @@ def read_resource(
                     "available": importlib.util.find_spec("planegcs") is not None,
                 },
                 "viewerUrl": viewer_url,
-                "featureKinds": TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"],
-                "checkKinds": list(SUPPORTED_REQUIREMENT_KINDS),
+                "featureKinds": sorted(
+                    kind
+                    for action, kind in schemas.FEATURE_ACTION_SCHEMAS
+                    if action == "create" and kind is not None
+                ),
+                "checkKinds": sorted({"valid_brep", *requirements.REQUIREMENT_HANDLERS}),
             },
             indent=2,
         )
         return [ReadResourceContents(content, "application/json")]
-    raise McpError(
+    raise _resource_not_found(uri)
+
+
+def _resource_not_found(uri: str) -> McpError:
+    return McpError(
         types.ErrorData(
             code=types.INVALID_PARAMS,
-            message=f"unknown coalesce resource: {uri}",
+            message=f"coalesce resource is not available: {uri}",
             data={"code": "RESOURCE_NOT_FOUND", "uri": uri},
         )
     )
