@@ -108,6 +108,7 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
     feature_schema = tools["feature"].inputSchema
     assert feature_schema["properties"]["kind"]["enum"] == [
         "extrude",
+        "revolve",
         "cut",
         "hole",
         "fillet",
