@@ -19,10 +19,10 @@ from coalesce.service import (
     _updated_dimensions,
 )
 from coalesce.sketch_solver import (
+    OPERAND_SIGNATURES,
     Circle,
     Dimension,
     DimensionKind,
-    OPERAND_SIGNATURES,
     Point,
     SolvedCircle,
     SolveResult,
