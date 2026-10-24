@@ -54,6 +54,7 @@ from .graph import (
     Polyline,
     PortCutout,
     Rectangle,
+    Revolve,
     ScrewClosure,
     ScrewPoint,
     Sketch,
@@ -77,7 +78,7 @@ from .references import (
 from .refresh_delta import bounded_summary, format_summary, refresh_delta
 from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
-from .schemas import SUPPORTED_REQUIREMENT_KINDS
+from .schemas import FEATURE_KIND_SCHEMAS, SUPPORTED_REQUIREMENT_KINDS
 from .serialization import dumps, loads
 from .sketch_solver import (
     DEFAULT_SOLVE_TIMEOUT_SECONDS,
@@ -93,18 +94,7 @@ if TYPE_CHECKING:
     from .viewer import ScenePart, ViewerSceneStore
 
 _LOG = logging.getLogger(__name__)
-_ALLOWED_FEATURE_KINDS = [
-    "extrude",
-    "cut",
-    "hole",
-    "fillet",
-    "chamfer",
-    "pcb_base",
-    "standoffs",
-    "pcb_lid",
-    "port_cutout",
-    "screw_closure",
-]
+_ALLOWED_FEATURE_KINDS = list(FEATURE_KIND_SCHEMAS)
 
 
 class _KernelLoaderInterface(Protocol):
@@ -325,6 +315,13 @@ class ExtrudeParameters:
 
 
 @dataclass(frozen=True)
+class RevolveParameters:
+    profile: ExtrudeProfile
+    axis: str
+    operation: str
+
+
+@dataclass(frozen=True)
 class FeatureTarget:
     featureId: str
 
@@ -539,6 +536,16 @@ class ExtrudeCreate(_FeatureCreate):
     featureId: str
     parameters: ExtrudeParameters
     kind: ClassVar[str] = "extrude"
+
+
+@dataclass(frozen=True)
+class RevolveCreate(_FeatureCreate):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    parameters: RevolveParameters
+    kind: ClassVar[str] = "revolve"
 
 
 @dataclass(frozen=True)
@@ -781,6 +788,7 @@ MutationOperation = (
     | SketchDelete
     | FeatureDelete
     | ExtrudeCreate
+    | RevolveCreate
     | CutCreate
     | HoleCreate
     | FilletCreate
@@ -1050,6 +1058,31 @@ def _parse_extrude(
                 else None
             ),
             direction=parameters.get("direction"),
+        ),
+    )
+
+
+def _parse_revolve(payload: dict[str, Any], common: dict[str, Any]) -> RevolveCreate:
+    if common["action"] is Action.UPDATE:
+        raise RequestError("INVALID_PARAMETER", "revolve is updated through its source sketch")
+    parameters = payload.get("parameters", {})
+    profile = parameters.get("profile", {})
+    angle = parameters.get("angle", {})
+    if parameters.get("operation") != "new_body" or parameters.get("axis") not in {"x", "y"}:
+        raise RequestError(
+            "INVALID_PARAMETER", "revolve supports only new_body around local x or y"
+        )
+    if angle != {"value": 360, "unit": "deg"}:
+        raise RequestError("INVALID_PARAMETER", "revolve angle must be exactly 360 deg")
+    return RevolveCreate(
+        **common,
+        parameters=RevolveParameters(
+            profile=ExtrudeProfile(
+                sketchId=profile.get("sketchId"),
+                profileIds=tuple(profile.get("profileIds", [])),
+            ),
+            axis=parameters["axis"],
+            operation=parameters["operation"],
         ),
     )
 
@@ -1639,6 +1672,7 @@ def _parse_feature(
     payload: dict[str, Any],
 ) -> (
     ExtrudeCreate
+    | RevolveCreate
     | CutCreate
     | HoleCreate
     | FilletCreate
@@ -1665,6 +1699,7 @@ def _parse_feature(
     kind = payload.get("kind")
     parser = {
         "extrude": _parse_extrude,
+        "revolve": _parse_revolve,
         "cut": _parse_cut,
         "hole": _parse_hole,
         "fillet": _parse_edge_treatment,
@@ -2204,6 +2239,37 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     return operation.featureId
 
 
+def _apply_revolve(graph: Any, operation: RevolveCreate) -> str:
+    parameters = operation.parameters
+    sketch = graph.nodes.get(parameters.profile.sketchId)
+    if not isinstance(sketch, Sketch):
+        raise RequestError("UNKNOWN_ID", "revolve profile sketch does not exist")
+    expected_profiles = (
+        [sketch.id] if sketch.constrained is not None else [entity.id for entity in sketch.entities]
+    )
+    if len(expected_profiles) != 1:
+        raise GraphError(
+            "REVOLVE_MULTIPLE_PROFILES",
+            f"revolve sketch {sketch.id} must contain exactly one profile",
+            sketch=sketch.id,
+            profileCount=len(expected_profiles),
+        )
+    if list(parameters.profile.profileIds) != expected_profiles:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "profileIds must list the one sketch profile in graph order",
+        )
+    graph.add(
+        Revolve(
+            operation.featureId,
+            sketch=sketch.id,
+            axis=parameters.axis,
+            operation=parameters.operation,
+        )
+    )
+    return operation.featureId
+
+
 def _apply_target_update(
     graph: Any,
     operation: CutUpdate,
@@ -2631,6 +2697,7 @@ def _apply_feature(
     applier = {
         ExtrudeCreate: _apply_extrude,
         ExtrudeUpdate: _apply_extrude,
+        RevolveCreate: _apply_revolve,
         CutCreate: _apply_cut,
         CutUpdate: _apply_cut,
         HoleCreate: _apply_hole,
@@ -3328,7 +3395,10 @@ class DocumentService:
     def _validate_treatment_parts(
         operation: MutationOperation, result: RegenResult, changed_id: str
     ) -> None:
-        if not isinstance(operation, (FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate)):
+        if not isinstance(
+            operation,
+            (RevolveCreate, FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate),
+        ):
             return
         parts = [
             part

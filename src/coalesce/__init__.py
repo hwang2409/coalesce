@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         PcbLid,
         Plane,
         Rectangle,
+        Revolve,
         Sketch,
         Standoffs,
     )
@@ -42,14 +43,14 @@ __all__ = [
     "BodySource", "Cardinality", "Chamfer", "Circle", "CircularHolePattern", "Cut",
     "Extrude", "Fillet", "Graph", "GraphError", "Hole", "HoleSurfaceSource",
     "LinearHolePattern", "MaxAlong", "Normal", "Parameter",
-    "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution",
+    "PcbBase", "PcbLid", "Plane", "Position", "Rectangle", "Reference", "RegenResult", "Resolution", "Revolve",
     "Sketch", "SketchSegmentSource", "Standoffs", "Status", "ToolCapSource", "regenerate",
 ]
 
 _GRAPH_NAMES = {
     "Chamfer", "Circle", "CircularHolePattern", "Cut", "Extrude", "Fillet", "Graph",
     "GraphError", "Hole", "LinearHolePattern", "Parameter",
-    "PcbBase", "PcbLid", "Plane", "Rectangle", "Sketch", "Standoffs",
+    "PcbBase", "PcbLid", "Plane", "Rectangle", "Revolve", "Sketch", "Standoffs",
 }
 _REFERENCE_NAMES = {
     "BodySource", "Cardinality", "HoleSurfaceSource", "MaxAlong", "Normal", "Position",

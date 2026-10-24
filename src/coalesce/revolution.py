@@ -1,0 +1,176 @@
+"""Build one full-revolution body with profile-segment provenance."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import pi
+
+from build123d import Edge, Face, GeomType, Location, Shape
+from build123d import Plane as BuildPlane
+from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt
+
+from .constrained_profile import build_constrained_profile
+from .extrusion import _profile, sketch_location
+from .graph import GraphError, Revolve, Sketch
+from .provenance import candidate, derive_edge_candidates
+from .references import BodySource, Candidate, SketchSegmentSource
+
+_AXIS_TOLERANCE = 1e-7
+
+
+@dataclass(frozen=True)
+class RevolutionResult:
+    shape: Shape
+    candidates: list[Candidate]
+
+
+@dataclass(frozen=True)
+class _RevolutionProfile:
+    entity_id: str
+    face: Face
+    segments: dict[str, Edge]
+    topology: dict[str, tuple[str, ...]]
+
+
+def _profile_for_revolution(sketch: Sketch, location: Location) -> _RevolutionProfile:
+    if sketch.constrained is not None:
+        exact = build_constrained_profile(sketch.constrained, sketch.id, location)
+        if len(exact.face.wires()) != 1:
+            raise GraphError(
+                "REVOLVE_MULTIPLE_PROFILES",
+                f"revolve sketch {sketch.id} must contain one outer profile and no inner loops",
+                sketch=sketch.id,
+            )
+        return _RevolutionProfile(exact.id, exact.face, exact.segments, exact.segment_topology)
+    if len(sketch.entities) != 1:
+        raise GraphError(
+            "REVOLVE_MULTIPLE_PROFILES",
+            f"revolve sketch {sketch.id} must contain exactly one profile",
+            sketch=sketch.id,
+            profileCount=len(sketch.entities),
+        )
+    exact = _profile(sketch.entities[0], location)
+    return _RevolutionProfile(exact.entity_id, exact.face, exact.segments, exact.segment_topology)
+
+
+def _ordinate(point, axis: str) -> float:
+    return float(point.Y if axis == "x" else point.X)
+
+
+def _edge_lies_on_axis(edge: Edge, axis: str) -> bool:
+    return edge.geom_type is GeomType.LINE and all(
+        abs(_ordinate(vertex.center(), axis)) <= _AXIS_TOLERANCE for vertex in edge.vertices()
+    )
+
+
+def _validate_axis(profile: _RevolutionProfile, axis: str, sketch: str) -> set[str]:
+    bounds = profile.face.bounding_box()
+    minimum, maximum = (
+        (float(bounds.min.Y), float(bounds.max.Y))
+        if axis == "x"
+        else (float(bounds.min.X), float(bounds.max.X))
+    )
+    if minimum < -_AXIS_TOLERANCE and maximum > _AXIS_TOLERANCE:
+        raise GraphError(
+            "REVOLVE_AXIS_CROSSING",
+            f"revolve profile {profile.entity_id} crosses the local {axis} axis",
+            sketch=sketch,
+            profile=profile.entity_id,
+            axis=axis,
+        )
+    touches = minimum <= _AXIS_TOLERANCE and maximum >= -_AXIS_TOLERANCE
+    axis_segments = {
+        name for name, edge in profile.segments.items() if _edge_lies_on_axis(edge, axis)
+    }
+    if touches and not axis_segments:
+        raise GraphError(
+            "REVOLVE_AXIS_CONTACT",
+            f"revolve profile {profile.entity_id} may touch the local {axis} axis only along a straight segment",
+            sketch=sketch,
+            profile=profile.entity_id,
+            axis=axis,
+        )
+    return axis_segments
+
+
+def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
+    if node.operation != "new_body" or node.axis not in {"x", "y"}:
+        raise GraphError(
+            "INVALID_REVOLVE",
+            f"revolve {node.id} supports only a full new_body around local x or y",
+            feature=node.id,
+            operation=node.operation,
+            axis=node.axis,
+        )
+    local = _profile_for_revolution(sketch, Location())
+    axis_segments = _validate_axis(local, node.axis, sketch.id)
+    location = sketch_location(sketch)
+    profile = _profile_for_revolution(sketch, location)
+    plane = BuildPlane(location)
+    origin = plane.origin
+    direction = plane.x_dir if node.axis == "x" else plane.y_dir
+    try:
+        maker = BRepPrimAPI_MakeRevol(
+            profile.face.wrapped,
+            gp_Ax1(
+                gp_Pnt(origin.X, origin.Y, origin.Z),
+                gp_Dir(direction.X, direction.Y, direction.Z),
+            ),
+            2 * pi,
+            True,
+        )
+        maker.Build()
+        if not maker.IsDone():
+            raise RuntimeError("OCCT did not complete the revolution")
+        shape = Shape.cast(maker.Shape())
+    except Exception as error:
+        raise GraphError(
+            "REVOLVE_FAILED",
+            f"revolve {node.id} failed in the CAD kernel",
+            feature=node.id,
+        ) from error
+
+    solids = shape.solids()
+    if len(solids) != 1:
+        raise GraphError(
+            "REVOLVE_MULTIPLE_SOLIDS",
+            f"revolve {node.id} must produce exactly one solid",
+            feature=node.id,
+            solidCount=len(solids),
+        )
+    if not BRepCheck_Analyzer(shape.wrapped).IsValid():
+        raise GraphError(
+            "INVALID_BREP", f"revolve {node.id} produced invalid geometry", feature=node.id
+        )
+
+    body = BodySource(node.id, profile.entity_id)
+    faces: list[Candidate] = []
+    for segment, edge in profile.segments.items():
+        generated = [Shape.cast(item) for item in maker.Generated(edge.wrapped)]
+        if segment in axis_segments:
+            if generated:
+                raise GraphError(
+                    "HISTORY_MISSING",
+                    f"revolve {node.id} axis segment {segment} unexpectedly generated geometry",
+                    feature=node.id,
+                    segment=segment,
+                )
+            continue
+        if len(generated) != 1 or not isinstance(generated[0], Face):
+            raise GraphError(
+                "HISTORY_MISSING",
+                f"revolve {node.id} did not map segment {segment} to exactly one face",
+                feature=node.id,
+                segment=segment,
+                generatedCount=len(generated),
+            )
+        source = SketchSegmentSource(
+            sketch.id,
+            profile.entity_id,
+            segment,
+            profile.topology.get(segment, ()),
+        )
+        faces.append(candidate(node.id, f"side({segment})", source, generated[0], body=body))
+    return RevolutionResult(shape, [*faces, *derive_edge_candidates(node.id, shape, faces)])

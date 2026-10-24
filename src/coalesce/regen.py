@@ -35,6 +35,7 @@ from .graph import (
     PcbBase,
     PcbLid,
     PortCutout,
+    Revolve,
     ScrewClosure,
     Sketch,
     Standoffs,
@@ -55,6 +56,7 @@ from .references import (
     reference_matches_key,
     resolve,
 )
+from .revolution import revolve_sketch
 
 
 @dataclass
@@ -827,6 +829,21 @@ def _apply_extrude(
     lineage.replace(node.target, node.id, result.shape, result.candidates)
 
 
+def _apply_revolve(
+    node: Revolve,
+    graph: Graph,
+    shapes: dict[str, Shape],
+    states: dict[str, list[Candidate]],
+    provenance: dict[str, list[Candidate]],
+    lineage: BodyLineage,
+) -> None:
+    result = revolve_sketch(node, graph.nodes[node.sketch])
+    shapes[node.id] = result.shape
+    states[node.id] = result.candidates
+    provenance[node.id] = result.candidates
+    lineage.create(node.id, result.shape, result.candidates)
+
+
 def _apply_cut(
     node: Cut,
     graph: Graph,
@@ -970,6 +987,8 @@ def _regenerate(graph: Graph) -> RegenResult:
                 joined_material,
                 lineage,
             )
+        elif isinstance(node, Revolve):
+            _apply_revolve(node, graph, shapes, states, provenance, lineage)
         elif isinstance(node, Cut):
             _apply_cut(node, graph, shapes, states, removed_material, lineage)
         elif isinstance(node, Hole):
