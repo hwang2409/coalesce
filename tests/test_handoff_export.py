@@ -193,59 +193,108 @@ def test_exclusive_directory_rename_never_replaces_an_existing_directory(tmp_pat
     assert (destination / "keep.txt").read_text() == "keep"
 
 
-def test_existing_destination_with_unrelated_file_is_structured_error_and_unchanged(tmp_path):
+def test_existing_destination_entries_are_bounded_sorted_and_unchanged(tmp_path):
     service = _service(tmp_path)
     destination = tmp_path / "delivery"
     destination.mkdir()
-    sentinel = destination / "keep.txt"
-    sentinel.write_text("keep")
-    before = sorted(tmp_path.iterdir())
+    entries = [destination / f".{index:02}.txt" for index in reversed(range(21))]
+    for entry in entries:
+        entry.write_text("keep")
 
     response = service.export(_separate(destination))
 
     assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
-    assert sentinel.read_text() == "keep"
-    assert sorted(tmp_path.iterdir()) == before
+    assert response["error"]["entries"] == sorted(entry.name for entry in entries)[:20]
+    assert response["error"]["truncated"] is True
+    assert all(entry.read_text() == "keep" for entry in entries)
     assert not list(tmp_path.glob(".delivery.tmp-*"))
 
 
-@pytest.mark.parametrize("entry_name", ["keep.txt", ".hidden"])
-def test_existing_destination_entry_is_structured_error_and_unchanged(tmp_path, entry_name):
-    service = _service(tmp_path)
+def _publish_test_files(destination):
+    prepared = [
+        {"file": "one.step", "_content": b"one"},
+        {"file": "two.step", "_content": b"two"},
+    ]
+    manifest = b'{"parts":[{"file":"one.step"},{"file":"two.step"}]}\n'
+    return export_module._publish_prepared_parts(destination, prepared, manifest)
+
+
+def test_fault_after_staging_second_part_keeps_existing_directory_unchanged(tmp_path, monkeypatch):
     destination = tmp_path / "delivery"
     destination.mkdir()
-    entry = destination / entry_name
-    entry.write_text("keep")
-
-    response = service.export(_separate(destination))
-
-    assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
-    assert "choose an empty or new directory" in response["error"]["message"]
-    assert response["error"]["entries"] == [entry_name]
-    assert entry.read_text() == "keep"
-    assert list(destination.iterdir()) == [entry]
-
-
-def test_existing_empty_destination_is_atomic_when_file_appears(tmp_path, monkeypatch):
-    service = _service(tmp_path)
-    destination = tmp_path / "delivery"
-    destination.mkdir()
+    inode = destination.stat().st_ino
     original = export_module._write_private_file
-    raced = False
 
-    def race(path, content):
-        nonlocal raced
-        if not raced:
-            raced = True
-            (destination / "race.txt").write_text("keep")
-        return original(path, content)
+    def fail_after_second(path, content):
+        original(path, content)
+        if path.name == "two.step":
+            raise OSError("injected failure after second staged part")
 
-    monkeypatch.setattr(export_module, "_write_private_file", race)
-    response = service.export(_separate(destination))
+    monkeypatch.setattr(export_module, "_write_private_file", fail_after_second)
+    with pytest.raises(export_module.ExportFailure, match="could not be published"):
+        _publish_test_files(destination)
 
-    assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
-    assert (destination / "race.txt").read_text() == "keep"
-    assert sorted(path.name for path in destination.iterdir()) == ["race.txt"]
+    assert (destination.stat().st_ino, list(destination.iterdir())) == (inode, [])
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+@pytest.mark.parametrize("race", ["file", "symlink", "late"])
+def test_target_change_after_preflight_blocks_atomic_publish(tmp_path, monkeypatch, race):
+    destination = tmp_path / "delivery"
+    destination.mkdir()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+
+    if race == "late":
+        original = export_module._sync_directory
+
+        def inject(path):
+            (destination / "late.txt").write_text("keep")
+            original(path)
+
+        monkeypatch.setattr(export_module, "_sync_directory", inject)
+    else:
+        original = export_module.os.rename
+
+        def inject(source, target):
+            if race == "file":
+                (destination / "race.txt").write_text("keep")
+            else:
+                destination.rmdir()
+                destination.symlink_to(foreign, target_is_directory=True)
+            return original(source, target)
+
+        monkeypatch.setattr(export_module.os, "rename", inject)
+
+    with pytest.raises(export_module.ExportFailure) as failure:
+        _publish_test_files(destination)
+
+    assert failure.value.code == "EXPORT_PATH_EXISTS"
+    assert list(foreign.iterdir()) == []
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+    if race != "symlink":
+        name = "race.txt" if race == "file" else "late.txt"
+        assert failure.value.details["entries"] == [name]
+        assert (destination / name).read_text() == "keep"
+
+
+def test_manifest_is_never_visible_without_all_parts(tmp_path, monkeypatch):
+    destination = tmp_path / "delivery"
+    destination.mkdir()
+    original = export_module.os.rename
+    observations = []
+
+    def observe(source, target):
+        observations.append(set(destination.iterdir()))
+        result = original(source, target)
+        observations.append({path.name for path in destination.iterdir()})
+        return result
+
+    monkeypatch.setattr(export_module.os, "rename", observe)
+    _publish_test_files(destination)
+
+    assert observations == [set(), {"one.step", "two.step", "manifest.json"}]
+    assert all("manifest.json" not in names or len(names) == 3 for names in observations)
 
 
 def test_validation_failure_publishes_nothing_and_leaves_no_sibling_temp(tmp_path, monkeypatch):

@@ -482,29 +482,35 @@ def _write_private_file(path: Path, content: bytes) -> None:
         os.fsync(stream.fileno())
 
 
-def _destination_state(path: Path) -> tuple[Path, list[str]]:
+def _path_entries(path: Path) -> list[str]:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return []
+    if not stat.S_ISDIR(mode):
+        return [path.name]
+    try:
+        return sorted(entry.name for entry in path.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return [path.name]
+
+
+def _destination_state(path: Path) -> tuple[Path, bool, list[str]]:
     resolved, directory_fd = _open_directory(path)
     os.close(directory_fd)
     try:
         mode = resolved.lstat().st_mode
     except FileNotFoundError:
-        return resolved, []
+        return resolved, False, []
     if not stat.S_ISDIR(mode):
-        raise ExportFailure(
-            "EXPORT_PATH_EXISTS",
-            "export path already exists; separate-file export never overwrites; "
-            "choose an empty or new directory",
-            path=str(resolved),
-            entries=[resolved.name],
-            hint="choose an empty or new directory",
-        )
-    return resolved, sorted(entry.name for entry in resolved.iterdir())
+        raise _existing_directory_failure(resolved, [resolved.name])
+    return resolved, True, _path_entries(resolved)
 
 
 def _existing_directory_failure(path: Path, entries: list[str]) -> ExportFailure:
     return ExportFailure(
         "EXPORT_PATH_EXISTS",
-        "export directory is not empty; choose an empty or new directory",
+        "export path is not an empty real directory; choose an empty or new directory",
         path=str(path),
         entries=entries[:20],
         truncated=len(entries) > 20,
@@ -533,11 +539,6 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
     raise OSError(error_number, os.strerror(error_number), destination)
 
 
-def _unexpected_entries(destination: Path, created: list[Path]) -> list[str]:
-    created_names = {path.name for path in created}
-    return sorted(entry.name for entry in destination.iterdir() if entry.name not in created_names)
-
-
 def _sync_directory(path: Path) -> None:
     directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
@@ -546,92 +547,37 @@ def _sync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _remove_created(paths: list[Path]) -> None:
-    for path in paths:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _publish_existing_directory(
-    destination: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
-) -> Path:
-    created: list[Path] = []
-    published = False
-    contents = [(item["file"], item["_content"]) for item in prepared]
-    contents.append(("manifest.json", manifest_bytes))
-    try:
-        for name, content in contents:
-            if unexpected := _unexpected_entries(destination, created):
-                raise _existing_directory_failure(destination, unexpected)
-            target = destination / name
-            _write_private_file(target, content)
-            created.append(target)
-        if unexpected := _unexpected_entries(destination, created):
-            raise _existing_directory_failure(destination, unexpected)
-        _sync_directory(destination)
-        published = True
-    except FileExistsError as error:
-        raise _existing_directory_failure(destination, _unexpected_entries(destination, created)) from error
-    except ExportFailure:
-        raise
-    except OSError as error:
-        raise ExportFailure(
-            "EXPORT_WRITE_FAILED",
-            "separate-file export could not be published",
-            path=str(destination),
-            hint="check the target parent and retry with a new path",
-        ) from error
-    finally:
-        if not published:
-            _remove_created(created)
-    return destination
-
-
 def _publish_prepared_parts(
     path: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
 ) -> Path:
-    """Publish prepared bytes into an empty target or a new directory."""
-    destination, entries = _destination_state(path)
-    if entries:
+    """Publish prepared bytes with one atomic sibling-directory handoff."""
+    destination, existed, entries = _destination_state(path)
+    if entries or (existed and os.name == "nt"):
         raise _existing_directory_failure(destination, entries)
-    if destination.exists():
-        return _publish_existing_directory(destination, prepared, manifest_bytes)
 
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
     )
-    published = False
     try:
         for item in prepared:
             _write_private_file(temporary / item["file"], item["_content"])
         _write_private_file(temporary / "manifest.json", manifest_bytes)
-        temporary_fd = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        _sync_directory(temporary)
         try:
-            os.fsync(temporary_fd)
-        finally:
-            os.close(temporary_fd)
-        try:
-            _rename_new_directory(temporary, destination)
-        except FileExistsError as error:
-            raise ExportFailure(
-                "EXPORT_PATH_EXISTS",
-                "export path already exists; separate-file export never overwrites",
-                path=str(destination),
-                hint="choose an empty or new directory",
-            ) from error
-        published = True
-        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            if existed:
+                os.rename(temporary, destination)
+            else:
+                _rename_new_directory(temporary, destination)
+        except OSError as error:
+            if error.errno in {errno.EEXIST, errno.ENOTDIR, errno.ENOTEMPTY}:
+                raise _existing_directory_failure(
+                    destination, _path_entries(destination)
+                ) from error
+            raise
+        _sync_directory(destination.parent)
     except ExportFailure:
         raise
     except OSError as error:
-        if published and destination.is_dir():
-            shutil.rmtree(destination)
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
             "separate-file export could not be published",

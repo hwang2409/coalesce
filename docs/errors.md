@@ -138,7 +138,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `AMBIGUOUS` | import | a board/footprint subject has more than one valid match | use a stable id that resolves once |
 | `PORT_BLOCKED_BY_LID` | enclosure | a port opening conflicts with the lid or lip | apply a verified `alternative` or change the lid/opening |
 | `INSPECTION_FAILED` | enclosure | enclosure inspection cannot evaluate the requested requirements; the raw diagnostic is in `kernelMessage` | check each requirement kind against the `check` tool schema; if they are valid, treat the requirements as unevaluated and report the failure |
-| `EXPORT_PATH_EXISTS` | export | the target path already exists, or a separate export directory is not empty | choose an empty or new directory; coalesce never overwrites |
+| `EXPORT_PATH_EXISTS` | export | a separate-export target is not an empty real directory, changed before atomic publication, or is an existing directory on Windows | choose an empty or new directory; on POSIX only, coalesce atomically replaces an empty directory |
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
 
