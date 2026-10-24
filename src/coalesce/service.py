@@ -3395,7 +3395,14 @@ class DocumentService:
     def _validate_treatment_parts(
         operation: MutationOperation, result: RegenResult, changed_id: str
     ) -> None:
-        if not isinstance(
+        validated_features = {changed_id}
+        if isinstance(operation, SketchUpdate):
+            validated_features = {
+                node.id
+                for node in result.graph.nodes.values()
+                if isinstance(node, Revolve) and node.sketch == operation.sketchId
+            }
+        elif not isinstance(
             operation,
             (RevolveCreate, FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate),
         ):
@@ -3403,17 +3410,19 @@ class DocumentService:
         parts = [
             part
             for part in terminal_parts(result)
-            if changed_id
-            in {item["id"] for item in _lineage(result, part.terminal_feature, part.source_body)}
+            if validated_features
+            & {item["id"] for item in _lineage(result, part.terminal_feature, part.source_body)}
         ]
         for part in parts:
             try:
                 _validate_part_for_step(part)
             except ExportFailure as error:
+                feature_id = min(validated_features)
+                feature_kind = getattr(operation, "kind", "revolve")
                 raise RequestError(
                     "MANUFACTURING_VALIDATION_FAILED",
-                    f"{operation.kind} {changed_id} cannot produce matching STEP geometry for {part.part_id}",
-                    featureId=changed_id,
+                    f"{feature_kind} {feature_id} cannot produce matching STEP geometry for {part.part_id}",
+                    featureId=feature_id,
                     partId=part.part_id,
                     mismatchedMetric=error.details.get("mismatchedMetric", "reimport"),
                 ) from error

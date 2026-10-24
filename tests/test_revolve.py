@@ -219,6 +219,34 @@ def test_step_round_trip_failure_is_atomic(tmp_path, monkeypatch):
     assert result["revision"] == 1 and document.read_bytes() == before
 
 
+def test_sketch_update_round_trip_failure_is_atomic(tmp_path, monkeypatch):
+    import coalesce.service as service_module
+    from coalesce.export import ExportFailure
+
+    document = tmp_path / "roundtrip-update.coalesce.json"
+    service = DocumentService(document, warmup=False)
+    assert service.sketch(polyline_sketch(PULLEY))["ok"]
+    assert service.feature(revolve())["ok"]
+    before = document.read_bytes()
+
+    def fail_round_trip(_part):
+        raise ExportFailure("EXPORT_VALIDATION_FAILED", "injected update mismatch")
+
+    monkeypatch.setattr(service_module, "_validate_part_for_step", fail_round_trip)
+    changed = polyline_sketch([[0, 4], [30, 4], [30, 9], [20, 9], [20, 14], [0, 14]])
+    result = service.sketch(
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "bad-roundtrip-update",
+            "sketchId": "profile",
+            "set": {"entities": changed["entities"]},
+        }
+    )
+    assert result["error"]["code"] == "MANUFACTURING_VALIDATION_FAILED"
+    assert result["revision"] == 2 and document.read_bytes() == before
+
+
 def test_stale_revision_is_atomic(tmp_path):
     document = tmp_path / "stale.coalesce.json"
     service = DocumentService(document, warmup=False)
