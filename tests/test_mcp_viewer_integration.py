@@ -1535,6 +1535,7 @@ async def test_rejected_sketch_overlay_is_transient_in_real_stdio_browser(tmp_pa
         }
         assert first["label"] == "Rejected sketch — not accepted"
         assert "Rejected sketch — not accepted" in first["alert"]
+        assert first["keyboardFocus"] == "BUTTON"
         assert first["errors"] == []
         assert large["large"][size]["diagnostic"]["entityCount"] == 300
         assert large["large"][size]["errors"] == []

@@ -27,7 +27,9 @@ async function resultFor({ page, errors, name }, expectedKinds, screenshot) {
     { timeout: 15000 },
   );
   if (screenshot) await page.screenshot({ path: `${shots}/${name}-${screenshot}.png` });
+  await page.keyboard.press('Tab');
   const result = await page.evaluate(() => ({
+    keyboardFocus: document.activeElement?.tagName,
     revision: window.coalesceViewer.revision,
     diagnostic: window.coalesceViewer.diagnostic,
     label: document.getElementById('rejected-label').textContent,
