@@ -71,6 +71,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `DUPLICATE_ID` | request | a node id already exists | choose a new stable id |
 | `DUPLICATE_ENTITY_ID` | request | one sketch repeats an entity id | give each sketch entity a unique id |
 | `UNKNOWN_ID` | request | a requested node, part, or revision is not retained | query the graph or listed valid parts and use an existing id |
+| `RESOURCE_NOT_FOUND` | request | an mcp resource uri is not listed by the server | list resources and use one of the returned uris |
 | `UNKNOWN_PLANE` | request | a sketch names an unsupported origin plane | use `XY`, `XZ`, or `YZ` |
 | `NON_FINITE_VALUE` | request | a numeric value is NaN or infinite | send a finite number |
 | `INVALID_CIRCLE_RADIUS` | request | a sketch circle radius is not positive | send a positive radius |
