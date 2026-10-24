@@ -192,6 +192,7 @@ async function act(action) {
         memory: window.coalesceViewer.memory,
         modes: [...document.querySelectorAll('[data-mode]')].map((b) => ({
           name: b.textContent,
+          visible: b.checkVisibility(),
           pressed: b.getAttribute('aria-pressed'),
           disabled: b.disabled || b.getAttribute('aria-disabled') === 'true',
           reason: b.title,

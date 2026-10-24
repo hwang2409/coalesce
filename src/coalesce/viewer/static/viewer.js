@@ -792,10 +792,16 @@ function fade(group, on) {
   }
 }
 
+// the enclosure-only review modes apply only when the scene has an enclosure fit check
+function hasEnclosure() {
+  return Boolean(current?.fit?.length);
+}
+
 // places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
 function applyMode() {
   const parts = current?.parts ?? [];
-  if (unavailable(mode, parts)) mode = 'assembled';
+  const enclosure = hasEnclosure();
+  if ((!enclosure && mode !== 'section') || unavailable(mode, parts)) mode = 'assembled';
   const offsets = mode === 'exploded' ? explodeOffsets(parts) : null;
   if (mode === 'section') {
     const [low, high] = sectionRange(parts);
@@ -829,8 +835,11 @@ function applyMode() {
     toggles[index].disabled = lifted;
     toggles[index].title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggles[index].dataset.title}`;
   });
-  for (const button of document.querySelectorAll('[data-mode]')) {
+  const modeButtons = [...document.querySelectorAll('[data-mode]')];
+  const focusSection = !enclosure && modeButtons.some((button) => button === document.activeElement && button.dataset.mode !== 'section');
+  for (const button of modeButtons) {
     const reason = unavailable(button.dataset.mode, parts);
+    button.hidden = !enclosure && button.dataset.mode !== 'section';
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
     if (reason) {
       button.setAttribute('aria-disabled', 'true');
@@ -840,6 +849,9 @@ function applyMode() {
       button.removeAttribute('title');
     }
   }
+  if (focusSection) document.querySelector('[data-mode="section"]').focus();
+  $('modes').classList.toggle('single', !enclosure);
+  $('section-help').textContent = enclosure ? 'Escape returns to the Assembled view.' : 'Escape returns to the default view.';
   for (const button of document.querySelectorAll('[data-axis]')) {
     button.setAttribute('aria-pressed', String(button.dataset.axis === section.axis));
   }
@@ -898,16 +910,17 @@ for (const input of [$('section-range'), $('section-value')]) {
 }
 // Escape in the section controls ends the section view; the hint says so while they have focus
 const sectionControls = $('section-controls');
-sectionControls.addEventListener('focusin', () => hint('Esc returns to Assembled'));
+sectionControls.addEventListener('focusin', () => hint(`Esc returns to ${hasEnclosure() ? 'Assembled' : 'the default view'}`));
 sectionControls.addEventListener('focusout', (event) => {
   if (!sectionControls.contains(event.relatedTarget)) hint(null);
 });
 sectionControls.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   event.preventDefault();
+  const enclosed = hasEnclosure();
   setMode('assembled');
-  document.querySelector('[data-mode="assembled"]').focus(); // the hidden controls drop focus
-  $('review-announce').textContent = 'Section view ended; Assembled view restored.';
+  document.querySelector(`[data-mode="${enclosed ? 'assembled' : 'section'}"]`).focus(); // the hidden controls drop focus
+  $('review-announce').textContent = `Section view ended; ${enclosed ? 'Assembled' : 'default'} view restored.`;
 });
 $('section-value').addEventListener('change', () => {
   $('section-value').value = Number(section.position.toFixed(1)); // shows the clamped position

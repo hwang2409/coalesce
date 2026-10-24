@@ -47,6 +47,10 @@ def pressed(state):
     return [mode["name"] for mode in state["modes"] if mode["pressed"] == "true"]
 
 
+def visible_modes(state):
+    return [mode["name"] for mode in state["modes"] if mode["visible"]]
+
+
 def overlaps(a, b):
     return a["left"] < b["right"] and b["left"] < a["right"] and a["top"] < b["bottom"] and b["top"] < a["bottom"]
 
@@ -234,35 +238,43 @@ def test_review_modes_show_inside_the_enclosure_and_restore_it_exactly(module, v
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
-def test_modes_that_do_not_apply_are_disabled_with_a_reason(module, viewport):  # noqa: F811
+def test_plain_part_shows_only_section_and_live_enclosure_modes_follow_revisions(module, viewport):  # noqa: F811
     store = ViewerSceneStore()
     server = ViewerServer(store)
     driver, step = open_driver(module, server.url, viewport)
     try:
         step("empty", wait={"ready": True})
         store.publish(1, [ScenePart("plate", plate(6))])
-        shown = step("plate-modes", wait={"revision": 1}, do=[{"review": True}])
-        state = review(shown)
-        assert [mode["disabled"] for mode in state["modes"]] == [False, True, True, False]
-        assert [mode["reason"] for mode in state["modes"][1:3]] == [
-            "No lid in this model", "No lid or board to separate"]
+        plain = step("plain-part", wait={"revision": 1}, do=[{"review": True}])
+        state = review(plain)
+        assert visible_modes(state) == ["Section"]
         assert state["hint"] is None
-        # choosing one says why, and keeps the assembled view
-        tried = step("plate-lid-off", do=[{"force": "Lid off"}, {"review": True}])
-        state = review(tried, 1)
-        assert state["hint"] == "Lid off: no lid in this model"
-        assert pressed(state) == ["Assembled"]
-        assert tried["scene"]["visible"] == [True]
         assert_clear_layout(state)
-        cut = step("plate-section", do=[{"click": "Section"}, {"review": True}])
-        assert pressed(review(cut, 1)) == ["Section"]
-        assert cut["scene"]["cut"] == [True]
-        assert_clear_layout(review(cut, 1))
-        # a new revision while cut, then the assembled view: the old cut faces were freed with their part
-        store.publish(2, [ScenePart("plate", plate(6))])
-        step("plate-section-2", wait={"revision": 2}, do=[{"settle": True}])
-        back = step("plate-assembled", do=[{"click": "Assembled"}, {"settle": True}, {"review": True}])
-        assert review(back, 2)["memory"] == state["memory"]
+        keyboard = step("plain-keyboard", do=[{"blur": True}, {"tabTo": "Section"}])
+        assert [name for name in keyboard["actions"][1]["visited"] if name in MODES] == ["Section"]
+
+        enclosure_parts = [
+            ScenePart("base", plate(6), features=({"id": "base", "kind": "pcb base"},)),
+            ScenePart("lid", Pos(0, 0, 8) * plate(2), features=({"id": "lid", "kind": "pcb lid"},)),
+        ]
+        store.publish(2, enclosure_parts, fit=[{"baseId": "base", "rows": []}])
+        enclosed = step("enclosure", wait={"revision": 2}, do=[{"review": True}])
+        assert visible_modes(review(enclosed)) == MODES
+
+        active = step("enclosure-exploded", do=[
+            {"click": "Exploded"}, {"settle": True}, {"focus": "[data-mode='exploded']"}, {"review": True},
+        ])
+        assert pressed(review(active, 3)) == ["Exploded"]
+        assert active["focused"] == "Exploded"
+
+        store.publish(3, [ScenePart("plate", plate(8))])
+        reverted = step("plain-again", wait={"revision": 3}, do=[{"review": True}])
+        state = review(reverted)
+        assert visible_modes(state) == ["Section"]
+        assert reverted["scene"]["mode"] == "assembled"
+        assert reverted["focused"] == "Section"
+        assert reverted["scene"]["visible"] == [True]
+        assert_clear_layout(state)
         driver.stdin.close()
         assert driver.wait(timeout=30) == 0
     finally:
@@ -520,7 +532,7 @@ def test_section_of_a_model_with_no_enclosure_spans_its_full_extent(module, view
             for axis in "XYZ":
                 state = review(step(f"{shot}-{axis}", do=[{"click": axis}, {"review": True}]), 1)["section"]
                 found[f"{name} {axis}"] = (state["min"], state["max"])
-            step(f"{shot}-off", do=[{"click": "Assembled"}])
+            step(f"{shot}-off", do=[{"focus": "#section-range"}, {"key": "Escape"}])
         full = {"X": (-29.9, 29.9), "Y": (-19.9, 19.9), "Z": (0.1, 5.9)}
         assert found == {f"{name} {axis}": full[axis] for name in models for axis in "XYZ"}, found
         driver.stdin.close()
