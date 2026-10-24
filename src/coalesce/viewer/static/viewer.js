@@ -792,11 +792,16 @@ function fade(group, on) {
   }
 }
 
+// the enclosure-only review modes apply only when the scene has an enclosure fit check
+function hasEnclosure() {
+  return Boolean(current?.fit?.length);
+}
+
 // places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
 function applyMode() {
   const parts = current?.parts ?? [];
-  const hasEnclosure = Boolean(current?.fit.length);
-  if ((!hasEnclosure && mode !== 'section') || unavailable(mode, parts)) mode = 'assembled';
+  const enclosure = hasEnclosure();
+  if ((!enclosure && mode !== 'section') || unavailable(mode, parts)) mode = 'assembled';
   const offsets = mode === 'exploded' ? explodeOffsets(parts) : null;
   if (mode === 'section') {
     const [low, high] = sectionRange(parts);
@@ -831,10 +836,10 @@ function applyMode() {
     toggles[index].title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggles[index].dataset.title}`;
   });
   const modeButtons = [...document.querySelectorAll('[data-mode]')];
-  const focusSection = !hasEnclosure && modeButtons.some((button) => button === document.activeElement && button.dataset.mode !== 'section');
+  const focusSection = !enclosure && modeButtons.some((button) => button === document.activeElement && button.dataset.mode !== 'section');
   for (const button of modeButtons) {
     const reason = unavailable(button.dataset.mode, parts);
-    button.hidden = !hasEnclosure && button.dataset.mode !== 'section';
+    button.hidden = !enclosure && button.dataset.mode !== 'section';
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
     if (reason) {
       button.setAttribute('aria-disabled', 'true');
@@ -845,7 +850,8 @@ function applyMode() {
     }
   }
   if (focusSection) document.querySelector('[data-mode="section"]').focus();
-  $('section-help').textContent = hasEnclosure ? 'Escape returns to the Assembled view.' : 'Escape returns to the default view.';
+  $('modes').classList.toggle('single', !enclosure);
+  $('section-help').textContent = enclosure ? 'Escape returns to the Assembled view.' : 'Escape returns to the default view.';
   for (const button of document.querySelectorAll('[data-axis]')) {
     button.setAttribute('aria-pressed', String(button.dataset.axis === section.axis));
   }
@@ -904,7 +910,6 @@ for (const input of [$('section-range'), $('section-value')]) {
 }
 // Escape in the section controls ends the section view; the hint says so while they have focus
 const sectionControls = $('section-controls');
-const hasEnclosure = () => Boolean(current?.fit.length);
 sectionControls.addEventListener('focusin', () => hint(`Esc returns to ${hasEnclosure() ? 'Assembled' : 'the default view'}`));
 sectionControls.addEventListener('focusout', (event) => {
   if (!sectionControls.contains(event.relatedTarget)) hint(null);
