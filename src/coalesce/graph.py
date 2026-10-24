@@ -169,6 +169,13 @@ class Extrude(Feature):
 
 
 @dataclass
+class Revolve(Feature):
+    sketch: str = ""
+    axis: str = "x"
+    operation: str = "new_body"
+
+
+@dataclass
 class PcbBase(Feature):
     board: str = ""
     wall_thickness: float = 2

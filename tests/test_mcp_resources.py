@@ -21,6 +21,7 @@ GUIDES = {
     "coalesce://docs/hole": "docs/hole.md",
     "coalesce://docs/enclosure": "docs/enclosures.md",
     "coalesce://docs/refresh": "docs/refresh.md",
+    "coalesce://docs/revolve": "docs/revolve.md",
     "coalesce://docs/examples/cycloidal-disc": "docs/examples/cycloidal-disc.md",
 }
 

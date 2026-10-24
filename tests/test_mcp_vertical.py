@@ -806,6 +806,7 @@ def test_unknown_feature_kind_and_invalid_geometry_are_safe(tmp_path):
     assert unknown["error"]["code"] == "INVALID_PARAMETER"
     assert unknown["error"]["allowedKinds"] == [
         "extrude",
+        "revolve",
         "cut",
         "hole",
         "fillet",

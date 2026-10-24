@@ -291,6 +291,17 @@ PROFILE = {
     "required": ["sketchId", "profileIds"],
     "additionalProperties": False,
 }
+REVOLVE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "profile": PROFILE,
+        "axis": {"enum": ["x", "y"]},
+        "angle": {"const": {"value": 360, "unit": "deg"}},
+        "operation": {"const": "new_body"},
+    },
+    "required": ["profile", "axis", "angle", "operation"],
+    "additionalProperties": False,
+}
 EXTRUDE_PARAMETERS = {
     "type": "object",
     "properties": {
@@ -573,37 +584,24 @@ STANDOFFS_PARAMETERS = {
     "required": ["target", "board", "selection", "bossDiameter", "pilotDiameter"],
     "additionalProperties": False,
 }
-FEATURE_PARAMETERS = {
-    "oneOf": [
-        EXTRUDE_PARAMETERS,
-        CUT_PARAMETERS,
-        HOLE_PARAMETERS,
-        FILLET_PARAMETERS,
-        CHAMFER_PARAMETERS,
-        PCB_BASE_PARAMETERS,
-        STANDOFFS_PARAMETERS,
-        PCB_LID_PARAMETERS,
-        PORT_CUTOUT_PARAMETERS,
-        SCREW_CLOSURE_PARAMETERS,
-    ]
+FEATURE_KIND_SCHEMAS = {
+    "extrude": EXTRUDE_PARAMETERS,
+    "revolve": REVOLVE_PARAMETERS,
+    "cut": CUT_PARAMETERS,
+    "hole": HOLE_PARAMETERS,
+    "fillet": FILLET_PARAMETERS,
+    "chamfer": CHAMFER_PARAMETERS,
+    "pcb_base": PCB_BASE_PARAMETERS,
+    "standoffs": STANDOFFS_PARAMETERS,
+    "pcb_lid": PCB_LID_PARAMETERS,
+    "port_cutout": PORT_CUTOUT_PARAMETERS,
+    "screw_closure": SCREW_CLOSURE_PARAMETERS,
 }
+FEATURE_PARAMETERS = {"oneOf": list(FEATURE_KIND_SCHEMAS.values())}
 FEATURE_PROPERTIES = {
     **MUTATION_PROPERTIES,
     "featureId": {"type": "string", "minLength": 1},
-    "kind": {
-        "enum": [
-            "extrude",
-            "cut",
-            "hole",
-            "fillet",
-            "chamfer",
-            "pcb_base",
-            "standoffs",
-            "pcb_lid",
-            "port_cutout",
-            "screw_closure",
-        ]
-    },
+    "kind": {"enum": list(FEATURE_KIND_SCHEMAS)},
 }
 FEATURE_CREATE_SCHEMA = {
     "type": "object",
@@ -775,18 +773,7 @@ FEATURE_ACTION_SCHEMAS = {
                 "parameters": parameters,
             },
         }
-        for kind, parameters in {
-            "extrude": EXTRUDE_PARAMETERS,
-            "cut": CUT_PARAMETERS,
-            "hole": HOLE_PARAMETERS,
-            "fillet": FILLET_PARAMETERS,
-            "chamfer": CHAMFER_PARAMETERS,
-            "pcb_base": PCB_BASE_PARAMETERS,
-            "standoffs": STANDOFFS_PARAMETERS,
-            "pcb_lid": PCB_LID_PARAMETERS,
-            "port_cutout": PORT_CUTOUT_PARAMETERS,
-            "screw_closure": SCREW_CLOSURE_PARAMETERS,
-        }.items()
+        for kind, parameters in FEATURE_KIND_SCHEMAS.items()
     },
 }
 for kind, changes in {

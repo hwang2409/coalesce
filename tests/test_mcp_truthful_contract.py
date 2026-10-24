@@ -14,6 +14,7 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
 
     assert tools["feature"].inputSchema["properties"]["kind"]["enum"] == [
         "extrude",
+        "revolve",
         "cut",
         "hole",
         "fillet",
