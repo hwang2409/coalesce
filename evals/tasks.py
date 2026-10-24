@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 REQUIRED = {"id", "tier", "prompt", "fixtures", "checks"}
-EXPECTED_GEOMETRY = {"bbox": "size", "hole_positions": "positions"}
+EXPECTED_GEOMETRY = {
+    "bbox": "size",
+    "hole_positions": "positions",
+    "part_hole_positions": "holes",
+}
 
 
 def _validate_checks(path: Path, checks: object) -> None:
@@ -18,6 +22,15 @@ def _validate_checks(path: Path, checks: object) -> None:
             raise ValueError(f"invalid {field} in {path}: expected geometry must be non-empty")
         if check.get("kind") == "hole_positions" and not check.get("diameter"):
             raise ValueError(f"invalid diameter in {path}: expected geometry must be non-empty")
+        if check.get("kind") == "part_hole_positions" and (
+            not check.get("feature")
+            or any(not hole.get("position") or not hole.get("diameter") for hole in check["holes"])
+        ):
+            raise ValueError(f"invalid part hole geometry in {path}")
+        if check.get("kind") == "document_state" and not all(
+            field in check for field in ("revision", "features", "receiptFeatureIds")
+        ):
+            raise ValueError(f"invalid document state in {path}")
         if check.get("kind") == "port_opening_clears_connector" and not all(
             check.get(field) for field in ("reference", "wall")
         ):

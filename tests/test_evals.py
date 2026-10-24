@@ -905,9 +905,73 @@ def test_checks_pass_fail_unknown(tmp_path):
     assert [result["status"] for result in results] == ["pass", "fail", "unknown"]
 
 
+def test_document_state_requires_exact_revision_feature_values_and_receipt_order(tmp_path):
+    document = tmp_path / "model.coalesce.json"
+    document.write_text(json.dumps({
+        "revision": 3,
+        "graph": {"nodes": [{"id": "profile", "type": "Sketch", "value": 4}]},
+        "receipts": [
+            {"response": {"changedFeatureIds": ["profile"]}},
+            {"response": {"changedFeatureIds": ["plate"]}},
+            {"response": {"changedFeatureIds": ["profile"]}},
+        ],
+    }))
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    expected = {
+        "kind": "document_state",
+        "revision": 3,
+        "features": {"profile": {"type": "Sketch", "value": 4}},
+        "receiptFeatureIds": [["profile"], ["plate"], ["profile"]],
+    }
+
+    assert check_task({"checks": [expected]}, document, steps)[0]["status"] == "pass"
+    changed = {**expected, "features": {"profile": {"value": 5}}}
+    assert check_task({"checks": [changed]}, document, steps)[0]["status"] == "fail"
+
+
+def test_part_hole_positions_selects_terminal_feature_and_requires_exact_set(
+    tmp_path, monkeypatch
+):
+    from build123d import Align, Box, Cylinder, Pos, export_step
+
+    from evals.checks import ArtifactContext, _single_solid_metrics
+
+    shape = Box(30, 20, 4, align=(Align.MIN, Align.MIN, Align.MIN))
+    for x in (5, 15, 25):
+        shape -= Pos(x, 10, 0) * Cylinder(1.5, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    steps = tmp_path / "steps"
+    steps.mkdir()
+    step = steps / "plate.step"
+    export_step(shape, step)
+    monkeypatch.setattr(
+        ArtifactContext,
+        "measurements",
+        property(lambda _self: {"parts": [{"partId": "plate", "terminalFeatureId": "holes"}]}),
+    )
+    monkeypatch.setattr(
+        ArtifactContext,
+        "document_parts",
+        property(lambda _self: {"plate": _single_solid_metrics(step)}),
+    )
+    check = {
+        "kind": "part_hole_positions",
+        "feature": "holes",
+        "holes": [
+            {"position": [x, 10], "diameter": [2.9, 3.1]} for x in (5, 15, 25)
+        ],
+    }
+
+    passed = check_task({"checks": [check]}, _document(tmp_path / "model.json"), steps)[0]
+    assert passed["status"] == "pass"
+    check["holes"].pop()
+    failed = check_task({"checks": [check]}, _document(tmp_path / "model.json"), steps)[0]
+    assert failed["status"] == "fail"
+
+
 def test_task_files_load_and_validate():
     tasks = load_tasks(Path("evals/tasks"))
-    assert len(tasks) == 8
+    assert len(tasks) == 11
     assert {task["tier"] for task in tasks} == {"easy", "medium", "hard"}
 
 

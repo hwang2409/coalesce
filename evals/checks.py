@@ -31,7 +31,9 @@ class ArtifactContext:
         self._step_shapes = None
         self._service = None
         self._inspection = None
+        self._measurements = None
         self._document_parts = None
+        self._document_payload = None
 
     @property
     def step_metrics(self):
@@ -81,21 +83,26 @@ class ArtifactContext:
         return self._inspection
 
     @property
+    def measurements(self):
+        if self._measurements is None:
+            self._measurements = self.service.query({"select": {"kind": "measurements"}})
+            if self._measurements.get("ok") is not True:
+                raise ValueError(
+                    f"saved document measurements query failed: {self._measurements}"
+                )
+        return self._measurements
+
+    @property
     def document_parts(self):
         if self._document_parts is None:
-            part_ids = [part["partId"] for part in self.inspection["terminalParts"]]
-            measured = self.service.query({"select": {"kind": "measurements"}})
-            if measured.get("ok") is not True:
-                raise ValueError(f"saved document measurements query failed: {measured}")
-            if {part["partId"] for part in measured["parts"]} != set(part_ids):
-                raise ValueError("enclosure and measurement manufacturing parts disagree")
+            part_ids = [part["partId"] for part in self.measurements["parts"]]
             with tempfile.TemporaryDirectory(prefix="coalesce-eval-") as temporary:
                 directory = Path(temporary)
                 self._document_parts = {}
                 for index, part_id in enumerate(part_ids):
                     path = directory / f"reference-{index}.step"
                     exported = self.service.export({
-                        "expectedRevision": measured["revision"],
+                        "expectedRevision": self.measurements["revision"],
                         "path": str(path),
                         "partIds": [part_id],
                     })
@@ -103,6 +110,12 @@ class ArtifactContext:
                         raise ValueError(f"reference export failed: {exported}")
                     self._document_parts[part_id] = _single_solid_metrics(path)
         return self._document_parts
+
+    @property
+    def document_payload(self):
+        if self._document_payload is None:
+            self._document_payload = json.loads(self.document.read_text())
+        return self._document_payload
 
 
 def _parts_result(expected, context):
@@ -202,6 +215,29 @@ def _metric_holes(metric, shape):
     ]
 
 
+def _match_holes(expected, holes, tolerance):
+    unmatched = list(holes)
+    unmatched_expected = []
+    matched = []
+    for item in expected:
+        expected_x, expected_y = item["position"]
+        diameter = item["diameter"]
+        candidates = [
+            (index, math.hypot(x - expected_x, y - expected_y))
+            for index, hole in enumerate(unmatched)
+            for x, y in [hole["position"]]
+            if diameter[0] <= hole["diameter"] <= diameter[1]
+            and abs(x - expected_x) <= tolerance
+            and abs(y - expected_y) <= tolerance
+        ]
+        if not candidates:
+            unmatched_expected.append(item)
+            continue
+        index, _distance = min(candidates, key=lambda candidate: candidate[1])
+        matched.append(unmatched.pop(index))
+    return matched, unmatched, unmatched_expected
+
+
 def _hole_positions(check, context):
     if len(context.step_paths) != 1:
         return _result(
@@ -210,24 +246,12 @@ def _hole_positions(check, context):
             reason=f"hole evidence requires exactly one STEP file, found {len(context.step_paths)}",
         )
     holes = _metric_holes(context.step_metrics[0], context.step_shapes[0])
-    unmatched = list(holes)
-    unmatched_expected = []
-    matched = []
     tolerance = check.get("tolerance", 0.1)
-    for expected_x, expected_y in check["positions"]:
-        candidates = [
-            (index, math.hypot(x - expected_x, y - expected_y))
-            for index, hole in enumerate(unmatched)
-            for x, y in [hole["position"]]
-            if check["diameter"][0] <= hole["diameter"] <= check["diameter"][1]
-            and abs(x - expected_x) <= tolerance
-            and abs(y - expected_y) <= tolerance
-        ]
-        if not candidates:
-            unmatched_expected.append([expected_x, expected_y])
-            continue
-        index, _distance = min(candidates, key=lambda item: item[1])
-        matched.append(unmatched.pop(index))
+    expected = [
+        {"position": position, "diameter": check["diameter"]}
+        for position in check["positions"]
+    ]
+    matched, unmatched, unmatched_expected = _match_holes(expected, holes, tolerance)
     volume, expected_volume = _plate_volumes(context.step_metrics[0], context.step_shapes[0], matched)
     # shortcut: aggregate volume, so a box minus its holes; an extra cavity, pocket, or boss changes it,
     # but equal-volume compensation can spoof it (see evals/README.md for the upgrade condition).
@@ -240,6 +264,50 @@ def _hole_positions(check, context):
         unmatchedExpected=unmatched_expected,
         volume=volume,
         expectedVolume=expected_volume,
+    )
+
+
+def _part_hole_positions(check, context):
+    matching_parts = [
+        part
+        for part in context.measurements["parts"]
+        if part.get("terminalFeatureId") == check["feature"]
+    ]
+    if len(matching_parts) != 1:
+        return _result(
+            check,
+            "fail",
+            reason=(
+                f"feature {check['feature']!r} resolved to {len(matching_parts)} "
+                "terminal parts; expected exactly one"
+            ),
+        )
+    part_id = matching_parts[0]["partId"]
+    reference = context.document_parts[part_id]
+    candidates = []
+    for path, metric, shape in zip(
+        context.step_paths, context.step_metrics, context.step_shapes, strict=True
+    ):
+        solids = list(shape.solids())
+        if len(solids) == 1 and _same_solid(_solid_metrics(solids[0]), reference):
+            candidates.append((path, metric, shape))
+    if len(candidates) != 1:
+        return _result(
+            check,
+            "fail",
+            reason=f"terminal part {part_id!r} matched {len(candidates)} STEP files; expected one",
+        )
+    _path, metric, shape = candidates[0]
+    holes = _metric_holes(metric, shape)
+    _matched, unmatched, unmatched_expected = _match_holes(
+        check["holes"], holes, check.get("tolerance", 0.1)
+    )
+    return _result(
+        check,
+        "pass" if not unmatched and not unmatched_expected else "fail",
+        actual=holes,
+        unmatched=unmatched,
+        unmatchedExpected=unmatched_expected,
     )
 
 
@@ -336,9 +404,47 @@ def _step_check(check, context):
         "bbox": _bbox_check,
         "no_overlapping_parts": _no_overlapping_parts,
         "hole_positions": _hole_positions,
+        "part_hole_positions": _part_hole_positions,
     }
     handler = handlers.get(check["kind"])
     return handler(check, context) if handler else None
+
+
+def _contains(actual, expected):
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _contains(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) == len(expected) and all(
+            _contains(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _document_state(check, context):
+    payload = context.document_payload
+    nodes = {node.get("id"): node for node in payload.get("graph", {}).get("nodes", [])}
+    expected_features = check.get("features", {})
+    actual_features = {feature_id: nodes.get(feature_id) for feature_id in expected_features}
+    actual_receipts = [
+        receipt.get("response", {}).get("changedFeatureIds")
+        for receipt in payload.get("receipts", [])
+    ]
+    passed = (
+        payload.get("revision") == check.get("revision")
+        and _contains(actual_features, expected_features)
+        and actual_receipts == check.get("receiptFeatureIds")
+    )
+    return _result(
+        check,
+        "pass" if passed else "fail",
+        actual={
+            "revision": payload.get("revision"),
+            "features": actual_features,
+            "receiptFeatureIds": actual_receipts,
+        },
+    )
 
 
 def _range_result(check, value):
@@ -539,6 +645,8 @@ def _edge_treatment(check, context):
 
 def _enclosure_check(check, context):
     kind = check["kind"]
+    if kind == "document_state":
+        return _document_state(check, context)
     if kind == "references_resolve":
         _ = context.service
         return _result(check, "pass")
