@@ -405,9 +405,36 @@ def _step_check(check, context):
         "no_overlapping_parts": _no_overlapping_parts,
         "hole_positions": _hole_positions,
         "part_hole_positions": _part_hole_positions,
+        "cylinder_radii": _cylinder_radii,
     }
     handler = handlers.get(check["kind"])
     return handler(check, context) if handler else None
+
+
+def _cylinder_radii(check, context):
+    if len(context.step_shapes) != 1:
+        return _result(
+            check,
+            "fail",
+            reason=(
+                "cylinder evidence requires exactly one STEP file, "
+                f"found {len(context.step_shapes)}"
+            ),
+        )
+    from build123d import GeomType
+
+    actual = sorted(
+        float(face.radius)
+        for face in context.step_shapes[0].faces()
+        if face.geom_type is GeomType.CYLINDER
+    )
+    expected = sorted(check["radii"])
+    tolerance = check.get("tolerance", 1e-6)
+    passed = len(actual) == len(expected) and all(
+        math.isclose(measured, wanted, rel_tol=0, abs_tol=tolerance)
+        for measured, wanted in zip(actual, expected, strict=True)
+    )
+    return _result(check, "pass" if passed else "fail", actual=actual)
 
 
 def _contains(actual, expected):
@@ -432,9 +459,11 @@ def _document_state(check, context):
         for receipt in payload.get("receipts", [])
     ]
     # edit tasks leave revision and receipt history to runner_feature_edit
+    actual_feature_ids = list(nodes)
     passed = (
         check.get("revision", payload.get("revision")) == payload.get("revision")
         and _contains(actual_features, expected_features)
+        and check.get("featureIds", actual_feature_ids) == actual_feature_ids
         and check.get("receiptFeatureIds", actual_receipts) == actual_receipts
     )
     return _result(
@@ -443,6 +472,7 @@ def _document_state(check, context):
         actual={
             "revision": payload.get("revision"),
             "features": actual_features,
+            "featureIds": actual_feature_ids,
             "receiptFeatureIds": actual_receipts,
         },
     )
@@ -460,10 +490,12 @@ def _runner_feature_edit(check, context):
     receipts = [response.get("changedFeatureIds") for response in responses]
     before_receipts = before.get("receiptFeatureIds", [])
     edits = responses[len(before_receipts):]
+    preserved = before.get("preservedFeatures", {})
     passed = (
         before.get("featureId") == feature_id
         and _contains(before.get("feature"), check["before"])
         and feature_id in nodes
+        and all(nodes.get(item_id) == node for item_id, node in preserved.items())
         and receipts[: len(before_receipts)] == before_receipts
         and bool(edits)
         and all(
@@ -477,6 +509,7 @@ def _runner_feature_edit(check, context):
         "pass" if passed else "fail",
         actual={
             "beforeFeatureId": before.get("featureId"),
+            "preservedFeatureIds": sorted(preserved),
             "revision": payload.get("revision"),
             "receiptFeatureIds": receipts,
         },

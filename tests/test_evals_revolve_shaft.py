@@ -9,7 +9,6 @@ from evals.checks import check_task
 from evals.run import build_before_state
 from evals.tasks import load_tasks
 
-
 FINAL_POINTS = [
     {"id": "axis_left", "x": 0, "y": 0},
     {"id": "axis_right", "x": 30, "y": 0},
