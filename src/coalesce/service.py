@@ -79,7 +79,12 @@ from .requirements import InvalidHoleIds, reduce_gate
 from .requirements import evaluate as evaluate_requirements
 from .schemas import SUPPORTED_REQUIREMENT_KINDS
 from .serialization import dumps, loads
-from .sketch_solver import DEFAULT_SOLVE_TIMEOUT_SECONDS, SketchSolverSession, solve_sketch
+from .sketch_solver import (
+    DEFAULT_SOLVE_TIMEOUT_SECONDS,
+    SketchSolverSession,
+    diagnostic_geometry_details,
+    solve_sketch,
+)
 
 _CONSTRAINED_SKETCH_SOLVE = ConstrainedSketch.solve
 
@@ -2017,20 +2022,27 @@ def _sketch_rejection(result: Any, model: ConstrainedSketch) -> RequestError:
     message = messages.get(
         result.status.value, ("INVALID_PARAMETER", "invalid constrained sketch input")
     )[1]
+    entity_ids = {
+        entity.id for entity in (*model.points, *model.lines, *model.arcs, *model.circles)
+    }
+    details = {
+        "diagnostics": result_payload(model),
+        **diagnostic_geometry_details(result, entity_ids),
+    }
     if result.status.value == "invalid_input":
-        return RequestError("INVALID_PARAMETER", message, diagnostics=result_payload(model))
+        return RequestError("INVALID_PARAMETER", message, **details)
     if result.status.value == "redundant":
-        return RequestError("SKETCH_REDUNDANT", message, diagnostics=result_payload(model))
+        return RequestError("SKETCH_REDUNDANT", message, **details)
     if result.status.value == "conflicting":
-        return RequestError("SKETCH_CONFLICTING", message, diagnostics=result_payload(model))
+        return RequestError("SKETCH_CONFLICTING", message, **details)
     if result.status.value == "did_not_converge":
         codes = {error.code for error in result.errors}
         if "SOLVE_TIMEOUT" in codes:
-            return RequestError("SKETCH_SOLVE_TIMEOUT", message, diagnostics=result_payload(model))
+            return RequestError("SKETCH_SOLVE_TIMEOUT", message, **details)
         if "SOLVER_FAILED" in codes:
-            return RequestError("SKETCH_SOLVER_FAILED", message, diagnostics=result_payload(model))
-        return RequestError("SKETCH_DID_NOT_CONVERGE", message, diagnostics=result_payload(model))
-    return RequestError("SKETCH_BRANCH_FLIP", message, diagnostics=result_payload(model))
+            return RequestError("SKETCH_SOLVER_FAILED", message, **details)
+        return RequestError("SKETCH_DID_NOT_CONVERGE", message, **details)
+    return RequestError("SKETCH_BRANCH_FLIP", message, **details)
 
 
 def _accept_constrained_sketch(

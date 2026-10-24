@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import queue
@@ -313,12 +314,15 @@ class SolveResult:
     landmarks: Mapping[str, float] = field(default_factory=dict)
     iterations_or_detail: Mapping[str, object] = field(default_factory=dict)
     errors: tuple[SketchSolveError, ...] = ()
+    diagnostic_entities: Mapping[str, SolvedEntity] = field(default_factory=dict)
 
 
 DEFAULT_SOLVE_TIMEOUT_SECONDS = 1.0
 MIN_SOLVE_TIMEOUT_SECONDS = 0.5
 MAX_SOLVE_TIMEOUT_SECONDS = 120.0
 MAX_FRAME_BYTES = 16 * 1024 * 1024
+MAX_DIAGNOSTIC_GEOMETRY_BYTES = 64 * 1024
+DIAGNOSTIC_GEOMETRY_PRECISION = 6
 
 
 def _write_message(stream: Any, value: Any) -> None:
@@ -568,6 +572,9 @@ def _solve_sketch_native(request: SolveRequest) -> SolveResult:
             degrees_of_freedom=diagnosis.dof,
             redundant_constraints=redundant,
             conflicting_constraints=conflicting,
+            diagnostic_entities=_read_diagnostic_entities(
+                sketch, request, point_handles, line_handles, arc_handles, circle_handles
+            ),
         )
     plane_status = sketch.solve()
     if plane_status not in (PlaneSolveStatus.Success, PlaneSolveStatus.Converged):
@@ -580,6 +587,9 @@ def _solve_sketch_native(request: SolveRequest) -> SolveResult:
                 details={"solver_status": plane_status.name},
             ),
             dof=diagnosis.dof,
+            diagnostic_entities=_read_diagnostic_entities(
+                sketch, request, point_handles, line_handles, arc_handles, circle_handles
+            ),
         )
 
     solved = _read_entities(
@@ -603,6 +613,7 @@ def _solve_sketch_native(request: SolveRequest) -> SolveResult:
         diagnosis.dof,
         redundant_constraints=redundant,
         landmarks=landmarks,
+        diagnostic_entities=solved if status is SolveStatus.REDUNDANT else {},
     )
 
 
@@ -624,6 +635,19 @@ def _validate(request: SolveRequest) -> SketchSolveError | None:
     if error:
         return error
 
+    error = _validate_equations(request, entity_types)
+    if error:
+        return error
+
+    error = _validate_tangent_endpoints(request)
+    if error:
+        return error
+    return _validate_landmarks(request)
+
+
+def _validate_equations(
+    request: SolveRequest, entity_types: Mapping[str, str]
+) -> SketchSolveError | None:
     for item in (*request.dimensions, *request.constraints):
         if not _match_signature(item.kind, item.entities, entity_types):
             kind = item.kind.value if isinstance(item.kind, StrEnum) else str(item.kind)
@@ -649,11 +673,7 @@ def _validate(request: SolveRequest) -> SketchSolveError | None:
                 f"dimension {dimension.id!r} must be positive",
                 constraint_ids=(dimension.id,),
             )
-
-    error = _validate_tangent_endpoints(request)
-    if error:
-        return error
-    return _validate_landmarks(request)
+    return None
 
 
 def _validate_structure(request: SolveRequest) -> SketchSolveError | None:
@@ -1058,6 +1078,86 @@ def _read_entities(
     return solved
 
 
+def _read_diagnostic_entities(
+    sketch: Any,
+    request: SolveRequest,
+    points: Mapping[str, Any],
+    lines: Mapping[str, Any],
+    arcs: Mapping[str, Any],
+    circles: Mapping[str, Any],
+) -> dict[str, SolvedEntity]:
+    try:
+        return _read_entities(sketch, request, points, lines, arcs, circles)
+    except (OverflowError, RuntimeError, TypeError, ValueError):
+        return {}
+
+
+def _rounded(value: float) -> float:
+    return round(float(value), DIAGNOSTIC_GEOMETRY_PRECISION)
+
+
+def _diagnostic_entity_payload(entity: SolvedEntity) -> dict[str, object]:
+    if isinstance(entity, SolvedPoint):
+        return {
+            "kind": "point",
+            "x": _rounded(entity.x),
+            "y": _rounded(entity.y),
+            "construction": entity.construction,
+        }
+    if isinstance(entity, SolvedLine):
+        return {
+            "kind": "line",
+            "start": [_rounded(value) for value in entity.start],
+            "end": [_rounded(value) for value in entity.end],
+            "construction": entity.construction,
+        }
+    if isinstance(entity, SolvedArc):
+        return {
+            "kind": "arc",
+            "center": [_rounded(value) for value in entity.center],
+            "start": [_rounded(value) for value in entity.start],
+            "end": [_rounded(value) for value in entity.end],
+            "radius": _rounded(entity.radius),
+            "startAngle": _rounded(entity.start_angle),
+            "endAngle": _rounded(entity.end_angle),
+            "construction": entity.construction,
+        }
+    return {
+        "kind": "circle",
+        "center": [_rounded(value) for value in entity.center],
+        "radius": _rounded(entity.radius),
+        "construction": entity.construction,
+    }
+
+
+def diagnostic_geometry_details(
+    result: SolveResult, allowed_entity_ids: set[str]
+) -> dict[str, object]:
+    if not result.diagnostic_entities:
+        return {}
+    geometry = {
+        "accepted": False,
+        "entities": {
+            entity_id: _diagnostic_entity_payload(entity)
+            for entity_id, entity in sorted(result.diagnostic_entities.items())
+            if entity_id in allowed_entity_ids and _solved_entity_is_finite(entity)
+        },
+    }
+    if not geometry["entities"]:
+        return {}
+    payload_bytes = len(
+        json.dumps(geometry, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
+    )
+    if payload_bytes > MAX_DIAGNOSTIC_GEOMETRY_BYTES:
+        return {
+            "diagnosticGeometryOmitted": {
+                "reason": "payload_too_large",
+                "limitBytes": MAX_DIAGNOSTIC_GEOMETRY_BYTES,
+            }
+        }
+    return {"diagnosticGeometry": geometry}
+
+
 def _solved_entity_is_finite(entity: SolvedEntity) -> bool:
     if isinstance(entity, SolvedPoint):
         values = (entity.x, entity.y)
@@ -1119,10 +1219,12 @@ def _error_result(
     *,
     dof: int | None = None,
     landmarks: Mapping[str, float] | None = None,
+    diagnostic_entities: Mapping[str, SolvedEntity] | None = None,
 ) -> SolveResult:
     return SolveResult(
         status,
         degrees_of_freedom=dof,
         landmarks={} if landmarks is None else landmarks,
         errors=(error,),
+        diagnostic_entities={} if diagnostic_entities is None else diagnostic_entities,
     )

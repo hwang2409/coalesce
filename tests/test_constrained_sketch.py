@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import shutil
 import signal
@@ -375,6 +376,8 @@ async def test_rejected_updates_leave_revision_and_file_unchanged(tmp_path, mode
     assert rejected["ok"] is False
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == code
+    if code == "SKETCH_BRANCH_FLIP":
+        assert "diagnosticGeometry" not in rejected["error"]
     assert path.read_bytes() == saved
 
 
@@ -399,6 +402,7 @@ async def test_missing_solver_extra_is_structured_and_primitive_still_works(tmp_
     assert constrained["revision"] == 0
     assert constrained["error"]["code"] == "SKETCH_SOLVER_UNAVAILABLE"
     assert "coalesce[sketch]" in constrained["error"]["message"]
+    assert "diagnosticGeometry" not in constrained["error"]
     assert primitive["ok"] is True
     assert primitive["revision"] == 1
 
@@ -498,6 +502,7 @@ async def test_malformed_constrained_payload_is_invalid_parameter(tmp_path, chan
     assert result["ok"] is False
     assert result["error"]["code"] == "INVALID_PARAMETER"
     assert result["error"]["field"] == field
+    assert "diagnosticGeometry" not in result["error"]
 
 
 @pytest.mark.anyio
@@ -550,6 +555,7 @@ def test_solver_process_failures_only_expose_registered_codes(tmp_path, monkeypa
         return []
 
     assert set(codes(result)) <= set(ERROR_REGISTRY)
+    assert "diagnosticGeometry" not in result["error"]
 
 
 @pytest.mark.anyio
@@ -571,7 +577,134 @@ async def test_did_not_converge_update_is_atomic(tmp_path):
     assert rejected["ok"] is False
     assert rejected["revision"] == 1
     assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+    assert "diagnosticGeometry" not in rejected["error"]
     assert path.read_bytes() == saved
+
+
+@pytest.mark.anyio
+async def test_real_stdio_non_convergence_returns_uncommitted_geometry_and_keeps_state(tmp_path):
+    path = tmp_path / "diagnostic.coalesce.json"
+    exported = tmp_path / "previous.step"
+    create = create_request(rectangle_model())
+    extrude = {
+        "action": "create",
+        "expectedRevision": 1,
+        "requestId": "extrude",
+        "featureId": "body",
+        "kind": "extrude",
+        "parameters": {
+            "profile": {"sketchId": "profile", "profileIds": ["profile"]},
+            "distance": {"value": 5, "unit": "mm"},
+            "operation": "new_body",
+            "direction": "normal",
+        },
+    }
+    accepted = await run_server(path, [("sketch", create), ("feature", extrude)])
+    saved = path.read_bytes()
+
+    rejected, queried, checked, published = await run_server(
+        path,
+        [
+            ("sketch", update_request(rectangle_model(width=1e100), 2, "non-converging")),
+            ("query", {"select": {"kind": "graph"}}),
+            ("check", {"action": "evaluate", "revision": 2}),
+            (
+                "export",
+                {"action": "publish", "expectedRevision": 2, "path": str(exported)},
+            ),
+        ],
+    )
+
+    assert [result["revision"] for result in accepted] == [1, 2]
+    assert rejected["error"]["code"] == "SKETCH_DID_NOT_CONVERGE"
+    diagnostic = rejected["error"]["diagnosticGeometry"]
+    assert diagnostic["accepted"] is False
+    assert set(diagnostic["entities"]) == {
+        *(f"p{index}" for index in range(8)),
+        *(f"line{index}" for index in range(4)),
+    }
+    numbers = [
+        number
+        for entity in diagnostic["entities"].values()
+        for value in entity.values()
+        if not isinstance(value, (str, bool))
+        for number in (value if isinstance(value, list) else [value])
+    ]
+    assert all(math.isfinite(number) for number in numbers)
+    assert all(number == round(number, 6) for number in numbers)
+    assert rejected["revision"] == queried["revision"] == checked["revision"] == 2
+    assert graph_sketch(queried)["constrained"]["solved"]["status"] == "fully_constrained"
+    assert checked["ok"] is True
+    assert published["ok"] is True
+    assert exported.is_file()
+    assert path.read_bytes() == saved
+
+
+def test_failed_solve_geometry_keeps_stable_constraint_ids_and_is_response_only(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(
+        tmp_path / "failed-diagnostics.coalesce.json", scene_store=store, warmup=False
+    )
+    try:
+        assert service.sketch(create_request(rectangle_model()))["ok"] is True
+        assert store.wait_for_change(0, 3)
+        scene_revision = store.current_revision
+        redundant = service.sketch(update_request(fixed_pair_model(5), 1, "redundant"))
+        conflicting = service.sketch(update_request(fixed_pair_model(10), 1, "conflicting"))
+    finally:
+        service.close()
+
+    assert redundant["error"]["diagnostics"]["diagnostics"]["redundantConstraints"] == [
+        "fix-q"
+    ]
+    assert conflicting["error"]["diagnostics"]["diagnostics"]["conflictingConstraints"] == [
+        "distance-10",
+        "fix-p",
+        "fix-q",
+    ]
+    for rejected in (redundant, conflicting):
+        assert rejected["error"]["diagnosticGeometry"]["accepted"] is False
+        assert rejected["revision"] == 1
+    assert store.current_revision == scene_revision == 1
+
+
+def test_diagnostic_geometry_over_cap_is_dropped_with_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(sketch_solver_module, "MAX_DIAGNOSTIC_GEOMETRY_BYTES", 80)
+    service = DocumentService(tmp_path / "diagnostic-cap.coalesce.json", warmup=False)
+    try:
+        result = service.sketch(create_request(fixed_pair_model(10)))
+    finally:
+        service.close()
+
+    error = result["error"]
+    assert "diagnosticGeometry" not in error
+    assert error["diagnosticGeometryOmitted"] == {
+        "reason": "payload_too_large",
+        "limitBytes": 80,
+    }
+
+
+def _diagnostic_points(count: int) -> SolveResult:
+    entities = {
+        f"p{index:04d}": sketch_solver_module.SolvedPoint(index + 0.123456, -index - 0.654321)
+        for index in range(count)
+    }
+    return SolveResult(SolveStatus.DID_NOT_CONVERGE, diagnostic_entities=entities)
+
+
+def test_diagnostic_geometry_uses_the_real_64_kib_cap():
+    small = _diagnostic_points(300)
+    large = _diagnostic_points(2000)
+
+    kept = sketch_solver_module.diagnostic_geometry_details(small, set(small.diagnostic_entities))
+    dropped = sketch_solver_module.diagnostic_geometry_details(large, set(large.diagnostic_entities))
+
+    assert len(kept["diagnosticGeometry"]["entities"]) == 300
+    assert "diagnosticGeometry" not in dropped
+    assert dropped["diagnosticGeometryOmitted"] == {
+        "reason": "payload_too_large",
+        "limitBytes": 65536,
+    }
 
 
 def test_check_uses_one_locked_snapshot_while_repair_commits(tmp_path, monkeypatch):

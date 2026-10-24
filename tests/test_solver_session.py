@@ -171,6 +171,7 @@ def test_solver_failure_preserves_accepted_document(tmp_path, monkeypatch, failu
     assert rejected["error"]["code"] == (
         "SKETCH_SOLVE_TIMEOUT" if failure == "timeout" else "SKETCH_SOLVER_FAILED"
     )
+    assert "diagnosticGeometry" not in rejected["error"]
     assert path.read_bytes() == saved
     assert _wait_until(lambda: not _pid_exists(int(pid_file.read_text())))
 

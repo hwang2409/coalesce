@@ -31,6 +31,22 @@ every failed tool call returns the last unchanged document `revision` and this s
 
 raw kernel diagnostics never appear in `message`. when available, they appear as `kernelMessage` in the structured error details. agents must not parse or show that field as recovery advice.
 
+A redundant, conflicting, or non-converged constrained-sketch error can include bounded `diagnosticGeometry`:
+
+```json
+{
+  "diagnosticGeometry": {
+    "accepted": false,
+    "entities": {
+      "p0": {"kind": "point", "x": 0.0, "y": 0.0, "construction": false},
+      "edge": {"kind": "line", "start": [0.0, 0.0], "end": [9.999999, 0.0], "construction": false}
+    }
+  }
+}
+```
+
+This is response-only solver diagnostic data, not CAD geometry. It is never accepted, persisted, published as a viewer scene revision, used by queries or checks, used as a reference target, or exported. Values are finite and rounded to six decimal places; entity count cannot exceed the request, and the object has a 64 KiB byte limit. If the object is too large, it is absent and `diagnosticGeometryOmitted` is `{"reason":"payload_too_large","limitBytes":65536}`. Branch flips, malformed input, missing solver dependency, solver crash or protocol failure, timeout, and a non-finite or absent last iterate return no `diagnosticGeometry`.
+
 failed and empty edge-reference resolutions include `availableRoles`. each entry gives the selectable role, exact edge count, orientation, length, and an example exact-cardinality reference. this is the same catalog returned by the `edge_roles` query.
 
 ## families
