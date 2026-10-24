@@ -59,11 +59,11 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `NON_FINITE_VALUE` | request | a numeric value is NaN or infinite | send a finite number |
 | `INVALID_CIRCLE_RADIUS` | request | a sketch circle radius is not positive | send a positive radius |
 | `SKETCH_SOLVER_UNAVAILABLE` | request | the optional constrained sketch solver is not installed | install `coalesce[sketch]` |
-| `SKETCH_SOLVER_FAILED` | request | the constrained sketch solver child exits or sends a malformed or oversized frame | retry once, then report the failing sketch and solver environment |
+| `SKETCH_SOLVER_FAILED` | request | the constrained sketch solver child exits or sends a malformed or oversized frame | retry once; coalesce restarts the child lazily, so report the failing sketch and solver environment if the retry fails |
 | `SKETCH_REDUNDANT` | request | constrained sketch constraints are redundant | remove the redundant constraint |
 | `SKETCH_CONFLICTING` | request | constrained sketch constraints conflict | revise the constraint model |
 | `SKETCH_DID_NOT_CONVERGE` | request | constrained sketch did not converge | revise initial values or constraints |
-| `SKETCH_SOLVE_TIMEOUT` | request | constrained sketch exceeded the 1 second solve bound | simplify or repair the sketch and retry |
+| `SKETCH_SOLVE_TIMEOUT` | request | constrained sketch exceeded the configured solve bound | simplify or repair the sketch and retry; change `--sketch-solve-timeout` only when the sketch is expected to need more time |
 | `SKETCH_BRANCH_FLIP` | request | constrained sketch changed branch | preserve the branch landmark |
 | `SKETCH_PROFILE_UNSUPPORTED` | geometry | a constrained profile is open, degenerate, self-intersecting, exceeds the 64-loop limit, or its loops touch, cross, have ambiguous containment, form multiple outer bodies, or contain an island inside a hole | inspect `reason`; for `too_many_loops`, inspect `limit` and `count`; otherwise inspect `loops` and provide exactly one outer loop with only directly contained hole loops |
 | `REQUEST_ID_REUSED` | request | a request id was used for a different body or its receipt expired | send the intended edit with a new request id |

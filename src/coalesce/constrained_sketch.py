@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from math import isfinite
@@ -150,8 +151,10 @@ class ConstrainedSketch:
             self.landmarks,
         )
 
-    def solve(self) -> SolveResult:
-        result = solve_sketch(self.request())
+    def solve(
+        self, solver: Callable[[SolveRequest], SolveResult] = solve_sketch
+    ) -> SolveResult:
+        result = solver(self.request())
         self.solved = result
         return result
 

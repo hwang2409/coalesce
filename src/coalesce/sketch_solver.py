@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pickle
 import queue
 import struct
@@ -314,7 +315,9 @@ class SolveResult:
     errors: tuple[SketchSolveError, ...] = ()
 
 
-SOLVE_TIMEOUT_SECONDS = 1.0
+DEFAULT_SOLVE_TIMEOUT_SECONDS = 1.0
+MIN_SOLVE_TIMEOUT_SECONDS = 0.5
+MAX_SOLVE_TIMEOUT_SECONDS = 120.0
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
@@ -343,11 +346,21 @@ def _read_message(stream: Any) -> Any:
 
 
 def _start_solver_child() -> subprocess.Popen:
-    return subprocess.Popen(
-        [sys.executable, "-m", "coalesce._solver_child"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-    )
+    lifetime_reader, lifetime_writer = os.pipe()
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "coalesce._solver_child", str(lifetime_reader)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            pass_fds=(lifetime_reader,),
+        )
+    except BaseException:
+        os.close(lifetime_writer)
+        raise
+    finally:
+        os.close(lifetime_reader)
+    process._coalesce_lifetime_fd = lifetime_writer  # type: ignore[attr-defined]
+    return process
 
 
 def _receive_child_message(process: subprocess.Popen, messages: queue.Queue) -> None:
@@ -358,50 +371,128 @@ def _receive_child_message(process: subprocess.Popen, messages: queue.Queue) -> 
         messages.put(error)
 
 
-def solve_sketch(request: SolveRequest) -> SolveResult:
-    """Solve in a child whose stdin closes automatically when this process dies."""
-    process = _start_solver_child()
-    messages: queue.Queue[Any] = queue.Queue(maxsize=1)
-    try:
-        assert process.stdin is not None
-        _write_message(process.stdin, request)
-        threading.Thread(
-            target=_receive_child_message, args=(process, messages), daemon=True
-        ).start()
-        try:
-            message = messages.get(timeout=SOLVE_TIMEOUT_SECONDS)
-        except queue.Empty:
-            return _error_result(
-                SolveStatus.DID_NOT_CONVERGE,
-                SketchSolveError(
-                    "SOLVE_TIMEOUT",
-                    f"the sketch solver exceeded {SOLVE_TIMEOUT_SECONDS:g} seconds",
-                    recoverable=True,
-                ),
+class SketchSolverSession:
+    """Serialize framed solves through one supervised child without exposing its handle."""
+
+    def __init__(self, timeout: float = DEFAULT_SOLVE_TIMEOUT_SECONDS):
+        if not MIN_SOLVE_TIMEOUT_SECONDS <= timeout <= MAX_SOLVE_TIMEOUT_SECONDS:
+            raise ValueError(
+                f"sketch solve timeout must be between {MIN_SOLVE_TIMEOUT_SECONDS:g} "
+                f"and {MAX_SOLVE_TIMEOUT_SECONDS:g} seconds"
             )
-        if isinstance(message, BaseException):
-            return _error_result(
-                SolveStatus.DID_NOT_CONVERGE,
-                SketchSolveError("SOLVER_FAILED", "the sketch solver process exited unexpectedly"),
-            )
-        kind, value = message
-        if kind == "result":
-            return value
-        if kind == "import_error":
-            raise ImportError(value)
-        return _error_result(
-            SolveStatus.DID_NOT_CONVERGE,
-            SketchSolveError(
-                "SOLVER_FAILED", "the sketch solver process failed", details={"error": value}
-            ),
-        )
-    finally:
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._termination_lock = threading.Lock()
+        self._closed = False
+        self._process: subprocess.Popen | None = None
+
+    def solve(self, request: SolveRequest) -> SolveResult:
+        with self._lock:
+            stale_process = None
+            with self._state_lock:
+                if self._closed:
+                    return _solver_failed("the server is shutting down")
+                process = self._process
+                if process is not None and process.poll() is not None:
+                    stale_process = process
+                    self._process = process = None
+            if stale_process is not None:
+                self._terminate(stale_process)
+            if process is None:
+                with self._state_lock:
+                    if self._closed:
+                        return _solver_failed("the server is shutting down")
+                    process = self._process = _start_solver_child()
+            messages: queue.Queue[Any] = queue.Queue(maxsize=1)
+            try:
+                assert process.stdin is not None
+                _write_message(process.stdin, request)
+                threading.Thread(
+                    target=_receive_child_message, args=(process, messages), daemon=True
+                ).start()
+                try:
+                    message = messages.get(timeout=self.timeout)
+                except queue.Empty:
+                    self._stop(process)
+                    return _error_result(
+                        SolveStatus.DID_NOT_CONVERGE,
+                        SketchSolveError(
+                            "SOLVE_TIMEOUT",
+                            f"the sketch solver exceeded {self.timeout:g} seconds",
+                        ),
+                    )
+                if isinstance(message, BaseException):
+                    self._stop(process)
+                    return _solver_failed("the sketch solver process exited unexpectedly")
+                try:
+                    kind, value = message
+                except (TypeError, ValueError):
+                    self._stop(process)
+                    return _solver_failed("the sketch solver process sent a malformed response")
+                if kind == "result" and isinstance(value, SolveResult):
+                    return value
+                self._stop(process)
+                if kind == "import_error":
+                    raise ImportError(value)
+                if kind == "solver_error":
+                    return _solver_failed("the sketch solver process failed", error=value)
+                return _solver_failed("the sketch solver process sent a malformed response")
+            except (BrokenPipeError, OSError):
+                self._stop(process)
+                return _solver_failed("the sketch solver process exited unexpectedly")
+
+    def close(self) -> None:
+        with self._state_lock:
+            self._closed = True
+            process = self._process
+        if process is not None:
+            self._stop(process)
+
+    def _stop(self, process: subprocess.Popen) -> None:
+        with self._termination_lock:
+            with self._state_lock:
+                if self._process is not process:
+                    return
+            self._terminate(process)
+            with self._state_lock:
+                if self._process is process:
+                    self._process = None
+
+    def _terminate(self, process: subprocess.Popen) -> None:
+        lifetime_fd = getattr(process, "_coalesce_lifetime_fd", None)
+        if lifetime_fd is not None:
+            with suppress(OSError):
+                os.close(lifetime_fd)
+            process._coalesce_lifetime_fd = None  # type: ignore[attr-defined]
         if process.stdin is not None:
             with suppress(OSError):
                 process.stdin.close()
         if process.poll() is None:
             process.terminate()
-        process.wait()
+        try:
+            process.wait(timeout=1)
+        except TypeError:  # simple process doubles need not implement timeout
+            process.wait()
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def _solver_failed(message: str, **details: object) -> SolveResult:
+    return _error_result(
+        SolveStatus.DID_NOT_CONVERGE,
+        SketchSolveError("SOLVER_FAILED", message, details=details),
+    )
+
+
+def solve_sketch(request: SolveRequest) -> SolveResult:
+    """Compatibility entry point for one isolated solve."""
+    session = SketchSolverSession()
+    try:
+        return session.solve(request)
+    finally:
+        session.close()
 
 
 def _success_status(redundant: tuple[str, ...], dof: int) -> SolveStatus:
