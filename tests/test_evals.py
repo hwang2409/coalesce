@@ -557,6 +557,51 @@ def test_runner_feature_edit_fails_without_runner_facts(tmp_path):
     assert result["reason"] == "runner before-state facts are missing"
 
 
+def _inner_loop_payload(*, renamed=False, separate_cut=False, primitive=False, retry=False):
+    sketch_id = "plate_profile" if renamed else "profile"
+    extrude_id = "extrude_plate" if renamed else "plate"
+    model = {
+        "kind": "constrained",
+        "lines": [{"id": "edge", "start": "p0", "end": "p1"}],
+        "circles": [{"id": "opening", "center": "center", "radius": 4.0}],
+        "dimensions": [{"kind": "radius", "entities": ["opening"], "value": 4.0, "driving": True}],
+    }
+    sketch = {"id": sketch_id, "type": "Sketch"}
+    if primitive:
+        sketch["entities"] = [{"id": "edge", "type": "Polyline"}]
+    else:
+        sketch["constrained"] = model
+    nodes = [sketch, {"id": extrude_id, "type": "Extrude", "sketch": sketch_id, "height": 5.0}]
+    if separate_cut:
+        nodes.append({"id": "opening_cut", "type": "Cut", "target": extrude_id})
+    receipts = [{"response": {"changedFeatureIds": [sketch_id]}}, {"response": {"changedFeatureIds": [extrude_id]}}]
+    if retry:
+        receipts.insert(1, {"response": {"ok": False, "changedFeatureIds": []}})
+    return {"revision": len(receipts), "graph": {"nodes": nodes}, "receipts": receipts}
+
+
+def test_inner_loop_intent_allows_agent_ids_and_failed_retry_history(tmp_path):
+    document = tmp_path / "model.coalesce.json"
+    document.write_text(json.dumps(_inner_loop_payload(renamed=True, retry=True)))
+    result = check_task({"checks": [{"kind": "inner_loop_intent"}]}, document, tmp_path / "steps")[0]
+    assert result["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"separate_cut": True}, "separate cut"),
+        ({"primitive": True}, "constrained sketch"),
+    ],
+)
+def test_inner_loop_intent_rejects_wrong_design(tmp_path, kwargs, reason):
+    document = tmp_path / "model.coalesce.json"
+    document.write_text(json.dumps(_inner_loop_payload(**kwargs)))
+    result = check_task({"checks": [{"kind": "inner_loop_intent"}]}, document, tmp_path / "steps")[0]
+    assert result["status"] == "fail"
+    assert reason in result["reason"]
+
+
 def test_pcb_change_unchanged_before_state_fails(tmp_path):
     task, document, facts = _staged_pcb_change(tmp_path)
     results = check_task(task, document, tmp_path / "steps", facts)

@@ -77,18 +77,20 @@ def test_revolve_shaft_golden_runs_through_stdio(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "expected_kind"),
     [
-        "wrong shoulder radius",
-        "rebuilt revolve",
-        "rebuilt fillet",
-        "removed fillet",
-        "wrong cylinder radius",
-        "extra solid",
+        ("wrong shoulder radius", "document_state"),
+        ("rebuilt revolve", "runner_feature_edit"),
+        ("rebuilt fillet", "runner_feature_edit"),
+        ("removed fillet", "runner_feature_edit"),
+        ("wrong cylinder radius", "cylinder_radii"),
+        ("wrong axial step", "cylinder_steps"),
+        ("extra solid", "parts"),
+        ("same ids recreated", "runner_feature_edit"),
     ],
 )
-def test_revolve_shaft_mutations_fail_closed(tmp_path, mutation):
-    from build123d import Align, Box, Cylinder, Rot, export_step
+def test_revolve_shaft_mutations_fail_closed(tmp_path, mutation, expected_kind):
+    from build123d import Align, Box, Cylinder, Pos, Rot, export_step
 
     document, before, steps = _artifact(tmp_path)
     payload = json.loads(document.read_text())
@@ -108,8 +110,21 @@ def test_revolve_shaft_mutations_fail_closed(tmp_path, mutation):
     elif mutation == "wrong cylinder radius":
         wrong = Rot(0, 90, 0) * Cylinder(7, 30, align=(Align.CENTER, Align.CENTER, Align.MIN))
         export_step(wrong, steps / "shaft.step")
+    elif mutation == "wrong axial step":
+        wrong = (
+            Rot(0, 90, 0) * Cylinder(8, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
+            + Rot(0, 90, 0) * Pos(20, 0, 0) * Cylinder(10, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        )
+        export_step(wrong, steps / "shaft.step")
     elif mutation == "extra solid":
         export_step(Box(1, 1, 1), steps / "extra.step")
+    elif mutation == "same ids recreated":
+        payload["receipts"].append({
+            "response": {"changedFeatureIds": ["profile"], "deleted": [{"id": "profile"}]}
+        })
+        payload["revision"] += 1
+        document.write_text(json.dumps(payload))
 
     results = _statuses(document, before, steps)
-    assert results and any(result["status"] != "pass" for result in results)
+    failing = [result for result in results if result["status"] != "pass"]
+    assert failing and any(result["kind"] == expected_kind for result in failing)

@@ -406,6 +406,7 @@ def _step_check(check, context):
         "hole_positions": _hole_positions,
         "part_hole_positions": _part_hole_positions,
         "cylinder_radii": _cylinder_radii,
+        "cylinder_steps": _cylinder_steps,
     }
     handler = handlers.get(check["kind"])
     return handler(check, context) if handler else None
@@ -437,6 +438,29 @@ def _cylinder_radii(check, context):
     return _result(check, "pass" if passed else "fail", actual=actual)
 
 
+def _cylinder_steps(check, context):
+    if len(context.step_shapes) != 1:
+        return _result(check, "fail", reason="cylinder step evidence requires exactly one STEP file")
+    from build123d import GeomType
+
+    actual = []
+    for face in context.step_shapes[0].faces():
+        if face.geom_type is not GeomType.CYLINDER:
+            continue
+        bounds = face.bounding_box()
+        actual.append([float(face.radius), float(bounds.min.X), float(bounds.max.X)])
+    tolerance = check.get("tolerance", 1e-6)
+    expected = check["steps"]
+    passed = len(actual) == len(expected) and all(
+        any(
+            all(abs(measured - wanted) <= tolerance for measured, wanted in zip(found, wanted_step, strict=True))
+            for found in actual
+        )
+        for wanted_step in expected
+    )
+    return _result(check, "pass" if passed else "fail", actual=sorted(actual))
+
+
 def _contains(actual, expected):
     if isinstance(expected, dict):
         return isinstance(actual, dict) and all(
@@ -447,6 +471,38 @@ def _contains(actual, expected):
             _contains(left, right) for left, right in zip(actual, expected, strict=True)
         )
     return actual == expected
+
+
+def _inner_loop_model_reason(model):
+    if not any(not item.get("construction") for item in model.get("lines", [])):
+        return "inner-loop intent missing: one outer boundary and at least one inner opening loop are required"
+    openings = model.get("circles", []) + model.get("arcs", [])
+    if not any(not item.get("construction") for item in openings):
+        return "inner-loop intent missing: one outer boundary and at least one inner opening loop are required"
+    if not any(
+        item.get("kind") == "radius" and item.get("driving", True)
+        for item in model.get("dimensions", [])
+    ):
+        return "inner-loop intent missing: the opening radius must be an editable driving dimension"
+    return None
+
+
+def _inner_loop_intent(check, context):
+    nodes = context.document_payload.get("graph", {}).get("nodes", [])
+    constrained = [
+        node for node in nodes
+        if node.get("type") == "Sketch" and isinstance(node.get("constrained"), dict)
+    ]
+    extrusions = [node for node in nodes if node.get("type") == "Extrude"]
+    if len(constrained) != 1 or len(extrusions) != 1:
+        return _result(check, "fail", reason="inner-loop intent missing: one constrained sketch and one extrusion are required")
+    sketch, extrusion = constrained[0], extrusions[0]
+    if extrusion.get("sketch") != sketch.get("id"):
+        return _result(check, "fail", reason="inner-loop intent missing: the extrusion profile must be the constrained sketch")
+    if any(node.get("type") not in {"Sketch", "Extrude"} for node in nodes):
+        return _result(check, "fail", reason="inner-loop intent missing: the opening must be a loop in the extrusion profile, not a separate cut")
+    reason = _inner_loop_model_reason(sketch["constrained"])
+    return _result(check, "fail", reason=reason) if reason else _result(check, "pass")
 
 
 def _document_state(check, context):
@@ -749,6 +805,7 @@ def _with_context_and_inspection(handler):
 
 _ENCLOSURE_CHECKS = {
     "document_state": _document_state,
+    "inner_loop_intent": _inner_loop_intent,
     "runner_feature_edit": _runner_feature_edit,
     "references_resolve": _references_resolve,
     "edge_treatment": _edge_treatment,
