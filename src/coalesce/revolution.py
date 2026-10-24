@@ -95,19 +95,7 @@ def _validate_axis(profile: _RevolutionProfile, axis: str, sketch: str) -> set[s
     return axis_segments
 
 
-def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
-    if node.operation != "new_body" or node.axis not in {"x", "y"}:
-        raise GraphError(
-            "INVALID_REVOLVE",
-            f"revolve {node.id} supports only a full new_body around local x or y",
-            feature=node.id,
-            operation=node.operation,
-            axis=node.axis,
-        )
-    local = _profile_for_revolution(sketch, Location())
-    axis_segments = _validate_axis(local, node.axis, sketch.id)
-    location = sketch_location(sketch)
-    profile = _profile_for_revolution(sketch, location)
+def _make_revolution(node: Revolve, profile: _RevolutionProfile, location: Location):
     plane = BuildPlane(location)
     origin = plane.origin
     direction = plane.x_dir if node.axis == "x" else plane.y_dir
@@ -124,7 +112,7 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
         maker.Build()
         if not maker.IsDone():
             raise RuntimeError("OCCT did not complete the revolution")
-        shape = Shape.cast(maker.Shape())
+        return maker, Shape.cast(maker.Shape())
     except Exception as error:
         raise GraphError(
             "REVOLVE_FAILED",
@@ -132,45 +120,75 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
             feature=node.id,
         ) from error
 
-    solids = shape.solids()
-    if len(solids) != 1:
+
+def _validate_result(node: Revolve, shape: Shape) -> None:
+    solid_count = len(shape.solids())
+    if solid_count != 1:
         raise GraphError(
             "REVOLVE_MULTIPLE_SOLIDS",
             f"revolve {node.id} must produce exactly one solid",
             feature=node.id,
-            solidCount=len(solids),
+            solidCount=solid_count,
         )
     if not BRepCheck_Analyzer(shape.wrapped).IsValid():
         raise GraphError(
             "INVALID_BREP", f"revolve {node.id} produced invalid geometry", feature=node.id
         )
 
-    body = BodySource(node.id, profile.entity_id)
-    faces: list[Candidate] = []
-    for segment, edge in profile.segments.items():
-        generated = [Shape.cast(item) for item in maker.Generated(edge.wrapped)]
-        if segment in axis_segments:
-            if generated:
-                raise GraphError(
-                    "HISTORY_MISSING",
-                    f"revolve {node.id} axis segment {segment} unexpectedly generated geometry",
-                    feature=node.id,
-                    segment=segment,
-                )
-            continue
-        if len(generated) != 1 or not isinstance(generated[0], Face):
+
+def _generated_face(node: Revolve, maker, segment: str, edge: Edge, on_axis: bool) -> Face | None:
+    generated = [Shape.cast(item) for item in maker.Generated(edge.wrapped)]
+    if on_axis:
+        if generated:
             raise GraphError(
                 "HISTORY_MISSING",
-                f"revolve {node.id} did not map segment {segment} to exactly one face",
+                f"revolve {node.id} axis segment {segment} unexpectedly generated geometry",
                 feature=node.id,
                 segment=segment,
-                generatedCount=len(generated),
             )
+        return None
+    if len(generated) != 1 or not isinstance(generated[0], Face):
+        raise GraphError(
+            "HISTORY_MISSING",
+            f"revolve {node.id} did not map segment {segment} to exactly one face",
+            feature=node.id,
+            segment=segment,
+            generatedCount=len(generated),
+        )
+    return generated[0]
+
+
+def _face_candidates(node: Revolve, sketch: Sketch, profile: _RevolutionProfile, maker, axis_segments: set[str]) -> list[Candidate]:
+    body = BodySource(node.id, profile.entity_id)
+    faces = []
+    for segment, edge in profile.segments.items():
+        generated = _generated_face(node, maker, segment, edge, segment in axis_segments)
+        if generated is None:
+            continue
         source = SketchSegmentSource(
             sketch.id,
             profile.entity_id,
             segment,
             profile.topology.get(segment, ()),
         )
-        faces.append(candidate(node.id, f"side({segment})", source, generated[0], body=body))
+        faces.append(candidate(node.id, f"side({segment})", source, generated, body=body))
+    return faces
+
+
+def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
+    if node.operation != "new_body" or node.axis not in {"x", "y"}:
+        raise GraphError(
+            "INVALID_REVOLVE",
+            f"revolve {node.id} supports only a full new_body around local x or y",
+            feature=node.id,
+            operation=node.operation,
+            axis=node.axis,
+        )
+    local = _profile_for_revolution(sketch, Location())
+    axis_segments = _validate_axis(local, node.axis, sketch.id)
+    location = sketch_location(sketch)
+    profile = _profile_for_revolution(sketch, location)
+    maker, shape = _make_revolution(node, profile, location)
+    _validate_result(node, shape)
+    faces = _face_candidates(node, sketch, profile, maker, axis_segments)
     return RevolutionResult(shape, [*faces, *derive_edge_candidates(node.id, shape, faces)])
