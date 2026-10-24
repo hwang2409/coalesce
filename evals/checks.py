@@ -474,16 +474,20 @@ def _contains(actual, expected):
 
 
 def _inner_loop_model_reason(model):
-    if not any(not item.get("construction") for item in model.get("lines", [])):
-        return "inner-loop intent missing: one outer boundary and at least one inner opening loop are required"
-    openings = model.get("circles", []) + model.get("arcs", [])
-    if not any(not item.get("construction") for item in openings):
-        return "inner-loop intent missing: one outer boundary and at least one inner opening loop are required"
+    openings = [
+        item for item in model.get("circles", []) + model.get("arcs", [])
+        if not item.get("construction")
+    ]
+    if not openings:
+        return "inner-loop intent missing: one inner opening loop is required"
+    opening_ids = {item.get("id") for item in openings}
     if not any(
-        item.get("kind") == "radius" and item.get("driving", True)
+        item.get("kind") in {"radius", "diameter"}
+        and item.get("driving", True)
+        and opening_ids.intersection(item.get("entities", []))
         for item in model.get("dimensions", [])
     ):
-        return "inner-loop intent missing: the opening radius must be an editable driving dimension"
+        return "inner-loop intent missing: the opening radius or diameter must be an editable driving dimension"
     return None
 
 
