@@ -9,7 +9,7 @@ import json
 import math
 import os
 import shutil
-import subprocess
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -62,28 +62,65 @@ def result_json(result) -> dict:
     return json.loads(result.content[0].text)
 
 
-def playwright_module() -> str | None:
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await process.wait()
+
+
+async def _run_process(
+    *command: str, timeout: float, pid_file: str | None = None
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    if pid_file:
+        Path(pid_file).write_text(str(process.pid))
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except BaseException:
+        await _stop_process(process)
+        raise
+    return process.returncode, stdout.decode(), stderr.decode()
+
+
+async def playwright_module() -> str | None:
     if not shutil.which("node"):
         return None
     candidates = [os.environ.get("PLAYWRIGHT_MODULE")]
     candidates.extend(sorted(glob.glob(os.path.expanduser("~/.npm/_npx/*/node_modules/playwright/index.mjs"))))
     probe = "const m=await import(process.argv[1]);await(await m.chromium.launch()).close()"
     for candidate in filter(None, candidates):
-        checked = subprocess.run(
-            ["node", "--input-type=module", "-e", probe, candidate],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if checked.returncode == 0:
+        try:
+            returncode, _, _ = await _run_process(
+                "node", "--input-type=module", "-e", probe, candidate, timeout=60
+            )
+        except TimeoutError:
+            continue
+        if returncode == 0:
             return candidate
     return None
 
 
-def capture_screenshots(module: str, viewer_url: str, output: Path, stage: str, revision: int) -> None:
-    captured = subprocess.run(
-        [
+async def capture_screenshots(
+    module: str, viewer_url: str, output: Path, stage: str, revision: int
+) -> None:
+    try:
+        returncode, stdout, stderr = await _run_process(
             "node",
             str(SCREENSHOT_HELPER),
             module,
@@ -91,16 +128,13 @@ def capture_screenshots(module: str, viewer_url: str, output: Path, stage: str, 
             str(output),
             stage,
             str(revision),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=90,
-        check=False,
-    )
-    if captured.returncode != 0:
-        raise DemoFailure(
-            f"screenshot capture failed ({stage}): {captured.stderr.strip() or captured.stdout.strip()}"
+            timeout=90,
+            pid_file=os.environ.get("COALESCE_CYCLOID_CAPTURE_PID_FILE"),
         )
+    except TimeoutError as error:
+        raise DemoFailure(f"screenshot capture timed out ({stage})") from error
+    if returncode != 0:
+        raise DemoFailure(f"screenshot capture failed ({stage}): {stderr.strip() or stdout.strip()}")
 
 
 def viewer_url(errlog) -> str:
@@ -134,8 +168,8 @@ async def run_demo(output: Path, *, screenshots: bool, edited_bolt_radius: float
             read, write
         ) as session:
             await session.initialize()
-            url = viewer_url(errlog)
-            module = playwright_module() if screenshots else None
+            url = os.environ.get("COALESCE_CYCLOID_VIEWER_URL") or viewer_url(errlog)
+            module = await playwright_module() if screenshots else None
             if screenshots and module is None:
                 print("screenshots skipped: no launchable Playwright Chromium was found")
 
@@ -274,7 +308,7 @@ async def run_demo(output: Path, *, screenshots: bool, edited_bolt_radius: float
                 },
             )
             if module:
-                capture_screenshots(module, url, output, "pre-edit", 5)
+                await capture_screenshots(module, url, output, "pre-edit", 5)
 
             await call(
                 "edit bolt pattern",
@@ -298,7 +332,7 @@ async def run_demo(output: Path, *, screenshots: bool, edited_bolt_radius: float
                 },
             )
             if module:
-                capture_screenshots(module, url, output, "post-edit", 6)
+                await capture_screenshots(module, url, output, "post-edit", 6)
 
             validity = await call(
                 "check valid brep",
