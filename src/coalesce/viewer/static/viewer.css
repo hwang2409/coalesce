@@ -483,6 +483,19 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
 
 .failure-title { color: var(--fail); font-weight: 650; }
 
+.rejected-label {
+  width: fit-content;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--fail);
+  color: #fff;
+  font-weight: 650;
+  text-wrap: balance;
+}
+
+.diagnostic-omitted { margin-top: 4px; color: var(--mute); }
+
 .failure-features { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
 
 .feature-id {
