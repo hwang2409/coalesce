@@ -88,6 +88,12 @@ CHAMFERED_INNER = [[0, 4], [5, 6], [30, 6], [30, 14], [0, 14]]
             "360° about the X axis of sketch profile. Bore Ø12 mm. Outer diameter Ø28 mm",
         ),
         (
+            "rounded-once",
+            [[0, 4.1237499998], [30, 4.1237499998], [30, 14], [0, 14]],
+            "polyline",
+            "360° about the X axis of sketch profile. Bore Ø8.247 mm. Outer diameter Ø28 mm",
+        ),
+        (
             "spline",
             [[0, 10], [10, 4], [30, 10], [10, 16]],
             "spline",
@@ -462,3 +468,11 @@ def test_revolve_guide_example_is_json_and_registered():
     payload = json.loads(guide.split("```json\n", 1)[1].split("\n```", 1)[0])
     assert payload["kind"] == "revolve"
     assert payload["parameters"]["angle"] == {"value": 360, "unit": "deg"}
+
+
+def test_revolve_diameters_round_once_at_display():
+    from coalesce.fit_summary import _diameter_fact
+
+    # 4.1237499998 mm radius: rounding twice would show 8.248
+    assert _diameter_fact([2 * 4.1237499998], "Bore", "Bores") == "Bore Ø8.247 mm"
+    assert _diameter_fact([8.0, 8.0000000001, 12.0], "Bore", "Bores") == "Bores Ø8, Ø12 mm"

@@ -165,7 +165,7 @@ def _generated_face(node: Revolve, maker, segment: str, edge: Edge, on_axis: boo
 
 def _profile_diameters(profile: _RevolutionProfile, axis: str) -> dict[str, list[float]]:
     orientation = 1 if profile.face.normal_at().Z > 0 else -1
-    dimensions: dict[str, set[float]] = {"bores": set(), "outerDiameters": set()}
+    dimensions: dict[str, list[float]] = {"bores": [], "outerDiameters": []}
     for edge in profile.segments.values():
         if edge.geom_type is not GeomType.LINE:
             continue
@@ -179,7 +179,7 @@ def _profile_diameters(profile: _RevolutionProfile, axis: str) -> dict[str, list
         tangent = edge.tangent_at(0)
         material_direction = orientation * (tangent.X if axis == "x" else -tangent.Y)
         kind = "bores" if ordinate * material_direction > 0 else "outerDiameters"
-        dimensions[kind].add(round(2 * abs(ordinate), 9))
+        dimensions[kind].append(2 * abs(ordinate))  # exact; rounded only for display
     return {kind: sorted(values) for kind, values in dimensions.items()}
 
 

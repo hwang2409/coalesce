@@ -443,12 +443,14 @@ def _opening_facts(result: Any, node: Extrude) -> tuple[dict[str, Any], ...]:
 
 
 def _diameter_fact(values: list[float], singular: str, plural: str) -> str | None:
-    if not values:
+    # exact values are rounded once, here; equal displayed values count once
+    shown = list(dict.fromkeys(_mm(value) for value in sorted(values)))
+    if not shown:
         return None
-    if len(values) > 3:
-        return f"{len(values)} {plural.lower()}"
-    label = singular if len(values) == 1 else plural
-    return f"{label} " + ", ".join(f"Ø{_mm(value)}" for value in values) + " mm"
+    if len(shown) > 3:
+        return f"{len(shown)} {plural.lower()}"
+    label = singular if len(shown) == 1 else plural
+    return f"{label} " + ", ".join(f"Ø{value}" for value in shown) + " mm"
 
 
 def _revolve_fact(result: Any, node: Revolve) -> dict[str, Any]:
