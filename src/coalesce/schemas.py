@@ -94,6 +94,7 @@ def _outline_entity(kind: str) -> dict:
                 "items": POINT_2D,
                 "minItems": MIN_OUTLINE_POINTS,
                 "maxItems": MAX_OUTLINE_POINTS,
+                "description": "Use explicit point ids when an outline may be edited or referenced; array-point identity follows list position.",
             },
             "closed": {"const": True},
         },
@@ -105,7 +106,13 @@ def _outline_entity(kind: str) -> dict:
 POLYLINE = _outline_entity("polyline")
 SPLINE = _outline_entity("spline")
 SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE, POLYLINE, SPLINE]}
-CONSTRAINED_SKETCH = CONSTRAINED_SKETCH_SCHEMA
+CONSTRAINED_SKETCH = {
+    **CONSTRAINED_SKETCH_SCHEMA,
+    "description": (
+        "Keep stable ids and use dimensions for values that must stay editable. Fixing every "
+        "point can produce fully_constrained with zero dof but gives no editable driving dimensions."
+    ),
+}
 DIRECTION = {
     "type": "array",
     "items": {"type": "number"},
@@ -196,7 +203,11 @@ REFERENCE = {
 }
 
 MUTATION_PROPERTIES = {
-    "expectedRevision": {"type": "integer", "minimum": 0},
+    "expectedRevision": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Use the current query revision; after a successful mutation, chain the returned revision into the next mutation.",
+    },
     "requestId": {"type": "string", "minLength": 1},
 }
 SKETCH_PROPERTIES = {
@@ -255,6 +266,56 @@ SKETCH_UPDATE_SCHEMA = {
     "required": ["action", *SKETCH_PROPERTIES, "set"],
     "additionalProperties": False,
 }
+SKETCH_EXAMPLES = [
+    {
+        "action": "create",
+        "expectedRevision": 0,
+        "requestId": "stable-outline",
+        "sketchId": "outline",
+        "plane": {"kind": "origin", "name": "XY"},
+        "entities": [
+            {
+                "id": "perimeter",
+                "kind": "polyline",
+                "points": [
+                    {"id": "lower_left", "x": 0, "y": 0},
+                    {"id": "lower_right", "x": 40, "y": 0},
+                    {"id": "upper_right", "x": 40, "y": 30},
+                    {"id": "upper_left", "x": 0, "y": 30},
+                ],
+                "closed": True,
+            }
+        ],
+    },
+    {
+        "action": "update",
+        "expectedRevision": 2,
+        "requestId": "resize-opening",
+        "sketchId": "profile",
+        "set": {
+            "constrained": {
+                "kind": "constrained",
+                "points": [
+                    {"id": "center", "x": 20, "y": 15},
+                    {"id": "opening-center", "x": 20, "y": 15},
+                ],
+                "circles": [
+                    {"id": "outer", "center": "center", "radius": 15},
+                    {"id": "opening", "center": "opening-center", "radius": 4},
+                ],
+                "dimensions": [
+                    {"id": "outer-radius", "kind": "radius", "entities": ["outer"], "value": 15},
+                    {"id": "opening-radius", "kind": "radius", "entities": ["opening"], "value": 4},
+                ],
+                "constraints": [
+                    {"id": "fix-center", "kind": "fix", "entities": ["center"]},
+                    {"id": "fix-opening-center", "kind": "fix", "entities": ["opening-center"]},
+                ],
+            }
+        },
+    },
+]
+
 SKETCH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -280,6 +341,7 @@ SKETCH_SCHEMA = {
     },
     "required": ["action", *SKETCH_PROPERTIES],
     "additionalProperties": False,
+    "examples": SKETCH_EXAMPLES,
 }
 
 PROFILE = {
@@ -816,6 +878,22 @@ FEATURE_SCHEMA = {
     },
     "required": ["action", *MUTATION_PROPERTIES, "featureId"],
     "additionalProperties": False,
+    "examples": [
+        {
+            "action": "update",
+            "expectedRevision": 6,
+            "requestId": "edit-lid-pattern",
+            "featureId": "lid_pattern",
+            "kind": "hole",
+            "set": {
+                "pattern": {
+                    "kind": "linear",
+                    "pitch": {"value": 5, "unit": "mm"},
+                    "count": 4,
+                }
+            },
+        }
+    ],
 }
 IMPORT_PROPERTIES = {
     **MUTATION_PROPERTIES,

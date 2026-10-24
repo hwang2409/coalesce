@@ -58,7 +58,7 @@ Angles increase counterclockwise from +X. `startAngle` accepts `deg` or `rad`.
 
 ## update and references
 
-Update pattern intent without resending generated coordinates. The update kind must match the stored pattern:
+Update the same pattern feature in place without resending generated coordinates. Query the current revision, keep the existing `featureId` and pattern `kind`, and chain the returned revision into the next mutation's `expectedRevision`. The inline `feature` schema includes this update recipe:
 
 ```json
 {

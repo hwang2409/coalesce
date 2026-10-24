@@ -88,6 +88,23 @@ diagnostics, and landmark values. For example, a fixed 10 mm horizontal line is:
   "constraints":[{"id":"fix-a","kind":"fix","entities":["a"]},{"id":"horizontal","kind":"horizontal","entities":["edge"]}]}}
 ```
 
+## design intent and edits
+
+A solve status describes geometric freedom, not edit quality. Fixing every point can return
+`fully_constrained` with zero degrees of freedom, but it leaves no editable driving dimensions.
+Fix only the anchors that define placement. Give dimensions stable ids for sizes that will change,
+such as `opening-radius`, and update the dimension value instead of replacing point coordinates.
+Because `set.constrained` replaces the full constrained definition, resend the same point, entity,
+dimension, and constraint ids with the changed value.
+
+For an outer loop with directly contained inner loops, send all loops in one constrained sketch.
+Extrude or cut it with the sketch id as the only `profileIds` value; the inner loops become holes.
+The inline `sketch` schema includes a complete dimension-driven inner-loop update.
+
+Query the current revision before the first mutation. Each successful mutation returns the next
+revision; use it as the following call's `expectedRevision` and use a new `requestId`. Keep the
+same `sketchId` when editing a sketch so downstream features regenerate from that identity.
+
 ## primitive closed outlines
 
 Primitive sketches support two free-form closed outline kinds in addition to rectangles and circles:

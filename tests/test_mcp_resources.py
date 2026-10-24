@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from jsonschema import validate
 from mcp import McpError, types
 
 from coalesce import resources, schemas
@@ -124,6 +125,44 @@ async def test_resource_read_does_not_block_event_loop_on_document_lock(tmp_path
     thread.join()
     assert len(ticks) == 5
     assert ticks[0] < 0.2
+
+
+@pytest.mark.anyio
+async def test_tool_list_serializes_valid_design_intent_examples(tmp_path):
+    server = create_server(DocumentService(tmp_path / "recipes.coalesce.json", warmup=False))
+    result = await server.request_handlers[types.ListToolsRequest](types.ListToolsRequest())
+    snapshot = json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
+    tools = {tool["name"]: tool for tool in snapshot["tools"]}
+
+    for name in ("sketch", "feature"):
+        schema = tools[name]["inputSchema"]
+        assert schema["examples"]
+        for example in schema["examples"]:
+            validate(example, schema)
+
+    serialized = json.dumps(snapshot).lower()
+    assert "fixing every point" in serialized
+    assert "opening-radius" in serialized
+    assert "lower_left" in serialized
+    assert "edit-lid-pattern" in serialized
+    assert "chain the returned revision" in serialized
+    assert "coalesce://docs/hole" in serialized
+
+
+def test_packaged_guides_match_inline_design_intent_recipes():
+    [sketch] = resources.read_resource(
+        "coalesce://docs/sketch", sketch_solve_timeout=1.0, viewer_url=None
+    )
+    [hole] = resources.read_resource(
+        "coalesce://docs/hole", sketch_solve_timeout=1.0, viewer_url=None
+    )
+
+    assert "fully_constrained` with zero degrees of freedom" in sketch.content
+    assert "no editable driving dimensions" in sketch.content
+    assert "same point, entity,\ndimension, and constraint ids" in sketch.content
+    assert "sketch id as the only `profileIds` value" in sketch.content
+    assert "keep the existing `featureId`" in hole.content
+    assert "chain the returned revision" in hole.content
 
 
 def test_missing_packaged_guide_returns_registered_resource_error(monkeypatch):

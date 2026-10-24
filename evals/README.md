@@ -8,7 +8,13 @@ uv run python -m evals.run --task plate-holes --model <model> --harness zeta --z
 
 ```
 
-`--coalesce-path` is the revision under test. the zeta harness reads the coalesce server's `--directory` or `--project` from `<zeta-project>/.zeta/mcp.json` and fails closed unless that checkout has the same `HEAD`. it never changes that checkout; run the checkout command in the error message, then retry. both the server checkout and the checkout under test must be clean; commit or clean all listed files before running. every run records the revision and clean-tree state in its metadata and scorecard.
+Install the runner and constrained-sketch solver before staged sketch tasks:
+
+```bash
+uv sync --extra test --extra sketch
+```
+
+`--coalesce-path` is the revision under test. the zeta harness reads the coalesce server's `--directory` or `--project` from `<zeta-project>/.zeta/mcp.json`; it does not generate this config. The `coalesce` entry must use `"transport": "stdio"`. The runner fails closed unless the configured checkout has the same `HEAD`. it never changes that checkout; run the checkout command in the error message, then retry. both the server checkout and the checkout under test must be clean; commit or clean all listed files before running. every run records the revision and clean-tree state in its metadata and scorecard.
 
 `--task` accepts a task id, a tier (`easy`, `medium`, or `hard`), or `all`. the output directory must not contain an existing directory for the same task and model.
 
