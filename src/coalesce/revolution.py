@@ -13,7 +13,7 @@ from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt
 
 from .constrained_profile import build_constrained_profile
 from .extrusion import _profile, sketch_location
-from .graph import GraphError, Revolve, Sketch
+from .graph import GraphError, PrimitiveEntity, Revolve, Sketch
 from .provenance import candidate, derive_edge_candidates
 from .references import BodySource, Candidate, SketchSegmentSource
 
@@ -35,25 +35,45 @@ class _RevolutionProfile:
     topology: dict[str, tuple[str, ...]]
 
 
-def _profile_for_revolution(sketch: Sketch, location: Location) -> _RevolutionProfile:
+def _selected_profile(node: Revolve, sketch: Sketch) -> PrimitiveEntity | None:
     if sketch.constrained is not None:
-        exact = build_constrained_profile(sketch.constrained, sketch.id, location)
-        if len(exact.face.wires()) != 1:
+        if node.profile_ids not in (None, (sketch.id,)):
             raise GraphError(
-                "REVOLVE_MULTIPLE_PROFILES",
-                f"revolve sketch {sketch.id} must contain one outer profile and no inner loops",
+                "INVALID_PARAMETER",
+                f"revolve {node.id} refers to a missing constrained profile",
+                feature=node.id,
                 sketch=sketch.id,
+                expectedProfileIds=[sketch.id],
             )
-        return _RevolutionProfile(exact.id, exact.face, exact.segments, exact.segment_topology)
-    if len(sketch.entities) != 1:
+        return None
+    selected_ids = node.profile_ids or tuple(entity.id for entity in sketch.entities)
+    entities = [entity for entity in sketch.entities if entity.id in selected_ids]
+    if len(entities) != 1 or len(selected_ids) != 1:
         raise GraphError(
             "REVOLVE_MULTIPLE_PROFILES",
-            f"revolve sketch {sketch.id} must contain exactly one profile",
+            f"revolve sketch {sketch.id} must contain exactly one selected profile",
+            feature=node.id,
             sketch=sketch.id,
-            profileCount=len(sketch.entities),
+            profileCount=len(entities),
         )
-    exact = _profile(sketch.entities[0], location)
-    return _RevolutionProfile(exact.entity_id, exact.face, exact.segments, exact.segment_topology)
+    return entities[0]
+
+
+def _profile_for_revolution(
+    sketch: Sketch, location: Location, entity: PrimitiveEntity | None
+) -> _RevolutionProfile:
+    if entity is not None:
+        exact = _profile(entity, location)
+        return _RevolutionProfile(exact.entity_id, exact.face, exact.segments, exact.segment_topology)
+    assert sketch.constrained is not None
+    exact = build_constrained_profile(sketch.constrained, sketch.id, location)
+    if len(exact.face.wires()) != 1:
+        raise GraphError(
+            "REVOLVE_MULTIPLE_PROFILES",
+            f"revolve sketch {sketch.id} must contain one outer profile and no inner loops",
+            sketch=sketch.id,
+        )
+    return _RevolutionProfile(exact.id, exact.face, exact.segments, exact.segment_topology)
 
 
 def _ordinate(point, axis: str) -> float:
@@ -209,10 +229,11 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
             operation=node.operation,
             axis=node.axis,
         )
-    local = _profile_for_revolution(sketch, Location())
+    entity = _selected_profile(node, sketch)
+    local = _profile_for_revolution(sketch, Location(), entity)
     axis_segments = _validate_axis(local, node.axis, sketch.id, node.id)
     location = sketch_location(sketch)
-    profile = _profile_for_revolution(sketch, location)
+    profile = _profile_for_revolution(sketch, location, entity)
     maker, shape = _make_revolution(node, profile, location)
     _validate_result(node, shape)
     faces = _face_candidates(node, sketch, profile, maker, axis_segments)

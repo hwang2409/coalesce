@@ -174,6 +174,7 @@ def test_feature_query_returns_only_requested_feature_and_rejects_unknown_id(tmp
         "depends_on": [],
         "sketch": "plate_profile",
         "height": 6.0,
+        "profile_ids": ["outline"],
     }
     assert "graph" not in result
 

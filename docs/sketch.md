@@ -109,8 +109,10 @@ Resend the same point, entity,
 dimension, and constraint ids with the changed value.
 
 For an outer loop with directly contained inner loops, send all loops in one constrained sketch.
-To extrude it, set `profileIds` to `[<sketch id>]`; this selects all loops, and inner loops become holes.
-To cut it, set `tool` to `{"sketchId": "<sketch id>"}`.
+To extrude every loop, omit `profileIds`; inner loops become holes. The extrusion stores the
+resolved `[<sketch id>]` value so later sketch edits cannot silently change its profile identity.
+Explicit `[<sketch id>]` payloads remain valid. To cut it, set `tool` to
+`{"sketchId": "<sketch id>"}`.
 
 Query the current revision before the first mutation. Each successful mutation returns the next
 revision; use it as the following call's `expectedRevision` and use a new `requestId`. Keep the
@@ -125,7 +127,7 @@ Primitive sketches support two free-form closed outline kinds in addition to rec
 
 A point can be `[x, y]` or `{"id": "corner", "x": x, "y": y}`. References follow point ids. Array points get default ids `p0`, `p1`, and so on by list position, so reordering or rotating that list moves the ids to different coordinates. Give points explicit ids if you will reorder them.
 
-Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. For primitive outlines, inner holes are separate cut or hole features; for constrained sketches, use the single-sketch route above. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`.
+Coordinates are finite millimeter values. Set `closed` to `true`; open outlines are not supported. Consecutive duplicate points, near-zero-area outlines, and exact wire or face self-intersections are rejected atomically before the sketch is accepted. For primitive outlines, inner holes are separate cut or hole features; for constrained sketches, use the single-sketch route above. The entity `id` is optional; when omitted, it defaults to the kind and one-based entity position, such as `spline-1`. These default ids are positional. If an extrusion or revolution stores one, any later entity-list change is rejected atomically with `REFERENCE_FAILED`; give outlines explicit ids to keep profile references across entity edits. Explicit ids continue to follow their entities across reorder and remove-and-append edits.
 
 This example creates and extrudes a triangular polyline:
 
@@ -134,7 +136,7 @@ This example creates and extrudes a triangular polyline:
 ```
 
 ```json
-{"action":"create","expectedRevision":1,"requestId":"triangle-extrude","featureId":"triangle","kind":"extrude","parameters":{"profile":{"sketchId":"triangle_profile","profileIds":["triangle"]},"distance":{"value":5,"unit":"mm"},"operation":"new_body","direction":"normal"}}
+{"action":"create","expectedRevision":1,"requestId":"triangle-extrude","featureId":"triangle","kind":"extrude","parameters":{"profile":{"sketchId":"triangle_profile"},"distance":{"value":5,"unit":"mm"},"operation":"new_body","direction":"normal"}}
 ```
 
 How a downstream reference (for example a fillet on a profile edge) behaves when you update the outline points:
@@ -150,9 +152,9 @@ See [the seven-lobe cycloidal disc example](examples/cycloidal-disc.md) for a co
 ## exact closed profile extrusion
 
 A constrained sketch can supply one outer closed non-construction loop and directly
-contained inner loops to the existing `extrude` and `cut` features. For `extrude`, use the
-sketch id as the single `profileIds` value; for `cut`, set `tool` to `{"sketchId": "<sketch id>"}`.
-Inner loops become holes. Lines, arcs, and circles
+contained inner loops to the existing `extrude` and `cut` features. For `extrude`, omit
+`profileIds` to select all loops, or explicitly use the sketch id as its single value. For `cut`,
+set `tool` to `{"sketchId": "<sketch id>"}`. Inner loops become holes. Lines, arcs, and circles
 remain analytic; construction geometry is ignored. Loop containment is derived from
 the exact solved faces, not entity order. Open, degenerate, self-intersecting,
 touching, crossing, ambiguous, multiple-outer, and three-level island profiles are
