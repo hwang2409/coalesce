@@ -109,8 +109,8 @@ SKETCH_ENTITY = {"oneOf": [RECTANGLE, CIRCLE, POLYLINE, SPLINE]}
 CONSTRAINED_SKETCH = {
     **CONSTRAINED_SKETCH_SCHEMA,
     "description": (
-        "Keep stable ids and use dimensions for values that must stay editable. Fixing every "
-        "point can produce fully_constrained with zero dof but gives no editable driving dimensions."
+        "Use dimensions for editable values. Fixing every point can report fully_constrained "
+        "with zero dof but no editable driving dimensions"
     ),
 }
 DIRECTION = {
@@ -206,7 +206,7 @@ MUTATION_PROPERTIES = {
     "expectedRevision": {
         "type": "integer",
         "minimum": 0,
-        "description": "Use the current query revision; after a successful mutation, chain the returned revision into the next mutation.",
+        "description": "Chain each returned revision",
     },
     "requestId": {"type": "string", "minLength": 1},
 }
@@ -270,50 +270,41 @@ SKETCH_EXAMPLES = [
     {
         "action": "create",
         "expectedRevision": 0,
-        "requestId": "stable-outline",
-        "sketchId": "outline",
-        "plane": {"kind": "origin", "name": "XY"},
-        "entities": [
-            {
-                "id": "perimeter",
-                "kind": "polyline",
-                "points": [
-                    {"id": "lower_left", "x": 0, "y": 0},
-                    {"id": "lower_right", "x": 40, "y": 0},
-                    {"id": "upper_right", "x": 40, "y": 30},
-                    {"id": "upper_left", "x": 0, "y": 30},
-                ],
-                "closed": True,
-            }
-        ],
-    },
-    {
-        "action": "update",
-        "expectedRevision": 2,
-        "requestId": "resize-opening",
+        "requestId": "create-profile",
         "sketchId": "profile",
-        "set": {
-            "constrained": {
-                "kind": "constrained",
-                "points": [
-                    {"id": "center", "x": 20, "y": 15},
-                    {"id": "opening-center", "x": 20, "y": 15},
-                ],
-                "circles": [
-                    {"id": "outer", "center": "center", "radius": 15},
-                    {"id": "opening", "center": "opening-center", "radius": 4},
-                ],
-                "dimensions": [
-                    {"id": "outer-radius", "kind": "radius", "entities": ["outer"], "value": 15},
-                    {"id": "opening-radius", "kind": "radius", "entities": ["opening"], "value": 4},
-                ],
-                "constraints": [
-                    {"id": "fix-center", "kind": "fix", "entities": ["center"]},
-                    {"id": "fix-opening-center", "kind": "fix", "entities": ["opening-center"]},
-                ],
-            }
+        "plane": {"kind": "origin", "name": "XY"},
+        "constrained": {
+            "kind": "constrained",
+            "points": [
+                {"id": "p0", "x": 0, "y": 0},
+                {"id": "p1", "x": 40, "y": 0},
+                {"id": "p2", "x": 40, "y": 30},
+                {"id": "p3", "x": 0, "y": 30},
+                {"id": "c", "x": 20, "y": 15},
+            ],
+            "lines": [
+                {"id": "e0", "start": "p0", "end": "p1"},
+                {"id": "e1", "start": "p1", "end": "p2"},
+                {"id": "e2", "start": "p2", "end": "p3"},
+                {"id": "e3", "start": "p3", "end": "p0"},
+            ],
+            "circles": [{"id": "opening", "center": "c", "radius": 4}],
+            "dimensions": [
+                {"id": "width", "kind": "distance", "entities": ["p0", "p1"], "value": 40},
+                {"id": "height", "kind": "distance", "entities": ["p0", "p3"], "value": 30},
+                {"id": "center-left", "kind": "distance", "entities": ["p0", "c"], "value": 25},
+                {"id": "center-right", "kind": "distance", "entities": ["p1", "c"], "value": 25},
+                {"id": "opening-radius", "kind": "radius", "entities": ["opening"], "value": 4},
+            ],
+            "constraints": [
+                {"id": "anchor", "kind": "fix", "entities": ["p0"]},
+                {"id": "bottom", "kind": "horizontal", "entities": ["e0"]},
+                {"id": "right", "kind": "vertical", "entities": ["e1"]},
+                {"id": "top", "kind": "horizontal", "entities": ["e2"]},
+                {"id": "left", "kind": "vertical", "entities": ["e3"]},
+            ],
         },
-    },
+    }
 ]
 
 SKETCH_SCHEMA = {
@@ -348,7 +339,12 @@ PROFILE = {
     "type": "object",
     "properties": {
         "sketchId": {"type": "string"},
-        "profileIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "profileIds": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "description": "for a constrained sketch, the profile id that selects all its loops (outer plus inner loops as holes) is the sketch id itself",
+        },
     },
     "required": ["sketchId", "profileIds"],
     "additionalProperties": False,
@@ -880,17 +876,16 @@ FEATURE_SCHEMA = {
     "additionalProperties": False,
     "examples": [
         {
-            "action": "update",
-            "expectedRevision": 6,
-            "requestId": "edit-lid-pattern",
-            "featureId": "lid_pattern",
-            "kind": "hole",
-            "set": {
-                "pattern": {
-                    "kind": "linear",
-                    "pitch": {"value": 5, "unit": "mm"},
-                    "count": 4,
-                }
+            "action": "create",
+            "expectedRevision": 1,
+            "requestId": "extrude-profile",
+            "featureId": "plate",
+            "kind": "extrude",
+            "parameters": {
+                "profile": {"sketchId": "profile", "profileIds": ["profile"]},
+                "distance": {"value": 5, "unit": "mm"},
+                "operation": "new_body",
+                "direction": "normal",
             },
         }
     ],

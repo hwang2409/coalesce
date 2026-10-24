@@ -140,12 +140,34 @@ async def test_tool_list_serializes_valid_design_intent_examples(tmp_path):
         for example in schema["examples"]:
             validate(example, schema)
 
+    sketch_example = tools["sketch"]["inputSchema"]["examples"][0]
+    feature_example = tools["feature"]["inputSchema"]["examples"][0]
+    constrained = sketch_example["constrained"]
+    assert sum(item["kind"] == "fix" for item in constrained["constraints"]) == 1
+    assert {item["id"] for item in constrained["dimensions"]} >= {
+        "width",
+        "height",
+        "opening-radius",
+    }
+    assert feature_example["parameters"]["profile"] == {
+        "sketchId": "profile",
+        "profileIds": ["profile"],
+    }
+
+    call = server.request_handlers[types.CallToolRequest]
+    for name, example in (("sketch", sketch_example), ("feature", feature_example)):
+        result = await call(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(name=name, arguments=example)
+            )
+        )
+        assert result.root.isError is False
+
     serialized = json.dumps(snapshot).lower()
     assert "fixing every point" in serialized
     assert "opening-radius" in serialized
-    assert "lower_left" in serialized
-    assert "edit-lid-pattern" in serialized
-    assert "chain the returned revision" in serialized
+    assert "outer plus inner loops as holes" in serialized
+    assert "chain each returned revision" in serialized
     assert "coalesce://docs/hole" in serialized
 
 
