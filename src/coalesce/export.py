@@ -526,9 +526,6 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
         result = renamex(source_bytes, destination_bytes, 0x00000004)  # RENAME_EXCL
     elif renameat2 := getattr(libc, "renameat2", None):
         result = renameat2(-100, source_bytes, -100, destination_bytes, 1)  # RENAME_NOREPLACE
-    elif os.name == "nt":
-        os.rename(source, destination)
-        return
     else:
         raise OSError(errno.ENOTSUP, "exclusive directory rename is unavailable")
     if result == 0:
@@ -549,15 +546,16 @@ def _sync_directory(path: Path) -> None:
 
 def _publish_prepared_parts(
     path: Path, prepared: list[dict[str, Any]], manifest_bytes: bytes
-) -> Path:
+) -> tuple[Path, list[dict[str, str]]]:
     """Publish prepared bytes with one atomic sibling-directory handoff."""
     destination, existed, entries = _destination_state(path)
-    if entries or (existed and os.name == "nt"):
+    if entries:
         raise _existing_directory_failure(destination, entries)
 
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
     )
+    published = False
     try:
         for item in prepared:
             _write_private_file(temporary / item["file"], item["_content"])
@@ -574,7 +572,7 @@ def _publish_prepared_parts(
                     destination, _path_entries(destination)
                 ) from error
             raise
-        _sync_directory(destination.parent)
+        published = True
     except ExportFailure:
         raise
     except OSError as error:
@@ -585,9 +583,18 @@ def _publish_prepared_parts(
             hint="check the target parent and retry with a new path",
         ) from error
     finally:
-        if temporary.exists():
+        if not published and temporary.exists():
             shutil.rmtree(temporary)
-    return destination
+
+    warnings = []
+    try:
+        _sync_directory(destination.parent)
+    except OSError:
+        warnings.append({
+            "code": "EXPORT_DURABILITY_UNCONFIRMED",
+            "message": "files are published, but their durability on disk is not confirmed",
+        })
+    return destination, warnings
 
 
 def export_parts_separately(
@@ -605,11 +612,12 @@ def export_parts_separately(
     manifest_bytes = (
         json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode()
-    destination = _publish_prepared_parts(path, prepared, manifest_bytes)
+    destination, warnings = _publish_prepared_parts(path, prepared, manifest_bytes)
     return {
         "path": str(destination),
         "partIds": [part["partId"] for part in prepared],
         "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        **({"warnings": warnings} if warnings else {}),
     }
 
 

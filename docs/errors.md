@@ -138,7 +138,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `AMBIGUOUS` | import | a board/footprint subject has more than one valid match | use a stable id that resolves once |
 | `PORT_BLOCKED_BY_LID` | enclosure | a port opening conflicts with the lid or lip | apply a verified `alternative` or change the lid/opening |
 | `INSPECTION_FAILED` | enclosure | enclosure inspection cannot evaluate the requested requirements; the raw diagnostic is in `kernelMessage` | check each requirement kind against the `check` tool schema; if they are valid, treat the requirements as unevaluated and report the failure |
-| `EXPORT_PATH_EXISTS` | export | a separate-export target is not an empty real directory, changed before atomic publication, or is an existing directory on Windows | choose an empty or new directory; on POSIX only, coalesce atomically replaces an empty directory |
+| `EXPORT_PATH_EXISTS` | export | a separate-export target is not an empty real directory or changed before atomic publication | on a POSIX system (macOS or Linux), choose an empty or new directory; separate STEP export is not supported on Windows |
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
 
@@ -153,10 +153,11 @@ original endpoint ids can also recover the reference.
 
 ## inspection warnings
 
-a successful enclosure inspection can include `warnings`. a warning does not fail the request. agents can branch on its `code`.
+a successful enclosure inspection or export can include `warnings`. a warning does not fail the request. agents can branch on its `code`.
 
 | warning | meaning | agent action |
 |---|---|---|
+| `EXPORT_DURABILITY_UNCONFIRMED` | the separate STEP files and manifest were published, but the parent-directory sync failed, so their durability on disk is not confirmed. | treat the export as published; copy or export it again to another path if confirmed durability is required. |
 | `OTHER_MANUFACTURING_BODY` | a manufactured body that is not part of the enclosure exists; it is named by `featureId` and `partId`. | delete it, or confirm it is intended before export. |
 | `CONNECTOR_HEIGHT_UNRESOLVED` | the board declares no 3D models, so connector heights for `footprintIds` are not measured. | treat port height clearance as unknown; ask for connector heights or add margin. |
 | `UNCLASSIFIED_BOARD_HOLES` | board holes in `holeIds` are not mounting holes, so no standoff is expected for them. | check that these holes need no standoff. |

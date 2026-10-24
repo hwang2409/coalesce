@@ -8,6 +8,7 @@ from test_pcb_enclosure import FIXTURES, base_request, import_request, standoffs
 from test_pcb_lid import lid_request
 
 import coalesce.export as export_module
+import coalesce.service as service_module
 from coalesce.service import DocumentService
 
 
@@ -403,6 +404,50 @@ def test_destination_created_at_rename_is_structured_and_empty(tmp_path, monkeyp
 
     assert response["error"]["code"] == "EXPORT_PATH_EXISTS"
     assert list(destination.iterdir()) == []
+    assert not list(tmp_path.glob(".delivery.tmp-*"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_parent_fsync_failure_after_rename_returns_success_with_warning(
+    tmp_path, monkeypatch, existing
+):
+    destination = tmp_path / "delivery"
+    if existing:
+        destination.mkdir()
+    prepared = [
+        {"partId": "one", "status": "passed", "file": "one.step", "_content": b"one"},
+        {"partId": "two", "status": "passed", "file": "two.step", "_content": b"two"},
+    ]
+    original = export_module._sync_directory
+
+    def fail_parent_sync(path):
+        if path == destination.parent:
+            raise OSError("injected parent fsync failure")
+        original(path)
+
+    monkeypatch.setattr(export_module, "_sync_directory", fail_parent_sync)
+    monkeypatch.setattr(service_module, "prepare_parts", lambda _selected: prepared)
+    service = object.__new__(DocumentService)
+    service._document = type("Document", (), {"revision": 4})()
+    service._handoff_result = lambda _prepared, _payload: {
+        "parts": export_module.public_parts(prepared),
+        "requirements": {"gate": "PASS", "results": []},
+        "unknowns": [],
+        "ready": True,
+    }
+    service._handoff_sources = list
+    result = service._export_separate([], {"path": str(destination)})
+
+    assert result["ok"] is True
+    assert result["warnings"] == [{
+        "code": "EXPORT_DURABILITY_UNCONFIRMED",
+        "message": "files are published, but their durability on disk is not confirmed",
+    }]
+    assert sorted(path.name for path in destination.iterdir()) == [
+        "manifest.json",
+        "one.step",
+        "two.step",
+    ]
     assert not list(tmp_path.glob(".delivery.tmp-*"))
 
 
