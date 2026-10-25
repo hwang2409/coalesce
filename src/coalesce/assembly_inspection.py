@@ -29,6 +29,8 @@ class _KernelSymbols:
     common: Any
     analyzer: Any
     distance: Any | None
+    classifier: Any
+    inside_state: Any
     linear_tolerance: float
 
 
@@ -76,8 +78,10 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.collections import List_TopoDS_Shape
     from OCP.Precision import Precision
+    from OCP.TopAbs import TopAbs_IN
 
     if measure_clearance:
         from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -91,6 +95,8 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
         BRepAlgoAPI_Common,
         BRepCheck_Analyzer,
         BRepExtrema_DistShapeShape,
+        BRepClass3d_SolidClassifier,
+        TopAbs_IN,
         Precision.Confusion_s(),
     )
 
@@ -133,6 +139,32 @@ def _minimum_clearance(first: Any, second: Any, symbols: _KernelSymbols | None =
     if not operation.IsDone():
         raise ValueError("exact minimum-clearance operation did not complete")
     return operation.Value()
+
+
+def _contains_boundary_point(first: Any, second: Any, symbols: _KernelSymbols) -> bool:
+    second_solids = second.solids()
+    return any(
+        symbols.classifier(
+            second_solid.wrapped,
+            first_solid.vertices()[0].center().to_pnt(),
+            symbols.linear_tolerance,
+        ).State()
+        == symbols.inside_state
+        for first_solid in first.solids()
+        for second_solid in second_solids
+    )
+
+
+def _occurrence_bounds(
+    occurrences: list[ResolvedOccurrence], symbols: _KernelSymbols
+) -> dict[str, Any]:
+    bounds = {}
+    for item in occurrences:
+        try:
+            bounds[item.occurrence.id] = _bounding_box(item.shape, symbols)
+        except Exception as error:  # noqa: BLE001 - kernel failures become pair evidence.
+            bounds[item.occurrence.id] = error
+    return bounds
 
 
 def _pair_error(
@@ -183,7 +215,12 @@ def _inspect_pair(
         clearance = (
             _minimum_clearance(first.shape, second.shape, symbols) if measure_clearance else None
         )
-        exactly_separated = clearance is not None and clearance > symbols.linear_tolerance
+        exactly_separated = (
+            clearance is not None
+            and clearance > symbols.linear_tolerance
+            and not _contains_boundary_point(first.shape, second.shape, symbols)
+            and not _contains_boundary_point(second.shape, first.shape, symbols)
+        )
         overlap = (
             _common_volume(first.shape, second.shape, symbols)
             if boxes_overlap and not exactly_separated
@@ -191,7 +228,7 @@ def _inspect_pair(
         )
         overlap = overlap if overlap > INTERFERENCE_VOLUME_TOLERANCE_MM3 else 0.0
         interferes = overlap > 0.0
-        if interferes:
+        if interferes and measure_clearance:
             clearance = 0.0
     except Exception as error:  # noqa: BLE001 - kernel errors become explicit measurement evidence.
         return _pair_error(first, second, revision, error)
@@ -225,13 +262,7 @@ def inspect_assembly(
         for item in pair
     }
     ordered = [selected[occurrence_id] for occurrence_id in sorted(selected)]
-    occurrence_indexes = {item.occurrence.id: index for index, item in enumerate(ordered)}
-    boxes = []
-    for item in ordered:
-        try:
-            boxes.append(_bounding_box(item.shape, symbols))
-        except Exception as error:  # noqa: BLE001 - kernel failures become pair evidence.
-            boxes.append(error)
+    bounds = _occurrence_bounds(ordered, symbols)
     rows = []
     for index, (first, second) in enumerate(pairs):
         if monotonic() >= deadline:
@@ -241,8 +272,8 @@ def inspect_assembly(
             _inspect_pair(
                 first,
                 second,
-                boxes[occurrence_indexes[first.occurrence.id]],
-                boxes[occurrence_indexes[second.occurrence.id]],
+                bounds[first.occurrence.id],
+                bounds[second.occurrence.id],
                 revision,
                 measure_clearance,
                 symbols,

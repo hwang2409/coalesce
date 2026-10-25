@@ -16,8 +16,15 @@ from coalesce.parts import TerminalPart
 from coalesce.references import BodySource
 
 
-def _resolved(occurrence_id, *, translation=(0, 0, 0), angle=0, part_id="bar/body"):
-    shape = Box(10, 2, 2)
+def _resolved(
+    occurrence_id,
+    *,
+    translation=(0, 0, 0),
+    angle=0,
+    part_id="bar/body",
+    shape=None,
+):
+    shape = Box(10, 2, 2) if shape is None else shape
     transform = RigidTransform(translation, (0, 0, 1), angle)
     occurrence = Occurrence(occurrence_id, part_id, transform)
     part = TerminalPart(part_id, "bar", "manufacturing", BodySource("bar", "body"), "bar", shape)
@@ -145,6 +152,50 @@ def test_overlapping_pair_keeps_exact_volume():
 
     assert row["overlapVolume"]["value"] == pytest.approx(40.0)
     assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+
+
+@pytest.mark.parametrize("small_id", ["a", "b"])
+def test_contained_box_keeps_exact_volume_in_both_orders(small_id):
+    large_id = "b" if small_id == "a" else "a"
+    shapes = {
+        small_id: Box(2, 2, 2).translate((4, 4, 4)),
+        large_id: Box(10, 10, 10),
+    }
+    row = inspect_assembly(
+        [_resolved(occurrence_id, shape=shapes[occurrence_id]) for occurrence_id in ("a", "b")],
+        None,
+        1,
+    )[0]
+
+    assert row["overlapVolume"]["value"] == pytest.approx(8.0)
+    assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+    assert row["interferes"] is True
+
+
+def test_contained_fillet_keeps_exact_volume():
+    small = Box(4, 4, 2)
+    small = small.fillet(0.4, small.edges()).translate((4, 4, 4))
+    row = inspect_assembly(
+        [
+            _resolved("a", shape=small),
+            _resolved("b", shape=Box(10, 10, 10)),
+        ],
+        None,
+        1,
+    )[0]
+
+    assert row["overlapVolume"]["value"] == pytest.approx(small.volume)
+    assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+    assert row["interferes"] is True
+
+
+def test_overlapping_pair_omits_clearance_when_not_requested():
+    row = inspect_assembly(
+        [_resolved("a"), _resolved("b")], None, 1, measure_clearance=False
+    )[0]
+
+    assert row["interferes"] is True
+    assert "clearance" not in row
 
 
 def test_clearance_within_kernel_tolerance_still_calls_common(monkeypatch):
