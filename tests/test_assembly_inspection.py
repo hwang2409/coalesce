@@ -49,6 +49,26 @@ def test_repeated_definition_occurrences_remain_distinct_stable_pairs():
     assert all(row["clearance"]["value"] > 0 for row in rows)
 
 
+def test_clearance_is_skipped_when_not_requested(monkeypatch):
+    calls = 0
+
+    def count(*_args):
+        nonlocal calls
+        calls += 1
+        return 1.0
+
+    monkeypatch.setattr("coalesce.assembly_inspection._minimum_clearance", count)
+    rows = inspect_assembly(
+        [_resolved("a"), _resolved("b", translation=(20, 0, 0))],
+        None,
+        1,
+        measure_clearance=False,
+    )
+
+    assert calls == 0
+    assert "clearance" not in rows[0]
+
+
 @pytest.mark.parametrize("operation", ["_common_volume", "_minimum_clearance"])
 def test_kernel_measurement_failure_is_error_not_pass(monkeypatch, operation):
     def fail(*_args):

@@ -27,7 +27,13 @@ from .assembly import (
     resolve_occurrences,
     transform_to_dict,
 )
-from .assembly_inspection import AssemblyInspectionError, inspect_assembly
+from .assembly_inspection import (
+    MAX_INSPECTION_PAIRS,
+    AssemblyInspectionError,
+    inspect_assembly,
+    inspection_deadline,
+    inspection_pairs,
+)
 from .availability import SketchFailure, SolveAvailability, UnavailableFeature
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
@@ -4836,37 +4842,59 @@ class DocumentService:
             "bodies": catalog,
         }
 
-    def _evaluate_assembly_requirements(
+    def _prepare_assembly_requirements(
         self, requirements: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    ) -> tuple[list[dict[str, Any]], list[Any], dict[str, Any] | None]:
         selected = [item for item in requirements if item.get("kind") == "assembly_interference"]
         if not selected:
-            return [], None
+            return [], [], None
         try:
+            for requirement in selected:
+                _validate_assembly_requirement(requirement)
             resolved = resolve_occurrences(
                 self._document.assembly, terminal_parts(self._regen, role=None)
             )
-            results = []
-            for requirement in selected:
-                _validate_assembly_requirement(requirement)
-                inspection = inspect_assembly(
-                    resolved, requirement.get("occurrenceIds"), self._document.revision
-                )
-                results.extend(
-                    evaluate_requirements(
-                        [requirement], inspection, self._document.revision
-                    )["results"]
-                )
-            return results, None
-        except (AssemblyError, AssemblyInspectionError) as error:
-            return [], _safe_error(
-                self._document.revision,
-                None,
-                error.code,
-                str(error),
-                operation="check",
-                **error.details,
+            pair_count = sum(
+                len(inspection_pairs(resolved, item.get("occurrenceIds"))) for item in selected
             )
+            if pair_count > MAX_INSPECTION_PAIRS:
+                raise AssemblyInspectionError(
+                    "INVALID_PARAMETER",
+                    "assembly interference checks at most 120 total pairs per request",
+                    totalPairCount=pair_count,
+                    maximumPairCount=MAX_INSPECTION_PAIRS,
+                )
+            return selected, resolved, None
+        except (AssemblyError, AssemblyInspectionError) as error:
+            return (
+                [],
+                [],
+                _safe_error(
+                    self._document.revision,
+                    None,
+                    error.code,
+                    str(error),
+                    operation="check",
+                    **error.details,
+                ),
+            )
+
+    @staticmethod
+    def _evaluate_assembly_requirements(
+        requirements: list[dict[str, Any]], resolved: list[Any], revision: int
+    ) -> list[dict[str, Any]]:
+        deadline = inspection_deadline()
+        results = []
+        for requirement in requirements:
+            inspection = inspect_assembly(
+                resolved,
+                requirement.get("occurrenceIds"),
+                revision,
+                measure_clearance="minimumClearance" in requirement,
+                deadline=deadline,
+            )
+            results.extend(evaluate_requirements([requirement], inspection, revision)["results"])
+        return results
 
     def _evaluate_enclosure_requirements(
         self, payload: dict[str, Any], requirements: list[dict[str, Any]]
@@ -4922,6 +4950,29 @@ class DocumentService:
                 kernelMessage=str(error),
             )
 
+    def _finish_check_locked(
+        self,
+        payload: dict[str, Any],
+        requirements: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        enclosure_results, failure = self._evaluate_enclosure_requirements(payload, requirements)
+        if failure is not None:
+            return failure
+        results.extend(enclosure_results)
+        results.extend(
+            _valid_brep_result(self._regen, item, self._document.revision)
+            for item in requirements
+            if item.get("kind") == "valid_brep"
+        )
+        return {
+            "ok": True,
+            "revision": self._document.revision,
+            "units": "mm",
+            "gate": reduce_gate(results),
+            "results": results,
+        }
+
     def check(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             if failure := self._geometry_failure("check"):
@@ -4967,24 +5018,23 @@ class DocumentService:
                     kind=unknown_kinds[0],
                     supportedKinds=sorted(supported_requirement_kinds),
                 )
-            results, failure = self._evaluate_assembly_requirements(requirements)
+            selected, resolved, failure = self._prepare_assembly_requirements(requirements)
             if failure is not None:
                 return failure
-            enclosure_results, failure = self._evaluate_enclosure_requirements(
-                payload, requirements
-            )
-            if failure is not None:
-                return failure
-            results.extend(enclosure_results)
-            results.extend(
-                _valid_brep_result(self._regen, item, self._document.revision)
-                for item in requirements
-                if item.get("kind") == "valid_brep"
-            )
-            return {
-                "ok": True,
-                "revision": self._document.revision,
-                "units": "mm",
-                "gate": reduce_gate(results),
-                "results": results,
-            }
+            if not selected:
+                return self._finish_check_locked(payload, requirements, [])
+            revision = self._document.revision
+
+        results = self._evaluate_assembly_requirements(selected, resolved, revision)
+
+        with self._lock:
+            if self._document.revision != revision:
+                return _safe_error(
+                    self._document.revision,
+                    None,
+                    "REVISION_CONFLICT",
+                    "document changed during assembly inspection",
+                    operation="check",
+                    requestedRevision=revision,
+                )
+            return self._finish_check_locked(payload, requirements, results)

@@ -150,6 +150,47 @@ def test_omitted_ids_over_pair_cap_fails_clearly_and_explicit_subset_passes(tmp_
     assert passed["gate"] == "PASS"
 
 
+def test_total_pair_cap_applies_across_requirements_before_inspection(tmp_path):
+    service = _placed_service(tmp_path)
+    revision = 2
+    occurrence_ids = []
+    for index in range(12):
+        occurrence_id = f"copy-{index:02}"
+        occurrence_ids.append(occurrence_id)
+        assert service.feature(
+            occurrence_create(revision, f"place-{index}", occurrence_id, index * 70)
+        )["ok"]
+        revision += 1
+
+    result = service.check(
+        {
+            "action": "evaluate",
+            "requirements": [
+                _requirement(id="first", occurrenceIds=occurrence_ids),
+                _requirement(id="second", occurrenceIds=occurrence_ids),
+            ],
+        }
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["totalPairCount"] == 132
+    assert result["error"]["maximumPairCount"] == 120
+
+
+def test_deadline_marks_unchecked_real_pairs_as_errors(tmp_path, monkeypatch):
+    service = _placed_service(tmp_path)
+    assert service.feature(occurrence_create(2, "place-a", "a", 0))["ok"]
+    assert service.feature(occurrence_create(3, "place-b", "b", 20))["ok"]
+    monkeypatch.setattr("coalesce.assembly_inspection.INSPECTION_DEADLINE_SECONDS", 0.0)
+
+    response = service.check({"action": "evaluate", "requirements": [_requirement()]})
+
+    assert response["gate"] == "ERROR"
+    result = response["results"][0]
+    assert result["status"] == "ERROR"
+    assert result["measured"]["failedPairs"][0]["error"]["reason"] == "DEADLINE"
+
+
 def test_exact_kernel_failure_makes_requirement_gate_error(tmp_path, monkeypatch):
     service = _placed_service(tmp_path)
     service.feature(occurrence_create(2, "place-a", "a", 0))
