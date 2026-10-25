@@ -1,7 +1,9 @@
 import math
 from dataclasses import replace
+from itertools import combinations
 
 import pytest
+from build123d import Compound
 from test_mcp_assembly import occurrence_create, transform
 from test_mcp_vertical import FEATURE, SKETCH, run_server
 
@@ -19,6 +21,16 @@ def _placed_service(tmp_path):
     assert service.sketch(SKETCH)["ok"]
     assert service.feature(FEATURE)["ok"]
     return service
+
+
+def _assert_distinct_subshape_topology(*shapes):
+    for first, second in combinations(shapes, 2):
+        for kind in ("faces", "edges"):
+            assert not any(
+                left.wrapped.IsPartner(right.wrapped)
+                for left in getattr(first, kind)()
+                for right in getattr(second, kind)()
+            )
 
 
 def test_inspection_snapshot_owns_distinct_topology_per_occurrence(tmp_path, monkeypatch):
@@ -42,8 +54,11 @@ def test_inspection_snapshot_owns_distinct_topology_per_occurrence(tmp_path, mon
 
     assert result["ok"]
     cached = service._regen.shapes["plate_extrude"]
-    assert all(not item.shape.wrapped.IsPartner(cached.wrapped) for item in inspected)
-    assert not inspected[0].shape.wrapped.IsPartner(inspected[1].shape.wrapped)
+    shallow = Compound(children=[cached])
+    assert not shallow.wrapped.IsPartner(cached.wrapped)
+    with pytest.raises(AssertionError):
+        _assert_distinct_subshape_topology(cached, shallow)
+    _assert_distinct_subshape_topology(cached, *(item.shape for item in inspected))
 
 
 def test_real_overlap_reports_volume_ids_and_composes_with_valid_brep(tmp_path):

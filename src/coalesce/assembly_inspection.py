@@ -25,6 +25,7 @@ class _KernelSymbols:
     box: Any
     add_bounds: Any
     shape: Any
+    shape_list: Any
     common: Any
     analyzer: Any
     distance: Any | None
@@ -74,6 +75,7 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.collections import List_TopoDS_Shape
 
     if measure_clearance:
         from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -83,6 +85,7 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
         Bnd_Box,
         BRepBndLib.AddOptimal_s,
         Shape,
+        List_TopoDS_Shape,
         BRepAlgoAPI_Common,
         BRepCheck_Analyzer,
         BRepExtrema_DistShapeShape,
@@ -103,7 +106,13 @@ def _boxes_overlap(first: Any, second: Any, symbols: _KernelSymbols | None = Non
 
 def _common_volume(first: Any, second: Any, symbols: _KernelSymbols | None = None) -> float:
     symbols = symbols or _load_kernel_symbols(False)
-    operation = symbols.common(first.wrapped, second.wrapped)
+    arguments = symbols.shape_list()
+    arguments.Append(first.wrapped)
+    tools = symbols.shape_list()
+    tools.Append(second.wrapped)
+    operation = symbols.common()
+    operation.SetArguments(arguments)
+    operation.SetTools(tools)
     operation.SetNonDestructive(True)
     operation.Build()
     if not operation.IsDone():

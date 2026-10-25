@@ -1,8 +1,16 @@
+import copy
+from dataclasses import replace
+
 import pytest
 from build123d import Box
 
 from coalesce.assembly import Occurrence, ResolvedOccurrence, RigidTransform, locate_shape
-from coalesce.assembly_inspection import _boxes_overlap, inspect_assembly
+from coalesce.assembly_inspection import (
+    _boxes_overlap,
+    _common_volume,
+    _load_kernel_symbols,
+    inspect_assembly,
+)
 from coalesce.parts import TerminalPart
 from coalesce.references import BodySource
 
@@ -13,6 +21,24 @@ def _resolved(occurrence_id, *, translation=(0, 0, 0), angle=0, part_id="bar/bod
     occurrence = Occurrence(occurrence_id, part_id, transform)
     part = TerminalPart(part_id, "bar", "manufacturing", BodySource("bar", "body"), "bar", shape)
     return ResolvedOccurrence(occurrence, part, locate_shape(shape, transform))
+
+
+def test_common_is_configured_before_building_snapshot_shapes():
+    first = copy.deepcopy(Box(10, 10, 10))
+    second = copy.deepcopy(Box(10, 10, 10))
+    symbols = _load_kernel_symbols(False)
+    common = symbols.common
+    initial_state = []
+
+    def capture_initial_state(*args):
+        operation = common(*args)
+        initial_state.append((len(args), operation.IsDone()))
+        return operation
+
+    assert _common_volume(
+        first, second, replace(symbols, common=capture_initial_state)
+    ) == pytest.approx(1000)
+    assert initial_state == [(0, False)]
 
 
 def test_exact_pairs_cover_rotated_overlap_touch_clearance_and_aabb_false_positive():
