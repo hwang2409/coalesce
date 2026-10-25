@@ -204,6 +204,98 @@ async def test_step_export_excludes_pcb_reference_parts_like_default_measurement
 
 
 @pytest.mark.anyio
+async def test_assembly_export_uses_occurrences_and_lists_reference_exclusions(tmp_path):
+    document = tmp_path / "assembly.coalesce.json"
+    target = tmp_path / "assembly.step"
+    fixture = Path(__file__).parent / "fixtures/kicad/features.kicad_pcb"
+
+    def occurrence(revision, occurrence_id, part_id, x):
+        return {
+            "action": "create",
+            "kind": "assembly_occurrence",
+            "expectedRevision": revision,
+            "requestId": f"place-{occurrence_id}",
+            "occurrenceId": occurrence_id,
+            "parameters": {
+                "partId": part_id,
+                "transform": {
+                    "translation": {"value": [x, 0, 0], "unit": "mm"},
+                    "rotation": {
+                        "axis": [0, 1, 0],
+                        "angle": {"value": 90 if x else 0, "unit": "deg"},
+                    },
+                },
+            },
+        }
+
+    calls = [
+        (
+            "import",
+            {
+                "action": "create",
+                "expectedRevision": 0,
+                "requestId": "board",
+                "assetId": "controller_board",
+                "format": "kicad_pcb",
+                "path": str(fixture.resolve()),
+            },
+        ),
+        (
+            "sketch",
+            rectangle_sketch(
+                request_id="plate-sketch",
+                revision=1,
+                sketch_id="plate_sketch",
+                entity_id="plate",
+                width=20,
+                height=10,
+            ),
+        ),
+        (
+            "feature",
+            extrude(
+                request_id="plate",
+                revision=2,
+                feature_id="plate",
+                sketch_id="plate_sketch",
+                profile_ids=["plate"],
+                distance=3,
+            ),
+        ),
+        ("feature", occurrence(3, "plate-a", "plate/plate", 0)),
+        ("feature", occurrence(4, "plate-b", "plate/plate", 30)),
+        (
+            "feature",
+            occurrence(
+                5,
+                "board-reference",
+                "controller_board/loop-1e9db439140237c1f6f93e94",
+                0,
+            ),
+        ),
+        ("export", {"action": "preflight", "mode": "assembly", "expectedRevision": 6}),
+        (
+            "export",
+            {
+                "action": "publish",
+                "mode": "assembly",
+                "expectedRevision": 6,
+                "path": str(target),
+            },
+        ),
+    ]
+    *_, preflight, published = await run_server(document, calls)
+
+    assert preflight["ok"] is True
+    assert preflight["excludedOccurrenceIds"] == ["board-reference"]
+    assert preflight["occurrenceIds"] == ["plate-a", "plate-b"]
+    assert preflight["validation"]["xcaf"]["definitionCount"] == 1
+    assert preflight["validation"]["xcaf"]["occurrenceCount"] == 2
+    assert published["excludedOccurrenceIds"] == ["board-reference"]
+    assert published["sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+@pytest.mark.anyio
 async def test_step_export_accepts_terminal_feature_id(tmp_path):
     document = tmp_path / "feature-id.coalesce.json"
     target = tmp_path / "plate.step"
@@ -563,6 +655,7 @@ async def test_export_contract_documents_stateless_recovery(tmp_path):
     assert export_tool.inputSchema["properties"]["mode"]["enum"] == [
         "compound",
         "separate",
+        "assembly",
     ]
     assert "requestId" not in export_tool.inputSchema["properties"]
     for phrase in (

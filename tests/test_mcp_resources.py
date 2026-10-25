@@ -25,6 +25,7 @@ GUIDES = {
     "coalesce://docs/revolve": "docs/revolve.md",
     "coalesce://docs/assembly": "docs/assembly.md",
     "coalesce://docs/examples/cycloidal-disc": "docs/examples/cycloidal-disc.md",
+    "coalesce://docs/examples/cycloidal-drive-assembly": "docs/examples/cycloidal-drive-assembly.md",
 }
 
 

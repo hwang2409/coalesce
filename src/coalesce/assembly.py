@@ -224,9 +224,11 @@ def resolve_occurrences(assembly: Assembly, parts: list[TerminalPart]) -> list[R
 
 def definition_shape(shape: Any) -> Any:
     """Return a copy in the local frame used by assembly placements."""
-    from build123d import Location
+    from build123d import Location, Shape
+    from OCP.TopLoc import TopLoc_Location
 
-    return shape.located(Location())
+    local = shape.located(Location())
+    return Shape.cast(local.wrapped.Located(TopLoc_Location()))
 
 
 def locate_shape(shape: Any, transform: RigidTransform) -> Any:

@@ -42,13 +42,17 @@ from .constrained_sketch import from_payload as constrained_from_payload
 from .document_store import MAX_RECEIPTS, MAX_REQUEST_HASHES, Document, DocumentStore
 from .errors import ERROR_REGISTRY
 from .export import (
+    ABSOLUTE_TOLERANCE,
+    RELATIVE_TOLERANCE,
     ExportFailure,
     _validate_part_for_step,
+    export_assembly,
     export_parts,
     export_parts_separately,
     parts_are_ready,
     prepare_parts,
     public_parts,
+    write_assembly_step_bytes,
 )
 from .fit_summary import fit_summary, part_facts
 from .graph import (
@@ -4444,15 +4448,29 @@ class DocumentService:
         return selected
 
     @staticmethod
+    def _check_assembly_export_request(payload: dict[str, Any]) -> None:
+        if payload.get("mode") != "assembly":
+            return
+        if "partIds" in payload:
+            raise RequestError(
+                "INVALID_PARAMETER",
+                "assembly export includes all manufacturing occurrences and does not accept partIds",
+                invalidFields=["partIds"],
+            )
+
+    @staticmethod
     def _check_export_request(payload: dict[str, Any]) -> None:
         action = payload.get("action", "publish")
         mode = payload.get("mode", "compound")
+        DocumentService._check_assembly_export_request(payload)
         if action == "preflight":
-            forbidden = [field for field in ("path", "mode") if field in payload]
+            forbidden = [field for field in ("path",) if field in payload]
+            if mode != "assembly" and "mode" in payload:
+                forbidden.append("mode")
             if forbidden:
                 raise RequestError(
                     "INVALID_PARAMETER",
-                    "export preflight does not accept path or mode",
+                    "export preflight accepts mode only when mode is assembly and never accepts path",
                     invalidFields=forbidden,
                 )
             return
@@ -4538,6 +4556,41 @@ class DocumentService:
         fields = export_parts_separately(Path(payload["path"]), prepared, manifest)
         return {"ok": True, "revision": self._document.revision, "units": "mm", **result, **fields}
 
+    def _assembly_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        assert self._regen is not None
+        resolved = resolve_occurrences(self._document.assembly, terminal_parts(self._regen, role=None))
+        included = [item for item in resolved if item.part.role == "manufacturing"]
+        excluded = sorted(item.occurrence.id for item in resolved if item.part.role == "reference")
+        if not included:
+            raise RequestError(
+                "ASSEMBLY_EXPORT_EMPTY",
+                "assembly export requires at least one manufacturing occurrence",
+                excludedOccurrenceIds=excluded,
+            )
+        root_name = self.store.path.name.removesuffix(".coalesce.json") or "assembly"
+        if payload.get("action", "publish") == "preflight":
+            content, digest, evidence = write_assembly_step_bytes(root_name, included)
+            fields = {
+                "partIds": sorted({item.part.part_id for item in included}),
+                "occurrenceIds": sorted(item.occurrence.id for item in included),
+                "sha256": digest,
+                "byteCount": len(content),
+                "tolerance": {"relative": RELATIVE_TOLERANCE, "absolute": ABSOLUTE_TOLERANCE},
+                "validation": {
+                    "geometry": {"status": "passed", "freshProcess": True},
+                    "xcaf": evidence,
+                },
+            }
+        else:
+            fields = export_assembly(Path(payload["path"]), root_name, included)
+        return {
+            "ok": True,
+            "revision": self._document.revision,
+            "units": "mm",
+            "excludedOccurrenceIds": excluded,
+            **fields,
+        }
+
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             selected: list[Any] = []
@@ -4546,6 +4599,8 @@ class DocumentService:
                     return failure
                 self._check_export_revision(payload["expectedRevision"])
                 self._check_export_request(payload)
+                if payload.get("mode", "compound") == "assembly":
+                    return self._assembly_export(payload)
                 selected = self._select_export_parts(payload.get("partIds"))
                 if payload.get("action", "publish") == "preflight":
                     return self._export_preflight(selected, payload)

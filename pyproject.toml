@@ -32,6 +32,7 @@ packages = ["src/coalesce"]
 "docs/revolve.md" = "coalesce/guides/revolve.md"
 "docs/assembly.md" = "coalesce/guides/assembly.md"
 "docs/examples/cycloidal-disc.md" = "coalesce/guides/examples/cycloidal-disc.md"
+"docs/examples/cycloidal-drive-assembly.md" = "coalesce/guides/examples/cycloidal-drive-assembly.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

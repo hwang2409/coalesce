@@ -1257,7 +1257,7 @@ EXPORT_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"enum": ["preflight", "publish"]},
-        "mode": {"enum": ["compound", "separate"]},
+        "mode": {"enum": ["compound", "separate", "assembly"]},
         "expectedRevision": {"type": "integer", "minimum": 0},
         "path": {"type": "string", "minLength": 1},
         "partIds": EXPORT_PART_IDS,

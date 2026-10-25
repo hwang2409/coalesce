@@ -54,4 +54,10 @@ one request can inspect at most 120 pairs across all assembly requirements. asse
 
 on an apple m5 pro, 120 repeated box pairs took 0.108 seconds for touching common-volume checks, 0.311 seconds for overlapping common-volume checks, 0.211 seconds for touching clearance checks, and 0.114 seconds for disjoint clearance checks. 120 touching pairs running both common volume and clearance took 0.304 seconds.
 
-viewer placement, mates, and assembly step export are not available yet.
+## assembly step export
+
+use `export` with `mode: "assembly"` to preserve the product tree, named occurrences, shared definitions, and rigid placements. assembly mode exports all manufacturing occurrences and rejects `partIds`; reference occurrences are returned in `excludedOccurrenceIds`. `action: "preflight"` accepts assembly mode without a path and verifies the same structure without publishing.
+
+fresh-process validation uses xcaf labels and references, not only geometry reimport. publication stages a private sibling file and commits it with one exclusive rename, so validation and write failures publish nothing. compound mode and separate manufacturing manifests keep their existing behavior.
+
+mates are not available yet.
