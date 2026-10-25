@@ -18,7 +18,7 @@ from coalesce.document_store import Document, DocumentStore
 from coalesce.graph import Extrude, Graph, Hole, Rectangle, Sketch
 from coalesce.regen import regenerate as real_regenerate
 from coalesce.schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
-from coalesce.server import create_server
+from coalesce.server import _call_tool, create_server
 from coalesce.service import (
     DocumentService,
     ExtrudeCreate,
@@ -108,6 +108,144 @@ async def call_server_tool(service, name, arguments):
         )
     )
     return result.root.structuredContent
+
+
+@pytest.mark.anyio
+async def test_call_tool_rejects_kind_inside_non_discriminated_point_union(tmp_path):
+    service = DocumentService(tmp_path / "invalid-point.coalesce.json", warmup=False)
+    result = await _call_tool(
+        service,
+        "feature",
+        {
+            "action": "create",
+            "expectedRevision": 0,
+            "requestId": "invalid-pattern-point",
+            "featureId": "holes",
+            "kind": "hole",
+            "parameters": {
+                "target": {"featureId": "plate"},
+                "diameter": {"value": 3, "unit": "mm"},
+                "pattern": {
+                    "kind": "linear",
+                    "start": {"id": "p", "x": 0, "y": 0, "kind": "point"},
+                    "direction": [1, 0],
+                    "pitch": {"value": 5, "unit": "mm"},
+                    "count": 4,
+                    "namePrefix": "hole",
+                },
+            },
+        },
+    )
+
+    assert result.structuredContent["error"]["code"] == "INVALID_PARAMETER"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", TOOL_SCHEMAS)
+async def test_all_tools_structure_malformed_nested_payload_errors(tmp_path, name):
+    requirement = {
+        "id": "fit",
+        "kind": "fit_gap",
+        "threshold": {"min": {"kind": "quantity"}, "max": []},
+    }
+    mutation = {"expectedRevision": 0, "requestId": "malformed"}
+    payloads = {
+        "import": [
+            {
+                "action": "create",
+                **mutation,
+                "assetId": "board",
+                "format": "kicad_pcb",
+                "path": {"kind": "path"},
+            },
+            {
+                "action": "refresh",
+                **mutation,
+                "assetId": "board",
+                "format": ["kicad_pcb"],
+            },
+        ],
+        "sketch": [
+            {
+                "action": "create",
+                **mutation,
+                "sketchId": "profile",
+                "plane": {"kind": "origin", "name": "XY"},
+                "entities": [
+                    {
+                        "id": "circle",
+                        "kind": "circle",
+                        "center": {"kind": "point"},
+                        "radius": {"value": 2, "unit": "mm"},
+                    }
+                ],
+            },
+            {
+                "action": "update",
+                **mutation,
+                "sketchId": "profile",
+                "set": {"position": {"kind": "point"}},
+            },
+        ],
+        "feature": [
+            {
+                "action": "create",
+                **mutation,
+                "featureId": "hole",
+                "kind": "hole",
+                "parameters": {
+                    "target": {"featureId": "plate"},
+                    "diameter": {"value": 3, "unit": "mm"},
+                    "position": {"kind": "point"},
+                },
+            },
+            {
+                "action": "update",
+                **mutation,
+                "featureId": "hole",
+                "set": {
+                    "pattern": {"kind": "linear", "direction": {"kind": "vector"}}
+                },
+            },
+        ],
+        "query": [
+            {
+                "select": {
+                    "kind": "reference",
+                    "reference": {
+                        "feature": "plate",
+                        "role": "cap_end",
+                        "source": {"kind": "unexpected"},
+                    },
+                }
+            },
+            {
+                "select": {
+                    "kind": "reference",
+                    "reference": {
+                        "feature": "plate",
+                        "role": "cap_end",
+                        "filters": [
+                            {"kind": "Position", "direction": {"kind": "vector"}}
+                        ],
+                    },
+                }
+            },
+        ],
+        "check": [
+            {"action": "evaluate", "requirements": [requirement]},
+            {"action": "evaluate", "requirements": [{"kind": {"kind": "requirement"}}]},
+        ],
+        "export": [
+            {"expectedRevision": 0, "requirements": [requirement]},
+            {"expectedRevision": 0, "partIds": [{"kind": "part"}]},
+        ],
+    }
+    service = DocumentService(tmp_path / f"invalid-{name}.coalesce.json", warmup=False)
+
+    for payload in payloads[name]:
+        result = await _call_tool(service, name, payload)
+        assert result.structuredContent["error"]["code"] == "INVALID_PARAMETER"
 
 
 @pytest.mark.anyio
