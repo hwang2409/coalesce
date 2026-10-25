@@ -74,7 +74,7 @@ from .graph import (
     validate_sketch,
     validate_sketch_profiles,
 )
-from .parts import terminal_parts
+from .parts import AmbiguousTerminalPartsError, terminal_parts
 from .references import (
     BodySource,
     Cardinality,
@@ -3676,9 +3676,33 @@ class DocumentService:
     def revision(self) -> int:
         return self._document.revision
 
-    def _validate_assembly_references(self, result: RegenResult, *, loading: bool = False) -> None:
+    def _validate_assembly_references(
+        self,
+        result: RegenResult,
+        *,
+        loading: bool = False,
+        assembly: Assembly | None = None,
+    ) -> None:
+        assembly = self._document.assembly if assembly is None else assembly
         try:
-            resolve_occurrences(self._document.assembly, terminal_parts(result, role=None))
+            try:
+                parts = terminal_parts(result, role=None)
+            except AmbiguousTerminalPartsError as ambiguous:
+                occurrence_ids = sorted(
+                    item.id
+                    for item in assembly.occurrences.values()
+                    if item.part_id in ambiguous.part_ids
+                )
+                if not occurrence_ids:
+                    raise
+                raise AssemblyError(
+                    "ASSEMBLY_REFERENCE_STALE",
+                    f"assembly occurrences {', '.join(occurrence_ids)} reference ambiguous parts",
+                    occurrenceIds=occurrence_ids,
+                    partIds=ambiguous.part_ids,
+                    reason="AMBIGUOUS",
+                ) from ambiguous
+            resolve_occurrences(assembly, parts)
         except AssemblyError as error:
             if loading:
                 raise GraphError(
@@ -4283,6 +4307,8 @@ class DocumentService:
                 )
                 self._ensure_geometry()
                 assembly, occurrence = self._updated_assembly(parsed)
+                assert self._regen is not None
+                self._validate_assembly_references(self._regen, assembly=assembly)
                 response = self._occurrence_response(payload, occurrence)
                 document, durable = self._save_response(
                     self._document.graph, assembly, response, body_hash

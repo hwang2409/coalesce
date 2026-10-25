@@ -37,3 +37,4 @@ jobs:
           uv run --extra sketch python -m evals.golden.constrained_inner_loop "$out/inner-loop"
           uv run --extra sketch python -m evals.golden.constrained_sketch_update_after_extrusion "$out/sketch-update"
           uv run --extra sketch python -m evals.golden.constrained_sketch_dimension_update_after_extrusion "$out/dimension-update"
+          uv run python -m evals.golden.revolve_shaft_edit "$out/revolve-shaft"

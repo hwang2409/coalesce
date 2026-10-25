@@ -1,5 +1,9 @@
 # explicit assembly occurrences
 
+## document format
+
+files written by this version cannot be opened by earlier coalesce builds.
+
 coalesce stores an assembly as caller-named occurrences outside the manufacturing feature graph. use the existing `feature` tool with `kind: "assembly_occurrence"` to create, update, or delete a placement. every mutation requires `expectedRevision` and `requestId`.
 
 an occurrence references a canonical terminal `partId`. use `query` with `{"select":{"kind":"assembly"}}` to list `availableParts`; do not infer a part id from array order. more than one occurrence can reference the same part.

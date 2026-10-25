@@ -52,16 +52,62 @@ def test_assembly_serialization_is_sorted_and_rejects_duplicate_ids():
     assert caught.value.error["code"] == "INVALID_DOCUMENT"
 
 
-def test_document_store_reads_v1_empty_and_persists_v2_exactly(tmp_path):
+def test_document_store_dispatches_strictly_by_format_version(tmp_path):
     path = tmp_path / "part.coalesce.json"
-    path.write_text(json.dumps({"formatVersion": 1, "revision": 2, "graph": {"nodes": []}}))
-    store = DocumentStore(path)
-    loaded = store.load()
-    assert loaded.assembly == Assembly()
+    persisted = assembly_to_dict(
+        Assembly(
+            {
+                "ignored": Occurrence(
+                    "ignored", "pin/body", RigidTransform((1, 2, 3), (0, 1, 0), 45)
+                )
+            }
+        )
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "revision": 2,
+                "graph": {"nodes": []},
+                "assembly": persisted,
+            }
+        )
+    )
+    assert DocumentStore(path).load().assembly == Assembly()
 
-    transform = RigidTransform((1, 2, 3), (0, 1, 0), 45)
-    loaded.assembly = Assembly({"pin-2": Occurrence("pin-2", "pin/body", transform)})
-    store.save(loaded)
-    payload = json.loads(path.read_text())
-    assert payload["formatVersion"] == 2
-    assert DocumentStore(path).load().assembly == loaded.assembly
+    for payload in (
+        {"formatVersion": 2, "graph": {"nodes": []}},
+        {"formatVersion": 2, "graph": {"nodes": []}, "assembly": None},
+    ):
+        path.write_text(json.dumps(payload))
+        with pytest.raises(GraphError, match="requires assembly") as missing:
+            DocumentStore(path).load()
+        assert missing.value.error["code"] == "INVALID_DOCUMENT"
+
+    path.write_text(
+        json.dumps({"formatVersion": 3, "graph": {"nodes": []}, "assembly": persisted})
+    )
+    before = path.read_bytes()
+    with pytest.raises(GraphError, match="version 3.*newer coalesce") as future:
+        DocumentStore(path).load()
+    assert future.value.error["code"] == "INVALID_DOCUMENT"
+    assert path.read_bytes() == before
+
+
+def test_document_store_v2_round_trip_bytes_are_stable(tmp_path):
+    path = tmp_path / "part.coalesce.json"
+    store = DocumentStore(path)
+    transform = normalize_transform(
+        {
+            "translation": {"value": [1, 2, 3], "unit": "mm"},
+            "rotation": {"axis": [0, 1, 0], "angle": {"value": 45, "unit": "deg"}},
+        }
+    )
+    document = store.load()
+    document.assembly = Assembly({"pin-2": Occurrence("pin-2", "pin/body", transform)})
+
+    store.save(document)
+    before = path.read_bytes()
+    store.save(store.load())
+
+    assert path.read_bytes() == before

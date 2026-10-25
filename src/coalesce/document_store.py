@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .assembly import Assembly, assembly_from_dict, assembly_to_dict
-from .graph import Graph
+from .graph import Graph, GraphError
 from .serialization import dumps, loads
 
 MAX_RECEIPTS = 100
@@ -36,6 +36,23 @@ class DocumentStore:
         if not self.path.exists():
             return Document(Graph())
         payload = json.loads(self.path.read_text())
+        version = payload.get("formatVersion")
+        if type(version) is int and version == 1:
+            assembly = Assembly()
+        elif type(version) is int and version == 2:
+            if payload.get("assembly") is None:
+                raise GraphError(
+                    "INVALID_DOCUMENT",
+                    "document format version 2 requires assembly",
+                    field="assembly",
+                )
+            assembly = assembly_from_dict(payload["assembly"])
+        else:
+            raise GraphError(
+                "INVALID_DOCUMENT",
+                f"unsupported document format version {version}; a newer coalesce wrote it",
+                formatVersion=version,
+            )
         graph = loads(json.dumps(payload.get("graph", {"nodes": []})))
         receipts = list(payload.get("receipts", []))[-MAX_RECEIPTS:]
         request_hashes = payload.get("requestHashes")
@@ -46,7 +63,7 @@ class DocumentStore:
             ]
         return Document(
             graph=graph,
-            assembly=assembly_from_dict(payload.get("assembly")),
+            assembly=assembly,
             revision=int(payload.get("revision", 0)),
             receipts=receipts,
             request_hashes=list(request_hashes)[-MAX_REQUEST_HASHES:],

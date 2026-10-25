@@ -1,6 +1,11 @@
+import math
+import sys
+
 import pytest
 from test_mcp_vertical import FEATURE, SKETCH, run_server
 
+import coalesce.service as service_module
+from coalesce.parts import AmbiguousTerminalPartsError
 from coalesce.service import DocumentService
 
 
@@ -86,6 +91,56 @@ async def test_real_stdio_occurrences_are_named_sorted_mutable_and_restart_exact
     )
     assert deleted[0]["occurrenceId"] == "a-copy"
     assert [row["occurrenceId"] for row in deleted[1]["occurrences"]] == ["z-copy"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("axis", "angle", "expected_axis", "expected_angle"),
+    [
+        ((sys.float_info.max,) * 3, 45, (1 / math.sqrt(3),) * 3, 45),
+        ((5e-324, 0, 0), 45, (1, 0, 0), 45),
+        ((0, 0, 1), 1e308, (0, 0, 1), -64),
+        ((0, 0, 1), -1e308, (0, 0, 1), 64),
+        ((0, 0, 1), 180, (0, 0, 1), -180),
+        ((0, 0, 1), -180, (0, 0, 1), -180),
+    ],
+)
+async def test_extreme_transform_create_query_save_and_restart(
+    tmp_path, axis, angle, expected_axis, expected_angle
+):
+    path = tmp_path / f"transform-{angle}.coalesce.json"
+    payload = occurrence_create(2, "place", "plate")
+    payload["parameters"]["transform"] = transform(axis=axis, angle=angle)
+
+    created = await run_server(
+        path,
+        [("sketch", SKETCH), ("feature", FEATURE), ("feature", payload), ("query", {"select": {"kind": "assembly"}})],
+    )
+    assert created[2]["ok"] is True
+    stored = created[3]["occurrences"][0]["transform"]["rotation"]
+    assert stored["axis"] == pytest.approx(expected_axis)
+    assert stored["angle"]["value"] == expected_angle
+
+    restarted = await run_server(path, [("query", {"select": {"kind": "assembly"}})])
+    assert restarted[0] == created[3]
+
+
+def test_invalid_placement_is_rejected_before_save(tmp_path, monkeypatch):
+    path = tmp_path / "invalid-placement.coalesce.json"
+    service = DocumentService(path, warmup=False)
+    assert service.sketch(SKETCH)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    before = path.read_bytes()
+
+    def fail_placement(*_args):
+        raise ValueError("invalid placement")
+
+    monkeypatch.setattr("coalesce.assembly.locate_shape", fail_placement)
+    result = service.feature(occurrence_create(2, "place", "plate"))
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "KERNEL_OPERATION_FAILED"
+    assert path.read_bytes() == before
 
 
 def test_stale_part_delete_fails_atomically_and_names_occurrence(tmp_path):
@@ -218,6 +273,40 @@ def test_graph_edits_preserve_placement_and_part_id_changes_fail_atomically(tmp_
     assert split["error"]["occurrenceIds"] == ["plate"]
     assert split["error"]["partIds"] == ["plate_extrude/outline"]
     assert split["error"]["reason"] == "SPLIT"
+    assert path.read_bytes() == before
+
+
+def test_ambiguous_terminal_part_edit_fails_atomically(tmp_path, monkeypatch):
+    path = tmp_path / "ambiguous.coalesce.json"
+    service = DocumentService(path, warmup=False)
+    assert service.sketch(SKETCH)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    assert service.feature(occurrence_create(2, "place", "plate-at-origin"))["ok"]
+    before = path.read_bytes()
+
+    real_terminal_parts = service_module.terminal_parts
+
+    def ambiguous_after_edit(result, role="manufacturing"):
+        if result.graph.nodes["plate_profile"].position != (0.0, 0.0, 0.0):
+            raise AmbiguousTerminalPartsError(["plate_extrude/outline"])
+        return real_terminal_parts(result, role)
+
+    monkeypatch.setattr(service_module, "terminal_parts", ambiguous_after_edit)
+    result = service.sketch(
+        {
+            "action": "update",
+            "expectedRevision": 3,
+            "requestId": "make-provenance-ambiguous",
+            "sketchId": "plate_profile",
+            "set": {"position": [1, 0, 0]},
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ASSEMBLY_REFERENCE_STALE"
+    assert result["error"]["occurrenceIds"] == ["plate-at-origin"]
+    assert result["error"]["partIds"] == ["plate_extrude/outline"]
+    assert result["error"]["reason"] == "AMBIGUOUS"
     assert path.read_bytes() == before
 
 

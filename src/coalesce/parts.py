@@ -10,6 +10,12 @@ from .graph import BoardImport
 from .references import BodySource, Candidate
 
 
+class AmbiguousTerminalPartsError(ValueError):
+    def __init__(self, part_ids: list[str]):
+        self.part_ids = part_ids
+        super().__init__("terminal part provenance is ambiguous")
+
+
 @dataclass(frozen=True)
 class TerminalPart:
     part_id: str
@@ -100,6 +106,18 @@ def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[Term
     ]
     if role is not None:
         parts = [part for part in parts if part.role == role]
-    if len({part.part_id for part in parts}) != len(parts):
-        raise ValueError("terminal part provenance is ambiguous")
+    part_id_counts: dict[str, int] = {}
+    for part in parts:
+        part_id_counts[part.part_id] = part_id_counts.get(part.part_id, 0) + 1
+    duplicate_ids = {part_id for part_id, count in part_id_counts.items() if count > 1}
+    if duplicate_ids:
+        raise AmbiguousTerminalPartsError(
+            sorted(
+                {
+                    f"{part.source_body.feature}/{part.source_body.entity}"
+                    for part in parts
+                    if part.part_id in duplicate_ids
+                }
+            )
+        )
     return parts

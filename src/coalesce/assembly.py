@@ -76,13 +76,17 @@ def normalize_transform(value: Any) -> RigidTransform:
     angle = math.degrees(angle_value) if angle_unit == "rad" else float(angle_value)
     if not math.isfinite(angle):
         raise AssemblyError("NON_FINITE_VALUE", "rotation angle must be finite in degrees")
-    angle = (angle + 180.0) % 360.0 - 180.0
+    angle %= 360.0
+    if angle >= 180.0:
+        angle -= 360.0
     if angle == 0.0:
         return RigidTransform(vector, (0.0, 0.0, 1.0), 0.0)
-    length = math.hypot(*axis)
-    if length == 0.0:
+    scale = max(abs(component) for component in axis)
+    if scale == 0.0:
         raise AssemblyError("INVALID_PARAMETER", "rotation axis must be non-zero")
-    return RigidTransform(vector, tuple(component / length for component in axis), angle)
+    scaled_axis = tuple(component / scale for component in axis)
+    length = math.hypot(*scaled_axis)
+    return RigidTransform(vector, tuple(component / length for component in scaled_axis), angle)
 
 
 def transform_to_dict(transform: RigidTransform) -> dict[str, Any]:
