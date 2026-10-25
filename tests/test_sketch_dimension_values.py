@@ -324,6 +324,22 @@ async def test_dimension_update_is_published_in_schema_with_staged_example(tmp_p
     payload = dimension_update(2)
 
     validate(payload, schema)
+    set_schema = schema["properties"]["set"]
+    assert {key: set_schema[key] for key in ("type", "description", "additionalProperties")} == {
+        "type": "object",
+        "description": (
+            "Required for update and must be a JSON object: set.entities or set.constrained "
+            "replaces the full definition; set.dimensionValues changes named driving dimensions; "
+            "set.position moves the sketch. Not allowed for create or delete."
+        ),
+        "additionalProperties": False,
+    }
+    assert set(set_schema["properties"]) == {
+        "position",
+        "entities",
+        "constrained",
+        "dimensionValues",
+    }
     serialized = json.dumps(schema)
     assert '"dimensionValues"' in serialized
     assert '"opening-radius": 4' in serialized
