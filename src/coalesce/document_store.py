@@ -17,6 +17,25 @@ MAX_RECEIPTS = 100
 MAX_REQUEST_HASHES = 10_000
 
 
+def _assembly_for_payload(payload: dict[str, Any]) -> Assembly:
+    version = payload.get("formatVersion")
+    if type(version) is int and version == 1:
+        return Assembly()
+    if type(version) is int and version == 2:
+        if payload.get("assembly") is None:
+            raise GraphError(
+                "INVALID_DOCUMENT",
+                "document format version 2 requires assembly",
+                field="assembly",
+            )
+        return assembly_from_dict(payload["assembly"])
+    raise GraphError(
+        "INVALID_DOCUMENT",
+        f"unsupported document format version {version}; a newer coalesce wrote it",
+        formatVersion=version,
+    )
+
+
 @dataclass
 class Document:
     graph: Graph
@@ -36,23 +55,7 @@ class DocumentStore:
         if not self.path.exists():
             return Document(Graph())
         payload = json.loads(self.path.read_text())
-        version = payload.get("formatVersion")
-        if type(version) is int and version == 1:
-            assembly = Assembly()
-        elif type(version) is int and version == 2:
-            if payload.get("assembly") is None:
-                raise GraphError(
-                    "INVALID_DOCUMENT",
-                    "document format version 2 requires assembly",
-                    field="assembly",
-                )
-            assembly = assembly_from_dict(payload["assembly"])
-        else:
-            raise GraphError(
-                "INVALID_DOCUMENT",
-                f"unsupported document format version {version}; a newer coalesce wrote it",
-                formatVersion=version,
-            )
+        assembly = _assembly_for_payload(payload)
         graph = loads(json.dumps(payload.get("graph", {"nodes": []})))
         receipts = list(payload.get("receipts", []))[-MAX_RECEIPTS:]
         request_hashes = payload.get("requestHashes")
