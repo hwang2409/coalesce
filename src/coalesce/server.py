@@ -341,31 +341,36 @@ def _matching_kind_union(error: ValidationError) -> ValidationError | None:
     )
 
 
+def _kind_discriminators(union: ValidationError) -> list[tuple[int, tuple[Any, ...]]]:
+    pairs = [(index, _kind_discriminator(branch)) for index, branch in enumerate(union.validator_value)]
+    return [(index, values) for index, values in pairs if values]
+
+
+def _invalid_kind_error(union: ValidationError, allowed: list[Any]) -> ValidationError:
+    many = len(allowed) > 1
+    return ValidationError(
+        "kind",
+        validator="enum" if many else "const",
+        validator_value=allowed if many else allowed[0],
+        instance=union.instance["kind"],
+        path=[*union.absolute_path, "kind"],
+    )
+
+
+def _selected_branch_error(union: ValidationError, index: int) -> ValidationError:
+    branch = [error for error in union.context if list(error.relative_schema_path)[:1] == [index]]
+    return max(branch, key=relevance) if branch else union
+
+
 def _kind_union_branch(union: ValidationError) -> ValidationError:
-    discriminators = [
-        (index, values)
-        for index, branch in enumerate(union.validator_value)
-        if (values := _kind_discriminator(branch))
-    ]
+    discriminators = _kind_discriminators(union)
     if not discriminators:
         return union
     supplied = union.instance["kind"]
-    index = next((index for index, values in discriminators if supplied in values), None)
-    if index is None:
-        allowed = [value for _, values in discriminators for value in values]
-        return ValidationError(
-            "kind",
-            validator="enum" if len(allowed) > 1 else "const",
-            validator_value=allowed if len(allowed) > 1 else allowed[0],
-            instance=supplied,
-            path=[*union.absolute_path, "kind"],
-        )
-    branch = [
-        error
-        for error in union.context
-        if error.relative_schema_path and error.relative_schema_path[0] == index
-    ]
-    return max(branch, key=relevance) if branch else union
+    for index, values in discriminators:
+        if supplied in values:
+            return _selected_branch_error(union, index)
+    return _invalid_kind_error(union, [value for _, values in discriminators for value in values])
 
 
 def _branch_error(error: ValidationError) -> ValidationError:
