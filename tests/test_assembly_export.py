@@ -3,6 +3,7 @@ import hashlib
 import pytest
 from build123d import Box, Cylinder
 
+from coalesce import export as export_module
 from coalesce.assembly import Occurrence, ResolvedOccurrence, RigidTransform, locate_shape
 from coalesce.export import (
     ExportFailure,
@@ -84,6 +85,26 @@ def test_xcaf_assembly_round_trip_preserves_tree_references_names_and_placements
     assert shaft["transform"]["axis"] == pytest.approx([0, 1, 0], abs=1e-7)
     assert fresh["geometry"]["solidCount"] == 10
     assert fresh["geometry"]["allValid"] is True
+
+
+def test_assembly_publish_parent_fsync_failure_returns_durability_warning(tmp_path, monkeypatch):
+    destination = tmp_path / "drive.step"
+
+    def fail(_path):
+        raise OSError("injected parent fsync failure")
+
+    monkeypatch.setattr(export_module, "_sync_directory", fail)
+    published, warnings = export_module._publish_atomic_bytes(destination, b"assembly")
+
+    assert published == destination
+    assert destination.read_bytes() == b"assembly"
+    assert warnings == [
+        {
+            "code": "EXPORT_DURABILITY_UNCONFIRMED",
+            "message": "file is published, but its durability on disk is not confirmed",
+        }
+    ]
+    assert list(tmp_path.iterdir()) == [destination]
 
 
 def test_assembly_export_validation_failure_publishes_nothing(tmp_path, monkeypatch):

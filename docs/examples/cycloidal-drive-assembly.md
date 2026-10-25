@@ -1,6 +1,6 @@
 # cycloidal drive assembly
 
-this example builds a seven-lobe cycloidal disc, a revolved stepped shaft, and one pin definition through public stdio mcp calls. it then places the disc at a 2 mm eccentric offset, rotates the shaft 90 degrees about y, and creates eight named pin occurrences on a 30 mm circle.
+this example builds a seven-lobe cycloidal disc, a revolved stepped shaft, and one 4 mm radius pin definition through public stdio mcp calls. it then places the disc at a 2 mm eccentric offset, rotates the shaft 90 degrees about y, and creates eight named pin occurrences on a 30 mm circle.
 
 run the reproducible workflow without browser capture:
 
@@ -10,7 +10,7 @@ uv run --extra sketch python examples/cycloidal_drive_assembly_demo.py --out /tm
 
 add `--screenshots` to capture desktop and phone views when a launchable playwright chromium is available. the helper always closes each page and the browser.
 
-the output contains the revisioned document, `transcript.json`, and `cycloidal-drive-assembly.step`. the transcript records exact brep and assembly-interference checks, the assembly query before restart, a matching query after restart, and fresh-process xcaf evidence.
+the output contains the revisioned document, `transcript.json`, and `cycloidal-drive-assembly.step`. the transcript records exact brep checks plus disc-to-shaft and disc-to-each-pin interference checks, the assembly query before restart, a matching query after restart, and fresh-process xcaf evidence.
 
 ## export contract
 

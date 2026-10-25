@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from cycloidal_disc_demo import (
+    PIN_RADIUS,
     DemoFailure,
     _run_process,
     cycloid_points,
@@ -144,7 +145,7 @@ def _requests():
                         "id": "pin",
                         "kind": "circle",
                         "center": [0, 0],
-                        "radius": {"value": 2, "unit": "mm"},
+                        "radius": {"value": PIN_RADIUS, "unit": "mm"},
                     }
                 ],
             },
@@ -265,15 +266,20 @@ async def run_demo(output: Path, *, screenshots: bool) -> None:
                     "requirements": [
                         {"id": "valid", "kind": "valid_brep"},
                         {
-                            "id": "shaft-clearance",
+                            "id": "disc-shaft-clearance",
                             "kind": "assembly_interference",
                             "occurrenceIds": ["disc", "shaft"],
+                            "minimumClearance": {"value": 0, "unit": "mm"},
                         },
-                        {
-                            "id": "pin-clearance",
-                            "kind": "assembly_interference",
-                            "occurrenceIds": [f"ring-pin-{index}" for index in range(1, 9)],
-                        },
+                        *(
+                            {
+                                "id": f"disc-pin-{index}-clearance",
+                                "kind": "assembly_interference",
+                                "occurrenceIds": ["disc", f"ring-pin-{index}"],
+                                "minimumClearance": {"value": 0, "unit": "mm"},
+                            }
+                            for index in range(1, 9)
+                        ),
                     ],
                 },
             )

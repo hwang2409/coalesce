@@ -876,8 +876,6 @@ def _publish_atomic_bytes(path: Path, content: bytes) -> tuple[Path, list[dict[s
             os.fsync(stream.fileno())
         _rename_new_directory(temporary, destination)
         published = True
-        warnings = _sync_directory(destination.parent)
-        return destination, warnings
     except FileExistsError as error:
         raise _existing_path_failure(destination) from error
     except OSError as error:
@@ -890,6 +888,18 @@ def _publish_atomic_bytes(path: Path, content: bytes) -> tuple[Path, list[dict[s
     finally:
         if not published:
             temporary.unlink(missing_ok=True)
+
+    warnings = []
+    try:
+        _sync_directory(destination.parent)
+    except OSError:
+        warnings.append(
+            {
+                "code": "EXPORT_DURABILITY_UNCONFIRMED",
+                "message": "file is published, but its durability on disk is not confirmed",
+            }
+        )
+    return destination, warnings
 
 
 def export_assembly(path: Path, root_name: str, occurrences: list[Any]) -> dict[str, Any]:
