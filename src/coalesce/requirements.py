@@ -407,6 +407,63 @@ def _screw_closure(
     )
 
 
+def _assembly_threshold(requirement: dict[str, Any]) -> dict[str, Any]:
+    threshold = {
+        "maximumOverlapVolume": requirement.get(
+            "maximumOverlapVolume", {"value": 0.0, "unit": "mm^3"}
+        )
+    }
+    if "minimumClearance" in requirement:
+        threshold["minimumClearance"] = requirement["minimumClearance"]
+    return threshold
+
+
+def _assembly_pair_failed(row: dict[str, Any], threshold: dict[str, Any]) -> bool:
+    if row["overlapVolume"]["value"] > threshold["maximumOverlapVolume"]["value"]:
+        return True
+    minimum = threshold.get("minimumClearance")
+    return minimum is not None and row["clearance"]["value"] < minimum["value"]
+
+
+def _assembly_interference(
+    requirement: dict[str, Any], inspection: list[dict[str, Any]], revision: int
+) -> dict[str, Any]:
+    involved = sorted({item for row in inspection for item in row["occurrenceIds"]})
+    threshold = _assembly_threshold(requirement)
+    errors = [row for row in inspection if "error" in row]
+    if errors:
+        return _result(
+            requirement=requirement,
+            status="ERROR",
+            measured={"pairs": inspection, "failedPairs": errors},
+            threshold=threshold,
+            involved=involved,
+            revision=revision,
+        )
+    failed = [row for row in inspection if _assembly_pair_failed(row, threshold)]
+    measured = {
+        "maximumOverlapVolume": {
+            "value": max(row["overlapVolume"]["value"] for row in inspection),
+            "unit": "mm^3",
+        },
+        "pairs": inspection,
+        "failedPairs": failed,
+    }
+    if "minimumClearance" in threshold:
+        measured["minimumClearance"] = {
+            "value": min(row["clearance"]["value"] for row in inspection),
+            "unit": "mm",
+        }
+    return _result(
+        requirement=requirement,
+        status="FAIL" if failed else "PASS",
+        measured=measured,
+        threshold=threshold,
+        involved=involved,
+        revision=revision,
+    )
+
+
 def _clean(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
@@ -427,6 +484,7 @@ def _clean(
 
 
 REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "assembly_interference": _assembly_interference,
     "wall_thickness": _thickness,
     "board_clearance": _board_clearance,
     "floor_thickness": _thickness,

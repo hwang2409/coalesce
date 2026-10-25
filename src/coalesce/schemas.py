@@ -1128,6 +1128,29 @@ CHECK_HOLE_IDS = {
     "minItems": 1,
     "uniqueItems": True,
 }
+CHECK_OCCURRENCE_IDS = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+    "minItems": 2,
+    "maxItems": 16,
+    "uniqueItems": True,
+}
+CHECK_NON_NEGATIVE_LENGTH = {
+    **QUANTITY,
+    "properties": {
+        **QUANTITY["properties"],
+        "value": {"type": "number", "minimum": 0},
+    },
+}
+CHECK_NON_NEGATIVE_VOLUME = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "number", "minimum": 0},
+        "unit": {"const": "mm^3"},
+    },
+    "required": ["value", "unit"],
+    "additionalProperties": False,
+}
 CHECK_FIT_THRESHOLD = {
     "type": "object",
     "properties": {"min": QUANTITY, "max": QUANTITY},
@@ -1152,6 +1175,18 @@ CHECK_REQUIREMENT = {
                         "clean_manufacturing_bodies",
                     ]
                 },
+            },
+            "required": ["id", "kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": CHECK_ID,
+                "kind": {"const": "assembly_interference"},
+                "occurrenceIds": CHECK_OCCURRENCE_IDS,
+                "maximumOverlapVolume": CHECK_NON_NEGATIVE_VOLUME,
+                "minimumClearance": CHECK_NON_NEGATIVE_LENGTH,
             },
             "required": ["id", "kind"],
             "additionalProperties": False,

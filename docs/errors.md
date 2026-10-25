@@ -140,7 +140,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `MISSING` | import | required board or footprint mechanics are absent | provide the named mechanics or select a different subject |
 | `AMBIGUOUS` | import | a board/footprint subject has more than one valid match | use a stable id that resolves once |
 | `PORT_BLOCKED_BY_LID` | enclosure | a port opening conflicts with the lid or lip | apply a verified `alternative` or change the lid/opening |
-| `INSPECTION_FAILED` | enclosure | enclosure inspection cannot evaluate the requested requirements; the raw diagnostic is in `kernelMessage` | check each requirement kind against the `check` tool schema; if they are valid, treat the requirements as unevaluated and report the failure |
+| `INSPECTION_FAILED` | enclosure | exact enclosure or assembly inspection cannot evaluate the requested requirements; enclosure diagnostics use `kernelMessage`, while assembly pair evidence uses `error.message` | check each requirement kind against the `check` tool schema; if it is valid, treat the requirements as unevaluated and report the failure |
 | `EXPORT_PATH_EXISTS` | export | a separate-export target is not an empty real directory or changed before atomic publication | on a POSIX system (macOS or Linux), choose an empty or new directory; separate STEP export is not supported on Windows |
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
