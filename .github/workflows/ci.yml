@@ -7,8 +7,21 @@ on:
     branches: [dev]
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with: {version: latest}
+      - run: uv run --extra test ruff check .
+
+  pytest:
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    name: pytest (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -23,10 +36,77 @@ jobs:
       - run: echo "PLAYWRIGHT_MODULE=${{ github.workspace }}/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@v10.3.2
         with: {version: latest}
-      - run: uv run --extra test ruff check .
-      - run: uv run --extra test --extra sketch pytest -q
+      - name: assert partition and run shard
         env:
+          SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: 4
           COALESCE_REQUIRE_SKETCH: "1"
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as file:
+              testpaths = tomllib.load(file)["tool"]["pytest"]["ini_options"]["testpaths"]
+          assert testpaths == ["tests"], f"update CI shard discovery for testpaths={testpaths!r}"
+          PY
+          mapfile -t files < <(find tests -type f -name 'test_*.py' -print | sort)
+          test "${#files[@]}" -gt 0
+
+          overrides=(
+            tests/test_actionable_enclosure_errors.py
+            tests/test_assembly_inspection.py
+            tests/test_assembly.py
+            tests/test_mcp_edge_roles.py
+          )
+          for file in "${overrides[@]}"; do
+            test -f "$file" || { echo "rebalance override does not exist: $file" >&2; exit 1; }
+          done
+
+          assigned_shard() {
+            case "$1" in
+              tests/test_actionable_enclosure_errors.py) echo 1 ;;
+              tests/test_assembly_inspection.py) echo 0 ;;
+              tests/test_assembly.py) echo 2 ;;
+              tests/test_mcp_edge_roles.py) echo 3 ;;
+              *) echo $(($2 % SHARD_COUNT)) ;;
+            esac
+          }
+
+          declare -a seen=()
+          for ((shard = 0; shard < SHARD_COUNT; shard++)); do
+            shard_files=()
+            for i in "${!files[@]}"; do
+              if (("$(assigned_shard "${files[$i]}" "$i")" == shard)); then
+                shard_files+=("${files[$i]}")
+                seen[i]=$((seen[i] + 1))
+              fi
+            done
+            printf 'shard %d (%d files):\n' "$shard" "${#shard_files[@]}"
+            printf '  %s\n' "${shard_files[@]}"
+          done
+
+          test "${#seen[@]}" -eq "${#files[@]}"
+          for i in "${!files[@]}"; do
+            test "${seen[$i]}" -eq 1
+          done
+          printf 'partition assertion passed: %d files assigned exactly once across %d shards\n' "${#files[@]}" "$SHARD_COUNT"
+
+          selected=()
+          for i in "${!files[@]}"; do
+            if (("$(assigned_shard "${files[$i]}" "$i")" == SHARD)); then
+              selected+=("${files[$i]}")
+            fi
+          done
+          test "${#selected[@]}" -gt 0
+          uv run --extra test --extra sketch pytest -q --durations=20 "${selected[@]}"
+
+  goldens:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with: {version: latest}
       - name: run eval goldens through stdio server
         run: |
           out=$(mktemp -d)
