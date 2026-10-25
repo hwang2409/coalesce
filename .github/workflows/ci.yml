@@ -46,11 +46,21 @@ jobs:
           mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -print | sort)
           test "${#files[@]}" -gt 0
 
+          assigned_shard() {
+            case "$1" in
+              tests/test_actionable_enclosure_errors.py) echo 1 ;;
+              tests/test_assembly_inspection.py) echo 0 ;;
+              tests/test_assembly.py) echo 2 ;;
+              tests/test_mcp_edge_roles.py) echo 3 ;;
+              *) echo $(($2 % SHARD_COUNT)) ;;
+            esac
+          }
+
           declare -a seen=()
           for ((shard = 0; shard < SHARD_COUNT; shard++)); do
             shard_files=()
             for i in "${!files[@]}"; do
-              if ((i % SHARD_COUNT == shard)); then
+              if (("$(assigned_shard "${files[$i]}" "$i")" == shard)); then
                 shard_files+=("${files[$i]}")
                 seen[i]=$((seen[i] + 1))
               fi
@@ -67,7 +77,7 @@ jobs:
 
           selected=()
           for i in "${!files[@]}"; do
-            if ((i % SHARD_COUNT == SHARD)); then
+            if (("$(assigned_shard "${files[$i]}" "$i")" == SHARD)); then
               selected+=("${files[$i]}")
             fi
           done
