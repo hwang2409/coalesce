@@ -117,11 +117,19 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
         assembly_inspection=[
             *[
                 {
-                    "occurrenceIds": ["pin-left", "pin-right"],
-                    "partIds": ["pin/body", "pin/body"],
+                    "occurrenceIds": (
+                        ["shaft", "pin-left"]
+                        if index == 1
+                        else ["shaft", "pin-right"]
+                        if index == 2
+                        else ["pin-left", "pin-right"]
+                    ),
+                    "partIds": (
+                        ["shaft/body", "pin/body"] if index <= 2 else ["pin/body", "pin/body"]
+                    ),
                     "overlapVolume": {"value": 0, "unit": "mm^3"},
                     "clearance": {
-                        "value": 3.59548e-15 if index == 1 else float(index),
+                        "value": {1: 0.0004, 2: 0.0003}.get(index, float(index)),
                         "unit": "mm",
                     },
                     "interferes": False,
@@ -134,7 +142,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
             {
                 "occurrenceIds": ["shaft", "pin-left"],
                 "partIds": ["shaft/body", "pin/body"],
-                "overlapVolume": {"value": 12.50049, "unit": "mm^3"},
+                "overlapVolume": {"value": 0.0004, "unit": "mm^3"},
                 "clearance": {"value": 0, "unit": "mm"},
                 "interferes": True,
                 "revision": 1,
@@ -165,21 +173,12 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
         while not refresh_trigger.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
         assert refresh_trigger.exists(), process.communicate(timeout=5)[1]
-        store.publish_assembly_inspection(
-            1,
-            [
-                {
-                    "occurrenceIds": ["pin-left", "pin-right"],
-                    "partIds": ["pin/body", "pin/body"],
-                    "overlapVolume": {"value": 0, "unit": "mm^3"},
-                    "clearance": {"value": 12, "unit": "mm"},
-                    "interferes": False,
-                    "revision": 1,
-                    "requirementId": "assembly-clearance",
-                    "status": "PASS",
-                }
-            ],
-        )
+        refreshed_rows = store.scene(1)["assemblyInspection"]
+        refreshed_rows[-1] = {
+            **refreshed_rows[-1],
+            "requirementId": "refreshed-clearance",
+        }
+        store.publish_assembly_inspection(1, refreshed_rows)
         stdout, stderr = process.communicate(timeout=30)
     assert process.returncode == 0, stderr
     data = json.loads(stdout)
@@ -195,14 +194,37 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
         "clearance-05",
         "clearance-06",
     ]
+    assert data["initial"]["inspectionLabels"][:3] == [
+        "shaft ↔ pin-left",
+        "shaft ↔ pin-left",
+        "shaft ↔ pin-right",
+    ]
     assert data["initial"]["inspectionValues"][:3] == [
-        "12.5 mm³ overlap",
-        "touching",
-        "2 mm clearance",
+        "< 0.001 mm³ overlap",
+        "< 0.001 mm clearance",
+        "< 0.001 mm clearance",
     ]
     assert data["initial"]["morePassing"] == "Show 22 more passing checks"
-    assert data["expandedPassing"] == 28
-    assert "3.59548e-15" in data["initial"]["rawInspection"]
+    assert data["initial"]["disclosureExpanded"] == "false"
+    assert data["expanded"]["disclosureExpanded"] == "true"
+    assert data["expanded"]["morePassing"] == "Hide 22 passing checks"
+    assert data["expanded"]["activeConnected"] is True
+    assert data["focusedPass"]["disclosureExpanded"] == "true"
+    assert data["focusedPass"]["activeConnected"] is True
+    assert data["focusedPass"]["activeKey"] is not None
+    assert data["selectedCollapsed"]["disclosureExpanded"] == "false"
+    assert data["selectedCollapsed"]["pairPressed"] == "true"
+    assert data["selectedCollapsed"]["morePassing"] == "Show 21 more passing checks"
+    assert data["selectedCollapsed"]["activeConnected"] is True
+    assert len(data["selectedCollapsed"]["inspectionStatuses"]) == 8
+    assert data["refreshed"]["disclosureExpanded"] == "true"
+    assert data["refreshed"]["activeConnected"] is True
+    assert data["escaped"]["disclosureExpanded"] == "true"
+    assert data["escaped"]["activeConnected"] is True
+    assert data["collapsed"]["disclosureExpanded"] == "false"
+    assert data["collapsed"]["activeConnected"] is True
+    assert len(data["collapsed"]["inspectionStatuses"]) == 7
+    assert '"value": 0.0003' in data["initial"]["rawInspection"]
     assert data["initial"]["partNames"] == ["shaft", "shaft-skew", "pin-left", "pin-right"]
     assert data["initial"]["partSizes"][:2] == ["30 × 4 × 8", "30 × 4 × 8"]
     assert data["hidden"]["visible"] == ["false", "true", "true", "true"]
@@ -216,11 +238,9 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["focused"]["memory"]["cachedMeshes"] == 2
     assert data["focused"]["showing"] == "Showing shaft and pin-left, other parts faded."
     assert "shaft and pin-left" in data["focused"]["description"]
-    assert data["refreshed"]["pairPressed"] == "false"
-    assert data["refreshed"]["showing"] == ""
-    assert data["restored"]["pairPressed"] == "false"
-    assert data["restored"]["description"].startswith("All parts shown.")
+    assert data["refreshed"]["pairPressed"] == "true"
     assert data["escaped"]["pairPressed"] == "false"
+    assert data["escaped"]["description"].startswith("All parts shown.")
     assert "section view" in data["section"]["description"]
     assert any("Show shaft" in name for name in data["hidden"]["controls"])
     assert all(name for name in data["hidden"]["controls"])

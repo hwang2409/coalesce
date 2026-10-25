@@ -526,6 +526,7 @@ const partTitle = (partId) => partRow(partId)?.querySelector('.part-name').textC
 
 // the fit row whose part the canvas shows, the other parts faded; the camera stays where it is
 let selected = null; // {key, partIds}
+let passingExpanded = false;
 
 function fitRow(row, key) {
   const part = partRow(row.partId);
@@ -623,6 +624,16 @@ function assemblyKey(revision, row) {
   return `assembly/${JSON.stringify([revision, row.requirementId, row.occurrenceIds.toSorted()])}`;
 }
 
+function assemblyValue(row) {
+  const overlap = row.overlapVolume?.value;
+  const clearance = row.clearance?.value;
+  if (row.error) return row.error.message;
+  if (overlap > 0) return `${formatMm(overlap) === '0' ? '< 0.001' : formatMm(overlap)} mm³ overlap`;
+  if (clearance === undefined) return 'No overlap';
+  if (clearance <= current.assemblyLinearTolerance) return 'touching';
+  return `${formatMm(clearance) === '0' ? '< 0.001' : formatMm(clearance)} mm clearance`;
+}
+
 function assemblyRow(row, key) {
   const item = document.createElement('button');
   item.type = 'button';
@@ -630,17 +641,7 @@ function assemblyRow(row, key) {
   item.dataset.status = row.status;
   item.dataset.key = key;
   const titles = row.occurrenceIds.map(partTitle);
-  const overlap = row.overlapVolume?.value;
-  const clearance = row.clearance?.value;
-  const value = row.error
-    ? row.error.message
-    : overlap > 0
-      ? `${formatMm(overlap)} mm³ overlap`
-      : clearance === undefined
-        ? 'No overlap'
-        : clearance <= current.assemblyLinearTolerance
-          ? 'touching'
-          : `${formatMm(clearance)} mm clearance`;
+  const value = assemblyValue(row);
   for (const [className, text] of [
     ['fit-status', row.status],
     ['fit-label', titles.join(' ↔ ')],
@@ -658,7 +659,7 @@ function assemblyRow(row, key) {
   item.addEventListener('click', () => {
     if (shown) return showAll();
     showPart({ key, partIds: row.occurrenceIds });
-    item.focus();
+    fitRowFor(key)?.focus();
   });
   return item;
 }
@@ -694,31 +695,40 @@ function renderInspection(fit, assembly = []) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
+  const natural = new Intl.Collator(undefined, { numeric: true }).compare;
   const orderedAssembly = assembly.toSorted((a, b) => {
     const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
-    return rank(a) - rank(b) || (a.clearance?.value ?? Infinity) - (b.clearance?.value ?? Infinity);
+    const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
+      ? 0 : Number(formatMm(row.clearance?.value ?? Infinity));
+    return rank(a) - rank(b)
+      || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
+      || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/'));
   });
   const passing = orderedAssembly.filter((row) => row.status === 'PASS');
-  const shownAssembly = passing.length > 6
-    ? orderedAssembly.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6)
-    : orderedAssembly;
+  const extraPassing = passing.slice(6);
+  const shownAssembly = passingExpanded
+    ? orderedAssembly
+    : orderedAssembly.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6
+      || assemblyKey(current.revision, row) === selected?.key);
   for (const row of shownAssembly) {
     const item = document.createElement('li');
     item.append(assemblyRow(row, assemblyKey(current.revision, row)));
     list.append(item);
   }
-  if (passing.length > 6) {
+  if (extraPassing.length) {
     const item = document.createElement('li');
     item.className = 'assembly-more';
     const button = document.createElement('button');
+    const affected = extraPassing.filter((row) => assemblyKey(current.revision, row) !== selected?.key);
     button.type = 'button';
-    button.textContent = `Show ${passing.length - 6} more passing checks`;
+    button.setAttribute('aria-expanded', String(passingExpanded));
+    button.textContent = passingExpanded
+      ? `Hide ${affected.length} passing checks`
+      : `Show ${affected.length} more passing checks`;
     button.addEventListener('click', () => {
-      item.replaceWith(...passing.slice(6).map((row) => {
-        const rowItem = document.createElement('li');
-        rowItem.append(assemblyRow(row, assemblyKey(current.revision, row)));
-        return rowItem;
-      }));
+      passingExpanded = !passingExpanded;
+      renderInspection(current.fit, current.assemblyInspection);
+      document.querySelector('.assembly-more button')?.focus();
     });
     item.append(button);
     list.append(item);
@@ -1312,7 +1322,10 @@ function showScene(data, dropped, held) {
   } else applyView(activeView);
   syncGizmo();
   if (dropped) showAll(held);
-  else describeView();
+  else {
+    if (held) (fitRowFor(selected.key) || partRow(selected.partIds[0]))?.focus();
+    describeView();
+  }
   requestRender();
 }
 
@@ -1329,7 +1342,7 @@ async function loadOne(revision) {
     // a shown part outlives a new revision while its fit row still points at it; else all parts again,
     // and focus on its row follows to the replacement row
     const dropped = selected && !selectionExists(data, selected);
-    const held = dropped && [fitRowFor(selected.key), partRow(selected.partIds[0])].includes(document.activeElement);
+    const held = selected && [fitRowFor(selected.key), partRow(selected.partIds[0])].includes(document.activeElement);
     showScene(data, dropped, held);
   } catch (error) {
     // superseded: the event for the newer revision is already here or on its way
