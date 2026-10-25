@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from test_pcb_lid import lid_request
 import coalesce.export as export_module
 import coalesce.service as service_module
 from coalesce.service import DocumentService
+from evals.checks import check_task
 
 
 def _service(tmp_path: Path, *, include_lip=True) -> DocumentService:
@@ -138,6 +141,71 @@ async def test_real_stdio_separate_export_writes_two_parts_and_deterministic_man
     assert first_response["manifestSha256"] == hashlib.sha256(
         (first / "manifest.json").read_bytes()
     ).hexdigest()
+
+
+def test_eval_artifacts_ignore_separate_export_manifest(tmp_path):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    assert service.export(_separate(destination))["ok"] is True
+    task = {"parts": 2, "documentParts": True, "checks": [{"kind": "step_validity"}]}
+
+    expected = check_task(task, service.store.path, destination)
+    assert all(result["status"] == "pass" for result in expected), expected
+
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest_path.write_text("tampered")
+    assert check_task(task, service.store.path, destination) == expected
+
+    first, second = manifest["parts"]
+    first["partId"], second["partId"] = second["partId"], first["partId"]
+    manifest_path.write_text(json.dumps(manifest))
+    assert check_task(task, service.store.path, destination) == expected
+
+
+def test_eval_artifacts_reject_non_regular_files_before_reading(tmp_path):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    assert service.export(_separate(destination))["ok"] is True
+    task = {"parts": 2, "documentParts": True, "checks": [{"kind": "step_validity"}]}
+
+    external_step = tmp_path / "external.step"
+    shutil.copy(destination / "base.step", external_step)
+    cases = {}
+
+    symlinked_step = tmp_path / "symlinked-step"
+    shutil.copytree(destination, symlinked_step)
+    (symlinked_step / "base.step").unlink()
+    (symlinked_step / "base.step").symlink_to(external_step)
+    cases["symlinked STEP"] = symlinked_step
+
+    for name, make_manifest in {
+        "symlinked manifest": lambda path: path.symlink_to(destination / "manifest.json"),
+        "manifest FIFO": os.mkfifo,
+        "manifest directory": lambda path: path.mkdir(),
+    }.items():
+        changed = tmp_path / name.replace(" ", "-")
+        shutil.copytree(destination, changed)
+        manifest_path = changed / "manifest.json"
+        manifest_path.unlink()
+        make_manifest(manifest_path)
+        cases[name] = changed
+
+    for name, changed in cases.items():
+        results = check_task(task, service.store.path, changed)
+        inventory = next(result for result in results if result["kind"] == "artifacts")
+        assert inventory["status"] == "fail", name
+
+
+def test_eval_artifacts_reject_unrelated_extra_file(tmp_path):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    assert service.export(_separate(destination))["ok"] is True
+    (destination / "notes.txt").write_text("unexpected")
+    task = {"parts": 2, "documentParts": True, "checks": [{"kind": "step_validity"}]}
+
+    inventory = check_task(task, service.store.path, destination)[0]
+    assert inventory == {"kind": "artifacts", "status": "fail", "unexpected": ["notes.txt"]}
 
 
 def test_reference_board_is_not_a_separate_export_part(tmp_path):

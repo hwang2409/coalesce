@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import stat
 import tempfile
 from pathlib import Path
 
@@ -21,12 +22,18 @@ class ArtifactContext:
         self.document = document
         self.before_state = before_state
         artifacts = sorted(steps.iterdir()) if steps.is_dir() else []
+        regular = {path: stat.S_ISREG(path.lstat().st_mode) for path in artifacts}
         self.step_paths = [
             path
             for path in artifacts
-            if path.is_file() and path.suffix.lower() in {".step", ".stp"}
+            if regular[path] and path.suffix.lower() in {".step", ".stp"}
         ]
-        self.unexpected_artifacts = [path.name for path in artifacts if path not in self.step_paths]
+        self.unexpected_artifacts = [
+            path.name
+            for path in artifacts
+            if path not in self.step_paths
+            and not (regular[path] and path.name == "manifest.json")
+        ]
         self._step_metrics = None
         self._step_shapes = None
         self._service = None
