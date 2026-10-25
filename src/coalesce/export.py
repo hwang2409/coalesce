@@ -295,11 +295,21 @@ def _publish_bytes(path: Path, content: bytes, digest: str) -> Path:
             )
             created = True
         except FileExistsError as error:
+            is_directory = stat.S_ISDIR(path.lstat().st_mode)
             raise ExportFailure(
                 "EXPORT_PATH_EXISTS",
-                "export path already exists; STEP export never overwrites",
+                (
+                    f'export path {path} is a directory; use mode:"separate" to write one STEP '
+                    "per part into it, or provide a file path ending in .step for compound export"
+                    if is_directory
+                    else "export path already exists; STEP export never overwrites"
+                ),
                 path=str(path),
-                hint="choose a new path",
+                hint=(
+                    'use mode:"separate" for this directory or choose a new .step file path'
+                    if is_directory
+                    else "choose a new path"
+                ),
             ) from error
 
         view = memoryview(content)
