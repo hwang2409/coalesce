@@ -4,7 +4,9 @@ import time
 
 import pytest
 from build123d import Pos
+from test_mcp_assembly import occurrence_create
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
+from test_mcp_vertical import FEATURE, SKETCH
 from test_pcb_enclosure import FIXTURES, base_request, import_request, quantity, standoffs_request
 from test_pcb_lid import lid_request
 from test_port_cutout import port_request
@@ -193,6 +195,39 @@ def test_lid_without_a_lip_has_no_fit_gap_to_measure(tmp_path):
         "N/A", "the lid has no lip", None, None)
     assert gap["partId"] == lid["partId"]
     assert [(fact["label"], fact["value"]) for fact in lid["facts"]] == [("Thickness", "2 mm"), ("Lip", "none")]
+
+
+def test_assembly_check_reuses_measured_pair_rows_in_the_scene(tmp_path):
+    store = ViewerSceneStore()
+    service = DocumentService(tmp_path / "assembly.coalesce.json", scene_store=store, warmup=False)
+    assert service.sketch(SKETCH)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    assert service.feature(occurrence_create(2, "place-a", "a", 0))["ok"]
+    assert service.feature(occurrence_create(3, "place-b", "b", 61))["ok"]
+    wait_for(store, 4)
+
+    response = service.check(
+        {
+            "action": "evaluate",
+            "requirements": [
+                {
+                    "id": "clearance",
+                    "kind": "assembly_interference",
+                    "minimumClearance": {"value": 2, "unit": "mm"},
+                }
+            ],
+        }
+    )
+    deadline = time.monotonic() + 5
+    while not store.scene(4)["assemblyInspection"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    [row] = store.scene(4)["assemblyInspection"]
+    measured = response["results"][0]["measured"]["pairs"][0]
+    assert {key: row[key] for key in measured} == measured
+    assert row["occurrenceIds"] == ["a", "b"]
+    assert row["requirementId"] == "clearance"
+    assert row["status"] == "FAIL"
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])

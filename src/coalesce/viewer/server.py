@@ -213,9 +213,20 @@ class _Handler(BaseHTTPRequestHandler):
                         idle = 0
                     continue
                 first_snapshot = version is None
+                previous_version = version
                 version, revision, failure = self.viewer.store.snapshot()
                 visible_failure = _without_diagnostic_geometry(failure) if first_snapshot else failure
+                previous_sent = sent
                 out, sent = _pending_events(revision, visible_failure, sent)
+                out = _refresh_event(
+                    first_snapshot,
+                    version,
+                    previous_version,
+                    revision,
+                    failure,
+                    previous_sent,
+                    out,
+                )
                 if first_snapshot:
                     sent = (revision, failure)
                 if out:
@@ -233,6 +244,18 @@ def _without_diagnostic_geometry(failure: dict | None) -> dict | None:
         for key, value in failure.items()
         if key not in {"diagnosticGeometry", "diagnosticGeometryOmitted"}
     }
+
+
+def _refresh_event(first_snapshot, version, previous_version, revision, failure, sent, out):
+    if (
+        not first_snapshot
+        and version != previous_version
+        and revision == sent[0]
+        and failure is sent[1]
+        and not out
+    ):
+        return _event("revision", {"revision": revision, "refresh": True})
+    return out
 
 
 def _pending_events(revision, failure, sent):

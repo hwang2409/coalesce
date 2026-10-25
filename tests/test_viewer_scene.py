@@ -5,7 +5,8 @@ import struct
 import pytest
 from build123d import Align, Box, Cylinder, Pos
 
-from coalesce.viewer import ScenePart, ViewerSceneStore
+from coalesce.assembly import RigidTransform
+from coalesce.viewer import SceneOccurrence, ScenePart, ViewerSceneStore
 from coalesce.viewer.scene import REFERENCE_COLOR, _oklab
 
 PLATE_ALIGN = (Align.CENTER, Align.CENTER, Align.MIN)
@@ -51,6 +52,55 @@ def test_scene_bbox_from_mesh_matches_exact_plate_bbox():
     points, triangles = decode(store, part)
     # a closed, outward-wound mesh: its volume equals the exact solid volume.
     assert signed_volume(points, triangles) == pytest.approx(shape.volume, rel=1e-6)
+
+
+def test_repeated_occurrences_share_one_mesh_and_use_world_bounds(monkeypatch):
+    store = ViewerSceneStore()
+    definition = ScenePart("shaft/body", Box(30, 4, 8), label="Shaft")
+    calls = 0
+    original = __import__("coalesce.viewer.scene", fromlist=["_tessellate"])._tessellate
+
+    def counted(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr("coalesce.viewer.scene._tessellate", counted)
+    occurrences = [
+        SceneOccurrence(
+            f"shaft-{index + 1}",
+            definition,
+            RigidTransform((index * 40.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0 if index == 7 else 0.0),
+        )
+        for index in range(8)
+    ]
+
+    store.publish(1, occurrences)
+
+    scene = store.scene(1)
+    assert calls == 1
+    assert len(scene["parts"]) == 8
+    assert len({part["mesh"]["id"] for part in scene["parts"]}) == 1
+    assert scene["bbox"]["min"] == pytest.approx([-15, -15, -4])
+    assert scene["bbox"]["max"] == pytest.approx([282, 15, 4])
+    rotated = scene["parts"][-1]
+    assert rotated["name"] == rotated["occurrenceId"] == "shaft-8"
+    assert rotated["partId"] == "shaft/body"
+    assert rotated["size"] == pytest.approx([4, 30, 8])
+    assert rotated["transform"]["rotation"]["angleDegrees"] == 90
+
+
+def test_assembly_inspection_refreshes_the_current_scene():
+    store = ViewerSceneStore()
+    store.publish(1, [ScenePart("body", Box(1, 1, 1))])
+    version = store.snapshot()[0]
+
+    store.publish_assembly_inspection(1, [{"occurrenceIds": ["a", "b"]}])
+
+    refreshed, revision, _ = store.snapshot()
+    assert refreshed == version + 1
+    assert revision == 1
+    assert store.scene(1)["assemblyInspection"] == [{"occurrenceIds": ["a", "b"]}]
 
 
 def test_curved_part_mesh_stays_within_tolerance_and_has_brep_edges():

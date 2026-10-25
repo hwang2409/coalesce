@@ -3450,15 +3450,16 @@ def _step_validation_feature_ids(
     return set()
 
 
-def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
-    from .viewer import ScenePart
+def _scene_parts(result: RegenResult, assembly: Assembly | None = None) -> Iterable[ScenePart]:
+    from .viewer import SceneOccurrence, ScenePart
 
     # body creation order, not regen order: a later feature on one body must not move its row or color
     order = {feature: index for index, feature in enumerate(result.graph.nodes)}
     parts = terminal_parts(result, role=None)
+    definitions = {}
     for part in sorted(parts, key=lambda p: (order[p.source_body.feature], p.part_id)):
         features = _lineage(result, part.terminal_feature, part.source_body)
-        yield ScenePart(
+        definitions[part.part_id] = ScenePart(
             part.part_id,
             part.shape,
             role=part.role,
@@ -3470,6 +3471,11 @@ def _scene_parts(result: RegenResult) -> Iterable[ScenePart]:
             features=features,
             facts=part_facts(result, part.source_body.feature),
         )
+    if not assembly or not assembly.occurrences:
+        yield from definitions.values()
+        return
+    for occurrence in sorted(assembly.occurrences.values(), key=lambda item: item.id):
+        yield SceneOccurrence(occurrence.id, definitions[occurrence.part_id], occurrence.transform)
 
 
 class _ScenePublisher:
@@ -3484,13 +3490,19 @@ class _ScenePublisher:
         self,
         revision: int,
         result: RegenResult,
+        assembly: Assembly,
         before: Any = None,
         changed_id: str | None = None,
         change: dict[str, str] | None = None,
         accepted_edit: dict[str, Any] | None = None,
     ) -> None:
         """Describe the commit when supplied; disk startup publishes without a change."""
-        self._jobs.put(("publish", (revision, result, before, changed_id, change, accepted_edit)))
+        self._jobs.put(
+            ("publish", (revision, result, assembly, before, changed_id, change, accepted_edit))
+        )
+
+    def publish_assembly_inspection(self, revision: int, rows: list[dict[str, Any]]) -> None:
+        self._jobs.put(("publish_assembly_inspection", (revision, rows)))
 
     def publish_failure(
         self,
@@ -3505,16 +3517,18 @@ class _ScenePublisher:
             method, arguments = self._jobs.get()
             try:
                 if method == "publish":
-                    revision, result, before, changed_id, change, accepted_edit = arguments
+                    revision, result, assembly, before, changed_id, change, accepted_edit = arguments
                     if change is None and changed_id:
                         change = _change(before, result, changed_id)
                     self._store.publish(
                         revision,
-                        _scene_parts(result),
+                        _scene_parts(result, assembly),
                         change,
                         fit_summary(result, revision),
                         accepted_edit,
                     )
+                elif method == "publish_assembly_inspection":
+                    self._store.publish_assembly_inspection(*arguments)
                 else:
                     self._store.publish_failure(*arguments)
             except Exception:  # noqa: BLE001 - viewer work must not affect document calls.
@@ -3644,7 +3658,7 @@ class DocumentService:
             return
         availability = result.availability
         if availability.geometry_available:
-            self._publisher.publish(self._document.revision, result)
+            self._publisher.publish(self._document.revision, result, self._document.assembly)
             return
         error = _availability_request_error(availability)
         details = _safe_error(
@@ -3954,7 +3968,13 @@ class DocumentService:
             return
         if result.availability.geometry_available:
             self._publisher.publish(
-                self._document.revision, result, before, changed_id, change, accepted_edit
+                self._document.revision,
+                result,
+                self._document.assembly,
+                before,
+                changed_id,
+                change,
+                accepted_edit,
             )
         else:
             self._publish_regeneration(result)
@@ -4884,9 +4904,9 @@ class DocumentService:
     @staticmethod
     def _evaluate_assembly_requirements(
         requirements: list[dict[str, Any]], resolved: list[Any], revision: int
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         deadline = inspection_deadline()
-        results = []
+        results, rows = [], []
         for requirement in requirements:
             inspection = inspect_assembly(
                 resolved,
@@ -4895,8 +4915,13 @@ class DocumentService:
                 measure_clearance="minimumClearance" in requirement,
                 deadline=deadline,
             )
-            results.extend(evaluate_requirements([requirement], inspection, revision)["results"])
-        return results
+            [result] = evaluate_requirements([requirement], inspection, revision)["results"]
+            results.append(result)
+            failed = result.get("measured", {}).get("failedPairs", [])
+            for row in inspection:
+                status = "ERROR" if "error" in row else "FAIL" if row in failed else "PASS"
+                rows.append({**row, "requirementId": requirement["id"], "status": status})
+        return results, rows
 
     def _evaluate_enclosure_requirements(
         self, payload: dict[str, Any], requirements: list[dict[str, Any]]
@@ -5027,7 +5052,7 @@ class DocumentService:
                 return self._finish_check_locked(payload, requirements, [])
             revision = self._document.revision
 
-        results = self._evaluate_assembly_requirements(selected, resolved, revision)
+        results, inspection_rows = self._evaluate_assembly_requirements(selected, resolved, revision)
 
         with self._lock:
             if self._document.revision != revision:
@@ -5039,4 +5064,6 @@ class DocumentService:
                     operation="check",
                     requestedRevision=revision,
                 )
+            if self._publisher is not None:
+                self._publisher.publish_assembly_inspection(revision, inspection_rows)
             return self._finish_check_locked(payload, requirements, results)

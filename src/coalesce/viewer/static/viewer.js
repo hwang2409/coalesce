@@ -143,7 +143,8 @@ function partDetail(part) {
     return names.length ? `${count}: ${names.join(', ')}` : count;
   });
   const chain = part.features.map((feature) => feature.id).join(' › ');
-  return [...holes, chain && `Built by ${chain}`].filter(Boolean).join('. ');
+  const instance = part.occurrenceId ? `Instance of ${part.definitionLabel} · ${part.partId}` : null;
+  return [instance, ...holes, chain && `Built by ${chain}`].filter(Boolean).join('. ');
 }
 
 // the canvas's accessible description: what is drawn and how the camera frames it
@@ -153,7 +154,7 @@ function describeView() {
   const change = current?.change ? ` Latest change: ${current.change.summary}.` : '';
   const at = mode === 'section' ? ` at ${section.axis.toUpperCase()} = ${formatMm(Number(section.position.toFixed(1)))} mm` : '';
   const shown = MODE_TEXT[mode] ? ` Shown ${MODE_TEXT[mode]}${at}; the model is unchanged.` : '';
-  const showing = selected ? ` Showing ${partTitle(selected.partId)}, other parts faded.` : '';
+  const showing = selected ? ` Showing ${selected.partIds.map(partTitle).join(' and ')}, other parts faded.` : '';
   const rejected = diagnostic.children.length ? ' Rejected sketch — not accepted; shown as a dashed red overlay.' : '';
   $('view-description').textContent = parts.length
     ? `Revision ${current.revision}, ${framing}.${change}${shown}${showing}${rejected} `
@@ -338,11 +339,19 @@ async function loadMesh(mesh) {
 // the default offset and is never pushed behind a part it lies in front of
 const MAX_DEPTH_RANK = 3; // shortcut: more coincident copies share the last rank, rare once forks are rejected
 
+function partMatrix(part) {
+  const transform = part.transform;
+  if (!transform) return new THREE.Matrix4();
+  const axis = new THREE.Vector3(...transform.rotation.axis);
+  const quaternion = new THREE.Quaternion().setFromAxisAngle(axis, THREE.MathUtils.degToRad(transform.rotation.angleDegrees));
+  return new THREE.Matrix4().compose(new THREE.Vector3(...transform.translation), quaternion, new THREE.Vector3(1, 1, 1));
+}
+
 function depthRanks(parts) {
   const boxes = parts.map((part) => {
     const { surface } = geometries.get(part.mesh.id);
     if (!surface.boundingBox) surface.computeBoundingBox();
-    return surface.boundingBox;
+    return surface.boundingBox.clone().applyMatrix4(partMatrix(part));
   });
   const same = (a, b) => a.min.distanceTo(b.min) < 1e-3 && a.max.distanceTo(b.max) < 1e-3;
   return boxes.map((box, i) => Math.min(MAX_DEPTH_RANK, boxes.slice(0, i).filter((other) => same(box, other)).length));
@@ -360,6 +369,7 @@ function partObject(part, { surface, edges }, rank) {
     polygonOffsetUnits: 1 + rank * 16, // a step of 4 units was not enough in SwiftShader
   })));
   group.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: EDGE })));
+  group.applyMatrix4(partMatrix(part));
   group.visible = hiddenByUser.get(part.name) ?? part.visible;
   return group;
 }
@@ -369,7 +379,7 @@ function partObject(part, { surface, edges }, rank) {
 function partTitles(parts) {
   const group = (keys) => {
     const groups = new Map();
-    parts.forEach((part, i) => groups.set(keys[i], [...(groups.get(keys[i]) ?? []), part.partId]));
+    parts.forEach((part, i) => groups.set(keys[i], [...(groups.get(keys[i]) ?? []), part.occurrenceId ?? part.partId]));
     return groups;
   };
   const labels = group(parts.map((part) => part.label));
@@ -380,7 +390,7 @@ function partTitles(parts) {
   const same = group(titles);
   return titles.map((title, i) => {
     const ids = same.get(title).toSorted();
-    return ids.length > 1 ? `${title}, piece ${ids.indexOf(parts[i].partId) + 1}` : title;
+    return ids.length > 1 ? `${title}, piece ${ids.indexOf(parts[i].occurrenceId ?? parts[i].partId) + 1}` : title;
   });
 }
 
@@ -453,7 +463,7 @@ function renderPartList(parts) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'part';
-    button.dataset.partId = part.partId;
+    button.dataset.partId = part.occurrenceId ?? part.partId;
     const name = document.createElement('span');
     name.className = 'part-name';
     name.textContent = titles[index];
@@ -491,7 +501,7 @@ function renderPartList(parts) {
       hint.textContent = '\u25BE';
       title.append(hint);
       button.addEventListener('focus', () => {
-        if (part.facts.length) openPart = part.partId;
+        if (part.facts.length) openPart = part.occurrenceId ?? part.partId;
         syncAllExpanded();
       });
       button.addEventListener('blur', () => syncExpanded(button));
@@ -507,13 +517,13 @@ function renderPartList(parts) {
 
 // problems first: on a phone only the first rows show without scrolling. a measured value has no
 // threshold, so it is no gate result: its badge says "measured only", never anything like a pass
-const STATUS_TEXT = { FAIL: 'FAIL', UNKNOWN: 'UNKNOWN', PASS: 'PASS', MEASURED: 'MEASURED ONLY' };
-const severity = (row) => ['FAIL', 'UNKNOWN'].indexOf(row.status) >>> 0; // not a problem: last, in order
+const STATUS_TEXT = { ERROR: 'ERROR', FAIL: 'FAIL', UNKNOWN: 'UNKNOWN', PASS: 'PASS', MEASURED: 'MEASURED ONLY' };
+const severity = (row) => ['ERROR', 'FAIL', 'UNKNOWN'].indexOf(row.status) >>> 0; // not a problem: last, in order
 const partRow = (partId) => partId && document.querySelector(`.part[data-part-id="${CSS.escape(partId)}"]`);
 const partTitle = (partId) => partRow(partId)?.querySelector('.part-name').textContent ?? null;
 
 // the fit row whose part the canvas shows, the other parts faded; the camera stays where it is
-let selected = null; // {key, partId}
+let selected = null; // {key, partIds}
 
 function fitRow(row, key) {
   const part = partRow(row.partId);
@@ -547,7 +557,7 @@ function fitRow(row, key) {
         showAll();
         return;
       }
-      showPart({ key, partId: row.partId });
+      showPart({ key, partIds: [row.partId] });
       part.focus({ preventScroll: true });
       if (!narrow.matches) part.scrollIntoView({ block: 'nearest' });
     });
@@ -560,7 +570,7 @@ const fitRowFor = (key) => document.querySelector(`.fit-row[data-key="${CSS.esca
 
 function showPart(next) {
   selected = next;
-  renderInspection(current.fit);
+  renderInspection(current.fit, current.assemblyInspection);
   applyMode();
   describeView();
   requestRender();
@@ -569,10 +579,10 @@ function showPart(next) {
 // every part again, and the canvas says so. focus goes back to the fit row that showed the part, else
 // to the part's row, else to the parts heading: the row it was on may be gone in a new revision
 function showAll(focus = true) {
-  const { key, partId } = selected;
+  const { key, partIds } = selected;
   showPart(null);
   const row = fitRowFor(key);
-  if (focus) ((row?.dataset.partId === partId && row) || partRow(partId) || $('parts-title')).focus();
+  if (focus) (row || partRow(partIds[0]) || $('parts-title')).focus();
   $('view-description').textContent = `All parts shown. ${$('view-description').textContent}`;
 }
 
@@ -607,9 +617,48 @@ function pointEvidence(row) {
   });
 }
 
-function renderInspection(fit) {
-  $('inspection').hidden = !fit.length;
-  const rows = fit.flatMap((summary) => summary.rows);
+function assemblyRow(row, key) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'fit-row assembly-row';
+  item.dataset.status = row.status;
+  item.dataset.key = key;
+  const titles = row.occurrenceIds.map(partTitle);
+  const overlap = row.overlapVolume?.value;
+  const clearance = row.clearance?.value;
+  const value = row.error
+    ? row.error.message
+    : overlap > 0
+      ? `${formatMm(overlap)} mm³ overlap`
+      : clearance === undefined
+        ? 'No overlap'
+        : `${formatMm(clearance)} mm clearance`;
+  for (const [className, text] of [
+    ['fit-status', row.status],
+    ['fit-label', titles.join(' ↔ ')],
+    ['fit-value', value],
+    ['fit-reason', row.requirementId],
+  ]) {
+    const cell = document.createElement('span');
+    cell.className = className;
+    cell.textContent = text;
+    item.append(cell);
+  }
+  const shown = selected?.key === key;
+  item.setAttribute('aria-pressed', String(shown));
+  item.setAttribute('aria-label', `${shown ? 'Show all parts again' : `Focus ${titles.join(' and ')}`}: ${row.status}, ${value}`);
+  item.addEventListener('click', () => {
+    if (shown) return showAll();
+    showPart({ key, partIds: row.occurrenceIds });
+    item.focus();
+  });
+  return item;
+}
+
+function renderInspection(fit, assembly = []) {
+  $('inspection').hidden = !fit.length && !assembly.length;
+  $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
+  const rows = [...fit.flatMap((summary) => summary.rows), ...assembly];
   const counts = Object.entries(STATUS_TEXT)
     .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
     .filter(([count]) => count)
@@ -637,13 +686,24 @@ function renderInspection(fit) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
-  const raw = fit.map(({ baseId, rows: measured }) => ({
-    baseId,
-    rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
-  }));
+  for (const [index, row] of assembly.entries()) {
+    const item = document.createElement('li');
+    item.append(assemblyRow(row, `assembly/${index}`));
+    list.append(item);
+    const line = document.createElement('li');
+    line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()}`;
+    evidence.append(line);
+  }
+  const raw = {
+    fit: fit.map(({ baseId, rows: measured }) => ({
+      baseId,
+      rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
+    })),
+    assembly,
+  };
   $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
   $('showing').hidden = !selected;
-  $('showing-text').textContent = selected ? `Showing ${partTitle(selected.partId)}, other parts faded.` : '';
+  $('showing-text').textContent = selected ? `Showing ${selected.partIds.map(partTitle).join(' and ')}, other parts faded.` : '';
   updateMore();
 }
 
@@ -726,7 +786,9 @@ function sectionRange(parts) {
     return isLid(part) ? [0, factMm(part, 'Thickness')] : [factMm(part, 'Floor'), 0];
   };
   const ends = parts.map((part) => {
-    const box = geometries.get(part.mesh.id).surface.boundingBox;
+    const box = part.bbox
+      ? new THREE.Box3(new THREE.Vector3(...part.bbox.min), new THREE.Vector3(...part.bbox.max))
+      : geometries.get(part.mesh.id).surface.boundingBox;
     const [low, high] = insets(part);
     return [box.min.getComponent(i) + low, box.max.getComponent(i) - high];
   });
@@ -798,58 +860,68 @@ function hasEnclosure() {
 }
 
 // places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
+function setSection(parts) {
+  const [low, high] = sectionRange(parts);
+  section.position = Math.min(Math.max(section.position ?? (low + high) / 2, low), high);
+  const normal = new THREE.Vector3(...SECTION_NORMALS[section.axis]);
+  // drawn a hair past the shown position so a face exactly on the plane does not stipple
+  const nudge = 1e-4 * Math.max(high - low, 1);
+  sectionPlane.set(normal, -(section.position + nudge) * normal.getComponent('xyz'.indexOf(section.axis)));
+  Object.assign($('section-range'), { min: low, max: high });
+  $('section-range').value = section.position;
+  Object.assign($('section-value'), { min: low, max: high });
+  if (document.activeElement !== $('section-value')) $('section-value').value = Number(section.position.toFixed(1));
+}
+
+function positionCutFace(group, part) {
+  const face = group.children[4];
+  const bounds = part.bbox
+    ? new THREE.Box3(new THREE.Vector3(...part.bbox.min), new THREE.Vector3(...part.bbox.max))
+    : geometries.get(part.mesh.id).surface.boundingBox.clone().applyMatrix4(group.matrixWorld);
+  const position = sectionPlane.projectPoint(bounds.getCenter(new THREE.Vector3()), new THREE.Vector3());
+  group.worldToLocal(position);
+  face.position.copy(position);
+  const worldFace = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), sectionPlane.normal);
+  face.quaternion.copy(group.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(worldFace));
+}
+
+function applyPartMode(part, index, offsets, toggle) {
+  const group = model.getObjectByName(part.name);
+  group.position.set(...(part.transform?.translation ?? [0, 0, 0]));
+  group.position.z += offsets?.get(part.name) ?? 0;
+  const lifted = mode === 'lid-off' && isLid(part);
+  group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
+  setCut(group, part, index, mode === 'section');
+  fade(group, Boolean(selected) && !selected.partIds.includes(part.occurrenceId ?? part.partId));
+  if (mode === 'section') positionCutFace(group, part);
+  toggle.disabled = lifted;
+  toggle.title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggle.dataset.title}`;
+}
+
+function renderModeControls(parts, enclosure) {
+  const buttons = [...document.querySelectorAll('[data-mode]')];
+  const focusSection = !enclosure && buttons.some((button) => button === document.activeElement && button.dataset.mode !== 'section');
+  for (const button of buttons) {
+    const reason = unavailable(button.dataset.mode, parts);
+    button.hidden = !enclosure && button.dataset.mode !== 'section';
+    button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+    button.toggleAttribute('aria-disabled', Boolean(reason));
+    if (reason) button.title = reason;
+    else button.removeAttribute('title');
+  }
+  if (focusSection) document.querySelector('[data-mode="section"]').focus();
+}
+
+// places, shows and cuts every drawn part for the current mode; a mode that stops applying ends
 function applyMode() {
   const parts = current?.parts ?? [];
   const enclosure = hasEnclosure();
   if ((!enclosure && mode !== 'section') || unavailable(mode, parts)) mode = 'assembled';
   const offsets = mode === 'exploded' ? explodeOffsets(parts) : null;
-  if (mode === 'section') {
-    const [low, high] = sectionRange(parts);
-    section.position = Math.min(Math.max(section.position ?? (low + high) / 2, low), high);
-    const normal = new THREE.Vector3(...SECTION_NORMALS[section.axis]);
-    // drawn a hair (1e-4 of the range) past the shown position: a face lying exactly on the plane, such as
-    // a floor top at a round slider value, would otherwise be half clipped per pixel and stipple the cut face
-    const nudge = 1e-4 * Math.max(high - low, 1);
-    sectionPlane.set(normal, -(section.position + nudge) * normal.getComponent('xyz'.indexOf(section.axis)));
-    Object.assign($('section-range'), { min: low, max: high });
-    $('section-range').value = section.position;
-    Object.assign($('section-value'), { min: low, max: high });
-    // never rewrite a number while it is being typed; it is checked when the human commits it
-    if (document.activeElement !== $('section-value')) $('section-value').value = Number(section.position.toFixed(1));
-  }
+  if (mode === 'section') setSection(parts);
   const toggles = document.querySelectorAll('#parts .visibility');
-  parts.forEach((part, index) => {
-    const group = model.getObjectByName(part.name);
-    group.position.set(0, 0, offsets?.get(part.name) ?? 0);
-    const lifted = mode === 'lid-off' && isLid(part);
-    group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
-    setCut(group, part, index, mode === 'section');
-    fade(group, Boolean(selected) && part.partId !== selected.partId);
-    if (mode === 'section') {
-      // the cut face follows the plane: centred on the part's box, facing along the plane normal
-      const face = group.children[4];
-      sectionPlane.projectPoint(geometries.get(part.mesh.id).surface.boundingBox.getCenter(face.position), face.position);
-      face.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sectionPlane.normal);
-    }
-    // the lid's own show/hide waits until the view puts the lid back
-    toggles[index].disabled = lifted;
-    toggles[index].title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggles[index].dataset.title}`;
-  });
-  const modeButtons = [...document.querySelectorAll('[data-mode]')];
-  const focusSection = !enclosure && modeButtons.some((button) => button === document.activeElement && button.dataset.mode !== 'section');
-  for (const button of modeButtons) {
-    const reason = unavailable(button.dataset.mode, parts);
-    button.hidden = !enclosure && button.dataset.mode !== 'section';
-    button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-    if (reason) {
-      button.setAttribute('aria-disabled', 'true');
-      button.title = reason;
-    } else {
-      button.removeAttribute('aria-disabled');
-      button.removeAttribute('title');
-    }
-  }
-  if (focusSection) document.querySelector('[data-mode="section"]').focus();
+  parts.forEach((part, index) => applyPartMode(part, index, offsets, toggles[index]));
+  renderModeControls(parts, enclosure);
   $('modes').classList.toggle('single', !enclosure);
   $('section-help').textContent = enclosure ? 'Escape returns to the Assembled view.' : 'Escape returns to the default view.';
   for (const button of document.querySelectorAll('[data-axis]')) {
@@ -857,6 +929,7 @@ function applyMode() {
   }
   $('section-controls').hidden = mode !== 'section';
 }
+
 
 function hint(text) {
   $('review-hint').hidden = !text;
@@ -1149,14 +1222,15 @@ function showFailure() {
 // loads run one at a time, then catch up to the newest announced revision,
 // so the mesh cache is never pruned under an in-flight load.
 let loading = false;
-async function loadRevision(revision) {
+async function loadRevision(revision, refresh = false) {
   wanted = Math.max(wanted, revision);
   if (loading) return;
   loading = true;
   try {
     let tried = null;
-    while (wanted !== current?.revision && wanted !== tried) {
+    while ((refresh || wanted !== current?.revision) && wanted !== tried) {
       tried = wanted;
+      refresh = false;
       await loadOne(tried);
     }
   } finally {
@@ -1173,9 +1247,11 @@ async function loadMeshes(parts) {
 }
 
 // the shown part still exists and its fit row still points at it
-function selectionExists(data, { partId, key }) {
-  const fitRowPointsAtPart = ({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && row.partId === partId);
-  return data.parts.some((part) => part.partId === partId) && data.fit.some(fitRowPointsAtPart);
+function selectionExists(data, { partIds, key }) {
+  const identities = new Set(data.parts.map((part) => part.occurrenceId ?? part.partId));
+  if (!partIds.every((partId) => identities.has(partId))) return false;
+  if (key.startsWith('assembly/')) return Boolean(data.assemblyInspection?.[Number(key.split('/')[1])]);
+  return data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && partIds.includes(row.partId)));
 }
 
 async function loadOne(revision) {
@@ -1191,14 +1267,14 @@ async function loadOne(revision) {
     // a shown part outlives a new revision while its fit row still points at it; else all parts again,
     // and focus on its row follows to the replacement row
     const dropped = selected && !selectionExists(data, selected);
-    const held = dropped && [fitRowFor(selected.key), partRow(selected.partId)].includes(document.activeElement);
+    const held = dropped && [fitRowFor(selected.key), partRow(selected.partIds[0])].includes(document.activeElement);
     for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
     clearGroup(model, { ownsGeometry: false });
     const ranks = depthRanks(data.parts);
     data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
     current = data;
     renderPartList(data.parts);
-    renderInspection(data.fit);
+    renderInspection(data.fit, data.assemblyInspection);
     applyMode(); // the chosen review mode stays while it applies to the new revision
     showRevision(data);
     const empty = !data.parts.length;
@@ -1270,11 +1346,11 @@ function listen() {
     lost();
   });
   events.addEventListener('revision', (event) => {
-    const { revision } = JSON.parse(event.data);
+    const { revision, refresh = false } = JSON.parse(event.data);
     failure = null;
     clearDiagnostic();
     showFailure();
-    loadRevision(revision);
+    loadRevision(revision, refresh);
   });
   events.addEventListener('failure', (event) => {
     failure = JSON.parse(event.data);
