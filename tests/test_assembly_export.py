@@ -1,4 +1,6 @@
 import hashlib
+import os
+import stat
 
 import pytest
 from build123d import Box, Cylinder
@@ -90,10 +92,14 @@ def test_xcaf_assembly_round_trip_preserves_tree_references_names_and_placements
 def test_assembly_publish_parent_fsync_failure_returns_durability_warning(tmp_path, monkeypatch):
     destination = tmp_path / "drive.step"
 
-    def fail(_path):
-        raise OSError("injected parent fsync failure")
+    real_fsync = export_module.os.fsync
 
-    monkeypatch.setattr(export_module, "_sync_directory", fail)
+    def fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("injected parent fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(export_module.os, "fsync", fsync)
     published, warnings = export_module._publish_atomic_bytes(destination, b"assembly")
 
     assert published == destination
