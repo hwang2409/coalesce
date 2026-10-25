@@ -29,6 +29,9 @@ class _KernelSymbols:
     common: Any
     analyzer: Any
     distance: Any | None
+    classifier: Any
+    outside_state: Any
+    linear_tolerance: float
 
 
 def inspection_deadline() -> float:
@@ -75,7 +78,10 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.collections import List_TopoDS_Shape
+    from OCP.Precision import Precision
+    from OCP.TopAbs import TopAbs_OUT
 
     if measure_clearance:
         from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -83,25 +89,27 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
         BRepExtrema_DistShapeShape = None
     return _KernelSymbols(
         Bnd_Box,
-        BRepBndLib.AddOptimal_s,
+        BRepBndLib.Add_s,
         Shape,
         List_TopoDS_Shape,
         BRepAlgoAPI_Common,
         BRepCheck_Analyzer,
         BRepExtrema_DistShapeShape,
+        BRepClass3d_SolidClassifier,
+        TopAbs_OUT,
+        Precision.Confusion_s(),
     )
 
 
 def _bounding_box(shape: Any, symbols: _KernelSymbols | None = None) -> Any:
     symbols = symbols or _load_kernel_symbols(False)
     box = symbols.box()
-    symbols.add_bounds(shape.wrapped, box, True, True)
+    symbols.add_bounds(shape.wrapped, box, True)
     return box
 
 
-def _boxes_overlap(first: Any, second: Any, symbols: _KernelSymbols | None = None) -> bool:
-    symbols = symbols or _load_kernel_symbols(False)
-    return not _bounding_box(first, symbols).IsOut(_bounding_box(second, symbols))
+def _boxes_overlap(first: Any, second: Any) -> bool:
+    return not first.IsOut(second)
 
 
 def _common_volume(first: Any, second: Any, symbols: _KernelSymbols | None = None) -> float:
@@ -114,6 +122,7 @@ def _common_volume(first: Any, second: Any, symbols: _KernelSymbols | None = Non
     operation.SetArguments(arguments)
     operation.SetTools(tools)
     operation.SetNonDestructive(True)
+    operation.SetRunParallel(True)
     operation.Build()
     if not operation.IsDone():
         raise ValueError("exact common-volume operation did not complete")
@@ -130,6 +139,38 @@ def _minimum_clearance(first: Any, second: Any, symbols: _KernelSymbols | None =
     if not operation.IsDone():
         raise ValueError("exact minimum-clearance operation did not complete")
     return operation.Value()
+
+
+def _all_solid_points_outside(first: Any, second: Any, symbols: _KernelSymbols) -> bool:
+    first_solids = first.solids()
+    second_solids = second.solids()
+    if not first_solids or not second_solids:
+        return False
+    try:
+        return all(
+            symbols.classifier(
+                second_solid.wrapped,
+                first_solid.vertices()[0].center().to_pnt(),
+                symbols.linear_tolerance,
+            ).State()
+            == symbols.outside_state
+            for first_solid in first_solids
+            for second_solid in second_solids
+        )
+    except Exception:  # noqa: BLE001 - an uncertain classification requires exact Common.
+        return False
+
+
+def _occurrence_bounds(
+    occurrences: list[ResolvedOccurrence], symbols: _KernelSymbols
+) -> dict[str, Any]:
+    bounds = {}
+    for item in occurrences:
+        try:
+            bounds[item.occurrence.id] = _bounding_box(item.shape, symbols)
+        except Exception as error:  # noqa: BLE001 - kernel failures become pair evidence.
+            bounds[item.occurrence.id] = error
+    return bounds
 
 
 def _pair_error(
@@ -165,23 +206,36 @@ def _deadline_error(
 def _inspect_pair(
     first: ResolvedOccurrence,
     second: ResolvedOccurrence,
+    first_box: Any,
+    second_box: Any,
     revision: int,
     measure_clearance: bool,
     symbols: _KernelSymbols,
 ) -> dict[str, Any]:
     try:
+        if isinstance(first_box, BaseException):
+            raise first_box
+        if isinstance(second_box, BaseException):
+            raise second_box
+        boxes_overlap = _boxes_overlap(first_box, second_box)
+        clearance = (
+            _minimum_clearance(first.shape, second.shape, symbols) if measure_clearance else None
+        )
+        exactly_separated = (
+            clearance is not None
+            and clearance > symbols.linear_tolerance
+            and _all_solid_points_outside(first.shape, second.shape, symbols)
+            and _all_solid_points_outside(second.shape, first.shape, symbols)
+        )
         overlap = (
             _common_volume(first.shape, second.shape, symbols)
-            if _boxes_overlap(first.shape, second.shape, symbols)
+            if boxes_overlap and not exactly_separated
             else 0.0
         )
         overlap = overlap if overlap > INTERFERENCE_VOLUME_TOLERANCE_MM3 else 0.0
         interferes = overlap > 0.0
-        clearance = (
-            (0.0 if interferes else _minimum_clearance(first.shape, second.shape, symbols))
-            if measure_clearance
-            else None
-        )
+        if interferes and measure_clearance:
+            clearance = 0.0
     except Exception as error:  # noqa: BLE001 - kernel errors become explicit measurement evidence.
         return _pair_error(first, second, revision, error)
     row = {
@@ -208,10 +262,27 @@ def inspect_assembly(
     pairs = inspection_pairs(occurrences, occurrence_ids)
     deadline = inspection_deadline() if deadline is None else deadline
     symbols = _load_kernel_symbols(measure_clearance)
+    selected = {
+        item.occurrence.id: item
+        for pair in pairs
+        for item in pair
+    }
+    ordered = [selected[occurrence_id] for occurrence_id in sorted(selected)]
+    bounds = _occurrence_bounds(ordered, symbols)
     rows = []
     for index, (first, second) in enumerate(pairs):
         if monotonic() >= deadline:
             rows.extend(_deadline_error(left, right, revision) for left, right in pairs[index:])
             break
-        rows.append(_inspect_pair(first, second, revision, measure_clearance, symbols))
+        rows.append(
+            _inspect_pair(
+                first,
+                second,
+                bounds[first.occurrence.id],
+                bounds[second.occurrence.id],
+                revision,
+                measure_clearance,
+                symbols,
+            )
+        )
     return rows
