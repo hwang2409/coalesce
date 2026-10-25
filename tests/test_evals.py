@@ -505,8 +505,9 @@ def _update_lid_pattern(document, revision, change):
     ],
 )
 async def test_linear_pattern_update_reports_its_invalid_field(tmp_path, pattern):
-    from coalesce.service import DocumentService
     from test_mcp_vertical import call_server_tool
+
+    from coalesce.service import DocumentService
 
     _check, document, _facts = _staged_screw_pattern(tmp_path)
     service = DocumentService(document, warmup=False)
@@ -526,8 +527,9 @@ async def test_linear_pattern_update_reports_its_invalid_field(tmp_path, pattern
 
 @pytest.mark.anyio
 async def test_hole_pattern_update_cannot_change_kind(tmp_path):
-    from coalesce.service import DocumentService
     from test_mcp_vertical import call_server_tool
+
+    from coalesce.service import DocumentService
 
     _check, document, _facts = _staged_screw_pattern(tmp_path)
     result = await call_server_tool(DocumentService(document, warmup=False), "feature", {
