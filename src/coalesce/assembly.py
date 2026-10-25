@@ -178,29 +178,25 @@ def assembly_from_dict(value: Any) -> Assembly:
     return Assembly(occurrences)
 
 
-def _reference_reason(part_id: str, by_id: dict[str, list[TerminalPart]]) -> str | None:
-    if len(by_id.get(part_id, [])) == 1:
+def _reference_reason(part_id: str, part_ids: set[str]) -> str | None:
+    if part_id in part_ids:
         return None
-    if len(by_id.get(part_id, [])) > 1:
-        return "AMBIGUOUS"
-    return "SPLIT" if any(item.startswith(f"{part_id}#") for item in by_id) else "EMPTY"
+    return "SPLIT" if any(item.startswith(f"{part_id}#") for item in part_ids) else "EMPTY"
 
 
 def _stale_references(
     assembly: Assembly, parts: list[TerminalPart]
 ) -> tuple[list[str], list[str], str] | None:
-    by_id: dict[str, list[TerminalPart]] = {}
-    for part in parts:
-        by_id.setdefault(part.part_id, []).append(part)
+    part_ids = {part.part_id for part in parts}
     stale = [
         (item, reason)
         for item in assembly.occurrences.values()
-        if (reason := _reference_reason(item.part_id, by_id)) is not None
+        if (reason := _reference_reason(item.part_id, part_ids)) is not None
     ]
     if not stale:
         return None
     reasons = {reason for _, reason in stale}
-    reason = "AMBIGUOUS" if "AMBIGUOUS" in reasons else "SPLIT" if "SPLIT" in reasons else "EMPTY"
+    reason = "SPLIT" if "SPLIT" in reasons else "EMPTY"
     return (
         sorted(item.id for item, _ in stale),
         sorted({item.part_id for item, _ in stale}),

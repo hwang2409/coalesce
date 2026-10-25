@@ -4,8 +4,6 @@ import sys
 import pytest
 from test_mcp_vertical import FEATURE, SKETCH, run_server
 
-import coalesce.service as service_module
-from coalesce.parts import AmbiguousTerminalPartsError
 from coalesce.service import DocumentService
 
 
@@ -273,40 +271,6 @@ def test_graph_edits_preserve_placement_and_part_id_changes_fail_atomically(tmp_
     assert split["error"]["occurrenceIds"] == ["plate"]
     assert split["error"]["partIds"] == ["plate_extrude/outline"]
     assert split["error"]["reason"] == "SPLIT"
-    assert path.read_bytes() == before
-
-
-def test_ambiguous_terminal_part_edit_fails_atomically(tmp_path, monkeypatch):
-    path = tmp_path / "ambiguous.coalesce.json"
-    service = DocumentService(path, warmup=False)
-    assert service.sketch(SKETCH)["ok"]
-    assert service.feature(FEATURE)["ok"]
-    assert service.feature(occurrence_create(2, "place", "plate-at-origin"))["ok"]
-    before = path.read_bytes()
-
-    real_terminal_parts = service_module.terminal_parts
-
-    def ambiguous_after_edit(result, role="manufacturing"):
-        if result.graph.nodes["plate_profile"].position != (0.0, 0.0, 0.0):
-            raise AmbiguousTerminalPartsError(["plate_extrude/outline"])
-        return real_terminal_parts(result, role)
-
-    monkeypatch.setattr(service_module, "terminal_parts", ambiguous_after_edit)
-    result = service.sketch(
-        {
-            "action": "update",
-            "expectedRevision": 3,
-            "requestId": "make-provenance-ambiguous",
-            "sketchId": "plate_profile",
-            "set": {"position": [1, 0, 0]},
-        }
-    )
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "ASSEMBLY_REFERENCE_STALE"
-    assert result["error"]["occurrenceIds"] == ["plate-at-origin"]
-    assert result["error"]["partIds"] == ["plate_extrude/outline"]
-    assert result["error"]["reason"] == "AMBIGUOUS"
     assert path.read_bytes() == before
 
 

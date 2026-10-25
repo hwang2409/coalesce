@@ -3,18 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
 from .graph import BoardImport
 from .references import BodySource, Candidate
-
-
-class AmbiguousTerminalPartsError(ValueError):
-    def __init__(self, part_ids: list[str]):
-        self.part_ids = part_ids
-        super().__init__("terminal part provenance is ambiguous")
 
 
 @dataclass(frozen=True)
@@ -83,22 +76,10 @@ def _terminal_part(
     return TerminalPart(part_id, label, role, body, feature, solid)
 
 
-def _ambiguous_source_ids(parts: list[TerminalPart]) -> list[str]:
-    counts = Counter(part.part_id for part in parts)
-    duplicate_ids = {part_id for part_id, count in counts.items() if count > 1}
-    return sorted(
-        {
-            f"{part.source_body.feature}/{part.source_body.entity}"
-            for part in parts
-            if part.part_id in duplicate_ids
-        }
-    )
-
-
 def _select_unique_parts(parts: list[TerminalPart], role: str | None) -> list[TerminalPart]:
     selected = parts if role is None else [part for part in parts if part.role == role]
-    if ambiguous_source_ids := _ambiguous_source_ids(selected):
-        raise AmbiguousTerminalPartsError(ambiguous_source_ids)
+    if len({part.part_id for part in selected}) != len(selected):
+        raise ValueError("terminal part provenance is ambiguous")
     return selected
 
 

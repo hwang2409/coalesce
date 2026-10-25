@@ -74,7 +74,7 @@ from .graph import (
     validate_sketch,
     validate_sketch_profiles,
 )
-from .parts import AmbiguousTerminalPartsError, terminal_parts
+from .parts import terminal_parts
 from .references import (
     BodySource,
     Cardinality,
@@ -3685,24 +3685,7 @@ class DocumentService:
     ) -> None:
         assembly = self._document.assembly if assembly is None else assembly
         try:
-            try:
-                parts = terminal_parts(result, role=None)
-            except AmbiguousTerminalPartsError as ambiguous:
-                occurrence_ids = sorted(
-                    item.id
-                    for item in assembly.occurrences.values()
-                    if item.part_id in ambiguous.part_ids
-                )
-                if not occurrence_ids:
-                    raise
-                raise AssemblyError(
-                    "ASSEMBLY_REFERENCE_STALE",
-                    f"assembly occurrences {', '.join(occurrence_ids)} reference ambiguous parts",
-                    occurrenceIds=occurrence_ids,
-                    partIds=ambiguous.part_ids,
-                    reason="AMBIGUOUS",
-                ) from ambiguous
-            resolve_occurrences(assembly, parts)
+            resolve_occurrences(assembly, terminal_parts(result, role=None))
         except AssemblyError as error:
             if loading:
                 raise GraphError(

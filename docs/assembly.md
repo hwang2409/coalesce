@@ -27,6 +27,6 @@ placements use a translation in mm and an axis-angle rotation in degrees or radi
 }
 ```
 
-graph edits fail atomically with `ASSEMBLY_REFERENCE_STALE` when they would remove, split, or make ambiguous a referenced part. delete affected occurrences in an earlier revision before deleting their parts. an assembly can contain at most 64 occurrences.
+graph edits fail atomically with `ASSEMBLY_REFERENCE_STALE` when they would remove or split a referenced part. delete affected occurrences in an earlier revision before deleting their parts. an assembly can contain at most 64 occurrences.
 
 this slice persists and queries explicit placements. viewer placement, interference checks, mates, and assembly step export are not available yet.
