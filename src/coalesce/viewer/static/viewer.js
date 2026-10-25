@@ -1174,8 +1174,7 @@ function repair({ code, message, hint, redundantConstraints, conflictingConstrai
   if (code === 'UNKNOWN_ID') return `The edit names something that does not exist: ${message}. Ask your agent to check the id.`;
   if (code === 'DUPLICATE_ID') return `An id in the edit is already in use: ${message}. Ask your agent to pick a new id.`;
   if (code === 'CYCLE') return 'The edit makes a feature depend on itself. Ask your agent to reorder the features.';
-  if (code === 'TARGET_ALREADY_CONSUMED') return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
-  return `${feature} failed: ${message}. The last good model is still shown.`;
+  return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
 }
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -1292,6 +1291,31 @@ function selectionExists(data, { partIds, key }) {
   return data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && partIds.includes(row.partId)));
 }
 
+function showScene(data, dropped, held) {
+  for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
+  clearGroup(model, { ownsGeometry: false });
+  const ranks = depthRanks(data.parts);
+  data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
+  current = data;
+  renderPartList(data.parts);
+  renderInspection(data.fit, data.assemblyInspection);
+  applyMode(); // the chosen review mode stays while it applies to the new revision
+  showRevision(data);
+  const empty = !data.parts.length;
+  notice(empty ? `Revision ${data.revision} has no solid parts yet` : null,
+    'Sketches are not drawn here. Parts appear when a feature makes a solid.');
+  enableCamera(!empty);
+  if (empty) clearGroup(helpers, { ownsGeometry: true });
+  else if (userMoved) {
+    rebuildHelpers(data.bbox);
+    showRefit(true);
+  } else applyView(activeView);
+  syncGizmo();
+  if (dropped) showAll(held);
+  else describeView();
+  requestRender();
+}
+
 async function loadOne(revision) {
   if (!current) notice(`Loading revision ${revision}`);
   else $('revision-meta').textContent = `Loading revision ${revision}`;
@@ -1306,28 +1330,7 @@ async function loadOne(revision) {
     // and focus on its row follows to the replacement row
     const dropped = selected && !selectionExists(data, selected);
     const held = dropped && [fitRowFor(selected.key), partRow(selected.partIds[0])].includes(document.activeElement);
-    for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
-    clearGroup(model, { ownsGeometry: false });
-    const ranks = depthRanks(data.parts);
-    data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
-    current = data;
-    renderPartList(data.parts);
-    renderInspection(data.fit, data.assemblyInspection);
-    applyMode(); // the chosen review mode stays while it applies to the new revision
-    showRevision(data);
-    const empty = !data.parts.length;
-    notice(empty ? `Revision ${data.revision} has no solid parts yet` : null,
-      'Sketches are not drawn here. Parts appear when a feature makes a solid.');
-    enableCamera(!empty);
-    if (empty) clearGroup(helpers, { ownsGeometry: true });
-    else if (userMoved) {
-      rebuildHelpers(data.bbox);
-      showRefit(true);
-    } else applyView(activeView);
-    syncGizmo();
-    if (dropped) showAll(held);
-    else describeView();
-    requestRender();
+    showScene(data, dropped, held);
   } catch (error) {
     // superseded: the event for the newer revision is already here or on its way
     if (error instanceof Superseded || revision !== wanted) return;
