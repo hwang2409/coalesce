@@ -489,6 +489,63 @@ def _update_lid_pattern(document, revision, change):
     })
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        {
+            "kind": "linear",
+            "start": [2.0, 2.0],
+            "direction": [1.0, 0.0],
+            "pitch": 5.0,
+            "count": 4,
+            "namePrefix": "vent",
+        },
+        {"kind": "linear", "count": 4, "pitch": 5.0},
+    ],
+)
+async def test_linear_pattern_update_reports_its_invalid_field(tmp_path, pattern):
+    from coalesce.service import DocumentService
+    from test_mcp_vertical import call_server_tool
+
+    _check, document, _facts = _staged_screw_pattern(tmp_path)
+    service = DocumentService(document, warmup=False)
+    result = await call_server_tool(service, "feature", {
+        "action": "update",
+        "expectedRevision": 6,
+        "featureId": "lid_pattern",
+        "requestId": "update-lid-pattern",
+        "set": {"pattern": pattern},
+    })
+
+    assert result["error"]["message"] == (
+        'pitch must be an object; expected shape: {"value": 2, "unit": "mm"} '
+        "(field: set.pattern.pitch)"
+    )
+
+
+@pytest.mark.anyio
+async def test_hole_pattern_update_cannot_change_kind(tmp_path):
+    from coalesce.service import DocumentService
+    from test_mcp_vertical import call_server_tool
+
+    _check, document, _facts = _staged_screw_pattern(tmp_path)
+    result = await call_server_tool(DocumentService(document, warmup=False), "feature", {
+        "action": "update",
+        "expectedRevision": 6,
+        "featureId": "lid_pattern",
+        "requestId": "change-pattern-kind",
+        "set": {
+            "pattern": {
+                "kind": "circular",
+                "radius": {"value": 5, "unit": "mm"},
+            }
+        },
+    })
+
+    assert result["error"]["message"] == "hole pattern update kind must match the stored pattern"
+
+
 def test_runner_feature_edit_requires_runner_state_and_in_place_updates(tmp_path):
     check, document, facts = _staged_screw_pattern(tmp_path)
     steps = tmp_path / "steps"

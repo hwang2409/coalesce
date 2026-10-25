@@ -316,12 +316,22 @@ def _is_kind_union(error: ValidationError) -> bool:
     )
 
 
+def _matching_kind_union(error: ValidationError) -> ValidationError | None:
+    if _is_kind_union(error):
+        return error
+    return next(
+        (match for child in error.context if (match := _matching_kind_union(child)) is not None),
+        None,
+    )
+
+
 def _branch_error(error: ValidationError) -> ValidationError:
     """Report a union failure from the branch the supplied `kind` selects, not a wrong branch."""
-    union = error
-    while union.parent is not None:
-        union = union.parent
-    if not _is_kind_union(union):
+    root = error
+    while root.parent is not None:
+        root = root.parent
+    union = _matching_kind_union(root)
+    if union is None:
         return error
     while _is_kind_union(union):
         kinds = [branch.get("properties", {}).get("kind", {}) for branch in union.validator_value]
