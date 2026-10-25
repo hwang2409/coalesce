@@ -87,6 +87,7 @@ ERROR_REGISTRY = {
 
 # Codes of non-blocking warnings inside successful results.
 WARNING_CODES = frozenset({
+    "NESTED_JSON_STRING_DECODED",
     "EXPORT_DURABILITY_UNCONFIRMED",
     "OTHER_MANUFACTURING_BODY",
     "CONNECTOR_HEIGHT_UNRESOLVED",

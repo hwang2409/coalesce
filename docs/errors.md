@@ -153,10 +153,11 @@ original endpoint ids can also recover the reference.
 
 ## inspection warnings
 
-a successful enclosure inspection or export can include `warnings`. a warning does not fail the request. agents can branch on its `code`.
+a successful operation can include `warnings`. a warning does not fail the request. agents can branch on its `code`.
 
 | warning | meaning | agent action |
 |---|---|---|
+| `NESTED_JSON_STRING_DECODED` | a sketch update accepted `set` after decoding a JSON string that contained an object. | send `set` as an object on later calls. |
 | `EXPORT_DURABILITY_UNCONFIRMED` | the separate STEP files and manifest were published, but the parent-directory sync failed, so their durability on disk is not confirmed. | treat the export as published; copy or export it again to another path if confirmed durability is required. |
 | `OTHER_MANUFACTURING_BODY` | a manufactured body that is not part of the enclosure exists; it is named by `featureId` and `partId`. | delete it, or confirm it is intended before export. |
 | `CONNECTOR_HEIGHT_UNRESOLVED` | the board declares no 3D models, so connector heights for `footprintIds` are not measured. | treat port height clearance as unknown; ask for connector heights or add margin. |

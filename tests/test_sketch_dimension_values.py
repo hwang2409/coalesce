@@ -1,5 +1,6 @@
 import json
 import math
+import shutil
 
 import pytest
 from jsonschema import ValidationError, validate
@@ -294,25 +295,99 @@ async def test_dimension_update_solve_failure_is_atomic_with_diagnostics(
 
 
 @pytest.mark.anyio
-async def test_string_set_has_exact_actionable_error(tmp_path):
-    service = DocumentService(tmp_path / "string-set.coalesce.json", warmup=False)
+@pytest.mark.parametrize("encoded", ["not json", "[]", "42"])
+async def test_non_object_string_set_has_exact_actionable_error_and_is_atomic(tmp_path, encoded):
+    path = tmp_path / "string-set.coalesce.json"
+    build_before_state(
+        "constrained-sketch-update-after-extrusion",
+        path,
+        tmp_path / "fixtures",
+        tmp_path / "before-state.json",
+    )
+    saved = path.read_bytes()
+    service = DocumentService(path, warmup=False)
     result = await call_server_tool(
         service,
         "sketch",
         {
             "action": "update",
-            "expectedRevision": 0,
+            "expectedRevision": 2,
             "requestId": "string-set",
             "sketchId": "profile",
-            "set": '{"dimensionValues":{"opening-radius":4}}',
+            "set": encoded,
         },
     )
 
+    assert result["error"]["code"] == "INVALID_PARAMETER"
     assert result["error"]["message"] == (
-        'set must be a JSON object, not a JSON-encoded string; send "set": '
-        '{"constrained": {...}} or "set": {"dimensionValues": {...}} without surrounding '
-        'quotes (field: set)'
+        'set must be a JSON object; valid forms are "set": {"entities": [...]}, '
+        '"set": {"constrained": {...}}, "set": {"dimensionValues": {...}}, or '
+        '"set": {"position": [...]} without surrounding quotes (field: set)'
     )
+    assert result["revision"] == 2
+    assert path.read_bytes() == saved
+
+
+@pytest.mark.anyio
+async def test_json_string_dimension_values_matches_object_update_with_warning(tmp_path):
+    source = tmp_path / "source.coalesce.json"
+    (tmp_path / "fixtures").mkdir()
+    build_before_state(
+        "constrained-sketch-update-after-extrusion",
+        source,
+        tmp_path / "fixtures",
+        tmp_path / "before-state.json",
+    )
+    object_path = tmp_path / "object.coalesce.json"
+    string_path = tmp_path / "string.coalesce.json"
+    shutil.copyfile(source, object_path)
+    shutil.copyfile(source, string_path)
+    payload = dimension_update(2)
+
+    object_result = await call_server_tool(DocumentService(object_path, warmup=False), "sketch", payload)
+    encoded = {**payload, "set": json.dumps(payload["set"])}
+    string_result = await call_server_tool(DocumentService(string_path, warmup=False), "sketch", encoded)
+
+    assert object_result["ok"] is string_result["ok"] is True
+    assert string_result["warnings"] == [{
+        "code": "NESTED_JSON_STRING_DECODED",
+        "message": "set was decoded from a JSON string; send it as an object",
+    }]
+    assert object_path.read_bytes() == string_path.read_bytes()
+
+
+@pytest.mark.anyio
+async def test_json_string_entities_matches_object_update_with_warning(tmp_path):
+    source = tmp_path / "source.coalesce.json"
+    await call_server_tool(DocumentService(source, warmup=False), "sketch", SKETCH)
+    object_path = tmp_path / "object.coalesce.json"
+    string_path = tmp_path / "string.coalesce.json"
+    shutil.copyfile(source, object_path)
+    shutil.copyfile(source, string_path)
+    payload = {
+        "action": "update",
+        "expectedRevision": 1,
+        "requestId": "replace-outline",
+        "sketchId": "plate_profile",
+        "set": {"entities": [{
+            "id": "outline",
+            "kind": "rectangle",
+            "center": [0, 0],
+            "width": {"value": 50, "unit": "mm"},
+            "height": {"value": 40, "unit": "mm"},
+        }]},
+    }
+
+    object_result = await call_server_tool(DocumentService(object_path, warmup=False), "sketch", payload)
+    encoded = {**payload, "set": json.dumps(payload["set"])}
+    string_result = await call_server_tool(DocumentService(string_path, warmup=False), "sketch", encoded)
+
+    assert object_result["ok"] is string_result["ok"] is True
+    assert string_result["warnings"] == [{
+        "code": "NESTED_JSON_STRING_DECODED",
+        "message": "set was decoded from a JSON string; send it as an object",
+    }]
+    assert object_path.read_bytes() == string_path.read_bytes()
 
 
 @pytest.mark.anyio

@@ -436,6 +436,18 @@ def _stateful_error(
     return failure
 
 
+def _decode_sketch_set(arguments: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if arguments.get("action") != "update" or not isinstance(arguments.get("set"), str):
+        return arguments, False
+    try:
+        decoded = json.loads(arguments["set"])
+    except json.JSONDecodeError:
+        return arguments, False
+    if not isinstance(decoded, dict):
+        return arguments, False
+    return {**arguments, "set": decoded}, True
+
+
 async def _schema_failure(
     service: DocumentService, name: str, arguments: dict[str, Any], raised: ValidationError
 ) -> types.CallToolResult:
@@ -444,11 +456,15 @@ async def _schema_failure(
         error = _prefer_unknown_field(error)
     details = _schema_error_details(name, arguments, error)
     message = schema_error_message(error)
-    if name == "sketch" and isinstance(arguments.get("set"), str):
+    if (
+        name == "sketch"
+        and arguments.get("action") == "update"
+        and isinstance(arguments.get("set"), str)
+    ):
         message = (
-            'set must be a JSON object, not a JSON-encoded string; send "set": '
-            '{"constrained": {...}} or "set": {"dimensionValues": {...}} without surrounding '
-            'quotes (field: set)'
+            'set must be a JSON object; valid forms are "set": {"entities": [...]}, '
+            '"set": {"constrained": {...}}, "set": {"dimensionValues": {...}}, or '
+            '"set": {"position": [...]} without surrounding quotes (field: set)'
         )
     failure = await anyio.to_thread.run_sync(
         partial(
@@ -480,13 +496,28 @@ async def _call_tool(
             )
         )
         return _tool_result(failure)
+    decoded_string = False
+    if name == "sketch":
+        arguments, decoded_string = _decode_sketch_set(arguments)
     try:
         validate(instance=arguments, schema=_schema_for_action(name, arguments))
     except ValidationError as raised:
         return await _schema_failure(service, name, arguments, raised)
     try:
         handler = service.import_board if name == "import" else getattr(service, name)
-        return _tool_result(await anyio.to_thread.run_sync(handler, arguments))
+        result = await anyio.to_thread.run_sync(handler, arguments)
+        if decoded_string and result.get("ok"):
+            result = {
+                **result,
+                "warnings": [
+                    *result.get("warnings", []),
+                    {
+                        "code": "NESTED_JSON_STRING_DECODED",
+                        "message": "set was decoded from a JSON string; send it as an object",
+                    },
+                ],
+            }
+        return _tool_result(result)
     except Exception:  # noqa: BLE001 - raw failures stay on stderr at the transport seam.
         _LOG.exception("unexpected failure during %s", name)
         failure = await anyio.to_thread.run_sync(
