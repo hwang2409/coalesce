@@ -38,6 +38,12 @@ GUIDES = (
         "examples/cycloidal-disc.md",
         "Complete cycloidal disc modeling example.",
     ),
+    Guide(
+        "cycloidal drive assembly example",
+        "coalesce://docs/examples/cycloidal-drive-assembly",
+        "examples/cycloidal-drive-assembly.md",
+        "Verified XCAF assembly export example.",
+    ),
 )
 
 INDEX_URI = "coalesce://docs/index"

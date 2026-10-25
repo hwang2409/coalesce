@@ -642,10 +642,277 @@ def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
     return {**fields, "byteCount": len(content)}
 
 
+def _label_name(label: Any) -> str:
+    from OCP.TDataStd import TDataStd_Name
+
+    attribute = TDataStd_Name()
+    if not label.FindAttribute(TDataStd_Name.GetID_s(), attribute):
+        return ""
+    return attribute.Get().ToExtString()
+
+
+def _transform_evidence(location: Any) -> dict[str, Any]:
+    from OCP.gp import gp_Vec
+
+    transform = location.Transformation()
+    translation = transform.TranslationPart()
+    axis = gp_Vec()
+    (angle,) = transform.GetRotation().GetVectorAndAngle(axis)
+    if abs(angle) <= ABSOLUTE_TOLERANCE:
+        axis_values = [0.0, 0.0, 1.0]
+        angle = 0.0
+    else:
+        axis_values = [axis.X(), axis.Y(), axis.Z()]
+    return {
+        "translation": [translation.X(), translation.Y(), translation.Z()],
+        "axis": axis_values,
+        "angleDegrees": math.degrees(angle),
+        "matrix": [transform.Value(row, column) for row in range(1, 4) for column in range(1, 5)],
+    }
+
+
+def _read_assembly_step(path: Path) -> dict[str, Any]:
+    from build123d import Shape
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.collections import Sequence_TDF_Label
+    from OCP.IFSelect import IFSelect_ReturnStatus
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDF import TDF_Label
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
+
+    document = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
+    reader = STEPCAFControl_Reader()
+    reader.SetNameMode(True)
+    if reader.ReadFile(str(path)) != IFSelect_ReturnStatus.IFSelect_RetDone or not reader.Transfer(
+        document
+    ):
+        raise ValueError("STEP XCAF transfer failed")
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    roots = Sequence_TDF_Label()
+    shape_tool.GetFreeShapes(roots)
+    if roots.Size() != 1:
+        return {"rootCount": roots.Size()}
+    root = roots.Value(1)
+    components = Sequence_TDF_Label()
+    if not XCAFDoc_ShapeTool.GetComponents_s(root, components):
+        raise ValueError("STEP root is not an assembly")
+
+    occurrences = []
+    definitions = []
+    shapes = []
+    valid = []
+    for index in range(1, components.Size() + 1):
+        component = components.Value(index)
+        definition = TDF_Label()
+        if not XCAFDoc_ShapeTool.GetReferredShape_s(component, definition):
+            raise ValueError("STEP assembly component has no referred definition")
+        if not any(definition.IsEqual(item) for item in definitions):
+            definitions.append(definition)
+        wrapped = XCAFDoc_ShapeTool.GetShape_s(component)
+        shapes.append(Shape.cast(wrapped))
+        valid.append(BRepCheck_Analyzer(wrapped).IsValid())
+        occurrences.append(
+            {
+                "occurrenceId": _label_name(component),
+                "definitionLabel": _label_name(definition),
+                "transform": _transform_evidence(XCAFDoc_ShapeTool.GetLocation_s(component)),
+            }
+        )
+    occurrences.sort(key=lambda item: item["occurrenceId"])
+    geometry = _metrics(shapes, [item["occurrenceId"] for item in occurrences])
+    geometry["allValid"] = all(valid)
+    return {
+        "rootCount": 1,
+        "rootName": _label_name(root),
+        "definitionCount": len(definitions),
+        "occurrenceCount": len(occurrences),
+        "occurrences": occurrences,
+        "geometry": geometry,
+    }
+
+
+def verify_assembly_step_fresh(path: Path) -> dict[str, Any]:
+    """Read an XCAF product tree in a new interpreter and return measured evidence."""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "coalesce.export", "--verify-assembly", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "the fresh Python process could not validate the STEP assembly",
+        ) from error
+    if completed.returncode != 0:
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "the STEP assembly could not be read through XCAF in a fresh Python process",
+            verifierError=completed.stderr.strip()[-2000:],
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ExportFailure(
+            "EXPORT_VALIDATION_FAILED",
+            "the fresh-process XCAF verifier returned invalid evidence",
+        ) from error
+
+
+def _assembly_expectation(root_name: str, occurrences: list[Any]) -> dict[str, Any]:
+    expected_rows = []
+    for item in sorted(occurrences, key=lambda row: row.occurrence.id):
+        expected_rows.append(
+            {
+                "occurrenceId": item.occurrence.id,
+                "definitionLabel": item.part.part_id,
+                "transform": _transform_evidence(item.shape.wrapped.Location()),
+            }
+        )
+    geometry = _metrics(
+        [item.shape for item in sorted(occurrences, key=lambda row: row.occurrence.id)],
+        [item.occurrence.id for item in sorted(occurrences, key=lambda row: row.occurrence.id)],
+    )
+    geometry["allValid"] = True
+    return {
+        "rootCount": 1,
+        "rootName": root_name,
+        "definitionCount": len({item.part.part_id for item in occurrences}),
+        "occurrenceCount": len(occurrences),
+        "occurrences": expected_rows,
+        "geometry": geometry,
+    }
+
+
+def write_assembly_step_bytes(
+    root_name: str, occurrences: list[Any]
+) -> tuple[bytes, str, dict[str, Any]]:
+    """Build and fresh-process validate one XCAF assembly without publishing it."""
+    from OCP.BRep import BRep_Builder
+    from OCP.IFSelect import IFSelect_ReturnStatus
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    if not occurrences:
+        raise ExportFailure(
+            "ASSEMBLY_EXPORT_EMPTY", "assembly export has no manufacturing occurrences"
+        )
+    document = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    shape_tool.SetAutoNaming_s(False)
+    compound = TopoDS_Compound()
+    BRep_Builder().MakeCompound(compound)
+    root = shape_tool.AddShape(compound, True, False)
+    TDataStd_Name.Set_s(root, TCollection_ExtendedString(root_name or "assembly"))
+    from .assembly import definition_shape
+
+    definitions = {}
+    for item in sorted(occurrences, key=lambda row: row.part.part_id):
+        if item.part.part_id not in definitions:
+            definition = shape_tool.AddShape(
+                definition_shape(item.part.shape).wrapped, False, False
+            )
+            TDataStd_Name.Set_s(definition, TCollection_ExtendedString(item.part.part_id))
+            definitions[item.part.part_id] = definition
+    for item in sorted(occurrences, key=lambda row: row.occurrence.id):
+        component = shape_tool.AddComponent(
+            root, definitions[item.part.part_id], item.shape.wrapped.Location()
+        )
+        TDataStd_Name.Set_s(component, TCollection_ExtendedString(item.occurrence.id))
+    shape_tool.UpdateAssemblies()
+
+    temporary_directory = Path(tempfile.mkdtemp())
+    temporary_path = temporary_directory / "assembly.step"
+    try:
+        writer = STEPCAFControl_Writer()
+        writer.SetNameMode(True)
+        if (
+            not writer.Transfer(document)
+            or writer.Write(str(temporary_path)) != IFSelect_ReturnStatus.IFSelect_RetDone
+        ):
+            raise ExportFailure("EXPORT_VALIDATION_FAILED", "XCAF assembly STEP writing failed")
+        content = _normalized_step_bytes(temporary_path.read_bytes())
+        temporary_path.write_bytes(content)
+        expected = _assembly_expectation(root_name or "assembly", occurrences)
+        actual = verify_assembly_step_fresh(temporary_path)
+        mismatch = _first_mismatch(expected, actual)
+        if mismatch is not None:
+            raise ExportFailure(
+                "EXPORT_VALIDATION_FAILED",
+                "fresh-process XCAF assembly evidence does not match the source assembly",
+                mismatchedMetric=mismatch,
+                expected=expected,
+                actual=actual,
+            )
+        digest = hashlib.sha256(content).hexdigest()
+        return content, digest, actual
+    finally:
+        shutil.rmtree(temporary_directory)
+
+
+def _publish_atomic_bytes(path: Path, content: bytes) -> tuple[Path, list[dict[str, str]]]:
+    destination, directory_fd = _open_directory(path)
+    os.close(directory_fd)
+    if destination.exists() or destination.is_symlink():
+        raise _existing_path_failure(destination)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.tmp-", dir=destination.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    published = False
+    try:
+        with temporary.open("wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _rename_new_directory(temporary, destination)
+        published = True
+        warnings = _sync_directory(destination.parent)
+        return destination, warnings
+    except FileExistsError as error:
+        raise _existing_path_failure(destination) from error
+    except OSError as error:
+        raise ExportFailure(
+            "EXPORT_WRITE_FAILED",
+            "assembly STEP could not be published",
+            path=str(destination),
+            hint="check the target parent and retry with a new path",
+        ) from error
+    finally:
+        if not published:
+            temporary.unlink(missing_ok=True)
+
+
+def export_assembly(path: Path, root_name: str, occurrences: list[Any]) -> dict[str, Any]:
+    """Validate and atomically publish one XCAF assembly STEP."""
+    content, digest, evidence = write_assembly_step_bytes(root_name, occurrences)
+    destination, warnings = _publish_atomic_bytes(path, content)
+    return {
+        "path": str(destination),
+        "warnings": warnings,
+        "partIds": sorted({item.part.part_id for item in occurrences}),
+        "occurrenceIds": sorted(item.occurrence.id for item in occurrences),
+        "sha256": digest,
+        "byteCount": len(content),
+        "tolerance": {"relative": RELATIVE_TOLERANCE, "absolute": ABSOLUTE_TOLERANCE},
+        "validation": {"geometry": {"status": "passed", "freshProcess": True}, "xcaf": evidence},
+    }
+
+
 def _main() -> None:
-    if len(sys.argv) != 3 or sys.argv[1] != "--verify":
-        raise SystemExit("usage: python -m coalesce.export --verify PATH")
-    print(json.dumps(_read_step_metrics(Path(sys.argv[2])), separators=(",", ":")))
+    if len(sys.argv) != 3 or sys.argv[1] not in {"--verify", "--verify-assembly"}:
+        raise SystemExit("usage: python -m coalesce.export --verify|--verify-assembly PATH")
+    reader = _read_assembly_step if sys.argv[1] == "--verify-assembly" else _read_step_metrics
+    print(json.dumps(reader(Path(sys.argv[2])), separators=(",", ":")))
 
 
 if __name__ == "__main__":

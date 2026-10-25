@@ -37,7 +37,7 @@ _TOOL_DESCRIPTIONS = {
     "feature": "Create, update, or delete explicit assembly occurrences with canonical part ids and rigid transforms. Supports constant-radius fillet and symmetric one-distance chamfer; two-distance not supported. Holes use global +Z; plane normals are XY +Z, XZ -Y, YZ +X. Finite cuts use negative sketch normal for flip=false and positive sketch normal for flip=true; through-all is bidirectional. Routes: extrude/cut/fillet/chamfer -> coalesce://docs/tools; revolve -> coalesce://docs/revolve; hole/pattern -> coalesce://docs/hole; pcb_base/standoffs/pcb_lid/port_cutout/screw_closure -> coalesce://docs/enclosure; board refresh -> coalesce://docs/refresh.",
     "query": "Read one feature, the graph, revision, explicit assembly occurrences, exact mm metrics, inspect a PCB enclosure, list selectable edge roles, or resolve a typed reference. Use select.kind edge_roles with id before choosing treatment edges. Call select.kind enclosure before reporting enclosure dimensions.",
     "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, board-edge clearance, mounting coverage, lid interference, fit, exact lid_outline_match, screw_closure alignment and residual wall, connector clearance, and clean manufacturing bodies. assembly_interference measures exact common-solid volume for every pair among 2 to 16 selected occurrences and minimum clearance when requested; omit occurrenceIds only when the assembly has at most 16 occurrences. One request is capped at 120 total assembly pairs and a 10-second cooperative deadline. board_clearance accepts side left, right, front, back, or all and a minimum mm threshold. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
-    "export": "Preflight or publish selected terminal manufacturing parts at the current expectedRevision. action=preflight is read-only and validates each part in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate requires a POSIX system (macOS or Linux) and atomically publishes one labeled STEP per part plus a deterministic manifest at a new path or over an empty real directory; other targets are rejected with a bounded listing. BoardImport reference geometry is never included.",
+    "export": "Preflight or publish at the current expectedRevision. action=preflight is read-only and validates in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate atomically publishes one labeled STEP per manufacturing definition plus a deterministic manifest. mode=assembly writes a verified XCAF product tree for all manufacturing occurrences, preserves occurrence names and placements, and lists excluded reference occurrences; it does not accept partIds. Exports never overwrite.",
 }
 
 TOOLS_GUIDE = """# coalesce tools
@@ -187,9 +187,10 @@ excludes BoardImport reference geometry. Zero manufacturing solids return `UNKNO
 `expectedRevision` to validate each selected part without publishing. Supply `base` and explicit
 `requirements` to include enclosure acceptance statuses. The response lists every `UNKNOWN`
 result and sets `ready: false` unless every requirement passes. Preflight writes no user-visible
-files. Publishing is stateless and does not accept `requestId`; it requires an explicit absolute
-new `path` and defaults to all terminal manufacturing parts. Select stable `partIds` from
-measurements when needed. A feature id is
+files. Set `mode: assembly` during preflight to validate the XCAF product tree for all manufacturing
+occurrences; assembly mode rejects `partIds` and lists reference occurrences as excluded. Publishing
+is stateless and does not accept `requestId`; it requires an explicit absolute new `path` and defaults
+to all terminal manufacturing parts. Select stable `partIds` from measurements when needed. A feature id is
 accepted only when it resolves to exactly one terminal manufacturing part; otherwise
 `UNKNOWN_ID` lists valid part ids and the feature that built each. BoardImport
 reference geometry is never included. The default compound STEP mode never overwrites, renames,
