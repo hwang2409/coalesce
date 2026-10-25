@@ -30,6 +30,7 @@ packages = ["src/coalesce"]
 "docs/enclosures.md" = "coalesce/guides/enclosures.md"
 "docs/refresh.md" = "coalesce/guides/refresh.md"
 "docs/revolve.md" = "coalesce/guides/revolve.md"
+"docs/assembly.md" = "coalesce/guides/assembly.md"
 "docs/examples/cycloidal-disc.md" = "coalesce/guides/examples/cycloidal-disc.md"
 
 [tool.pytest.ini_options]

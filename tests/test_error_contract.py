@@ -208,6 +208,7 @@ PASS_THROUGH_CODES = {
     ("src/coalesce/edge_treatment.py", "GraphError", "invalid_code"),
     ("src/coalesce/graph.py", "dict", "code"),
     ("src/coalesce/service.py", "RequestError", "error['code']"),
+    ("src/coalesce/service.py", "RequestError", "error.code"),
     ("src/coalesce/service.py", "RequestError", "failure.code"),
     ("src/coalesce/service.py", "_safe_error", "code"),
     ("src/coalesce/service.py", "_safe_error", "error.code"),

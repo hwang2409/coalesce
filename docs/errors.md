@@ -88,6 +88,9 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `REVISION_CONFLICT` | request | a mutation was based on an old revision | query revision, review the model, and retry against that revision |
 | `STALE_REVISION` | request | export was requested from an old revision | query revision, review the model, and export that revision |
 | `INVALID_DOCUMENT` | request | a saved document cannot be loaded under the current format | correct or migrate the named field before starting coalesce |
+| `ASSEMBLY_OCCURRENCE_LIMIT` | request | an assembly create would exceed 64 named occurrences | delete an occurrence before adding another |
+| `ASSEMBLY_REFERENCE_STALE` | reference | a graph edit would remove, split, or make ambiguous a part used by a named occurrence | delete the named occurrences first or preserve the canonical part ids |
+| `ASSEMBLY_EXPORT_EMPTY` | export | an assembly export has no manufacturing occurrence | add a manufacturing occurrence before exporting |
 | `CYCLE` | dependency | the feature graph contains a dependency cycle | reorder or remove the cyclic dependency |
 | `HAS_DEPENDENTS` | dependency | non-cascade delete would orphan dependent nodes | inspect the listed dependents, then delete them or use cascade deliberately |
 | `TARGET_ALREADY_CONSUMED` | dependency | an edit targets a non-terminal body feature | use the proved `legalTargets` entry |

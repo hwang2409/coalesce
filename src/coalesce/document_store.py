@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .assembly import Assembly, assembly_from_dict, assembly_to_dict
 from .graph import Graph
 from .serialization import dumps, loads
 
@@ -19,6 +20,7 @@ MAX_REQUEST_HASHES = 10_000
 @dataclass
 class Document:
     graph: Graph
+    assembly: Assembly = field(default_factory=Assembly)
     revision: int = 0
     receipts: list[dict[str, Any]] = field(default_factory=list)
     request_hashes: list[dict[str, str]] = field(default_factory=list)
@@ -44,6 +46,7 @@ class DocumentStore:
             ]
         return Document(
             graph=graph,
+            assembly=assembly_from_dict(payload.get("assembly")),
             revision=int(payload.get("revision", 0)),
             receipts=receipts,
             request_hashes=list(request_hashes)[-MAX_REQUEST_HASHES:],
@@ -52,10 +55,11 @@ class DocumentStore:
     def save(self, document: Document) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "formatVersion": 1,
+            "formatVersion": 2,
             "units": "mm",
             "revision": document.revision,
             "graph": json.loads(dumps(document.graph)),
+            "assembly": assembly_to_dict(document.assembly),
             "receipts": document.receipts[-MAX_RECEIPTS:],
             "requestHashes": document.request_hashes[-MAX_REQUEST_HASHES:],
         }

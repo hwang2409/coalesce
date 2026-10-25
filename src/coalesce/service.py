@@ -17,6 +17,16 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from .assembly import (
+    MAX_OCCURRENCES,
+    Assembly,
+    AssemblyError,
+    Occurrence,
+    RigidTransform,
+    normalize_transform,
+    resolve_occurrences,
+    transform_to_dict,
+)
 from .availability import SketchFailure, SolveAvailability, UnavailableFeature
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
@@ -285,6 +295,48 @@ class FeatureDelete(_Operation):
     requestId: str
     featureId: str
     cascade: bool = False
+
+
+@dataclass(frozen=True)
+class AssemblyOccurrenceCreate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    occurrenceId: str
+    part_id: str
+    transform: RigidTransform
+    kind: ClassVar[str] = "assembly_occurrence"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {"action", "expectedRevision", "requestId", "occurrenceId", "kind", "parameters"}
+
+
+@dataclass(frozen=True)
+class AssemblyOccurrenceUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    occurrenceId: str
+    transform: RigidTransform
+    kind: ClassVar[str] = "assembly_occurrence"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {"action", "expectedRevision", "requestId", "occurrenceId", "kind", "set"}
+
+
+@dataclass(frozen=True)
+class AssemblyOccurrenceDelete(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    occurrenceId: str
+    kind: ClassVar[str] = "assembly_occurrence"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {"action", "expectedRevision", "requestId", "occurrenceId", "kind"}
 
 
 @dataclass(frozen=True)
@@ -784,7 +836,10 @@ class HoleUpdate(_Operation):
 DeleteOperation = ImportDelete | SketchDelete | FeatureDelete
 
 MutationOperation = (
-    BoardImportOperation
+    AssemblyOccurrenceCreate
+    | AssemblyOccurrenceUpdate
+    | AssemblyOccurrenceDelete
+    | BoardImportOperation
     | ImportDelete
     | SketchCreate
     | SketchUpdate
@@ -1697,6 +1752,36 @@ def _parse_screw_closure(
             ),
         ),
     )
+
+
+def _parse_assembly_occurrence(
+    payload: dict[str, Any],
+) -> AssemblyOccurrenceCreate | AssemblyOccurrenceUpdate | AssemblyOccurrenceDelete:
+    common = {
+        "action": Action(payload.get("action")),
+        "expectedRevision": _finite_number(payload.get("expectedRevision"), "expectedRevision"),
+        "requestId": payload.get("requestId"),
+        "occurrenceId": payload.get("occurrenceId"),
+    }
+    action = common["action"]
+    if action is Action.DELETE:
+        return AssemblyOccurrenceDelete(**common)
+    raw_transform = (
+        payload.get("parameters", {}).get("transform")
+        if action is Action.CREATE
+        else payload.get("set", {}).get("transform")
+    )
+    try:
+        transform = normalize_transform(raw_transform)
+    except AssemblyError as error:
+        raise RequestError(error.code, str(error), **error.details) from error
+    if action is Action.CREATE:
+        return AssemblyOccurrenceCreate(
+            **common,
+            part_id=payload.get("parameters", {}).get("partId"),
+            transform=transform,
+        )
+    return AssemblyOccurrenceUpdate(**common, transform=transform)
 
 
 def _parse_feature(
@@ -3500,6 +3585,11 @@ class DocumentService:
                 except GraphError as error:
                     self._record_graph_error(error)
                     return
+                try:
+                    self._validate_assembly_references(result, loading=True)
+                except GraphError as error:
+                    self._record_graph_error(error)
+                    return
                 self._regen = result
                 if self._document.revision > 0:
                     self._publish_regeneration(result)
@@ -3555,6 +3645,7 @@ class DocumentService:
             except GraphError as error:
                 self._record_graph_error(error)
                 raise
+            self._validate_assembly_references(result, loading=True)
             self._regen = result
             if self._document.revision > 0:
                 self._publish_regeneration(result)
@@ -3584,6 +3675,18 @@ class DocumentService:
     @property
     def revision(self) -> int:
         return self._document.revision
+
+    def _validate_assembly_references(self, result: RegenResult, *, loading: bool = False) -> None:
+        try:
+            resolve_occurrences(self._document.assembly, terminal_parts(result, role=None))
+        except AssemblyError as error:
+            if loading:
+                raise GraphError(
+                    "INVALID_DOCUMENT",
+                    str(error),
+                    **error.details,
+                ) from error
+            raise RequestError(error.code, str(error), **error.details) from error
 
     def _assert_effect(self, operation: MutationOperation, result: RegenResult) -> None:
         if not isinstance(operation, (CutCreate, HoleCreate)):
@@ -3678,7 +3781,7 @@ class DocumentService:
         error = failure["error"]
         mutation_ids = {
             field: value
-            for field in ("featureId", "sketchId", "assetId")
+            for field in ("featureId", "sketchId", "assetId", "occurrenceId")
             if isinstance(value := error.get(field) or payload.get(field), str)
         }
         error.update(mutation_ids)
@@ -3806,6 +3909,31 @@ class DocumentService:
         else:
             self._publish_regeneration(result)
 
+    def _save_response(
+        self,
+        graph: Any,
+        assembly: Assembly,
+        response: dict[str, Any],
+        body_hash: str,
+    ) -> tuple[Document, bool]:
+        receipt = {
+            "requestId": response["requestId"],
+            "requestHash": body_hash,
+            "revision": response["revision"],
+            "response": response,
+        }
+        document = Document(
+            graph=graph,
+            assembly=assembly,
+            revision=response["revision"],
+            receipts=[*self._document.receipts, receipt][-MAX_RECEIPTS:],
+            request_hashes=[
+                *self._document.request_hashes,
+                {"requestId": response["requestId"], "requestHash": body_hash},
+            ][-MAX_REQUEST_HASHES:],
+        )
+        return document, self.store.save(document)
+
     def _commit_mutation(
         self,
         payload: dict[str, Any],
@@ -3830,6 +3958,7 @@ class DocumentService:
             raise _availability_request_error(result.availability)
         self._assert_effect(parsed, result)
         self._validate_treatment_parts(parsed, result, changed_id)
+        self._validate_assembly_references(result)
         deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
         previous = self._document.revision
         before = self._document.graph
@@ -3858,22 +3987,9 @@ class DocumentService:
             **response_fields(graph, result, changed_id),
             **refresh_fields,
         }
-        receipt = {
-            "requestId": payload["requestId"],
-            "requestHash": body_hash,
-            "revision": previous + 1,
-            "response": response,
-        }
-        document = Document(
-            graph=graph,
-            revision=previous + 1,
-            receipts=[*self._document.receipts, receipt][-MAX_RECEIPTS:],
-            request_hashes=[
-                *self._document.request_hashes,
-                {"requestId": payload["requestId"], "requestHash": body_hash},
-            ][-MAX_REQUEST_HASHES:],
+        document, durable = self._save_response(
+            graph, self._document.assembly, response, body_hash
         )
-        durable = self.store.save(document)
         self._document = document
         self._regen = result
         self._graph_error = None
@@ -4095,7 +4211,97 @@ class DocumentService:
             )
         return {**payload, "kind": expected_kind}
 
+    def _updated_assembly(
+        self,
+        parsed: AssemblyOccurrenceCreate | AssemblyOccurrenceUpdate | AssemblyOccurrenceDelete,
+    ) -> tuple[Assembly, Occurrence]:
+        assembly = Assembly(dict(self._document.assembly.occurrences))
+        current = assembly.occurrences.get(parsed.occurrenceId)
+        if not isinstance(parsed, AssemblyOccurrenceCreate):
+            if current is None:
+                raise RequestError(
+                    "UNKNOWN_ID",
+                    f"unknown assembly occurrence: {parsed.occurrenceId}",
+                    occurrenceId=parsed.occurrenceId,
+                )
+            if isinstance(parsed, AssemblyOccurrenceDelete):
+                del assembly.occurrences[current.id]
+                return assembly, current
+            updated = Occurrence(current.id, current.part_id, parsed.transform)
+            assembly.occurrences[current.id] = updated
+            return assembly, updated
+        if current is not None:
+            raise RequestError(
+                "DUPLICATE_ID",
+                f"assembly occurrence already exists: {parsed.occurrenceId}",
+                occurrenceId=parsed.occurrenceId,
+            )
+        if len(assembly.occurrences) >= MAX_OCCURRENCES:
+            raise RequestError(
+                "ASSEMBLY_OCCURRENCE_LIMIT",
+                "an assembly can contain at most 64 occurrences",
+                limit=MAX_OCCURRENCES,
+            )
+        assert self._regen is not None
+        available = {part.part_id for part in terminal_parts(self._regen, role=None)}
+        if parsed.part_id not in available:
+            raise RequestError(
+                "UNKNOWN_ID",
+                f"unknown terminal part: {parsed.part_id}",
+                partId=parsed.part_id,
+            )
+        created = Occurrence(parsed.occurrenceId, parsed.part_id, parsed.transform)
+        assembly.occurrences[created.id] = created
+        return assembly, created
+
+    def _occurrence_response(
+        self, payload: dict[str, Any], occurrence: Occurrence
+    ) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "revision": self._document.revision + 1,
+            "previousRevision": self._document.revision,
+            "requestId": payload["requestId"],
+            "units": "mm",
+            "occurrenceId": occurrence.id,
+            "partId": occurrence.part_id,
+            "transform": transform_to_dict(occurrence.transform),
+            "warnings": [],
+        }
+
+    def _mutate_occurrence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            try:
+                parsed, body_hash, replay = self._mutation_request(
+                    payload, _parse_assembly_occurrence
+                )
+                if replay is not None:
+                    return replay
+                assert isinstance(
+                    parsed,
+                    (AssemblyOccurrenceCreate, AssemblyOccurrenceUpdate, AssemblyOccurrenceDelete),
+                )
+                self._ensure_geometry()
+                assembly, occurrence = self._updated_assembly(parsed)
+                response = self._occurrence_response(payload, occurrence)
+                document, durable = self._save_response(
+                    self._document.graph, assembly, response, body_hash
+                )
+                self._document = document
+                assert self._regen is not None
+                self._publish_regeneration(self._regen)
+                if not durable:
+                    _LOG.warning(
+                        "document rename committed but directory fsync failed; durability is unconfirmed"
+                    )
+                return response
+            except Exception as error:  # noqa: BLE001 - translate failures at this seam
+                return self._mutation_failure("feature", payload, error, None)
+
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("kind") == "assembly_occurrence":
+            return self._mutate_occurrence(payload)
+
         def parse(candidate: dict[str, Any]) -> MutationOperation:
             if candidate.get("action") == "update":
                 candidate = self._resolve_update_kind(candidate)
@@ -4303,13 +4509,53 @@ class DocumentService:
                     hint="check the target directory and retry with a new path",
                 )
 
+    def _assembly_query(self, base: dict[str, Any]) -> dict[str, Any]:
+        assert self._regen is not None
+        parts = terminal_parts(self._regen, role=None)
+        try:
+            resolved = resolve_occurrences(self._document.assembly, parts)
+        except AssemblyError as error:
+            return _safe_error(
+                self._document.revision,
+                None,
+                error.code,
+                str(error),
+                operation="query",
+                **error.details,
+            )
+        occurrences = [
+            {
+                "occurrenceId": item.occurrence.id,
+                "partId": item.part.part_id,
+                "terminalFeatureId": item.part.terminal_feature,
+                "role": item.part.role,
+                "transform": transform_to_dict(item.occurrence.transform),
+                "bbox": self._bbox([item.shape]),
+                "volume": {"value": item.part.shape.volume, "unit": "mm^3"},
+                "area": {"value": item.part.shape.area, "unit": "mm^2"},
+                "referenceStatus": "OK",
+            }
+            for item in resolved
+        ]
+        available = [
+            {
+                "partId": part.part_id,
+                "terminalFeatureId": part.terminal_feature,
+                "label": part.label,
+                "role": part.role,
+            }
+            for part in sorted(parts, key=lambda item: item.part_id)
+        ]
+        return {**base, "occurrences": occurrences, "availableParts": available}
+
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             kind = payload.get("select", {}).get("kind")
             graph_query = kind in {"document", "graph", "timeline"}
             if (
                 not graph_query
-                and kind in {"measurements", "feature", "reference", "edge_roles", "enclosure"}
+                and kind
+                in {"measurements", "feature", "reference", "edge_roles", "enclosure", "assembly"}
                 and (failure := self._geometry_failure("query"))
             ):
                 return failure
@@ -4336,6 +4582,8 @@ class DocumentService:
                 return {**base, "viewerUrl": self._viewer_url}
             if kind == "measurements":
                 return {**base, **self._metrics(select.get("role", "manufacturing"))}
+            if kind == "assembly":
+                return self._assembly_query(base)
             if kind == "feature":
                 return self._query_feature(select, base)
             if kind == "enclosure":
