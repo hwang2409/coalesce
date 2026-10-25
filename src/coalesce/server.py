@@ -29,6 +29,8 @@ from .service import DocumentService
 
 _LOG = logging.getLogger(__name__)
 
+MAX_SKETCH_SET_JSON_BYTES = 256 * 1024
+
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh with an optional replacement absolute path to re-read the board explicitly. Use delete to remove the board asset; it fails when dependents exist unless cascade is true.",
     "sketch": "set.entities/set.constrained replace full definition; set.dimensionValues changes only named driving dimensions",
@@ -439,9 +441,14 @@ def _stateful_error(
 def _decode_sketch_set(arguments: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     if arguments.get("action") != "update" or not isinstance(arguments.get("set"), str):
         return arguments, False
+    encoded = arguments["set"]
+    if len(encoded) > MAX_SKETCH_SET_JSON_BYTES:
+        return arguments, False
     try:
-        decoded = json.loads(arguments["set"])
-    except json.JSONDecodeError:
+        if len(encoded.encode("utf-8")) > MAX_SKETCH_SET_JSON_BYTES:
+            return arguments, False
+        decoded = json.loads(encoded)
+    except (json.JSONDecodeError, RecursionError, UnicodeEncodeError):
         return arguments, False
     if not isinstance(decoded, dict):
         return arguments, False

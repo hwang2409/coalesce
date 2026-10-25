@@ -103,6 +103,8 @@ The update preserves every entity, constraint, and dimension id, then solves and
 downstream features atomically. Values must be finite; lengths, radii, and diameters must be
 positive. Unknown ids return a bounded, sorted list of valid driving dimension ids, and reference
 dimensions cannot be updated. A failed solve leaves the revision and document unchanged.
+For compatibility, a string-valued `set` that contains a JSON object is decoded up to a fixed
+256 KiB UTF-8 limit; larger, malformed, or excessively nested values are rejected without a write.
 
 Full replacement through `set.constrained` remains accepted. It replaces the constrained definition.
 Resend the same point, entity,

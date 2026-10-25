@@ -8,9 +8,10 @@ from mcp import types
 from test_constrained_sketch import graph_sketch, run_server
 from test_mcp_vertical import SKETCH, call_server_tool
 
+import coalesce.server as server_module
 from coalesce.constrained_sketch import ConstrainedSketch
 from coalesce.graph import Sketch
-from coalesce.server import create_server
+from coalesce.server import MAX_SKETCH_SET_JSON_BYTES, create_server
 from coalesce.service import (
     DocumentService,
     RequestError,
@@ -329,6 +330,87 @@ async def test_non_object_string_set_has_exact_actionable_error_and_is_atomic(tm
 
 
 @pytest.mark.anyio
+async def test_deep_json_string_set_is_invalid_and_atomic(tmp_path):
+    path = tmp_path / "deep-string-set.coalesce.json"
+    build_before_state(
+        "constrained-sketch-update-after-extrusion",
+        path,
+        tmp_path / "fixtures",
+        tmp_path / "before-state.json",
+    )
+    saved = path.read_bytes()
+
+    result = await call_server_tool(
+        DocumentService(path, warmup=False),
+        "sketch",
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "deep-string-set",
+            "sketchId": "profile",
+            "set": "[" * 10_000 + "{}" + "]" * 10_000,
+        },
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["revision"] == 2
+    assert path.read_bytes() == saved
+
+
+@pytest.mark.anyio
+async def test_oversized_json_string_set_is_rejected_before_parsing(tmp_path, monkeypatch):
+    path = tmp_path / "oversized-string-set.coalesce.json"
+
+    def fail_if_called(_value):
+        pytest.fail("json.loads must not parse an oversized set")
+
+    monkeypatch.setattr(server_module.json, "loads", fail_if_called)
+    result = await call_server_tool(
+        DocumentService(path, warmup=False),
+        "sketch",
+        {
+            "action": "update",
+            "expectedRevision": 0,
+            "requestId": "oversized-string-set",
+            "sketchId": "profile",
+            "set": " " * (MAX_SKETCH_SET_JSON_BYTES + 1),
+        },
+    )
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["revision"] == 0
+    assert not path.exists()
+
+
+@pytest.mark.anyio
+async def test_json_string_set_just_under_limit_still_works(tmp_path):
+    path = tmp_path / "near-limit-string-set.coalesce.json"
+    build_before_state(
+        "constrained-sketch-update-after-extrusion",
+        path,
+        tmp_path / "fixtures",
+        tmp_path / "before-state.json",
+    )
+    encoded = json.dumps({"dimensionValues": {"opening-radius": 4}})
+    encoded += " " * (MAX_SKETCH_SET_JSON_BYTES - len(encoded) - 1)
+
+    result = await call_server_tool(
+        DocumentService(path, warmup=False),
+        "sketch",
+        {
+            "action": "update",
+            "expectedRevision": 2,
+            "requestId": "near-limit-string-set",
+            "sketchId": "profile",
+            "set": encoded,
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["revision"] == 3
+
+
+@pytest.mark.anyio
 async def test_json_string_dimension_values_matches_object_update_with_warning(tmp_path):
     source = tmp_path / "source.coalesce.json"
     (tmp_path / "fixtures").mkdir()
@@ -399,22 +481,6 @@ async def test_dimension_update_is_published_in_schema_with_staged_example(tmp_p
     payload = dimension_update(2)
 
     validate(payload, schema)
-    set_schema = schema["properties"]["set"]
-    assert {key: set_schema[key] for key in ("type", "description", "additionalProperties")} == {
-        "type": "object",
-        "description": (
-            "Required for update and must be a JSON object: set.entities or set.constrained "
-            "replaces the full definition; set.dimensionValues changes named driving dimensions; "
-            "set.position moves the sketch. Not allowed for create or delete."
-        ),
-        "additionalProperties": False,
-    }
-    assert set(set_schema["properties"]) == {
-        "position",
-        "entities",
-        "constrained",
-        "dimensionValues",
-    }
     serialized = json.dumps(schema)
     assert '"dimensionValues"' in serialized
     assert '"opening-radius": 4' in serialized

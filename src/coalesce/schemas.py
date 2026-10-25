@@ -346,11 +346,7 @@ SKETCH_SCHEMA = {
         "constrained": CONSTRAINED_SKETCH,
         "set": {
             **SKETCH_UPDATE_SCHEMA["properties"]["set"],
-            "description": (
-                "Required for update and must be a JSON object: set.entities or set.constrained "
-                "replaces the full definition; set.dimensionValues changes named driving dimensions; "
-                "set.position moves the sketch. Not allowed for create or delete."
-            ),
+            "description": "Required for update; not allowed for create or delete.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
