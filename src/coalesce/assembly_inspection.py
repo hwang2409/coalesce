@@ -30,7 +30,7 @@ class _KernelSymbols:
     analyzer: Any
     distance: Any | None
     classifier: Any
-    inside_state: Any
+    outside_state: Any
     linear_tolerance: float
 
 
@@ -81,7 +81,7 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.collections import List_TopoDS_Shape
     from OCP.Precision import Precision
-    from OCP.TopAbs import TopAbs_IN
+    from OCP.TopAbs import TopAbs_OUT
 
     if measure_clearance:
         from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -96,7 +96,7 @@ def _load_kernel_symbols(measure_clearance: bool) -> _KernelSymbols:
         BRepCheck_Analyzer,
         BRepExtrema_DistShapeShape,
         BRepClass3d_SolidClassifier,
-        TopAbs_IN,
+        TopAbs_OUT,
         Precision.Confusion_s(),
     )
 
@@ -141,18 +141,24 @@ def _minimum_clearance(first: Any, second: Any, symbols: _KernelSymbols | None =
     return operation.Value()
 
 
-def _contains_boundary_point(first: Any, second: Any, symbols: _KernelSymbols) -> bool:
+def _all_solid_points_outside(first: Any, second: Any, symbols: _KernelSymbols) -> bool:
+    first_solids = first.solids()
     second_solids = second.solids()
-    return any(
-        symbols.classifier(
-            second_solid.wrapped,
-            first_solid.vertices()[0].center().to_pnt(),
-            symbols.linear_tolerance,
-        ).State()
-        == symbols.inside_state
-        for first_solid in first.solids()
-        for second_solid in second_solids
-    )
+    if not first_solids or not second_solids:
+        return False
+    try:
+        return all(
+            symbols.classifier(
+                second_solid.wrapped,
+                first_solid.vertices()[0].center().to_pnt(),
+                symbols.linear_tolerance,
+            ).State()
+            == symbols.outside_state
+            for first_solid in first_solids
+            for second_solid in second_solids
+        )
+    except Exception:  # noqa: BLE001 - an uncertain classification requires exact Common.
+        return False
 
 
 def _occurrence_bounds(
@@ -218,8 +224,8 @@ def _inspect_pair(
         exactly_separated = (
             clearance is not None
             and clearance > symbols.linear_tolerance
-            and not _contains_boundary_point(first.shape, second.shape, symbols)
-            and not _contains_boundary_point(second.shape, first.shape, symbols)
+            and _all_solid_points_outside(first.shape, second.shape, symbols)
+            and _all_solid_points_outside(second.shape, first.shape, symbols)
         )
         overlap = (
             _common_volume(first.shape, second.shape, symbols)

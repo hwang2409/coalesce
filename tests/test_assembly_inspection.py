@@ -2,7 +2,8 @@ import copy
 from dataclasses import replace
 
 import pytest
-from build123d import Box
+from build123d import Box, Compound, Shell
+from OCP.TopAbs import TopAbs_ON, TopAbs_UNKNOWN
 
 from coalesce.assembly import Occurrence, ResolvedOccurrence, RigidTransform, locate_shape
 from coalesce.assembly_inspection import (
@@ -10,6 +11,7 @@ from coalesce.assembly_inspection import (
     _boxes_overlap,
     _common_volume,
     _load_kernel_symbols,
+    _minimum_clearance,
     inspect_assembly,
 )
 from coalesce.parts import TerminalPart
@@ -157,10 +159,10 @@ def test_overlapping_pair_keeps_exact_volume():
 @pytest.mark.parametrize("small_id", ["a", "b"])
 def test_contained_box_keeps_exact_volume_in_both_orders(small_id):
     large_id = "b" if small_id == "a" else "a"
-    shapes = {
-        small_id: Box(2, 2, 2).translate((4, 4, 4)),
-        large_id: Box(10, 10, 10),
-    }
+    shapes = {small_id: Box(2, 2, 2), large_id: Box(10, 10, 10)}
+    symbols = _load_kernel_symbols(True)
+    assert _minimum_clearance(shapes[small_id], shapes[large_id], symbols) > symbols.linear_tolerance
+
     row = inspect_assembly(
         [_resolved(occurrence_id, shape=shapes[occurrence_id]) for occurrence_id in ("a", "b")],
         None,
@@ -174,12 +176,13 @@ def test_contained_box_keeps_exact_volume_in_both_orders(small_id):
 
 def test_contained_fillet_keeps_exact_volume():
     small = Box(4, 4, 2)
-    small = small.fillet(0.4, small.edges()).translate((4, 4, 4))
+    small = small.fillet(0.4, small.edges())
+    large = Box(10, 10, 10)
+    symbols = _load_kernel_symbols(True)
+    assert _minimum_clearance(small, large, symbols) > symbols.linear_tolerance
+
     row = inspect_assembly(
-        [
-            _resolved("a", shape=small),
-            _resolved("b", shape=Box(10, 10, 10)),
-        ],
+        [_resolved("a", shape=small), _resolved("b", shape=large)],
         None,
         1,
     )[0]
@@ -187,6 +190,74 @@ def test_contained_fillet_keeps_exact_volume():
     assert row["overlapVolume"]["value"] == pytest.approx(small.volume)
     assert row["clearance"] == {"value": 0.0, "unit": "mm"}
     assert row["interferes"] is True
+
+
+def test_multi_solid_containment_keeps_exact_volume():
+    inside = Box(2, 2, 2)
+    compound = Compound(children=[Box(2, 2, 2).translate((20, 0, 0)), inside])
+    large = Box(10, 10, 10)
+    symbols = _load_kernel_symbols(True)
+    assert _minimum_clearance(compound, large, symbols) > symbols.linear_tolerance
+
+    row = inspect_assembly(
+        [_resolved("a", shape=compound), _resolved("b", shape=large)],
+        None,
+        1,
+    )[0]
+
+    assert row["overlapVolume"]["value"] == pytest.approx(inside.volume)
+    assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+    assert row["interferes"] is True
+
+
+def test_open_shell_cannot_prove_separation(monkeypatch):
+    shell = Shell(Box(10, 10, 10).faces()[:-1])
+    inside = Box(2, 2, 2)
+    symbols = _load_kernel_symbols(True)
+    calls = 0
+    common_volume = _common_volume
+    assert _minimum_clearance(shell, inside, symbols) > symbols.linear_tolerance
+
+    def count_common(*args):
+        nonlocal calls
+        calls += 1
+        return common_volume(*args)
+
+    monkeypatch.setattr("coalesce.assembly_inspection._common_volume", count_common)
+    inspect_assembly([_resolved("a", shape=shell), _resolved("b", shape=inside)], None, 1)
+
+    assert calls == 1
+
+
+@pytest.mark.parametrize("state", [TopAbs_ON, TopAbs_UNKNOWN, RuntimeError("classifier failed")])
+def test_uncertain_classifier_state_cannot_prove_separation(monkeypatch, state):
+    symbols = _load_kernel_symbols(True)
+    calls = 0
+    common_volume = _common_volume
+
+    class Classifier:
+        def __init__(self, *_args):
+            if isinstance(state, BaseException):
+                raise state
+
+        def State(self):
+            return state
+
+    def count_common(*args):
+        nonlocal calls
+        calls += 1
+        return common_volume(*args)
+
+    monkeypatch.setattr(
+        "coalesce.assembly_inspection._load_kernel_symbols",
+        lambda _measure_clearance: replace(symbols, classifier=Classifier),
+    )
+    monkeypatch.setattr("coalesce.assembly_inspection._common_volume", count_common)
+    apart = [_resolved("a", angle=45), _resolved("b", translation=(2, 7, 0), angle=-45)]
+
+    inspect_assembly(apart, None, 1)
+
+    assert calls == 1
 
 
 def test_overlapping_pair_omits_clearance_when_not_requested():
