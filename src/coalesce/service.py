@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -4854,6 +4855,7 @@ class DocumentService:
             resolved = resolve_occurrences(
                 self._document.assembly, terminal_parts(self._regen, role=None)
             )
+            resolved = [replace(item, shape=copy.deepcopy(item.shape)) for item in resolved]
             pair_count = sum(
                 len(inspection_pairs(resolved, item.get("occurrenceIds"))) for item in selected
             )

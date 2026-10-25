@@ -104,6 +104,7 @@ def _boxes_overlap(first: Any, second: Any, symbols: _KernelSymbols | None = Non
 def _common_volume(first: Any, second: Any, symbols: _KernelSymbols | None = None) -> float:
     symbols = symbols or _load_kernel_symbols(False)
     operation = symbols.common(first.wrapped, second.wrapped)
+    operation.SetNonDestructive(True)
     operation.Build()
     if not operation.IsDone():
         raise ValueError("exact common-volume operation did not complete")

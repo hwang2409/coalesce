@@ -1,9 +1,11 @@
 import math
+from dataclasses import replace
 
 import pytest
 from test_mcp_assembly import occurrence_create, transform
 from test_mcp_vertical import FEATURE, SKETCH, run_server
 
+from coalesce import service as service_module
 from coalesce.assembly import Assembly, Occurrence, RigidTransform
 from coalesce.service import DocumentService
 
@@ -17,6 +19,31 @@ def _placed_service(tmp_path):
     assert service.sketch(SKETCH)["ok"]
     assert service.feature(FEATURE)["ok"]
     return service
+
+
+def test_inspection_snapshot_owns_distinct_topology_per_occurrence(tmp_path, monkeypatch):
+    service = _placed_service(tmp_path)
+    assert service.feature(occurrence_create(2, "place-a", "a", 0))["ok"]
+    assert service.feature(occurrence_create(3, "place-b", "b", 20))["ok"]
+    inspected = []
+    evaluate = service._evaluate_assembly_requirements
+    resolve = service_module.resolve_occurrences
+
+    def shared_topology(assembly, parts):
+        return [replace(item, shape=item.part.shape) for item in resolve(assembly, parts)]
+
+    def capture(requirements, resolved, revision):
+        inspected.extend(resolved)
+        return evaluate(requirements, resolved, revision)
+
+    monkeypatch.setattr(service_module, "resolve_occurrences", shared_topology)
+    monkeypatch.setattr(service, "_evaluate_assembly_requirements", capture)
+    result = service.check({"action": "evaluate", "requirements": [_requirement()]})
+
+    assert result["ok"]
+    cached = service._regen.shapes["plate_extrude"]
+    assert all(not item.shape.wrapped.IsPartner(cached.wrapped) for item in inspected)
+    assert not inspected[0].shape.wrapped.IsPartner(inspected[1].shape.wrapped)
 
 
 def test_real_overlap_reports_volume_ids_and_composes_with_valid_brep(tmp_path):
