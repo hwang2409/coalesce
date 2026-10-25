@@ -35,6 +35,7 @@ packages = ["src/coalesce"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+python_files = ["test_*.py"]
 pythonpath = ["."]
 markers = ["slow: exhaustive tests that take more than 60 seconds"]
 
