@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,6 +83,25 @@ def _terminal_part(
     return TerminalPart(part_id, label, role, body, feature, solid)
 
 
+def _ambiguous_source_ids(parts: list[TerminalPart]) -> list[str]:
+    counts = Counter(part.part_id for part in parts)
+    duplicate_ids = {part_id for part_id, count in counts.items() if count > 1}
+    return sorted(
+        {
+            f"{part.source_body.feature}/{part.source_body.entity}"
+            for part in parts
+            if part.part_id in duplicate_ids
+        }
+    )
+
+
+def _select_unique_parts(parts: list[TerminalPart], role: str | None) -> list[TerminalPart]:
+    selected = parts if role is None else [part for part in parts if part.role == role]
+    if ambiguous_source_ids := _ambiguous_source_ids(selected):
+        raise AmbiguousTerminalPartsError(ambiguous_source_ids)
+    return selected
+
+
 def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[TerminalPart]:
     owned = [
         candidate
@@ -104,20 +124,4 @@ def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[Term
         _terminal_part(result, feature, solid, body, history, counts[body] > 1)
         for feature, solid, body, history in solids
     ]
-    if role is not None:
-        parts = [part for part in parts if part.role == role]
-    part_id_counts: dict[str, int] = {}
-    for part in parts:
-        part_id_counts[part.part_id] = part_id_counts.get(part.part_id, 0) + 1
-    duplicate_ids = {part_id for part_id, count in part_id_counts.items() if count > 1}
-    if duplicate_ids:
-        raise AmbiguousTerminalPartsError(
-            sorted(
-                {
-                    f"{part.source_body.feature}/{part.source_body.entity}"
-                    for part in parts
-                    if part.part_id in duplicate_ids
-                }
-            )
-        )
-    return parts
+    return _select_unique_parts(parts, role)
