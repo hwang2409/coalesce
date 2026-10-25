@@ -342,7 +342,7 @@ def _occurrence_facts(occurrence: SceneOccurrence) -> list[dict]:
 
 
 def _scene_row(item: ScenePart | SceneOccurrence, assets: dict) -> tuple[dict, tuple, tuple]:
-    from coalesce.assembly import locate_shape
+    from coalesce.assembly import definition_shape, locate_shape
 
     part = _item_part(item)
     occurrence = item if isinstance(item, SceneOccurrence) else None
@@ -351,6 +351,7 @@ def _scene_row(item: ScenePart | SceneOccurrence, assets: dict) -> tuple[dict, t
         if occurrence
         else part.shape.bounding_box()
     )
+    display_bounds = definition_shape(part.shape).bounding_box() if occurrence else exact
     color, digest, counts = assets[part.name]
     area = part.area if part.area is not None else part.shape.area
     volume = part.volume if part.volume is not None else part.shape.volume
@@ -365,7 +366,7 @@ def _scene_row(item: ScenePart | SceneOccurrence, assets: dict) -> tuple[dict, t
         "volume": {"value": volume, "unit": "mm^3"},
         "color": color,
         "visible": part.visible,
-        "size": [exact.size.X, exact.size.Y, exact.size.Z],
+        "size": [display_bounds.size.X, display_bounds.size.Y, display_bounds.size.Z],
         "features": list(part.features),
         "facts": _occurrence_facts(occurrence) if occurrence else list(part.facts),
         "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
@@ -415,7 +416,10 @@ def _build_scene(
         "fit": fit,
     }
     if any(isinstance(item, SceneOccurrence) for item in items):
+        from OCP.Precision import Precision
+
         scene["assemblyInspection"] = assembly_inspection
+        scene["assemblyLinearTolerance"] = Precision.Confusion_s()
     return scene, meshes
 
 

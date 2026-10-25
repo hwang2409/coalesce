@@ -25,7 +25,16 @@ const state = async () => page.evaluate(() => ({
   description: document.querySelector('#view-description')?.textContent,
   memory: window.coalesceViewer.memory,
   worldBounds: window.coalesceViewer.drawn.worldBounds,
+  inspectionCount: document.querySelector('#inspection-count')?.textContent,
+  inspectionStatuses: [...document.querySelectorAll('.assembly-row')].map(node => node.dataset.status),
+  inspectionValues: [...document.querySelectorAll('.assembly-row .fit-value')].map(node => node.textContent),
+  inspectionReasons: [...document.querySelectorAll('.assembly-row .fit-reason')].map(node => node.textContent),
+  morePassing: document.querySelector('.assembly-more button')?.textContent ?? null,
+  partNames: [...document.querySelectorAll('.part')].map(node => node.getAttribute('aria-label')),
+  partSizes: [...document.querySelectorAll('.part-size')].map(node => node.textContent),
+  rawInspection: document.querySelector('#inspection-raw')?.textContent,
 }));
+const initial = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-assembled-r2.png`, fullPage: true });
 const firstToggle = page.locator('.visibility').first();
 await firstToggle.click();
@@ -34,6 +43,9 @@ await firstToggle.click();
 await page.locator('.assembly-row').first().click();
 const focused = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r2.png`, fullPage: true });
+await page.locator('.assembly-more button').focus();
+await page.keyboard.press('Enter');
+const expandedPassing = await page.locator('.assembly-row[data-status="PASS"]').count();
 await writeFile(refreshTrigger, 'ready');
 await page.waitForFunction(() => document.querySelector('.assembly-row .fit-label')?.textContent === 'pin-left ↔ pin-right');
 const refreshed = await state();
@@ -45,5 +57,5 @@ await page.keyboard.press('Escape');
 const escaped = await state();
 await page.getByRole('button', { name: 'Section' }).click();
 const section = await state();
-console.log(JSON.stringify({ hidden, focused, refreshed, restored, escaped, section, errors }));
+console.log(JSON.stringify({ initial, expandedPassing, hidden, focused, refreshed, restored, escaped, section, errors }));
 await browser.close();

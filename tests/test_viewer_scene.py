@@ -167,7 +167,7 @@ def test_repeated_occurrences_share_one_mesh_and_use_world_bounds(monkeypatch):
     rotated = scene["parts"][-1]
     assert rotated["name"] == rotated["occurrenceId"] == "shaft-8"
     assert rotated["partId"] == "shaft/body"
-    assert rotated["size"] == pytest.approx([4, 30, 8])
+    assert rotated["size"] == pytest.approx([30, 4, 8])
     assert rotated["transform"]["rotation"]["angleDegrees"] == 90
 
 

@@ -130,10 +130,11 @@ function updateScale(height) {
 }
 
 function formatMm(value) {
-  return Number(value.toPrecision(6)).toString();
+  const rounded = Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(3));
+  return rounded.toFixed(3).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 }
 
-const formatSize = (part) => part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
+const formatSize = (part) => part.size.map(formatMm).join(' × ');
 
 // named holes and the features that built the part, so the human can check what the agent made
 function partDetail(part) {
@@ -464,6 +465,7 @@ function renderPartList(parts) {
     button.type = 'button';
     button.className = 'part';
     button.dataset.partId = part.occurrenceId ?? part.partId;
+    button.setAttribute('aria-label', titles[index]);
     const name = document.createElement('span');
     name.className = 'part-name';
     name.textContent = titles[index];
@@ -636,7 +638,9 @@ function assemblyRow(row, key) {
       ? `${formatMm(overlap)} mm³ overlap`
       : clearance === undefined
         ? 'No overlap'
-        : `${formatMm(clearance)} mm clearance`;
+        : clearance <= current.assemblyLinearTolerance
+          ? 'touching'
+          : `${formatMm(clearance)} mm clearance`;
   for (const [className, text] of [
     ['fit-status', row.status],
     ['fit-label', titles.join(' ↔ ')],
@@ -690,10 +694,36 @@ function renderInspection(fit, assembly = []) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
-  for (const row of assembly) {
+  const orderedAssembly = assembly.toSorted((a, b) => {
+    const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
+    return rank(a) - rank(b) || (a.clearance?.value ?? Infinity) - (b.clearance?.value ?? Infinity);
+  });
+  const passing = orderedAssembly.filter((row) => row.status === 'PASS');
+  const shownAssembly = passing.length > 6
+    ? orderedAssembly.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6)
+    : orderedAssembly;
+  for (const row of shownAssembly) {
     const item = document.createElement('li');
     item.append(assemblyRow(row, assemblyKey(current.revision, row)));
     list.append(item);
+  }
+  if (passing.length > 6) {
+    const item = document.createElement('li');
+    item.className = 'assembly-more';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `Show ${passing.length - 6} more passing checks`;
+    button.addEventListener('click', () => {
+      item.replaceWith(...passing.slice(6).map((row) => {
+        const rowItem = document.createElement('li');
+        rowItem.append(assemblyRow(row, assemblyKey(current.revision, row)));
+        return rowItem;
+      }));
+    });
+    item.append(button);
+    list.append(item);
+  }
+  for (const row of orderedAssembly) {
     const line = document.createElement('li');
     line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()}`;
     evidence.append(line);
