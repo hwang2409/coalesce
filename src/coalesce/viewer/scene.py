@@ -13,12 +13,13 @@ import threading
 from array import array
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from build123d import Shape
 
+    from coalesce.assembly import RigidTransform
     from coalesce.references import BodySource
 
 # restrained engineering-review colors for manufactured parts, assigned in part order when no color
@@ -32,7 +33,11 @@ _LMS_TO_LAB = (
     (1.9779984951, -2.4285922050, 0.4505937099),
     (0.0259040371, 0.7827717662, -0.8086757660),
 )
-_LAB_TO_LMS = ((1, 0.3963377774, 0.2158037573), (1, -0.1055613458, -0.0638541728), (1, -0.0894841775, -1.2914855480))
+_LAB_TO_LMS = (
+    (1, 0.3963377774, 0.2158037573),
+    (1, -0.1055613458, -0.0638541728),
+    (1, -0.0894841775, -1.2914855480),
+)
 _LMS_TO_RGB = (
     (4.0767416621, -3.3077115913, 0.2309699292),
     (-1.2684380046, 2.6097574011, -0.3413193965),
@@ -70,6 +75,13 @@ class ScenePart:
     features: tuple[dict, ...] = ()
     # what the committed features say about this part, for the human: [{"label", "value"}]
     facts: tuple[dict, ...] = ()
+
+
+@dataclass(frozen=True)
+class SceneOccurrence:
+    occurrence_id: str
+    definition: ScenePart
+    transform: RigidTransform
 
 
 def _bytes(kind: str, values: list) -> bytes:
@@ -113,20 +125,22 @@ def _tessellate(part: ScenePart, tolerance: float) -> tuple[bytes, dict, tuple, 
     edges = []
     for index in range(1, faces_of.Extent() + 1):
         location = TopLoc_Location()
-        mesh = BRep_Tool.Triangulation_s(TopoDS.Face(faces_of.FindFromIndex(index).First()), location)
-        polygon = BRep_Tool.PolygonOnTriangulation_s(TopoDS.Edge(faces_of.FindKey(index)), mesh, location)
+        mesh = BRep_Tool.Triangulation_s(
+            TopoDS.Face(faces_of.FindFromIndex(index).First()), location
+        )
+        polygon = BRep_Tool.PolygonOnTriangulation_s(
+            TopoDS.Edge(faces_of.FindKey(index)), mesh, location
+        )
         if polygon is None:  # a degenerated edge, such as a cone apex, has no length to draw
             continue
         move = location.Transformation()
-        points = [mesh.Node(polygon.Node(i)).Transformed(move) for i in range(1, polygon.NbNodes() + 1)]
+        points = [
+            mesh.Node(polygon.Node(i)).Transformed(move) for i in range(1, polygon.NbNodes() + 1)
+        ]
         for a, b in itertools.pairwise(points):
             edges += [a.X(), a.Y(), a.Z(), b.X(), b.Y(), b.Z()]
     flat = [c for v in vertices for c in v]
-    data = (
-        _bytes("f", flat)
-        + _bytes("I", [i for t in triangles for i in t])
-        + _bytes("f", edges)
-    )
+    data = _bytes("f", flat) + _bytes("I", [i for t in triangles for i in t]) + _bytes("f", edges)
     lo = tuple(min(flat[i::3]) for i in range(3))
     hi = tuple(max(flat[i::3]) for i in range(3))
     counts = {
@@ -172,7 +186,12 @@ def _manufactured_colors(count: int) -> tuple[str, ...]:
     Greedy in order, so the first n colors never change as count grows.
     """
     colors = list(PALETTE[:count])
-    return (*colors, *_pick(map(_candidate, range(_CANDIDATES)), [REFERENCE_COLOR, *colors], count - len(colors)))
+    return (
+        *colors,
+        *_pick(
+            map(_candidate, range(_CANDIDATES)), [REFERENCE_COLOR, *colors], count - len(colors)
+        ),
+    )
 
 
 def _pick(candidates: Iterable[str], taken: Sequence[str], count: int) -> list[str]:
@@ -183,7 +202,9 @@ def _pick(candidates: Iterable[str], taken: Sequence[str], count: int) -> list[s
     while len(picked) < count:
         gaps = [min(math.dist(lab, t) for t in taken) for _, lab in candidates]
         # the first candidate far enough; once the space is full, the farthest one
-        pick = next((i for i, gap in enumerate(gaps) if gap >= _MIN_DISTANCE), gaps.index(max(gaps)))
+        pick = next(
+            (i for i, gap in enumerate(gaps) if gap >= _MIN_DISTANCE), gaps.index(max(gaps))
+        )
         color, lab = candidates[pick]
         picked.append(color)
         taken.append(lab)
@@ -201,7 +222,9 @@ def _shades(color: str, count: int) -> tuple[str, ...]:
     chroma, hue = math.hypot(a, b), math.atan2(b, a)
     candidates = []
     for turn, more in _SPLIT_VARIANTS:
-        if turn and 90 < math.degrees(hue + turn) % 360 < 220:  # never turn toward green or teal, the board's hues
+        if (
+            turn and 90 < math.degrees(hue + turn) % 360 < 220
+        ):  # never turn toward green or teal, the board's hues
             continue
         ab = (chroma + more) * math.cos(hue + turn), (chroma + more) * math.sin(hue + turn)
         for step in range(1, 8):
@@ -209,7 +232,10 @@ def _shades(color: str, count: int) -> tuple[str, ...]:
                 lab = (lightness + sign * step * _SPLIT_STEP, *ab)
                 shade = _hex(lab)
                 # out of gamut clips toward white or black, where many shades would end up the same
-                if _SPLIT_LIGHTNESS[0] <= lab[0] <= _SPLIT_LIGHTNESS[1] and math.dist(_oklab(shade), lab) < 0.005:
+                if (
+                    _SPLIT_LIGHTNESS[0] <= lab[0] <= _SPLIT_LIGHTNESS[1]
+                    and math.dist(_oklab(shade), lab) < 0.005
+                ):
                     candidates.append(shade)
     guard = [REFERENCE_COLOR, *_manufactured_colors(_SPLIT_GUARD), color]
     return (color, *_pick(candidates, guard, count - 1))
@@ -237,61 +263,168 @@ def _part_colors(parts: Sequence[ScenePart]) -> list[str]:
     return colors
 
 
-def _build_scene(
-    revision: int, parts: Iterable[ScenePart], tolerance: float, change: dict | None, fit: list[dict]
-) -> tuple[dict, dict[str, bytes]]:
-    """Validate and tessellate parts into (scene JSON, mesh bytes by content digest)."""
-    parts = list(parts)
-    names = [p.name for p in parts]
-    if len(set(names)) != len(names):
-        raise ValueError(f"duplicate part names in {names}")
+def _item_part(item: ScenePart | SceneOccurrence) -> ScenePart:
+    return item.definition if isinstance(item, SceneOccurrence) else item
+
+
+def _item_name(item: ScenePart | SceneOccurrence) -> str:
+    return item.occurrence_id if isinstance(item, SceneOccurrence) else item.name
+
+
+def _definitions(items: list[ScenePart | SceneOccurrence]) -> list[ScenePart]:
+    by_name = {}
+    for item in items:
+        part = _item_part(item)
+        if isinstance(item, SceneOccurrence):
+            from coalesce.assembly import definition_shape
+
+            part = replace(part, shape=definition_shape(part.shape))
+            by_name[part.name] = part
+        else:
+            by_name.setdefault(part.name, part)
+    parts = list(by_name.values())
     for part in parts:
         if part.role not in {"manufacturing", "reference"}:
             raise ValueError(f"part {part.name!r} has unknown role {part.role!r}")
         if part.color is not None and not _COLOR.fullmatch(part.color):
             raise ValueError(f"part {part.name!r} color must be #rrggbb, got {part.color!r}")
-    meshes, scene_parts, lows, highs = {}, [], [], []
+    return parts
+
+
+def _definition_assets(parts: list[ScenePart], tolerance: float) -> tuple[dict, dict]:
+    assets, meshes = {}, {}
     for part, color in zip(parts, _part_colors(parts), strict=True):
-        data, counts, lo, hi = _tessellate(part, tolerance)
+        data, counts, _, _ = _tessellate(part, tolerance)
         digest = hashlib.sha256(data).hexdigest()[:32]
+        assets[part.name] = color, digest, counts
         meshes[digest] = data
-        exact = part.shape.bounding_box()
-        scene_parts.append(
-            {
-                "name": part.name,
-                "partId": part.name,
-                "label": part.label or part.name,
-                "role": part.role,
-                "sourceBody": asdict(part.source_body) if part.source_body else None,
-                "terminalFeatureId": part.terminal_feature,
-                "area": {"value": part.area if part.area is not None else part.shape.area, "unit": "mm^2"},
-                "volume": {"value": part.volume if part.volume is not None else part.shape.volume, "unit": "mm^3"},
-                "color": color,
-                "visible": part.visible,
-                "size": [exact.size.X, exact.size.Y, exact.size.Z],
-                "features": list(part.features),
-                "facts": list(part.facts),
-                "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
-            }
+    return assets, meshes
+
+
+def _number(value: float, places: int = 3) -> str:
+    return f"{round(value, places) + 0.0:g}"
+
+
+def _rotation_text(transform: RigidTransform) -> str:
+    if round(transform.angle_degrees, 3) == 0:
+        return "none"
+    principal = {
+        (1.0, 0.0, 0.0): "X",
+        (-1.0, 0.0, 0.0): "-X",
+        (0.0, 1.0, 0.0): "Y",
+        (0.0, -1.0, 0.0): "-Y",
+        (0.0, 0.0, 1.0): "Z",
+        (0.0, 0.0, -1.0): "-Z",
+    }.get(transform.axis)
+    axis = (
+        principal
+        or "(" + ", ".join(f"{round(value, 2) + 0.0:.2f}" for value in transform.axis) + ")"
+    )
+    return f"{_number(transform.angle_degrees)}° about {axis}"
+
+
+def _occurrence_facts(occurrence: SceneOccurrence) -> list[dict]:
+    from coalesce.assembly import definition_shape
+
+    part, value = occurrence.definition, occurrence.transform
+    size = definition_shape(part.shape).bounding_box().size
+    area = part.area if part.area is not None else part.shape.area
+    volume = part.volume if part.volume is not None else part.shape.volume
+    return [
+        {"label": "Translation", "value": ", ".join(_number(n) for n in value.translation) + " mm"},
+        {"label": "Rotation", "value": _rotation_text(value)},
+        {"label": "Terminal feature", "value": part.terminal_feature or "none"},
+        {"label": "Definition size", "value": " × ".join(_number(n) for n in size) + " mm"},
+        {"label": "Area", "value": f"{_number(area)} mm²"},
+        {"label": "Volume", "value": f"{_number(volume)} mm³"},
+        *part.facts,
+    ]
+
+
+def _scene_row(item: ScenePart | SceneOccurrence, assets: dict) -> tuple[dict, tuple, tuple]:
+    from coalesce.assembly import locate_shape
+
+    part = _item_part(item)
+    occurrence = item if isinstance(item, SceneOccurrence) else None
+    exact = (
+        locate_shape(part.shape, occurrence.transform).bounding_box()
+        if occurrence
+        else part.shape.bounding_box()
+    )
+    color, digest, counts = assets[part.name]
+    area = part.area if part.area is not None else part.shape.area
+    volume = part.volume if part.volume is not None else part.shape.volume
+    row = {
+        "name": _item_name(item),
+        "partId": part.name,
+        "label": _item_name(item) if occurrence else part.label or part.name,
+        "role": part.role,
+        "sourceBody": asdict(part.source_body) if part.source_body else None,
+        "terminalFeatureId": part.terminal_feature,
+        "area": {"value": area, "unit": "mm^2"},
+        "volume": {"value": volume, "unit": "mm^3"},
+        "color": color,
+        "visible": part.visible,
+        "size": [exact.size.X, exact.size.Y, exact.size.Z],
+        "features": list(part.features),
+        "facts": _occurrence_facts(occurrence) if occurrence else list(part.facts),
+        "mesh": {"id": digest, "url": f"/api/mesh/{digest}", **counts},
+    }
+    if occurrence:
+        value = occurrence.transform
+        row.update(
+            occurrenceId=occurrence.occurrence_id,
+            definitionLabel=part.label or part.name,
+            transform={
+                "translation": list(value.translation),
+                "rotation": {"axis": list(value.axis), "angleDegrees": value.angle_degrees},
+            },
+            bbox={"min": list(exact.min), "max": list(exact.max)},
         )
-        lows.append(lo)
-        highs.append(hi)
+    return row, tuple(exact.min), tuple(exact.max)
+
+
+def _scene_bounds(lows: list[tuple], highs: list[tuple]) -> dict:
+    if not lows:
+        return {"min": [0, 0, 0], "max": [0, 0, 0]}
+    return {"min": [min(c) for c in zip(*lows)], "max": [max(c) for c in zip(*highs)]}
+
+
+def _build_scene(
+    revision: int,
+    items: Iterable[ScenePart | SceneOccurrence],
+    tolerance: float,
+    change: dict | None,
+    fit: list[dict],
+    assembly_inspection: list[dict],
+) -> tuple[dict, dict[str, bytes]]:
+    """Validate and tessellate definitions once into scene JSON and mesh bytes."""
+    items = list(items)
+    names = [_item_name(item) for item in items]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate part names in {names}")
+    definitions = _definitions(items)
+    assets, meshes = _definition_assets(definitions, tolerance)
+    rows = [_scene_row(item, assets) for item in items]
     scene = {
         "revision": revision,
         "units": "mm",
-        "bbox": {
-            "min": [min(c) for c in zip(*lows)] if lows else [0, 0, 0],
-            "max": [max(c) for c in zip(*highs)] if highs else [0, 0, 0],
-        },
-        "parts": scene_parts,
+        "bbox": _scene_bounds([low for _, low, _ in rows], [high for _, _, high in rows]),
+        "parts": [row for row, _, _ in rows],
         "change": change,
         "fit": fit,
     }
+    if any(isinstance(item, SceneOccurrence) for item in items):
+        scene["assemblyInspection"] = assembly_inspection
     return scene, meshes
 
 
 def _bounded_edit(edit: dict | None) -> dict | None:
-    if not edit or not isinstance(edit.get("featureId"), str) or not isinstance(edit.get("kind"), str):
+    if (
+        not edit
+        or not isinstance(edit.get("featureId"), str)
+        or not isinstance(edit.get("kind"), str)
+    ):
         return None
     fields = edit.get("fields")
     if not isinstance(fields, dict) or not fields:
@@ -345,10 +478,11 @@ class ViewerSceneStore:
     def publish(
         self,
         revision: int,
-        parts: Iterable[ScenePart],
+        parts: Iterable[ScenePart | SceneOccurrence],
         change: dict | None = None,
         fit: list[dict] | None = None,
         accepted_edit: dict | None = None,
+        assembly_inspection: list[dict] | None = None,
     ) -> None:
         """``change`` says what the commit did, for the human: {"featureId", "summary"}.
 
@@ -358,7 +492,9 @@ class ViewerSceneStore:
             if self._revision is not None and revision <= self._revision:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
         # tessellate outside the lock: readers keep serving the last scene meanwhile.
-        scene, meshes = _build_scene(revision, parts, self.TOLERANCE, change, fit or [])
+        scene, meshes = _build_scene(
+            revision, parts, self.TOLERANCE, change, fit or [], assembly_inspection or []
+        )
 
         with self._changed:
             if self._revision is not None and revision <= self._revision:
@@ -373,6 +509,15 @@ class ViewerSceneStore:
             self._failure = None
             self._version += 1
             self._changed.notify_all()
+
+    def publish_assembly_inspection(self, revision: int, rows: list[dict]) -> None:
+        """Attach already-measured pair rows to the matching committed scene."""
+        with self._changed:
+            scene = self._scenes.get(revision)
+            if scene is not None:
+                scene["assemblyInspection"] = copy.deepcopy(rows)
+                self._version += 1
+                self._changed.notify_all()
 
     def publish_failure(
         self, feature_ids: Sequence[str], error: dict[str, str], attempted_edit: dict | None = None

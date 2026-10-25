@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -27,10 +28,12 @@ from coalesce import (
     Sketch,
     regenerate,
 )
+from coalesce.assembly import RigidTransform
 from coalesce.service import _graph_error_response
-from coalesce.viewer import ScenePart, ViewerSceneStore, ViewerServer
+from coalesce.viewer import SceneOccurrence, ScenePart, ViewerSceneStore, ViewerServer
 
 SMOKE = Path(__file__).with_name("viewer_smoke.mjs")
+ASSEMBLY_SMOKE = Path(__file__).with_name("viewer_assembly_smoke.mjs")
 # chromium logs every request to a stopped server, whatever sent it; no page code can avoid it
 # a stopped server can refuse a new socket, reset one in flight, disconnect it before use,
 # or abort the bounded authorization probe that decides when the outage becomes terminal
@@ -85,6 +88,115 @@ def module():
     if not found:
         pytest.skip("no Node with a launchable Playwright Chromium on this machine")
     return found
+
+
+@pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
+def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport, tmp_path):
+    width, height = viewport
+    shots = os.environ.get("VIEWER_SCREENSHOTS", str(tmp_path))
+    store = ViewerSceneStore()
+    shaft = ScenePart(
+        "shaft/body",
+        Location((7, -3, 2)) * Box(30, 4, 8),
+        label="Shaft",
+        terminal_feature="shaft-extrude",
+    )
+    pin = ScenePart("pin/body", Box(4, 4, 12), label="Pin", terminal_feature="pin-extrude")
+    store.publish(
+        1,
+        [
+            SceneOccurrence("shaft", shaft, RigidTransform((0, 0, 0), (0, 0, 1), 90)),
+            SceneOccurrence(
+                "shaft-skew",
+                shaft,
+                RigidTransform((20, 10, 3), (1 / 3**0.5,) * 3, 37),
+            ),
+            SceneOccurrence("pin-left", pin, RigidTransform((-8, 0, 0), (0, 0, 1), 0)),
+            SceneOccurrence("pin-right", pin, RigidTransform((8, 0, 0), (0, 0, 1), 0)),
+        ],
+        assembly_inspection=[
+            {
+                "occurrenceIds": ["shaft", "pin-left"],
+                "partIds": ["shaft/body", "pin/body"],
+                "overlapVolume": {"value": 12.5, "unit": "mm^3"},
+                "clearance": {"value": 0, "unit": "mm"},
+                "interferes": True,
+                "revision": 1,
+                "requirementId": "assembly-clearance",
+                "status": "FAIL",
+            },
+            {
+                "occurrenceIds": ["pin-left", "pin-right"],
+                "partIds": ["pin/body", "pin/body"],
+                "overlapVolume": {"value": 0, "unit": "mm^3"},
+                "clearance": {"value": 12, "unit": "mm"},
+                "interferes": False,
+                "revision": 1,
+                "requirementId": "assembly-clearance",
+                "status": "PASS",
+            },
+        ],
+    )
+    expected_bounds = {part["name"]: part["bbox"] for part in store.scene(1)["parts"]}
+    refresh_trigger = tmp_path / "refresh-ready"
+    with ViewerServer(store) as server:
+        process = subprocess.Popen(
+            [
+                "node",
+                str(ASSEMBLY_SMOKE),
+                module,
+                server.url,
+                str(width),
+                str(height),
+                shots,
+                str(refresh_trigger),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 30
+        while not refresh_trigger.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert refresh_trigger.exists(), process.communicate(timeout=5)[1]
+        store.publish_assembly_inspection(
+            1,
+            [
+                {
+                    "occurrenceIds": ["pin-left", "pin-right"],
+                    "partIds": ["pin/body", "pin/body"],
+                    "overlapVolume": {"value": 0, "unit": "mm^3"},
+                    "clearance": {"value": 12, "unit": "mm"},
+                    "interferes": False,
+                    "revision": 1,
+                    "requirementId": "assembly-clearance",
+                    "status": "PASS",
+                }
+            ],
+        )
+        stdout, stderr = process.communicate(timeout=30)
+    assert process.returncode == 0, stderr
+    data = json.loads(stdout)
+    assert data["errors"] == []
+    assert data["hidden"]["visible"] == ["false", "true", "true", "true"]
+    for name, bounds in expected_bounds.items():
+        for limit in ("min", "max"):
+            assert data["hidden"]["worldBounds"][name][limit] == pytest.approx(
+                bounds[limit], abs=store.TOLERANCE
+            )
+    assert data["focused"]["pairPressed"] == "true"
+    assert data["focused"]["memory"] == data["hidden"]["memory"]
+    assert data["focused"]["memory"]["cachedMeshes"] == 2
+    assert data["focused"]["showing"] == "Showing shaft and pin-left, other parts faded."
+    assert "shaft and pin-left" in data["focused"]["description"]
+    assert data["refreshed"]["pairPressed"] == "false"
+    assert data["refreshed"]["showing"] == ""
+    assert data["restored"]["pairPressed"] == "false"
+    assert data["restored"]["description"].startswith("All parts shown.")
+    assert data["escaped"]["pairPressed"] == "false"
+    assert "section view" in data["section"]["description"]
+    assert any("Show shaft" in name for name in data["hidden"]["controls"])
+    assert all(name for name in data["hidden"]["controls"])
 
 
 def test_page_draws_and_follows_revisions_in_a_real_browser(module):

@@ -222,6 +222,13 @@ def resolve_occurrences(assembly: Assembly, parts: list[TerminalPart]) -> list[R
     ]
 
 
+def definition_shape(shape: Any) -> Any:
+    """Return a copy in the local frame used by assembly placements."""
+    from build123d import Location
+
+    return shape.located(Location())
+
+
 def locate_shape(shape: Any, transform: RigidTransform) -> Any:
     """Return a located copy without changing the shared part definition."""
     from build123d import Location
@@ -234,4 +241,4 @@ def locate_shape(shape: Any, transform: RigidTransform) -> Any:
         math.radians(transform.angle_degrees),
     )
     trsf.SetTranslationPart(gp_Vec(*transform.translation))
-    return shape.located(Location(TopLoc_Location(trsf)))
+    return definition_shape(shape).located(Location(TopLoc_Location(trsf)))
