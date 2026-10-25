@@ -13,7 +13,7 @@ import threading
 from array import array
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -275,7 +275,13 @@ def _definitions(items: list[ScenePart | SceneOccurrence]) -> list[ScenePart]:
     by_name = {}
     for item in items:
         part = _item_part(item)
-        by_name.setdefault(part.name, part)
+        if isinstance(item, SceneOccurrence):
+            from coalesce.assembly import definition_shape
+
+            part = replace(part, shape=definition_shape(part.shape))
+            by_name[part.name] = part
+        else:
+            by_name.setdefault(part.name, part)
     parts = list(by_name.values())
     for part in parts:
         if part.role not in {"manufacturing", "reference"}:
@@ -295,17 +301,31 @@ def _definition_assets(parts: list[ScenePart], tolerance: float) -> tuple[dict, 
     return assets, meshes
 
 
+def _rotation_text(transform: RigidTransform) -> str:
+    if transform.angle_degrees == 0:
+        return "none"
+    principal = {
+        (1.0, 0.0, 0.0): "X",
+        (-1.0, 0.0, 0.0): "-X",
+        (0.0, 1.0, 0.0): "Y",
+        (0.0, -1.0, 0.0): "-Y",
+        (0.0, 0.0, 1.0): "Z",
+        (0.0, 0.0, -1.0): "-Z",
+    }.get(transform.axis)
+    axis = principal or "(" + ", ".join(f"{value:.2f}" for value in transform.axis) + ")"
+    return f"{transform.angle_degrees:g}° about {axis}"
+
+
 def _occurrence_facts(occurrence: SceneOccurrence) -> list[dict]:
+    from coalesce.assembly import definition_shape
+
     part, value = occurrence.definition, occurrence.transform
-    size = part.shape.bounding_box().size
+    size = definition_shape(part.shape).bounding_box().size
     area = part.area if part.area is not None else part.shape.area
     volume = part.volume if part.volume is not None else part.shape.volume
     return [
-        {"label": "Translation", "value": " × ".join(f"{n:g}" for n in value.translation) + " mm"},
-        {
-            "label": "Rotation",
-            "value": ", ".join(f"{n:g}" for n in value.axis) + f" · {value.angle_degrees:g}°",
-        },
+        {"label": "Translation", "value": ", ".join(f"{n:g}" for n in value.translation) + " mm"},
+        {"label": "Rotation", "value": _rotation_text(value)},
         {"label": "Terminal feature", "value": part.terminal_feature or "none"},
         {"label": "Definition size", "value": " × ".join(f"{n:g}" for n in size) + " mm"},
         {"label": "Area", "value": f"{area:g} mm²"},

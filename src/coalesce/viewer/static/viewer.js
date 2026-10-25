@@ -617,6 +617,10 @@ function pointEvidence(row) {
   });
 }
 
+function assemblyKey(revision, row) {
+  return `assembly/${JSON.stringify([revision, row.requirementId, row.occurrenceIds.toSorted()])}`;
+}
+
 function assemblyRow(row, key) {
   const item = document.createElement('button');
   item.type = 'button';
@@ -686,9 +690,9 @@ function renderInspection(fit, assembly = []) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
-  for (const [index, row] of assembly.entries()) {
+  for (const row of assembly) {
     const item = document.createElement('li');
-    item.append(assemblyRow(row, `assembly/${index}`));
+    item.append(assemblyRow(row, assemblyKey(current.revision, row)));
     list.append(item);
     const line = document.createElement('li');
     line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()}`;
@@ -1254,7 +1258,7 @@ async function loadMeshes(parts) {
 function selectionExists(data, { partIds, key }) {
   const identities = new Set(data.parts.map((part) => part.occurrenceId ?? part.partId));
   if (!partIds.every((partId) => identities.has(partId))) return false;
-  if (key.startsWith('assembly/')) return Boolean(data.assemblyInspection?.[Number(key.split('/')[1])]);
+  if (key.startsWith('assembly/')) return data.assemblyInspection?.some((row) => assemblyKey(data.revision, row) === key);
   return data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && partIds.includes(row.partId)));
 }
 
@@ -1418,6 +1422,10 @@ if (window.coalesceDebug === true) {
       geometries: model.children.map((group) => group.children[0].geometry.uuid),
       mode,
       positions: model.children.map((group) => group.position.toArray()),
+      worldBounds: Object.fromEntries(model.children.map((group) => {
+        const { min, max } = new THREE.Box3().setFromObject(surfaceOf(group));
+        return [group.name, { min: min.toArray(), max: max.toArray() }];
+      })),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
       edgeStyles: model.children.map((group) => ({

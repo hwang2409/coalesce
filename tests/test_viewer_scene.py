@@ -35,7 +35,7 @@ def signed_volume(points, triangles) -> float:
     return total / 6
 
 
-def test_scene_bbox_from_mesh_matches_exact_plate_bbox():
+def test_scene_bbox_uses_exact_shape_bounds_for_camera_fit():
     store = ViewerSceneStore()
     shape = plate()
     store.publish(1, [ScenePart("plate", shape)])
@@ -52,6 +52,80 @@ def test_scene_bbox_from_mesh_matches_exact_plate_bbox():
     points, triangles = decode(store, part)
     # a closed, outward-wound mesh: its volume equals the exact solid volume.
     assert signed_volume(points, triangles) == pytest.approx(shape.volume, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("transform"),
+    [
+        RigidTransform((11, -5, 3), (0, 0, 1), 90),
+        RigidTransform((11, -5, 3), (1, 1, 1), 37),
+    ],
+)
+def test_off_origin_definition_mesh_and_payload_match_located_shape(transform):
+    store = ViewerSceneStore()
+    shape = Pos(7, -3, 2) * Box(8, 3, 5)
+    store.publish(1, [SceneOccurrence("placed", ScenePart("part", shape), transform)])
+
+    scene = store.scene(1)
+    [part] = scene["parts"]
+    exact = __import__("coalesce.assembly", fromlist=["locate_shape"]).locate_shape(
+        shape, transform
+    ).bounding_box()
+    expected = {"min": list(exact.min), "max": list(exact.max)}
+    for limit in ("min", "max"):
+        assert scene["bbox"][limit] == pytest.approx(expected[limit], abs=store.TOLERANCE)
+        assert part["bbox"][limit] == pytest.approx(expected[limit], abs=store.TOLERANCE)
+
+    points, _ = decode(store, part)
+    axis_length = math.sqrt(sum(value * value for value in transform.axis))
+    ux, uy, uz = (value / axis_length for value in transform.axis)
+    angle = math.radians(transform.angle_degrees)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    world = []
+    for x, y, z in points:
+        dot = ux * x + uy * y + uz * z
+        cross = (uy * z - uz * y, uz * x - ux * z, ux * y - uy * x)
+        world.append(
+            tuple(
+                coordinate * cosine
+                + cross[i] * sine
+                + (ux, uy, uz)[i] * dot * (1 - cosine)
+                + transform.translation[i]
+                for i, coordinate in enumerate((x, y, z))
+            )
+        )
+    rendered = {
+        "min": [min(point[i] for point in world) for i in range(3)],
+        "max": [max(point[i] for point in world) for i in range(3)],
+    }
+    for limit in ("min", "max"):
+        assert rendered[limit] == pytest.approx(expected[limit], abs=store.TOLERANCE)
+
+
+def test_occurrence_facts_use_position_and_readable_rotation_text():
+    store = ViewerSceneStore()
+    definition = ScenePart("part", Box(1, 1, 1))
+    store.publish(
+        1,
+        [
+            SceneOccurrence("none", definition, RigidTransform((-8, 0, 0), (0, 0, 1), 0)),
+            SceneOccurrence("z", definition, RigidTransform((0, 0, 0), (0, 0, 1), 90)),
+            SceneOccurrence(
+                "skew",
+                definition,
+                RigidTransform((0, 0, 0), (1 / math.sqrt(3),) * 3, 37),
+            ),
+        ],
+    )
+
+    facts = {
+        row["name"]: {fact["label"]: fact["value"] for fact in row["facts"]}
+        for row in store.scene(1)["parts"]
+    }
+    assert facts["none"]["Translation"] == "-8, 0, 0 mm"
+    assert facts["none"]["Rotation"] == "none"
+    assert facts["z"]["Rotation"] == "90° about Z"
+    assert facts["skew"]["Rotation"] == "37° about (0.58, 0.58, 0.58)"
 
 
 def test_repeated_occurrences_share_one_mesh_and_use_world_bounds(monkeypatch):
