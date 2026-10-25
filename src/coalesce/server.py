@@ -325,6 +325,31 @@ def _matching_kind_union(error: ValidationError) -> ValidationError | None:
     )
 
 
+def _kind_union_branch(union: ValidationError) -> ValidationError:
+    kinds = [branch.get("properties", {}).get("kind", {}) for branch in union.validator_value]
+    allowed = [
+        value for kind in kinds
+        for value in ([kind["const"]] if "const" in kind else kind.get("enum", []))
+    ]
+    index = next(
+        (
+            index for index, kind in enumerate(kinds)
+            if kind and union.instance["kind"] in (kind.get("const"), *kind.get("enum", ()))
+        ),
+        None,
+    )
+    if index is None:
+        return ValidationError(
+            "kind",
+            validator="enum" if len(allowed) > 1 else "const",
+            validator_value=allowed if len(allowed) > 1 else allowed[0],
+            instance=union.instance["kind"],
+            path=[*union.absolute_path, "kind"],
+        )
+    branch = [error for error in union.context if error.relative_schema_path[0] == index]
+    return max(branch, key=relevance) if branch else union
+
+
 def _branch_error(error: ValidationError) -> ValidationError:
     """Report a union failure from the branch the supplied `kind` selects, not a wrong branch."""
     root = error
@@ -334,30 +359,10 @@ def _branch_error(error: ValidationError) -> ValidationError:
     if union is None:
         return error
     while _is_kind_union(union):
-        kinds = [branch.get("properties", {}).get("kind", {}) for branch in union.validator_value]
-        allowed = [
-            value for k in kinds for value in ([k["const"]] if "const" in k else k.get("enum", []))
-        ]
-        index = next(
-            (
-                i
-                for i, k in enumerate(kinds)
-                if k and union.instance["kind"] in (k.get("const"), *k.get("enum", ()))
-            ),
-            None,
-        )
-        if index is None:
-            return ValidationError(
-                "kind",
-                validator="enum" if len(allowed) > 1 else "const",
-                validator_value=allowed if len(allowed) > 1 else allowed[0],
-                instance=union.instance["kind"],
-                path=[*union.absolute_path, "kind"],
-            )
-        branch = [e for e in union.context if e.relative_schema_path[0] == index]
-        if not branch:
+        selected = _kind_union_branch(union)
+        if selected is union:
             return error
-        union = max(branch, key=relevance)
+        union = selected
     return best_match([union])
 
 
