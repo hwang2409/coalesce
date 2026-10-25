@@ -47,6 +47,7 @@ def _saved_outline_document(points: list[list[float]], *, include_polyline: bool
             }
         )
     return {
+        "formatVersion": 1,
         "revision": 1,
         "graph": {
             "nodes": [
@@ -76,7 +77,7 @@ def _stdio_process(document, environment):
 @pytest.mark.parametrize("viewer_enabled", [True, False])
 def test_initialize_does_not_wait_for_kernel(tmp_path, viewer_enabled):
     document = tmp_path / "empty.coalesce.json"
-    document.write_text('{"graph":{"nodes":[]},"revision":0}')
+    document.write_text('{"formatVersion":1,"graph":{"nodes":[]},"revision":0}')
     environment = {**os.environ, "COALESCE_DEBUG_MODULES": "1"}
     command = [sys.executable, "-m", "coalesce", "--document", str(document)]
     if not viewer_enabled:
