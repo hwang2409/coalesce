@@ -27,6 +27,7 @@ from .assembly import (
     resolve_occurrences,
     transform_to_dict,
 )
+from .assembly_inspection import AssemblyInspectionError, inspect_assembly
 from .availability import SketchFailure, SolveAvailability, UnavailableFeature
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
@@ -3513,6 +3514,41 @@ class _ScenePublisher:
                 _LOG.exception("viewer publish failed")
 
 
+def _assembly_threshold(
+    requirement: dict[str, Any], field: str, unit: str, default: float | None = None
+) -> float | None:
+    quantity = requirement.get(field)
+    if quantity is None:
+        return default
+    if not isinstance(quantity, dict) or set(quantity) != {"value", "unit"}:
+        raise AssemblyInspectionError(
+            "INVALID_PARAMETER", f"{field} must contain only value and unit", field=field
+        )
+    if quantity["unit"] != unit:
+        raise AssemblyInspectionError(
+            "UNIT_MISMATCH", f"{field} must use {unit}", field=f"{field}.unit"
+        )
+    value = quantity["value"]
+    if type(value) not in (int, float):
+        raise AssemblyInspectionError(
+            "INVALID_PARAMETER", f"{field} value must be a number", field=f"{field}.value"
+        )
+    if not math.isfinite(value):
+        raise AssemblyInspectionError(
+            "NON_FINITE_VALUE", f"{field} value must be finite", field=f"{field}.value"
+        )
+    if value < 0:
+        raise AssemblyInspectionError(
+            "INVALID_PARAMETER", f"{field} value must be non-negative", field=f"{field}.value"
+        )
+    return float(value)
+
+
+def _validate_assembly_requirement(requirement: dict[str, Any]) -> None:
+    _assembly_threshold(requirement, "maximumOverlapVolume", "mm^3", 0.0)
+    _assembly_threshold(requirement, "minimumClearance", "mm")
+
+
 def _valid_brep_result(regen: Any, requirement: dict[str, Any], revision: int) -> dict[str, Any]:
     parts = terminal_parts(regen)
     valid = bool(parts) and all(BRepCheck_Analyzer(part.shape.wrapped).IsValid() for part in parts)
@@ -4800,10 +4836,46 @@ class DocumentService:
             "bodies": catalog,
         }
 
+    def _evaluate_assembly_requirements(
+        self, requirements: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        selected = [item for item in requirements if item.get("kind") == "assembly_interference"]
+        if not selected:
+            return [], None
+        try:
+            resolved = resolve_occurrences(
+                self._document.assembly, terminal_parts(self._regen, role=None)
+            )
+            results = []
+            for requirement in selected:
+                _validate_assembly_requirement(requirement)
+                inspection = inspect_assembly(
+                    resolved, requirement.get("occurrenceIds"), self._document.revision
+                )
+                results.extend(
+                    evaluate_requirements(
+                        [requirement], inspection, self._document.revision
+                    )["results"]
+                )
+            return results, None
+        except (AssemblyError, AssemblyInspectionError) as error:
+            return [], _safe_error(
+                self._document.revision,
+                None,
+                error.code,
+                str(error),
+                operation="check",
+                **error.details,
+            )
+
     def _evaluate_enclosure_requirements(
         self, payload: dict[str, Any], requirements: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        enclosure_requirements = [item for item in requirements if item.get("kind") != "valid_brep"]
+        enclosure_requirements = [
+            item
+            for item in requirements
+            if item.get("kind") not in {"valid_brep", "assembly_interference"}
+        ]
         if not enclosure_requirements:
             return [], None
         try:
@@ -4895,9 +4967,15 @@ class DocumentService:
                     kind=unknown_kinds[0],
                     supportedKinds=sorted(supported_requirement_kinds),
                 )
-            results, failure = self._evaluate_enclosure_requirements(payload, requirements)
+            results, failure = self._evaluate_assembly_requirements(requirements)
             if failure is not None:
                 return failure
+            enclosure_results, failure = self._evaluate_enclosure_requirements(
+                payload, requirements
+            )
+            if failure is not None:
+                return failure
+            results.extend(enclosure_results)
             results.extend(
                 _valid_brep_result(self._regen, item, self._document.revision)
                 for item in requirements

@@ -407,6 +407,55 @@ def _screw_closure(
     )
 
 
+def _assembly_interference(
+    requirement: dict[str, Any], inspection: list[dict[str, Any]], revision: int
+) -> dict[str, Any]:
+    involved = sorted({item for row in inspection for item in row["occurrenceIds"]})
+    threshold = {
+        "maximumOverlapVolume": requirement.get(
+            "maximumOverlapVolume", {"value": 0.0, "unit": "mm^3"}
+        ),
+        **(
+            {"minimumClearance": requirement["minimumClearance"]}
+            if "minimumClearance" in requirement
+            else {}
+        ),
+    }
+    errors = [row for row in inspection if "error" in row]
+    if errors:
+        return _result(
+            requirement=requirement,
+            status="ERROR",
+            measured={"pairs": inspection, "failedPairs": errors},
+            threshold=threshold,
+            involved=involved,
+            revision=revision,
+        )
+    maximum = max(row["overlapVolume"]["value"] for row in inspection)
+    minimum = min(row["clearance"]["value"] for row in inspection)
+    maximum_allowed = threshold["maximumOverlapVolume"]["value"]
+    minimum_allowed = threshold.get("minimumClearance", {}).get("value")
+    failed = [
+        row
+        for row in inspection
+        if row["overlapVolume"]["value"] > maximum_allowed
+        or (minimum_allowed is not None and row["clearance"]["value"] < minimum_allowed)
+    ]
+    return _result(
+        requirement=requirement,
+        status="FAIL" if failed else "PASS",
+        measured={
+            "maximumOverlapVolume": {"value": maximum, "unit": "mm^3"},
+            "minimumClearance": {"value": minimum, "unit": "mm"},
+            "pairs": inspection,
+            "failedPairs": failed,
+        },
+        threshold=threshold,
+        involved=involved,
+        revision=revision,
+    )
+
+
 def _clean(
     requirement: dict[str, Any], inspection: dict[str, Any], revision: int
 ) -> dict[str, Any]:
@@ -427,6 +476,7 @@ def _clean(
 
 
 REQUIREMENT_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "assembly_interference": _assembly_interference,
     "wall_thickness": _thickness,
     "board_clearance": _board_clearance,
     "floor_thickness": _thickness,
