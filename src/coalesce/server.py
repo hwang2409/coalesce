@@ -314,46 +314,84 @@ def schema_error_message(error: ValidationError) -> str:
     return f"{text} (field: {path})" if path else text
 
 
+def _kind_discriminator(branch: Any) -> tuple[Any, ...]:
+    if not isinstance(branch, dict):
+        return ()
+    properties = branch.get("properties")
+    if not isinstance(properties, dict):
+        return ()
+    kind = properties.get("kind")
+    if not isinstance(kind, dict):
+        return ()
+    if "const" in kind:
+        return (kind["const"],)
+    values = kind.get("enum")
+    return tuple(values) if isinstance(values, list) else ()
+
+
 def _is_kind_union(error: ValidationError) -> bool:
     return (
         error.validator in ("oneOf", "anyOf")
         and isinstance(error.instance, dict)
         and "kind" in error.instance
+        and any(_kind_discriminator(branch) for branch in error.validator_value)
     )
+
+
+def _matching_kind_union(error: ValidationError) -> ValidationError | None:
+    if _is_kind_union(error):
+        return error
+    return next(
+        (match for child in error.context if (match := _matching_kind_union(child)) is not None),
+        None,
+    )
+
+
+def _kind_discriminators(union: ValidationError) -> list[tuple[int, tuple[Any, ...]]]:
+    pairs = [(index, _kind_discriminator(branch)) for index, branch in enumerate(union.validator_value)]
+    return [(index, values) for index, values in pairs if values]
+
+
+def _invalid_kind_error(union: ValidationError, allowed: list[Any]) -> ValidationError:
+    many = len(allowed) > 1
+    return ValidationError(
+        "kind",
+        validator="enum" if many else "const",
+        validator_value=allowed if many else allowed[0],
+        instance=union.instance["kind"],
+        path=[*union.absolute_path, "kind"],
+    )
+
+
+def _selected_branch_error(union: ValidationError, index: int) -> ValidationError:
+    branch = [error for error in union.context if list(error.relative_schema_path)[:1] == [index]]
+    return max(branch, key=relevance) if branch else union
+
+
+def _kind_union_branch(union: ValidationError) -> ValidationError:
+    discriminators = _kind_discriminators(union)
+    if not discriminators:
+        return union
+    supplied = union.instance["kind"]
+    for index, values in discriminators:
+        if supplied in values:
+            return _selected_branch_error(union, index)
+    return _invalid_kind_error(union, [value for _, values in discriminators for value in values])
 
 
 def _branch_error(error: ValidationError) -> ValidationError:
     """Report a union failure from the branch the supplied `kind` selects, not a wrong branch."""
-    union = error
-    while union.parent is not None:
-        union = union.parent
-    if not _is_kind_union(union):
+    root = error
+    while root.parent is not None:
+        root = root.parent
+    union = _matching_kind_union(root)
+    if union is None:
         return error
     while _is_kind_union(union):
-        kinds = [branch.get("properties", {}).get("kind", {}) for branch in union.validator_value]
-        allowed = [
-            value for k in kinds for value in ([k["const"]] if "const" in k else k.get("enum", []))
-        ]
-        index = next(
-            (
-                i
-                for i, k in enumerate(kinds)
-                if k and union.instance["kind"] in (k.get("const"), *k.get("enum", ()))
-            ),
-            None,
-        )
-        if index is None:
-            return ValidationError(
-                "kind",
-                validator="enum" if len(allowed) > 1 else "const",
-                validator_value=allowed if len(allowed) > 1 else allowed[0],
-                instance=union.instance["kind"],
-                path=[*union.absolute_path, "kind"],
-            )
-        branch = [e for e in union.context if e.relative_schema_path[0] == index]
-        if not branch:
+        selected = _kind_union_branch(union)
+        if selected is union:
             return error
-        union = max(branch, key=relevance)
+        union = selected
     return best_match([union])
 
 
