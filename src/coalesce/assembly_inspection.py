@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from itertools import combinations
-from typing import Any
-
-from build123d import Shape
-from OCP.Bnd import Bnd_Box
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
-from OCP.BRepBndLib import BRepBndLib
-from OCP.BRepCheck import BRepCheck_Analyzer
-from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+from typing import TYPE_CHECKING, Any
 
 from .assembly import ResolvedOccurrence
+
+if TYPE_CHECKING:
+    from OCP.Bnd import Bnd_Box
 
 MAX_INSPECTION_OCCURRENCES = 16
 MAX_INSPECTION_PAIRS = 120
@@ -59,6 +55,9 @@ def _candidate_pairs(
 
 
 def _bounding_box(shape: Any) -> Bnd_Box:
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
     box = Bnd_Box()
     BRepBndLib.AddOptimal_s(shape.wrapped, box, True, True)
     return box
@@ -69,6 +68,10 @@ def _boxes_overlap(first: Any, second: Any) -> bool:
 
 
 def _common_volume(first: Any, second: Any) -> float:
+    from build123d import Shape
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
     operation = BRepAlgoAPI_Common(first.wrapped, second.wrapped)
     operation.Build()
     if not operation.IsDone():
@@ -80,6 +83,8 @@ def _common_volume(first: Any, second: Any) -> float:
 
 
 def _minimum_clearance(first: Any, second: Any) -> float:
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
     operation = BRepExtrema_DistShapeShape(first.wrapped, second.wrapped)
     operation.Perform()
     if not operation.IsDone():
