@@ -135,6 +135,12 @@ function formatMm(value) {
 
 const formatSize = (part) => part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
 
+// assembly evidence: three decimals, and a nonzero value never reads as 0
+function formatAssemblyMm(value) {
+  const rounded = Number(value.toFixed(3)) + 0;
+  return rounded === 0 && value !== 0 ? '< 0.001' : String(rounded);
+}
+
 // named holes and the features that built the part, so the human can check what the agent made
 function partDetail(part) {
   const holes = part.features.filter((feature) => feature.holes).map(({ holes }) => {
@@ -464,6 +470,7 @@ function renderPartList(parts) {
     button.type = 'button';
     button.className = 'part';
     button.dataset.partId = part.occurrenceId ?? part.partId;
+    button.setAttribute('aria-label', titles[index]);
     const name = document.createElement('span');
     name.className = 'part-name';
     name.textContent = titles[index];
@@ -524,6 +531,7 @@ const partTitle = (partId) => partRow(partId)?.querySelector('.part-name').textC
 
 // the fit row whose part the canvas shows, the other parts faded; the camera stays where it is
 let selected = null; // {key, partIds}
+let passingExpanded = false;
 
 function fitRow(row, key) {
   const part = partRow(row.partId);
@@ -621,6 +629,16 @@ function assemblyKey(revision, row) {
   return `assembly/${JSON.stringify([revision, row.requirementId, row.occurrenceIds.toSorted()])}`;
 }
 
+function assemblyValue(row) {
+  const overlap = row.overlapVolume?.value;
+  const clearance = row.clearance?.value;
+  if (row.error) return row.error.message;
+  if (overlap > 0) return `${formatAssemblyMm(overlap)} mm³ overlap`;
+  if (clearance === undefined) return 'No overlap';
+  if (clearance <= current.assemblyLinearTolerance) return 'touching';
+  return `${formatAssemblyMm(clearance)} mm clearance`;
+}
+
 function assemblyRow(row, key) {
   const item = document.createElement('button');
   item.type = 'button';
@@ -628,15 +646,7 @@ function assemblyRow(row, key) {
   item.dataset.status = row.status;
   item.dataset.key = key;
   const titles = row.occurrenceIds.map(partTitle);
-  const overlap = row.overlapVolume?.value;
-  const clearance = row.clearance?.value;
-  const value = row.error
-    ? row.error.message
-    : overlap > 0
-      ? `${formatMm(overlap)} mm³ overlap`
-      : clearance === undefined
-        ? 'No overlap'
-        : `${formatMm(clearance)} mm clearance`;
+  const value = assemblyValue(row);
   for (const [className, text] of [
     ['fit-status', row.status],
     ['fit-label', titles.join(' ↔ ')],
@@ -654,7 +664,7 @@ function assemblyRow(row, key) {
   item.addEventListener('click', () => {
     if (shown) return showAll();
     showPart({ key, partIds: row.occurrenceIds });
-    item.focus();
+    fitRowFor(key)?.focus();
   });
   return item;
 }
@@ -690,10 +700,45 @@ function renderInspection(fit, assembly = []) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
-  for (const row of assembly) {
+  const natural = new Intl.Collator(undefined, { numeric: true }).compare;
+  const orderedAssembly = assembly.toSorted((a, b) => {
+    const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
+    const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
+      ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
+    return rank(a) - rank(b)
+      || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
+      || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/'));
+  });
+  const passing = orderedAssembly.filter((row) => row.status === 'PASS');
+  const extraPassing = passing.slice(6);
+  const shownAssembly = passingExpanded
+    ? orderedAssembly
+    : orderedAssembly.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6
+      || assemblyKey(current.revision, row) === selected?.key);
+  for (const row of shownAssembly) {
     const item = document.createElement('li');
     item.append(assemblyRow(row, assemblyKey(current.revision, row)));
     list.append(item);
+  }
+  if (extraPassing.length) {
+    const item = document.createElement('li');
+    item.className = 'assembly-more';
+    const button = document.createElement('button');
+    const affected = extraPassing.filter((row) => assemblyKey(current.revision, row) !== selected?.key);
+    button.type = 'button';
+    button.setAttribute('aria-expanded', String(passingExpanded));
+    button.textContent = passingExpanded
+      ? `Hide ${affected.length} passing checks`
+      : `Show ${affected.length} more passing checks`;
+    button.addEventListener('click', () => {
+      passingExpanded = !passingExpanded;
+      renderInspection(current.fit, current.assemblyInspection);
+      document.querySelector('.assembly-more button')?.focus();
+    });
+    item.append(button);
+    list.append(item);
+  }
+  for (const row of orderedAssembly) {
     const line = document.createElement('li');
     line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()}`;
     evidence.append(line);
@@ -1144,8 +1189,7 @@ function repair({ code, message, hint, redundantConstraints, conflictingConstrai
   if (code === 'UNKNOWN_ID') return `The edit names something that does not exist: ${message}. Ask your agent to check the id.`;
   if (code === 'DUPLICATE_ID') return `An id in the edit is already in use: ${message}. Ask your agent to pick a new id.`;
   if (code === 'CYCLE') return 'The edit makes a feature depend on itself. Ask your agent to reorder the features.';
-  if (code === 'TARGET_ALREADY_CONSUMED') return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
-  return `${feature} failed: ${message}. The last good model is still shown.`;
+  return 'The edit targets an older point in a body lineage. Ask your agent to use the reported legal target.';
 }
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -1262,6 +1306,34 @@ function selectionExists(data, { partIds, key }) {
   return data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && partIds.includes(row.partId)));
 }
 
+function showScene(data, dropped, held) {
+  for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
+  clearGroup(model, { ownsGeometry: false });
+  const ranks = depthRanks(data.parts);
+  data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
+  current = data;
+  renderPartList(data.parts);
+  renderInspection(data.fit, data.assemblyInspection);
+  applyMode(); // the chosen review mode stays while it applies to the new revision
+  showRevision(data);
+  const empty = !data.parts.length;
+  notice(empty ? `Revision ${data.revision} has no solid parts yet` : null,
+    'Sketches are not drawn here. Parts appear when a feature makes a solid.');
+  enableCamera(!empty);
+  if (empty) clearGroup(helpers, { ownsGeometry: true });
+  else if (userMoved) {
+    rebuildHelpers(data.bbox);
+    showRefit(true);
+  } else applyView(activeView);
+  syncGizmo();
+  if (dropped) showAll(held);
+  else {
+    if (held) (fitRowFor(selected.key) || partRow(selected.partIds[0]))?.focus();
+    describeView();
+  }
+  requestRender();
+}
+
 async function loadOne(revision) {
   if (!current) notice(`Loading revision ${revision}`);
   else $('revision-meta').textContent = `Loading revision ${revision}`;
@@ -1275,29 +1347,8 @@ async function loadOne(revision) {
     // a shown part outlives a new revision while its fit row still points at it; else all parts again,
     // and focus on its row follows to the replacement row
     const dropped = selected && !selectionExists(data, selected);
-    const held = dropped && [fitRowFor(selected.key), partRow(selected.partIds[0])].includes(document.activeElement);
-    for (const group of model.children) setCut(group, null, 0, false); // frees each cut face's own quad
-    clearGroup(model, { ownsGeometry: false });
-    const ranks = depthRanks(data.parts);
-    data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
-    current = data;
-    renderPartList(data.parts);
-    renderInspection(data.fit, data.assemblyInspection);
-    applyMode(); // the chosen review mode stays while it applies to the new revision
-    showRevision(data);
-    const empty = !data.parts.length;
-    notice(empty ? `Revision ${data.revision} has no solid parts yet` : null,
-      'Sketches are not drawn here. Parts appear when a feature makes a solid.');
-    enableCamera(!empty);
-    if (empty) clearGroup(helpers, { ownsGeometry: true });
-    else if (userMoved) {
-      rebuildHelpers(data.bbox);
-      showRefit(true);
-    } else applyView(activeView);
-    syncGizmo();
-    if (dropped) showAll(held);
-    else describeView();
-    requestRender();
+    const held = selected && [fitRowFor(selected.key), partRow(selected.partIds[0])].includes(document.activeElement);
+    showScene(data, dropped, held);
   } catch (error) {
     // superseded: the event for the newer revision is already here or on its way
     if (error instanceof Superseded || revision !== wanted) return;

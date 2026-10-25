@@ -180,6 +180,19 @@ button {
 #inspection-rows { display: grid; grid-template-columns: fit-content(76px) 1fr; column-gap: 8px; }
 #inspection-rows > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
 
+#inspection-rows > .assembly-more { display: block; padding: 4px 8px; }
+.assembly-more button {
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--focus);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+.assembly-more button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
 /* one measurement: the status, then what was measured, its value and why it is not a pass */
 .fit-row {
   display: grid;
@@ -218,7 +231,7 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
 }
 
 .fit-row[data-status="PASS"] .fit-status { color: var(--live); background: #edf6f0; }
-.fit-row[data-status="FAIL"] .fit-status { color: var(--fail); background: var(--fail-wash); }
+.fit-row:is([data-status="FAIL"], [data-status="ERROR"]) .fit-status { color: var(--fail); background: var(--fail-wash); }
 .fit-row[data-status="UNKNOWN"] .fit-status { color: var(--wait); background: #fbf3e4; }
 .fit-row[data-status="MEASURED"] .fit-status { box-shadow: inset 0 0 0 1px var(--rule); }
 
@@ -346,6 +359,9 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
    wrapped beside the size so the size does not jump to a line of its own */
 .part-name.collides { white-space: normal; }
 .part:focus .part-name { white-space: normal; overflow-wrap: anywhere; }
+@media (hover: hover) {
+  .part:hover .part-name { white-space: normal; overflow-wrap: anywhere; }
+}
 
 /* narrow screens only: the detail line opens when the row has focus */
 .disclosure { display: none; flex: none; color: var(--mute); }
