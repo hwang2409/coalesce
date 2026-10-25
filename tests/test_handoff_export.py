@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from test_pcb_lid import lid_request
 import coalesce.export as export_module
 import coalesce.service as service_module
 from coalesce.service import DocumentService
+from evals.checks import check_task
 
 
 def _service(tmp_path: Path, *, include_lip=True) -> DocumentService:
@@ -138,6 +140,36 @@ async def test_real_stdio_separate_export_writes_two_parts_and_deterministic_man
     assert first_response["manifestSha256"] == hashlib.sha256(
         (first / "manifest.json").read_bytes()
     ).hexdigest()
+
+
+def test_eval_artifacts_accept_and_validate_separate_export_manifest(tmp_path):
+    service = _service(tmp_path)
+    destination = tmp_path / "delivery"
+    assert service.export(_separate(destination))["ok"] is True
+    task = {"parts": 2, "documentParts": True, "checks": [{"kind": "step_validity"}]}
+
+    results = check_task(task, service.store.path, destination)
+    assert all(result["status"] == "pass" for result in results), results
+
+    manifest = json.loads((destination / "manifest.json").read_text())
+    tampered = {
+        "wrong hash": lambda value: value["parts"][0].__setitem__("sha256", "0" * 64),
+        "wrong part id": lambda value: value["parts"][0].__setitem__("partId", "other"),
+        "missing part": lambda value: value["parts"].pop(),
+        "extra entry": lambda value: value["parts"].append({**value["parts"][0]}),
+    }
+    for name, mutate in tampered.items():
+        changed = tmp_path / name.replace(" ", "-")
+        shutil.copytree(destination, changed)
+        changed_manifest = json.loads(json.dumps(manifest))
+        mutate(changed_manifest)
+        (changed / "manifest.json").write_text(json.dumps(changed_manifest))
+        inventory = next(
+            result
+            for result in check_task(task, service.store.path, changed)
+            if result["kind"] == "artifacts"
+        )
+        assert inventory["status"] == "fail", name
 
 
 def test_reference_board_is_not_a_separate_export_part(tmp_path):
