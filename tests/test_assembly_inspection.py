@@ -6,6 +6,7 @@ from build123d import Box
 
 from coalesce.assembly import Occurrence, ResolvedOccurrence, RigidTransform, locate_shape
 from coalesce.assembly_inspection import (
+    _bounding_box,
     _boxes_overlap,
     _common_volume,
     _load_kernel_symbols,
@@ -28,17 +29,59 @@ def test_common_is_configured_before_building_snapshot_shapes():
     second = copy.deepcopy(Box(10, 10, 10))
     symbols = _load_kernel_symbols(False)
     common = symbols.common
-    initial_state = []
+    build_state = []
 
-    def capture_initial_state(*args):
-        operation = common(*args)
-        initial_state.append((len(args), operation.IsDone()))
-        return operation
+    class CommonSpy:
+        def __init__(self):
+            self.operation = common()
+            self.non_destructive = False
+            self.parallel = False
 
-    assert _common_volume(
-        first, second, replace(symbols, common=capture_initial_state)
-    ) == pytest.approx(1000)
-    assert initial_state == [(0, False)]
+        def __getattr__(self, name):
+            return getattr(self.operation, name)
+
+        def SetNonDestructive(self, enabled):
+            self.non_destructive = enabled
+            self.operation.SetNonDestructive(enabled)
+
+        def SetRunParallel(self, enabled):
+            self.parallel = enabled
+            self.operation.SetRunParallel(enabled)
+
+        def Build(self):
+            build_state.append((self.non_destructive, self.parallel, self.operation.IsDone()))
+            self.operation.Build()
+
+    assert _common_volume(first, second, replace(symbols, common=CommonSpy)) == pytest.approx(1000)
+    assert build_state == [(True, True, False)]
+
+
+def test_bounds_are_built_once_per_occurrence(monkeypatch):
+    symbols = _load_kernel_symbols(False)
+    add_bounds = symbols.add_bounds
+    calls = []
+
+    def count_bounds(*args):
+        calls.append(args[0])
+        return add_bounds(*args)
+
+    monkeypatch.setattr(
+        "coalesce.assembly_inspection._load_kernel_symbols",
+        lambda _measure_clearance: replace(symbols, add_bounds=count_bounds),
+    )
+
+    inspect_assembly(
+        [
+            _resolved("a"),
+            _resolved("b", translation=(20, 0, 0)),
+            _resolved("c", translation=(40, 0, 0)),
+        ],
+        None,
+        1,
+        measure_clearance=False,
+    )
+
+    assert len(calls) == 3
 
 
 def test_exact_pairs_cover_rotated_overlap_touch_clearance_and_aabb_false_positive():
@@ -57,11 +100,73 @@ def test_exact_pairs_cover_rotated_overlap_touch_clearance_and_aabb_false_positi
     assert touching["interferes"] is False
 
     apart = [_resolved("a", angle=45), _resolved("b", translation=(2, 7, 0), angle=-45)]
-    assert _boxes_overlap(apart[0].shape, apart[1].shape) is True
+    assert _boxes_overlap(_bounding_box(apart[0].shape), _bounding_box(apart[1].shape)) is True
     false_positive = inspect_assembly(apart, None, 9)[0]
     assert false_positive["overlapVolume"] == {"value": 0.0, "unit": "mm^3"}
     assert false_positive["clearance"]["value"] == pytest.approx(0.3639610307)
     assert false_positive["interferes"] is False
+
+
+def test_separated_pair_with_clearance_skips_common(monkeypatch):
+    def fail(*_args):
+        raise AssertionError("Common must not run after exact separation")
+
+    apart = [_resolved("a", angle=45), _resolved("b", translation=(2, 7, 0), angle=-45)]
+    assert _boxes_overlap(_bounding_box(apart[0].shape), _bounding_box(apart[1].shape)) is True
+    monkeypatch.setattr("coalesce.assembly_inspection._common_volume", fail)
+
+    row = inspect_assembly(apart, None, 9)[0]
+
+    assert row["overlapVolume"] == {"value": 0.0, "unit": "mm^3"}
+    assert row["clearance"]["value"] == pytest.approx(0.3639610307)
+    assert row["interferes"] is False
+
+
+def test_touching_pair_with_clearance_still_calls_common(monkeypatch):
+    calls = 0
+    common_volume = _common_volume
+
+    def count_common(*args):
+        nonlocal calls
+        calls += 1
+        return common_volume(*args)
+
+    monkeypatch.setattr("coalesce.assembly_inspection._common_volume", count_common)
+
+    row = inspect_assembly([_resolved("a"), _resolved("b", translation=(10, 0, 0))], None, 1)[0]
+
+    assert calls == 1
+    assert row["overlapVolume"] == {"value": 0.0, "unit": "mm^3"}
+    assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+
+
+def test_overlapping_pair_keeps_exact_volume():
+    row = inspect_assembly([_resolved("a"), _resolved("b")], None, 1)[0]
+
+    assert row["overlapVolume"]["value"] == pytest.approx(40.0)
+    assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+
+
+def test_clearance_within_kernel_tolerance_still_calls_common(monkeypatch):
+    symbols = _load_kernel_symbols(True)
+    calls = 0
+
+    def count_common(*_args):
+        nonlocal calls
+        calls += 1
+        return 0.0
+
+    monkeypatch.setattr(
+        "coalesce.assembly_inspection._minimum_clearance",
+        lambda *_args: symbols.linear_tolerance / 2,
+    )
+    monkeypatch.setattr("coalesce.assembly_inspection._common_volume", count_common)
+
+    row = inspect_assembly([_resolved("a"), _resolved("b")], None, 1)[0]
+
+    assert calls == 1
+    assert row["clearance"]["value"] == symbols.linear_tolerance / 2
+    assert row["interferes"] is False
 
 
 def test_repeated_definition_occurrences_remain_distinct_stable_pairs():
