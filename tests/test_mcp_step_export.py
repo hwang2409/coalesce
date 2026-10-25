@@ -336,6 +336,38 @@ async def test_export_dangling_parent_is_structured_error(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_compound_export_existing_directory_explains_modes(tmp_path):
+    from evals.golden.revolve_shaft_common import profile_entities, stage_shaft
+
+    document = tmp_path / "shaft.coalesce.json"
+    service = DocumentService(document)
+    stage_shaft(service)
+    assert service.sketch({
+        "action": "update",
+        "expectedRevision": 3,
+        "requestId": "golden-diameter-update",
+        "sketchId": "profile",
+        "set": {"entities": profile_entities(8)},
+    })["revision"] == 4
+    destination = tmp_path / "out"
+    destination.mkdir()
+
+    result = await call_server_tool(service, "export", {
+        "action": "publish",
+        "expectedRevision": 4,
+        "partIds": ["shaft"],
+        "path": str(destination),
+    })
+
+    assert result["error"]["code"] == "EXPORT_PATH_EXISTS"
+    assert result["error"]["message"] == (
+        f'export path {destination} is a directory; use mode:"separate" to write one STEP per part '
+        "into it, or provide a file path ending in .step for compound export"
+    )
+    assert list(destination.iterdir()) == []
+
+
+@pytest.mark.anyio
 async def test_export_refuses_existing_path_and_symlink_untouched(tmp_path):
     document = tmp_path / "existing.coalesce.json"
     await run_server(document, enclosure_calls())
