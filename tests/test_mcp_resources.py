@@ -23,6 +23,7 @@ GUIDES = {
     "coalesce://docs/enclosure": "docs/enclosures.md",
     "coalesce://docs/refresh": "docs/refresh.md",
     "coalesce://docs/revolve": "docs/revolve.md",
+    "coalesce://docs/assembly": "docs/assembly.md",
     "coalesce://docs/examples/cycloidal-disc": "docs/examples/cycloidal-disc.md",
 }
 

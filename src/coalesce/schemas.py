@@ -810,6 +810,88 @@ PCB_LID_UPDATE_SET = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+ASSEMBLY_TRANSFORM = {
+    "type": "object",
+    "properties": {
+        "translation": {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "array",
+                    "prefixItems": [{"type": "number"}] * 3,
+                    "items": False,
+                    "minItems": 3,
+                    "maxItems": 3,
+                },
+                "unit": {"const": "mm"},
+            },
+            "required": ["value", "unit"],
+            "additionalProperties": False,
+        },
+        "rotation": {
+            "type": "object",
+            "properties": {
+                "axis": {
+                    "type": "array",
+                    "prefixItems": [{"type": "number"}] * 3,
+                    "items": False,
+                    "minItems": 3,
+                    "maxItems": 3,
+                },
+                "angle": ANGLE,
+            },
+            "required": ["axis", "angle"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["translation", "rotation"],
+    "additionalProperties": False,
+}
+ASSEMBLY_OCCURRENCE_PROPERTIES = {
+    **MUTATION_PROPERTIES,
+    "kind": {"const": "assembly_occurrence"},
+    "occurrenceId": {"type": "string", "minLength": 1, "maxLength": 128},
+}
+ASSEMBLY_OCCURRENCE_CREATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "create"},
+        **ASSEMBLY_OCCURRENCE_PROPERTIES,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "partId": {"type": "string", "minLength": 1},
+                "transform": ASSEMBLY_TRANSFORM,
+            },
+            "required": ["partId", "transform"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["action", "kind", *MUTATION_PROPERTIES, "occurrenceId", "parameters"],
+    "additionalProperties": False,
+}
+ASSEMBLY_OCCURRENCE_UPDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "update"},
+        **ASSEMBLY_OCCURRENCE_PROPERTIES,
+        "set": {
+            "type": "object",
+            "properties": {"transform": ASSEMBLY_TRANSFORM},
+            "required": ["transform"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["action", "kind", *MUTATION_PROPERTIES, "occurrenceId", "set"],
+    "additionalProperties": False,
+}
+ASSEMBLY_OCCURRENCE_DELETE_SCHEMA = {
+    "type": "object",
+    "properties": {"action": {"const": "delete"}, **ASSEMBLY_OCCURRENCE_PROPERTIES},
+    "required": ["action", "kind", *MUTATION_PROPERTIES, "occurrenceId"],
+    "additionalProperties": False,
+}
+
 FEATURE_DELETE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -843,6 +925,9 @@ FEATURE_UPDATE_SCHEMA = {
 }
 FEATURE_ACTION_SCHEMAS = {
     ("delete", None): FEATURE_DELETE_SCHEMA,
+    ("create", "assembly_occurrence"): ASSEMBLY_OCCURRENCE_CREATE_SCHEMA,
+    ("update", "assembly_occurrence"): ASSEMBLY_OCCURRENCE_UPDATE_SCHEMA,
+    ("delete", "assembly_occurrence"): ASSEMBLY_OCCURRENCE_DELETE_SCHEMA,
     **{
         ("create", kind): {
             **FEATURE_CREATE_SCHEMA,
@@ -883,6 +968,8 @@ FEATURE_SCHEMA = {
             "description": "Use create with parameters, update to change a feature, or delete to remove it. Delete fails when dependents exist unless cascade is true.",
         },
         **FEATURE_PROPERTIES,
+        "kind": {"enum": [*FEATURE_KIND_SCHEMAS, "assembly_occurrence"]},
+        "occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"],
         "parameters": {
             **FEATURE_CREATE_SCHEMA["properties"]["parameters"],
             "description": "Required for create; not allowed for update.",
@@ -893,7 +980,7 @@ FEATURE_SCHEMA = {
         },
         "cascade": {"type": "boolean", "default": False},
     },
-    "required": ["action", *MUTATION_PROPERTIES, "featureId"],
+    "required": ["action", *MUTATION_PROPERTIES],
     "additionalProperties": False,
     "examples": [
         {
@@ -994,6 +1081,7 @@ QUERY_SCHEMA = {
                         "reference",
                         "edge_roles",
                         "server",
+                        "assembly",
                     ]
                 },
                 "id": {

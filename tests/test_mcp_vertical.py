@@ -685,6 +685,8 @@ def test_mutation_schema_fields_match_typed_operations():
         published = TOOL_SCHEMAS[tool]
         assert set(published["properties"]["action"]["enum"]) == set(actions)
         expected_fields = set().union(*(operation.wire_fields() for operation in actions.values()))
+        if tool == "feature":
+            expected_fields.add("occurrenceId")
         assert set(published["properties"]) == expected_fields
         for action, operation_type in actions.items():
             private = ACTION_SCHEMAS[tool][action]

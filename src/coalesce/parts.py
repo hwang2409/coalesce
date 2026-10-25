@@ -76,6 +76,13 @@ def _terminal_part(
     return TerminalPart(part_id, label, role, body, feature, solid)
 
 
+def _select_unique_parts(parts: list[TerminalPart], role: str | None) -> list[TerminalPart]:
+    selected = parts if role is None else [part for part in parts if part.role == role]
+    if len({part.part_id for part in selected}) != len(selected):
+        raise ValueError("terminal part provenance is ambiguous")
+    return selected
+
+
 def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[TerminalPart]:
     owned = [
         candidate
@@ -98,8 +105,4 @@ def terminal_parts(result: Any, role: str | None = "manufacturing") -> list[Term
         _terminal_part(result, feature, solid, body, history, counts[body] > 1)
         for feature, solid, body, history in solids
     ]
-    if role is not None:
-        parts = [part for part in parts if part.role == role]
-    if len({part.part_id for part in parts}) != len(parts):
-        raise ValueError("terminal part provenance is ambiguous")
-    return parts
+    return _select_unique_parts(parts, role)

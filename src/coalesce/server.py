@@ -34,8 +34,8 @@ MAX_SKETCH_SET_JSON_BYTES = 256 * 1024
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh with an optional replacement absolute path to re-read the board explicitly. Use delete to remove the board asset; it fails when dependents exist unless cascade is true.",
     "sketch": "set.entities/set.constrained replace full definition; set.dimensionValues changes only named driving dimensions",
-    "feature": "Supports constant-radius fillet and symmetric one-distance chamfer; two-distance not supported. Holes use global +Z; plane normals are XY +Z, XZ -Y, YZ +X. Finite cuts use negative sketch normal for flip=false and positive sketch normal for flip=true; through-all is bidirectional. Routes: extrude/cut/fillet/chamfer -> coalesce://docs/tools; revolve -> coalesce://docs/revolve; hole/pattern -> coalesce://docs/hole; pcb_base/standoffs/pcb_lid/port_cutout/screw_closure -> coalesce://docs/enclosure; board refresh -> coalesce://docs/refresh.",
-    "query": "Read one feature, the graph, revision, exact mm metrics, inspect a PCB enclosure, list selectable edge roles, or resolve a typed reference. Use select.kind edge_roles with id before choosing treatment edges. Call select.kind enclosure before reporting enclosure dimensions.",
+    "feature": "Create, update, or delete explicit assembly occurrences with canonical part ids and rigid transforms. Supports constant-radius fillet and symmetric one-distance chamfer; two-distance not supported. Holes use global +Z; plane normals are XY +Z, XZ -Y, YZ +X. Finite cuts use negative sketch normal for flip=false and positive sketch normal for flip=true; through-all is bidirectional. Routes: extrude/cut/fillet/chamfer -> coalesce://docs/tools; revolve -> coalesce://docs/revolve; hole/pattern -> coalesce://docs/hole; pcb_base/standoffs/pcb_lid/port_cutout/screw_closure -> coalesce://docs/enclosure; board refresh -> coalesce://docs/refresh.",
+    "query": "Read one feature, the graph, revision, explicit assembly occurrences, exact mm metrics, inspect a PCB enclosure, list selectable edge roles, or resolve a typed reference. Use select.kind edge_roles with id before choosing treatment edges. Call select.kind enclosure before reporting enclosure dimensions.",
     "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, board-edge clearance, mounting coverage, lid interference, fit, exact lid_outline_match, screw_closure alignment and residual wall, connector clearance, and clean manufacturing bodies. board_clearance accepts side left, right, front, back, or all and a minimum mm threshold. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
     "export": "Preflight or publish selected terminal manufacturing parts at the current expectedRevision. action=preflight is read-only and validates each part in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate requires a POSIX system (macOS or Linux) and atomically publishes one labeled STEP per part plus a deterministic manifest at a new path or over an empty real directory; other targets are rejected with a bounded listing. BoardImport reference geometry is never included.",
 }
@@ -159,6 +159,12 @@ Short enclosure sequence: `import` the board, create `pcb_base`, create `standof
 `pcb_lid`, optionally create `port_cutout`, create `screw_closure`, run `check` with
 `valid_brep` and `screw_closure`, then `export` the two terminal manufacturing parts.
 Export excludes the board reference geometry.
+
+Use `query` with `select.kind: assembly` to list canonical terminal `availableParts` and
+caller-named occurrences. Create, update, or delete an occurrence through `feature` with
+`kind: assembly_occurrence`; each placement has an explicit mm translation and axis-angle
+rotation. Graph edits fail atomically when they would make a referenced part unavailable.
+See `coalesce://docs/assembly` for the request shape and normalization rules.
 
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
 Mutations need the current `expectedRevision` and a unique `requestId`; exact replay is
@@ -452,6 +458,7 @@ def _schema_for_action(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         key = (
             ("delete", None)
             if arguments.get("action") == "delete"
+            and arguments.get("kind") != "assembly_occurrence"
             else (arguments.get("action"), arguments.get("kind"))
         )
         return FEATURE_ACTION_SCHEMAS.get(key, TOOL_SCHEMAS[name])

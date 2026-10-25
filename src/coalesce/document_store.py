@@ -9,16 +9,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .graph import Graph
+from .assembly import Assembly, assembly_from_dict, assembly_to_dict
+from .graph import Graph, GraphError
 from .serialization import dumps, loads
 
 MAX_RECEIPTS = 100
 MAX_REQUEST_HASHES = 10_000
 
 
+def _assembly_for_payload(payload: dict[str, Any]) -> Assembly:
+    version = payload.get("formatVersion")
+    if type(version) is int and version == 1:
+        return Assembly()
+    if type(version) is int and version == 2:
+        if payload.get("assembly") is None:
+            raise GraphError(
+                "INVALID_DOCUMENT",
+                "document format version 2 requires assembly",
+                field="assembly",
+            )
+        return assembly_from_dict(payload["assembly"])
+    raise GraphError(
+        "INVALID_DOCUMENT",
+        f"unsupported document format version {version}; a newer coalesce wrote it",
+        formatVersion=version,
+    )
+
+
 @dataclass
 class Document:
     graph: Graph
+    assembly: Assembly = field(default_factory=Assembly)
     revision: int = 0
     receipts: list[dict[str, Any]] = field(default_factory=list)
     request_hashes: list[dict[str, str]] = field(default_factory=list)
@@ -34,6 +55,7 @@ class DocumentStore:
         if not self.path.exists():
             return Document(Graph())
         payload = json.loads(self.path.read_text())
+        assembly = _assembly_for_payload(payload)
         graph = loads(json.dumps(payload.get("graph", {"nodes": []})))
         receipts = list(payload.get("receipts", []))[-MAX_RECEIPTS:]
         request_hashes = payload.get("requestHashes")
@@ -44,6 +66,7 @@ class DocumentStore:
             ]
         return Document(
             graph=graph,
+            assembly=assembly,
             revision=int(payload.get("revision", 0)),
             receipts=receipts,
             request_hashes=list(request_hashes)[-MAX_REQUEST_HASHES:],
@@ -52,10 +75,11 @@ class DocumentStore:
     def save(self, document: Document) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "formatVersion": 1,
+            "formatVersion": 2,
             "units": "mm",
             "revision": document.revision,
             "graph": json.loads(dumps(document.graph)),
+            "assembly": assembly_to_dict(document.assembly),
             "receipts": document.receipts[-MAX_RECEIPTS:],
             "requestHashes": document.request_hashes[-MAX_REQUEST_HASHES:],
         }

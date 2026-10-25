@@ -24,6 +24,7 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         "pcb_lid",
         "port_cutout",
         "screw_closure",
+        "assembly_occurrence",
     ]
     advertised = json.dumps([tool.model_dump(by_alias=True) for tool in tools.values()]).lower()
     assert "constant-radius fillet" in advertised
