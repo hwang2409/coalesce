@@ -130,11 +130,16 @@ function updateScale(height) {
 }
 
 function formatMm(value) {
-  const rounded = Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(3));
-  return rounded.toFixed(3).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  return Number(value.toPrecision(6)).toString();
 }
 
-const formatSize = (part) => part.size.map(formatMm).join(' × ');
+const formatSize = (part) => part.size.map((v) => formatMm(Number(v.toFixed(2)))).join(' × ');
+
+// assembly evidence: three decimals, and a nonzero value never reads as 0
+function formatAssemblyMm(value) {
+  const rounded = Number(value.toFixed(3)) + 0;
+  return rounded === 0 && value !== 0 ? '< 0.001' : String(rounded);
+}
 
 // named holes and the features that built the part, so the human can check what the agent made
 function partDetail(part) {
@@ -628,10 +633,10 @@ function assemblyValue(row) {
   const overlap = row.overlapVolume?.value;
   const clearance = row.clearance?.value;
   if (row.error) return row.error.message;
-  if (overlap > 0) return `${formatMm(overlap) === '0' ? '< 0.001' : formatMm(overlap)} mm³ overlap`;
+  if (overlap > 0) return `${formatAssemblyMm(overlap)} mm³ overlap`;
   if (clearance === undefined) return 'No overlap';
   if (clearance <= current.assemblyLinearTolerance) return 'touching';
-  return `${formatMm(clearance) === '0' ? '< 0.001' : formatMm(clearance)} mm clearance`;
+  return `${formatAssemblyMm(clearance)} mm clearance`;
 }
 
 function assemblyRow(row, key) {
@@ -699,7 +704,7 @@ function renderInspection(fit, assembly = []) {
   const orderedAssembly = assembly.toSorted((a, b) => {
     const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
     const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
-      ? 0 : Number(formatMm(row.clearance?.value ?? Infinity));
+      ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
     return rank(a) - rank(b)
       || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
       || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/'));
