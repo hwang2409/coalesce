@@ -905,9 +905,13 @@ function renderModeControls(parts, enclosure) {
     const reason = unavailable(button.dataset.mode, parts);
     button.hidden = !enclosure && button.dataset.mode !== 'section';
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-    button.toggleAttribute('aria-disabled', Boolean(reason));
-    if (reason) button.title = reason;
-    else button.removeAttribute('title');
+    if (reason) {
+      button.setAttribute('aria-disabled', 'true');
+      button.title = reason;
+    } else {
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('title');
+    }
   }
   if (focusSection) document.querySelector('[data-mode="section"]').focus();
 }
