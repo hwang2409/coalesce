@@ -115,6 +115,10 @@ def test_occurrence_facts_use_position_and_readable_rotation_text():
                 definition,
                 RigidTransform((0, 0, 0), (1 / math.sqrt(3),) * 3, 37),
             ),
+            SceneOccurrence("negzero", definition, RigidTransform((-0.0, 0.0, -0.0), (0, 0, 1), 0)),
+            SceneOccurrence(
+                "fraction", definition, RigidTransform((1.23456, 2.34567, 3.45678), (0, 0, 1), 12.34567)
+            ),
         ],
     )
 
@@ -126,6 +130,9 @@ def test_occurrence_facts_use_position_and_readable_rotation_text():
     assert facts["none"]["Rotation"] == "none"
     assert facts["z"]["Rotation"] == "90° about Z"
     assert facts["skew"]["Rotation"] == "37° about (0.58, 0.58, 0.58)"
+    assert facts["negzero"]["Translation"] == "0, 0, 0 mm"
+    assert facts["fraction"]["Translation"] == "1.235, 2.346, 3.457 mm"
+    assert facts["fraction"]["Rotation"] == "12.346° about Z"
 
 
 def test_repeated_occurrences_share_one_mesh_and_use_world_bounds(monkeypatch):

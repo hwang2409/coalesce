@@ -301,8 +301,12 @@ def _definition_assets(parts: list[ScenePart], tolerance: float) -> tuple[dict, 
     return assets, meshes
 
 
+def _number(value: float, places: int = 3) -> str:
+    return f"{round(value, places) + 0.0:g}"
+
+
 def _rotation_text(transform: RigidTransform) -> str:
-    if transform.angle_degrees == 0:
+    if round(transform.angle_degrees, 3) == 0:
         return "none"
     principal = {
         (1.0, 0.0, 0.0): "X",
@@ -312,8 +316,11 @@ def _rotation_text(transform: RigidTransform) -> str:
         (0.0, 0.0, 1.0): "Z",
         (0.0, 0.0, -1.0): "-Z",
     }.get(transform.axis)
-    axis = principal or "(" + ", ".join(f"{value:.2f}" for value in transform.axis) + ")"
-    return f"{transform.angle_degrees:g}° about {axis}"
+    axis = (
+        principal
+        or "(" + ", ".join(f"{round(value, 2) + 0.0:.2f}" for value in transform.axis) + ")"
+    )
+    return f"{_number(transform.angle_degrees)}° about {axis}"
 
 
 def _occurrence_facts(occurrence: SceneOccurrence) -> list[dict]:
@@ -324,12 +331,12 @@ def _occurrence_facts(occurrence: SceneOccurrence) -> list[dict]:
     area = part.area if part.area is not None else part.shape.area
     volume = part.volume if part.volume is not None else part.shape.volume
     return [
-        {"label": "Translation", "value": ", ".join(f"{n:g}" for n in value.translation) + " mm"},
+        {"label": "Translation", "value": ", ".join(_number(n) for n in value.translation) + " mm"},
         {"label": "Rotation", "value": _rotation_text(value)},
         {"label": "Terminal feature", "value": part.terminal_feature or "none"},
-        {"label": "Definition size", "value": " × ".join(f"{n:g}" for n in size) + " mm"},
-        {"label": "Area", "value": f"{area:g} mm²"},
-        {"label": "Volume", "value": f"{volume:g} mm³"},
+        {"label": "Definition size", "value": " × ".join(_number(n) for n in size) + " mm"},
+        {"label": "Area", "value": f"{_number(area)} mm²"},
+        {"label": "Volume", "value": f"{_number(volume)} mm³"},
         *part.facts,
     ]
 
