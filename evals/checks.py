@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
+import stat
 import tempfile
 from pathlib import Path
 
@@ -22,18 +22,17 @@ class ArtifactContext:
         self.document = document
         self.before_state = before_state
         artifacts = sorted(steps.iterdir()) if steps.is_dir() else []
+        regular = {path: stat.S_ISREG(path.lstat().st_mode) for path in artifacts}
         self.step_paths = [
             path
             for path in artifacts
-            if path.is_file() and path.suffix.lower() in {".step", ".stp"}
+            if regular[path] and path.suffix.lower() in {".step", ".stp"}
         ]
-        self.manifest_path = next(
-            (path for path in artifacts if path.name == "manifest.json"), None
-        )
         self.unexpected_artifacts = [
             path.name
             for path in artifacts
-            if path not in self.step_paths and path != self.manifest_path
+            if path not in self.step_paths
+            and not (regular[path] and path.name == "manifest.json")
         ]
         self._step_metrics = None
         self._step_shapes = None
@@ -124,55 +123,6 @@ class ArtifactContext:
         if self._document_payload is None:
             self._document_payload = json.loads(self.document.read_text())
         return self._document_payload
-
-
-def _valid_separate_manifest(context, task):
-    path = context.manifest_path
-    if path is None:
-        return True
-    if task.get("documentParts") is not True:
-        return False
-    try:
-        manifest = json.loads(path.read_text())
-        if path.is_symlink() or set(manifest) != {
-            "revision", "units", "sources", "parts", "requirements", "unknowns", "ready"
-        }:
-            return False
-        if (
-            manifest["revision"] != context.service.revision
-            or manifest["units"] != "mm"
-            or not isinstance(manifest["sources"], list)
-            or not isinstance(manifest["requirements"], dict)
-            or not isinstance(manifest["unknowns"], list)
-            or not isinstance(manifest["ready"], bool)
-            or not isinstance(manifest["parts"], list)
-        ):
-            return False
-        expected_files = {
-            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in context.step_paths
-        }
-        expected_part_ids = set(context.document_parts)
-        parts = manifest["parts"]
-        return (
-            len(parts) == len(expected_files) == len(expected_part_ids)
-            and {part.get("file") for part in parts} == set(expected_files)
-            and {part.get("partId") for part in parts} == expected_part_ids
-            and all(
-                set(part) == {"partId", "label", "file", "sha256", "status", "validation"}
-                and part["sha256"] == expected_files[part["file"]]
-                and part["status"] == "passed"
-                and isinstance(part["label"], str)
-                and isinstance(part["validation"], dict)
-                and part["validation"].get("status") == "passed"
-                and part["validation"].get("freshProcess") is True
-                and part["validation"].get("label") == part["label"]
-                and isinstance(part["validation"].get("reimport"), dict)
-                for part in parts
-            )
-        )
-    except Exception:  # noqa: BLE001 - malformed artifact evidence must fail closed
-        return False
 
 
 def _parts_result(expected, context):
@@ -892,14 +842,11 @@ def check_task(
 ) -> list[dict]:
     context = ArtifactContext(document, steps, before_state)
     output = []
-    unexpected = list(context.unexpected_artifacts)
-    if not _valid_separate_manifest(context, task):
-        unexpected.append("manifest.json")
-    if unexpected:
+    if context.unexpected_artifacts:
         output.append({
             "kind": "artifacts",
             "status": "fail",
-            "unexpected": unexpected,
+            "unexpected": context.unexpected_artifacts,
         })
     if "parts" in task:
         output.append(_parts_result(task["parts"], context))

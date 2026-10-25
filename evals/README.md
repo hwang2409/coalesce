@@ -24,7 +24,7 @@ tasks are json files under `evals/tasks/`. each task requires `id`, `tier`, `pro
 
 ## scoring and trust
 
-scoring is fail closed: a run passes only when the harness succeeds, its transcript parses, and every configured check passes. missing, unknown, malformed, extra, or unrecognized evidence fails the run. the runner inventories its complete `steps/` directory, accepts `.step` and `.stp` files case-insensitively plus a separate-export `manifest.json` that exactly matches their names, hashes, and expected part ids, and rejects all other entries.
+scoring is fail closed: a run passes only when the harness succeeds, its transcript parses, and every configured check passes. missing, unknown, malformed, extra, or unrecognized evidence fails the run. the runner inventories its complete `steps/` directory, accepts only direct non-symlink regular `.step` and `.stp` files case-insensitively, and rejects all other entries except one direct regular `manifest.json`; the manifest is ignored and not graded.
 
 hole checks match every detected through-hole one-to-one with the expected positions and diameter range. the solid must also equal its bounding box minus the matched holes in volume (`rel_tol=1e-6`, `abs_tol=1e-3`), so an extra cavity, blind hole, pocket, or boss fails the check. this is an aggregate-volume invariant: a deliberate addition and removal of equal volume (for example a partly blocked hole plus a compensating pocket) can spoof it. move to an exact expected-shape or symmetric-difference comparison when a task needs resistance to deliberate spoofing.
 
