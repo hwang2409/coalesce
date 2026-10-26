@@ -19,6 +19,22 @@ def _assert_functional_interference_checks(checked):
     disc_pin_rows = [item["measured"]["pairs"][0] for item in disc_pin_results]
 
     assert checked["response"]["gate"] == "PASS"
+    whole_drive = next(item for item in results if item["id"] == "whole-drive-interference")
+    all_pairs = whole_drive["measured"]["pairs"]
+    assert len(all_pairs) == 55
+    assert all(row["overlapVolume"]["value"] == 0 for row in all_pairs)
+    expected_contacts = {
+        frozenset(("disc", "shaft")),
+        frozenset(("ring", "shaft")),
+        *(frozenset(("disc", f"ring-pin-{index}")) for index in range(1, 9)),
+        *(frozenset(("ring", f"ring-pin-{index}")) for index in range(1, 9)),
+    }
+    actual_contacts = {
+        frozenset(row["occurrenceIds"])
+        for row in all_pairs
+        if row["clearance"]["value"] <= MAX_DISC_PIN_CLEARANCE_MM
+    }
+    assert actual_contacts == expected_contacts
     assert (
         next(item for item in results if item["id"] == "disc-shaft-clearance")["status"] == "PASS"
     )
@@ -32,13 +48,20 @@ def _assert_functional_interference_checks(checked):
 
 def _assert_xcaf_tree(preflight):
     xcaf = preflight["response"]["validation"]["xcaf"]
-    assert (xcaf["rootCount"], xcaf["definitionCount"], xcaf["occurrenceCount"]) == (1, 4, 12)
+    assert (xcaf["rootCount"], xcaf["definitionCount"], xcaf["occurrenceCount"]) == (1, 4, 11)
     pin_definitions = {
         item["definitionLabel"]
         for item in xcaf["occurrences"]
         if item["occurrenceId"].startswith("ring-pin-")
     }
     assert len(pin_definitions) == 1
+
+
+def test_drive_demo_models_the_eccentric_journal_in_the_shaft_definition():
+    source = DEMO.read_text()
+
+    assert '("eccentric", "pin/pin"' not in source
+    assert '"operation": "join"' in source
 
 
 def test_drive_demo_does_not_compute_pin_transforms_with_trigonometry():
@@ -81,7 +104,6 @@ def test_cycloidal_drive_assembly_demo(tmp_path):
         "ring",
         "disc",
         "shaft",
-        "eccentric",
         *(f"ring-pin-{index}" for index in range(1, 9)),
     }
     assert {
@@ -89,7 +111,7 @@ def test_cycloidal_drive_assembly_demo(tmp_path):
     } == {"pin/pin"}
     assert assembly["response"]["solveStatus"] == "UNDER_CONSTRAINED"
     mates = assembly["response"]["mates"]
-    assert len(mates) == 20
+    assert len(mates) == 21
     pin_axes = [mate for mate in mates if mate["mateId"].endswith("-axis") and mate["mateId"].startswith("pin-")]
     assert {mate["first"]["reference"]["source"]["name"] for mate in pin_axes} == {
         f"bolt{index}" for index in range(1, 9)
@@ -98,11 +120,12 @@ def test_cycloidal_drive_assembly_demo(tmp_path):
     assert shaft_axis["first"]["reference"]["source"]["name"] == "center"
     by_id = {item["occurrenceId"]: item for item in occurrences}
     assert (by_id["ring"]["grounded"], by_id["ring"]["remainingDof"]) == (True, 0)
-    assert (by_id["eccentric"]["grounded"], by_id["eccentric"]["remainingDof"]) == (True, 0)
-    assert by_id["shaft"]["remainingDof"] == 2
-    assert by_id["disc"]["remainingDof"] == 2
+    assert by_id["shaft"]["remainingDof"] == 1
+    assert by_id["disc"]["remainingDof"] == 1
     assert all(by_id[f"ring-pin-{index}"]["remainingDof"] == 1 for index in range(1, 9))
-    assert by_id["disc"]["transform"]["translation"]["value"] == [2.0, 0.0, 0.0]
+    assert by_id["shaft"]["transform"]["translation"]["value"] == [0.0, 0.0, 0.0]
+    assert by_id["shaft"]["transform"]["rotation"]["angle"]["value"] == 0.0
+    assert by_id["disc"]["transform"]["translation"]["value"] == [2.0, 0.0, 1.0]
 
     initial = _entry(transcript, "query initial assembly")["response"]
     edited = _entry(transcript, "query edited assembly")["response"]
@@ -127,8 +150,8 @@ def test_cycloidal_drive_assembly_demo(tmp_path):
     ]
     assert all(row["overlapVolume"]["value"] == 0 for row in edited_rows)
     edited_clearances = [row["clearance"]["value"] for row in edited_rows]
-    assert sum(clearance > MAX_DISC_PIN_CLEARANCE_MM for clearance in edited_clearances) == 7
-    assert sum(clearance <= MAX_DISC_PIN_CLEARANCE_MM for clearance in edited_clearances) == 1
+    assert sum(clearance > MAX_DISC_PIN_CLEARANCE_MM for clearance in edited_clearances) == 6
+    assert sum(clearance <= MAX_DISC_PIN_CLEARANCE_MM for clearance in edited_clearances) == 2
     stale = _entry(transcript, "reject stale ring member")["response"]
     assert stale["error"]["code"] == "MATE_REFERENCE_STALE"
     assert stale["error"]["mateId"] == "pin-8-axis"

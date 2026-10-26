@@ -15,9 +15,10 @@ try {
     await desktop.goto(url);
     await desktop.waitForFunction(expected => window.coalesceViewer?.drawn?.revision === expected, revision, { timeout: 30000 });
     await desktop.waitForSelector('[data-mate-id="pin-1-axis"]');
-    await desktop.screenshot({ path: path.join(output, 'desktop-assembled.png') });
+    if (await desktop.locator('#panel-scroll').evaluate(node => node.scrollWidth > node.clientWidth)) throw new Error('desktop panel overflows horizontally');
+    await desktop.screenshot({ path: path.join(output, 'desktop-assembled-r2.png') });
     await desktop.locator('[data-mate-id="pin-1-axis"]').click();
-    await desktop.screenshot({ path: path.join(output, 'desktop-pin-mate-focused.png') });
+    await desktop.screenshot({ path: path.join(output, 'desktop-pin-mate-focused-r2.png') });
   } finally {
     await desktop.close();
   }
@@ -31,7 +32,8 @@ try {
     await phone.goto(url);
     await phone.waitForFunction(expected => window.coalesceViewer?.drawn?.revision === expected, revision, { timeout: 30000 });
     await phone.waitForSelector('#assembly-state:not([hidden])');
-    await phone.screenshot({ path: path.join(output, 'phone.png') });
+    if (await phone.locator('#panel-scroll').evaluate(node => node.scrollWidth > node.clientWidth)) throw new Error('phone panel overflows horizontally');
+    await phone.screenshot({ path: path.join(output, 'phone-r2.png') });
   } finally {
     await phone.close();
   }

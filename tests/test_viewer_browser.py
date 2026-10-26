@@ -123,7 +123,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
                     "occurrenceId": occurrence_id,
                     "grounded": occurrence_id == "shaft-skew",
                     "remainingDof": 0 if occurrence_id == "shaft-skew" else 1,
-                    "freeMotions": [] if occurrence_id == "shaft-skew" else ["spin"],
+                    "freeMotions": [] if occurrence_id == "shaft-skew" else ["axisSpin"],
                     "mateIds": ["pin-axis"] if occurrence_id.startswith("pin-") else [],
                 }
                 for occurrence_id in ("shaft", "shaft-skew", "pin-left", "pin-right")
@@ -207,8 +207,8 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert process.returncode == 0, stderr
     data = json.loads(stdout)
     assert data["errors"] == []
-    assert data["initial"]["solveStatus"] == "UNDER CONSTRAINED"
-    assert data["initial"]["solveWarning"] == "Under-constrained: shaft, pin-left, pin-right"
+    assert data["initial"]["solveStatus"] == "solved · free motion remains"
+    assert data["initial"]["solveWarning"] == "shaft: spin · 2 pins: spin"
     assert data["initial"]["solveSummary"] == "1 grounded · 0 conflicts"
     assert data["initial"]["mateRows"] == [
         "pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"

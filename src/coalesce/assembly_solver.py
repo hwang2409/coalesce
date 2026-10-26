@@ -18,7 +18,14 @@ from .assembly import (
     canonical_transform,
     locate_shape,
 )
-from .references import Candidate, SketchSegmentSource, Status, face_role_catalog, resolve
+from .references import (
+    Candidate,
+    SketchSegmentSource,
+    Status,
+    face_role_catalog,
+    face_surface_type,
+    resolve,
+)
 
 _LINEAR_TOLERANCE = 1e-7
 _ANGULAR_TOLERANCE = 1e-7
@@ -200,7 +207,7 @@ def _oriented_candidate(candidate: Candidate, face: Face) -> Candidate:
         candidate.key,
         face,
         {
-            "type": face.geom_type.name,
+            "type": face_surface_type(face).name,
             "center": (center.X, center.Y, center.Z),
             "normal": (normal.X, normal.Y, normal.Z),
             "area": float(face.area),
@@ -282,14 +289,15 @@ def _resolved_face(
         )
     face = candidates[0].entity
     expected = GeomType.PLANE if mate.kind == "planar" else GeomType.CYLINDER
-    if face.geom_type is not expected or float(face.area) <= _LINEAR_TOLERANCE:
+    surface_type = face_surface_type(face)
+    if surface_type is not expected or float(face.area) <= _LINEAR_TOLERANCE:
         raise AssemblyError(
             "MATE_GEOMETRY_UNSUPPORTED",
             f"assembly mate {mate.id} {side_name} face must be {expected.name.lower()} with non-zero area",
             mateId=mate.id,
             side=side_name,
             occurrenceId=side.occurrence_id,
-            surfaceType=face.geom_type.name,
+            surfaceType=surface_type.name,
             area={"value": float(face.area), "unit": "mm^2"},
             availableRoles=face_role_catalog(scoped, side.reference.feature),
         )

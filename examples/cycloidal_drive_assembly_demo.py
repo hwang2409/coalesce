@@ -62,7 +62,9 @@ def _cap_reference(feature, entity, role):
     }
 
 
-def _sketch_side_reference(feature, sketch, entity, segment="circle"):
+def _sketch_side_reference(
+    feature, sketch, entity, segment="circle", *, body_feature=None, body_entity=None
+):
     return {
         "feature": feature,
         "role": f"side({segment})",
@@ -73,7 +75,7 @@ def _sketch_side_reference(feature, sketch, entity, segment="circle"):
             "entity": entity,
             "segment": segment,
         },
-        "body": _body(feature, entity),
+        "body": _body(body_feature or feature, body_entity or entity),
     }
 
 
@@ -103,15 +105,26 @@ def _ground(revision, mate_id, occurrence_id):
     }
 
 
-def _mate(revision, mate_id, kind, first_id, first_ref, second_id, second_ref):
+def _mate(
+    revision,
+    mate_id,
+    kind,
+    first_id,
+    first_ref,
+    second_id,
+    second_ref,
+    *,
+    orientation=None,
+    offset=0,
+):
     parameters = {
         "kind": kind,
         "first": {"occurrenceId": first_id, "reference": first_ref},
         "second": {"occurrenceId": second_id, "reference": second_ref},
-        "orientation": "aligned" if kind == "concentric" else "opposed",
+        "orientation": orientation or ("aligned" if kind == "concentric" else "opposed"),
     }
     if kind == "planar":
-        parameters["offset"] = {"value": 0, "unit": "mm"}
+        parameters["offset"] = {"value": offset, "unit": "mm"}
     return {
         "action": "create",
         "kind": "assembly_mate",
@@ -172,7 +185,7 @@ def _requests():
             },
         ),
         (
-            "create shaft sketch",
+            "create shaft shoulder sketch",
             "sketch",
             {
                 "action": "create",
@@ -183,27 +196,67 @@ def _requests():
                 "entities": [
                     {
                         "id": "shaft",
-                        "kind": "polyline",
-                        "closed": True,
-                        "points": [[-10, 0], [10, 0], [10, 1.75], [6, 1.75], [6, 1.5], [-10, 1.5]],
+                        "kind": "circle",
+                        "center": [0, 0],
+                        "radius": {"value": 6, "unit": "mm"},
                     }
                 ],
             },
         ),
         (
-            "revolve shaft",
+            "extrude shaft shoulder",
             "feature",
             {
                 "action": "create",
                 "expectedRevision": 4,
-                "requestId": "shaft-revolve",
+                "requestId": "shaft-extrude",
                 "featureId": "shaft",
-                "kind": "revolve",
+                "kind": "extrude",
                 "parameters": {
                     "profile": {"sketchId": "shaft_profile", "profileIds": ["shaft"]},
-                    "axis": "x",
-                    "angle": {"value": 360, "unit": "deg"},
+                    "distance": {"value": 1, "unit": "mm"},
                     "operation": "new_body",
+                    "direction": "normal",
+                },
+            },
+        ),
+        (
+            "create eccentric journal sketch",
+            "sketch",
+            {
+                "action": "create",
+                "expectedRevision": 5,
+                "requestId": "journal-sketch",
+                "sketchId": "shaft_journal_profile",
+                "plane": {"kind": "origin", "name": "XY"},
+                "entities": [
+                    {
+                        "id": "journal",
+                        "kind": "circle",
+                        "center": [2, 0],
+                        "radius": {"value": 4, "unit": "mm"},
+                    }
+                ],
+            },
+        ),
+        (
+            "join eccentric journal to shaft",
+            "feature",
+            {
+                "action": "create",
+                "expectedRevision": 6,
+                "requestId": "journal-join",
+                "featureId": "shaft_journal",
+                "kind": "extrude",
+                "parameters": {
+                    "profile": {
+                        "sketchId": "shaft_journal_profile",
+                        "profileIds": ["journal"],
+                    },
+                    "distance": {"value": 6, "unit": "mm"},
+                    "operation": "join",
+                    "target": {"featureId": "shaft"},
+                    "direction": "normal",
                 },
             },
         ),
@@ -212,7 +265,7 @@ def _requests():
             "sketch",
             {
                 "action": "create",
-                "expectedRevision": 5,
+                "expectedRevision": 7,
                 "requestId": "pin-sketch",
                 "sketchId": "pin_profile",
                 "plane": {"kind": "origin", "name": "XY"},
@@ -231,7 +284,7 @@ def _requests():
             "feature",
             {
                 "action": "create",
-                "expectedRevision": 6,
+                "expectedRevision": 8,
                 "requestId": "pin-extrude",
                 "featureId": "pin",
                 "kind": "extrude",
@@ -248,7 +301,7 @@ def _requests():
             "sketch",
             {
                 "action": "create",
-                "expectedRevision": 7,
+                "expectedRevision": 9,
                 "requestId": "ring-sketch",
                 "sketchId": "ring_profile",
                 "plane": {"kind": "origin", "name": "XY"},
@@ -267,7 +320,7 @@ def _requests():
             "feature",
             {
                 "action": "create",
-                "expectedRevision": 8,
+                "expectedRevision": 10,
                 "requestId": "ring-extrude",
                 "featureId": "ring",
                 "kind": "extrude",
@@ -284,7 +337,7 @@ def _requests():
             "feature",
             {
                 "action": "create",
-                "expectedRevision": 9,
+                "expectedRevision": 11,
                 "requestId": "ring-centre-bore",
                 "featureId": "ring_center_bore",
                 "kind": "hole",
@@ -300,7 +353,7 @@ def _requests():
             "feature",
             {
                 "action": "create",
-                "expectedRevision": 10,
+                "expectedRevision": 12,
                 "requestId": "ring-holes",
                 "featureId": "ring_holes",
                 "kind": "hole",
@@ -325,7 +378,6 @@ def _requests():
         ("ring", "ring/ring", _transform((0, 0, -2))),
         ("disc", "disc/disc", _transform()),
         ("shaft", "shaft/shaft", _transform()),
-        ("eccentric", "pin/pin", _transform((2, 0, 0))),
         *((f"ring-pin-{index}", "pin/pin", _transform()) for index in range(1, PIN_COUNT + 1)),
     ]
     for occurrence_id, part_id, transform in placements:
@@ -334,16 +386,11 @@ def _requests():
         )
         revision += 1
 
-    requests.extend(
-        [
-            ("ground ring", "feature", _ground(revision, "ring-ground", "ring")),
-            ("ground eccentric", "feature", _ground(revision + 1, "eccentric-ground", "eccentric")),
-        ]
-    )
-    revision += 2
+    requests.append(("ground ring", "feature", _ground(revision, "ring-ground", "ring")))
+    revision += 1
 
     ring_bore = _hole_reference("ring_center_bore", "center", "ring", "ring")
-    shaft_side = _sketch_side_reference("shaft", "shaft_profile", "shaft", "seg-p4-p5")
+    shaft_side = _sketch_side_reference("shaft", "shaft_profile", "shaft")
     requests.append(
         (
             "mate shaft to drive axis",
@@ -353,7 +400,35 @@ def _requests():
     )
     revision += 1
 
+    ring_seat = _cap_reference("ring", "ring", "cap_end")
+    shaft_shoulder = _cap_reference("shaft", "shaft", "cap_end")
+    requests.append(
+        (
+            "seat shaft on ring",
+            "feature",
+            _mate(
+                revision,
+                "shaft-seat",
+                "planar",
+                "ring",
+                ring_seat,
+                "shaft",
+                shaft_shoulder,
+                orientation="aligned",
+                offset=1,
+            ),
+        )
+    )
+    revision += 1
+
     pin_side = _sketch_side_reference("pin", "pin_profile", "pin")
+    journal_side = _sketch_side_reference(
+        "shaft_journal",
+        "shaft_journal_profile",
+        "journal",
+        body_feature="shaft",
+        body_entity="shaft",
+    )
     disc_bore = _hole_reference("disc_bore", "center", "disc", "disc")
     requests.append(
         (
@@ -363,8 +438,8 @@ def _requests():
                 revision,
                 "disc-eccentric",
                 "concentric",
-                "eccentric",
-                pin_side,
+                "shaft",
+                journal_side,
                 "disc",
                 disc_bore,
             ),
@@ -372,7 +447,24 @@ def _requests():
     )
     revision += 1
 
-    ring_seat = _cap_reference("ring", "ring", "cap_end")
+    disc_start = _cap_reference("disc", "disc", "cap_start")
+    requests.append(
+        (
+            "seat disc on shaft shoulder",
+            "feature",
+            _mate(
+                revision,
+                "disc-seat",
+                "planar",
+                "shaft",
+                shaft_shoulder,
+                "disc",
+                disc_start,
+            ),
+        )
+    )
+    revision += 1
+
     pin_seat = _cap_reference("pin", "pin", "cap_start")
     for index in range(1, PIN_COUNT + 1):
         occurrence_id = f"ring-pin-{index}"
@@ -408,6 +500,10 @@ def _requests():
         )
         revision += 2
     return requests
+
+
+def _manufacturing_occurrence_ids():
+    return ["disc", "ring", *(f"ring-pin-{index}" for index in range(1, PIN_COUNT + 1)), "shaft"]
 
 
 def _disc_pin_requirements():
@@ -550,6 +646,12 @@ async def run_demo(output: Path, *, screenshots: bool) -> None:
                     "requirements": [
                         {"id": "valid", "kind": "valid_brep"},
                         {
+                            "id": "whole-drive-interference",
+                            "kind": "assembly_interference",
+                            "occurrenceIds": _manufacturing_occurrence_ids(),
+                            "minimumClearance": {"value": 0, "unit": "mm"},
+                        },
+                        {
                             "id": "disc-shaft-clearance",
                             "kind": "assembly_interference",
                             "occurrenceIds": ["disc", "shaft"],
@@ -568,8 +670,8 @@ async def run_demo(output: Path, *, screenshots: bool) -> None:
                 {"action": "preflight", "mode": "assembly", "expectedRevision": revision},
             )
             xcaf = preflight["validation"]["xcaf"]
-            if (xcaf["definitionCount"], xcaf["occurrenceCount"]) != (4, 12):
-                raise DemoFailure("XCAF preflight did not preserve four definitions and 12 occurrences")
+            if (xcaf["definitionCount"], xcaf["occurrenceCount"]) != (4, 11):
+                raise DemoFailure("XCAF preflight did not preserve four definitions and 11 occurrences")
             await call(
                 "publish assembly STEP",
                 "export",

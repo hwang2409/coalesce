@@ -3303,6 +3303,40 @@ def _added(node: Any, result: RegenResult) -> str:
     return summary
 
 
+def _pattern_edits(old: Any, new: Any) -> list[str]:
+    if old == new:
+        return []
+    if old is None or new is None or type(old) is not type(new):
+        before = "none" if old is None else type(old).__name__.removesuffix("HolePattern").lower()
+        after = "none" if new is None else type(new).__name__.removesuffix("HolePattern").lower()
+        return [f"pattern: {before} → {after}"]
+    def plain(before: Any, after: Any) -> str:
+        return f"{before} → {after}"
+
+    def mm(before: Any, after: Any) -> str:
+        return f"{_mm(before)} → {_mm(after)} mm"
+
+    formats = {
+        "center": ("center", mm),
+        "radius": ("radius", mm),
+        "count": ("count", plain),
+        "start_angle": (
+            "start angle",
+            lambda before, after: f"{_mm(before)} → {_mm(after)} deg",
+        ),
+        "name_prefix": ("name prefix", plain),
+        "start": ("start", mm),
+        "direction": ("direction", lambda before, after: f"{_mm(before)} → {_mm(after)}"),
+        "pitch": ("pitch", mm),
+    }
+    edits = []
+    for field, (label, display) in formats.items():
+        before, after = getattr(old, field, None), getattr(new, field, None)
+        if before != after:
+            edits.append(f"pattern {label}: {display(before, after)}")
+    return edits
+
+
 def _edited(old: Any, node: Any) -> str:
     if isinstance(node, ScrewClosure):
         return (
@@ -3313,7 +3347,7 @@ def _edited(old: Any, node: Any) -> str:
     if isinstance(node, BoardImport):
         same = old.source_digest == node.source_digest
         return f"refreshed board {node.id}, source {'unchanged' if same else 'changed'}"
-    edits = []
+    edits = _pattern_edits(old.pattern, node.pattern) if isinstance(node, Hole) else []
     for name, (word, values) in _EDITED_FIELDS.items():
         was, now = getattr(old, name, None), getattr(node, name, None)
         if was != now:

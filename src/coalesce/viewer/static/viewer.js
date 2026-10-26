@@ -530,15 +530,43 @@ function renderPartList(parts) {
 
 // ---- assembly solve: persisted mate intent and the effective occurrence freedom
 
+function remainingMotionSummary(state) {
+  const free = state.occurrences.filter((row) => row.remainingDof > 0);
+  const motionName = (motion) => ({
+    axisSpin: 'spin', normalSpin: 'spin', axisTranslation: 'axial translation',
+    inPlaneX: 'in-plane translation', inPlaneY: 'in-plane translation',
+    globalRigidMotion: 'global rigid motion',
+  })[motion] ?? motion;
+  const groups = new Map();
+  for (const row of free) {
+    const part = current.parts.find((item) => item.occurrenceId === row.occurrenceId);
+    const label = (part?.partId?.split('/')[0] ?? part?.label ?? row.occurrenceId).toLowerCase();
+    const motions = [...new Set(row.freeMotions.map(motionName))].join(', ');
+    const key = `${label}\0${motions}`;
+    groups.set(key, { label, motions, count: (groups.get(key)?.count ?? 0) + 1 });
+  }
+  return {
+    free,
+    text: [...groups.values()].map(({ label, motions, count }) =>
+      `${count > 1 ? `${count} ${label}s` : label}: ${motions}`).join(' · '),
+    unexpected: free.some((row) => row.freeMotions.some((motion) => motion !== 'axisSpin')),
+  };
+}
+
 function renderAssemblyState(state) {
   const section = $('assembly-state');
   section.hidden = !state;
   if (!state) return;
-  $('solve-status').textContent = state.solveStatus.replaceAll('_', ' ');
+  const motion = remainingMotionSummary(state);
+  $('solve-status').textContent = state.conflicts.length
+    ? 'solve conflict'
+    : motion.free.length ? 'solved · free motion remains' : 'solved · fully constrained';
   const warning = $('solve-warning');
-  warning.hidden = !state.underConstrainedOccurrenceIds.length;
-  warning.textContent = state.underConstrainedOccurrenceIds.length
-    ? `Under-constrained: ${state.underConstrainedOccurrenceIds.join(', ')}` : '';
+  warning.hidden = !motion.text && !state.conflicts.length;
+  warning.classList.toggle('unexpected', state.conflicts.length > 0 || motion.unexpected);
+  warning.textContent = state.conflicts.length
+    ? `${state.conflicts.length} solve conflict${state.conflicts.length === 1 ? '' : 's'}`
+    : motion.text;
   const grounded = state.occurrences.filter((row) => row.grounded).length;
   $('solve-summary').textContent = `${grounded} grounded · ${state.conflicts.length} conflicts`;
   $('mate-count').textContent = `${state.mates.length}`;

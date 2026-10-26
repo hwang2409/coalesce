@@ -267,8 +267,23 @@ def _edge_orientation(entity: Any) -> str:
     return "angled"
 
 
+def face_surface_type(face: Any) -> Any:
+    """Return the kernel surface type, recognizing planar spline surfaces as planes."""
+    from build123d import GeomType
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomLib import GeomLib_IsPlanarSurface
+    from OCP.Precision import Precision
+
+    if face.geom_type is GeomType.PLANE:
+        return GeomType.PLANE
+    surface = BRep_Tool.Surface_s(face.wrapped)
+    if GeomLib_IsPlanarSurface(surface, Precision.Confusion_s()).IsPlanar():
+        return GeomType.PLANE
+    return face.geom_type
+
+
 def _face_role_entry(feature: str, role: str, candidates: list[Candidate]) -> dict[str, Any]:
-    types = {candidate.entity.geom_type.name for candidate in candidates}
+    types = {face_surface_type(candidate.entity).name for candidate in candidates}
     areas = [float(candidate.entity.area) for candidate in candidates]
     descriptor = candidates[0].descriptor
     frame = None

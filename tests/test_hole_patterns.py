@@ -17,8 +17,18 @@ from coalesce import (
     Sketch,
     regenerate,
 )
-from coalesce.graph import Hole
-from coalesce.service import _pattern_selection_summary
+from coalesce.graph import CircularHolePattern, Hole
+from coalesce.service import _edited, _pattern_selection_summary
+
+
+def test_nested_circular_pattern_radius_edit_is_described():
+    old = Hole(
+        "holes",
+        pattern=CircularHolePattern((0, 0), 31, 8, 0, "bolt"),
+    )
+    new = replace(old, pattern=replace(old.pattern, radius=30))
+
+    assert _edited(old, new) == "edited hole feature holes pattern radius: 31 → 30 mm"
 
 
 def circular_pattern(*, radius=12, count=6, prefix="bolt", start_angle=0):
