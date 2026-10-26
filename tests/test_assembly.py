@@ -149,7 +149,7 @@ def test_ground_mates_round_trip_sorted_and_reject_invalid_documents():
     assert conflict_error.value.error["code"] == "INVALID_DOCUMENT"
 
 
-def test_document_store_v3_mate_round_trip_is_byte_stable_and_v2_stays_old(tmp_path):
+def test_document_store_v3_mate_round_trip_is_byte_stable_and_v2_upgrades_on_save(tmp_path):
     path = tmp_path / "mates.coalesce.json"
     old_assembly = {
         "occurrences": [
@@ -167,6 +167,14 @@ def test_document_store_v3_mate_round_trip_is_byte_stable_and_v2_stays_old(tmp_p
     loaded_old = DocumentStore(path).load().assembly
     assert list(loaded_old.occurrences) == ["old"]
     assert loaded_old.mates == {}
+    old_store = DocumentStore(path)
+    old_store.save(old_store.load())
+    upgraded = json.loads(path.read_text())
+    assert upgraded["formatVersion"] == 3
+    assert upgraded["assembly"] == {**old_assembly, "mates": []}
+    first_upgrade = path.read_bytes()
+    old_store.save(old_store.load())
+    assert path.read_bytes() == first_upgrade
 
     path.write_text(json.dumps({"formatVersion": 3, "graph": {"nodes": []}, "assembly": old_assembly}))
     with pytest.raises(GraphError, match="occurrences and mates"):

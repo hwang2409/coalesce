@@ -2,7 +2,7 @@
 
 ## document format
 
-format version 3 stores occurrences and mates. version 1 still loads without assembly state, and version 2 still loads its occurrence-only assembly. newer versions fail with `INVALID_DOCUMENT` and name the unsupported version. files written by this version cannot be opened by earlier coalesce builds.
+format version 3 stores occurrences and mates. version 1 still loads without assembly state, and version 2 still loads its occurrence-only assembly. both older versions upgrade to version 3 on the next accepted save; the stored geometry and occurrences do not change, and `mates` is written as an empty list. newer versions fail with `INVALID_DOCUMENT` and name the unsupported version. files written by this version cannot be opened by earlier coalesce builds.
 
 coalesce stores an assembly as caller-named occurrences and mates outside the manufacturing feature graph. use the existing `feature` tool with `kind: "assembly_occurrence"` to create, update, or delete a placement. every mutation requires `expectedRevision` and `requestId`.
 
