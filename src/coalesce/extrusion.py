@@ -24,7 +24,7 @@ from .graph import (
 )
 from .profile_validation import build_outline_profile
 from .provenance import candidate, derive_edge_candidates
-from .references import BodySource, Candidate, SketchSegmentSource
+from .references import BodySource, Candidate, SketchSegmentSource, ToolCapSource
 
 
 @dataclass
@@ -245,14 +245,14 @@ def _extrude_region(
         candidate(
             node.id,
             "cap_start",
-            outer.entity_id,
-            final_shape(prism.FirstShape()),
+            ToolCapSource(node.id, "cap_start"),
+            final_shape(prism.FirstShape().Reversed()),
             body=body,
         ),
         candidate(
             node.id,
             "cap_end",
-            outer.entity_id,
+            ToolCapSource(node.id, "cap_end"),
             final_shape(prism.LastShape()),
             body=body,
         ),

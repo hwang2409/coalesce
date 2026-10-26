@@ -1,4 +1,4 @@
-# assembly occurrences and ground mates
+# assembly occurrences and planar mates
 
 ## document format
 
@@ -47,6 +47,39 @@ use `feature` with `kind: "assembly_mate"` to create, update, or delete a ground
 update a ground mate with `"set":{"occurrenceId":"other-occurrence"}`. a mate id is caller-supplied and unique. one occurrence can have at most one ground mate; a second ground fails atomically with `MATE_CONFLICT`. an occurrence with a mate cannot be deleted until its mate is deleted.
 
 an assembly query returns sorted `mates`, `solveStatus`, `underConstrainedOccurrenceIds`, and one status row per connected component. each occurrence reports `grounded`, `mateIds`, `remainingDof`, and `freeMotions`. a ground occurrence has zero remaining degrees of freedom. an unmated occurrence has six degrees of freedom and remains at its explicit stored transform. under-constraint is a successful state, not a failed solve.
+
+## face roles and planar mates
+
+query `face_roles` with a feature id before creating a planar mate. each role reports its exact face count, surface type, area, frame when unique, and an occurrence-independent typed provenance reference. put that reference beside an `occurrenceId` in the mate. do not use face indices or geometry proximity.
+
+```json
+{
+  "action": "create",
+  "kind": "assembly_mate",
+  "expectedRevision": 4,
+  "requestId": "seat-lid",
+  "mateId": "lid-seat",
+  "parameters": {
+    "kind": "planar",
+    "first": {
+      "occurrenceId": "base",
+      "reference": {"feature": "base", "role": "rim", "cardinality": "one"}
+    },
+    "second": {
+      "occurrenceId": "lid",
+      "reference": {"feature": "lid", "role": "underside", "cardinality": "one"}
+    },
+    "orientation": "opposed",
+    "offset": {"value": 0, "unit": "mm"}
+  }
+}
+```
+
+`aligned` makes the two outward face normals equal. `opposed` makes them opposite. the signed offset is measured from the first face to the second face along the first face normal. one planar mate removes three degrees of freedom from the moved occurrence and preserves its seeded in-plane translation and normal spin.
+
+coalesce resolves both references on every regeneration, solves the component, validates residuals, and persists the resulting canonical occurrence transforms in the same revision. viewer scenes, interference checks, and assembly step export consume those transforms through the normal occurrence-placement path. restart recomputes the solve and rejects a materially different persisted transform as `INVALID_DOCUMENT`.
+
+one ground is allowed per connected mate component. connectivity and grounding are validated by the same mate graph that reports solve status. stale, split, merged, or ambiguous face references fail atomically with `MATE_REFERENCE_STALE` and name the mate and side. non-planar or zero-area faces fail with `MATE_GEOMETRY_UNSUPPORTED`. planar cycles that disagree fail with `MATE_CONFLICT`; a satisfied duplicate restriction is reported in `redundantMateIds`.
 
 ## exact interference and clearance
 

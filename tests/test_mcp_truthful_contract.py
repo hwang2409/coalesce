@@ -4,6 +4,7 @@ import pytest
 from jsonschema import validate
 from test_mcp_vertical import FEATURE, SKETCH, list_server_tools, run_server
 
+from coalesce.schemas import FEATURE_ACTION_SCHEMAS
 from coalesce.server import TOOLS_GUIDE
 from coalesce.service import DocumentService
 
@@ -42,6 +43,144 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
         assert tools[name].annotations.readOnlyHint is False
         assert tools[name].annotations.destructiveHint is True
         assert tools[name].annotations.idempotentHint is True
+
+
+@pytest.mark.anyio
+async def test_mate_tool_text_teaches_face_discovery_and_planar_semantics(tmp_path):
+    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "text.coalesce.json")}
+    feature = tools["feature"].description
+    query = tools["query"].description
+    assert "face_roles" in feature
+    assert "aligned" in feature and "opposed" in feature
+    assert "signed offset" in feature
+    assert "coalesce://docs/assembly" in feature
+    assert "face_roles" in query
+    assert "face_roles" in TOOLS_GUIDE
+    assert "aligned" in TOOLS_GUIDE and "opposed" in TOOLS_GUIDE
+    assert "signed offset" in TOOLS_GUIDE
+    assert "coalesce://docs/assembly" in TOOLS_GUIDE
+
+
+def _assert_required_shape_is_published(full, published):
+    assert set(full.get("required", ())) <= set(published.get("required", ()))
+    for name in full.get("required", ()):
+        full_property = full.get("properties", {}).get(name, {})
+        published_property = published.get("properties", {}).get(name, {})
+        if "type" in full_property:
+            assert published_property.get("type") == full_property["type"]
+        if full_property.get("type") == "object":
+            _assert_required_shape_is_published(full_property, published_property)
+
+
+@pytest.mark.anyio
+async def test_feature_schema_keeps_required_mate_shape_without_codex_unsafe_refs(tmp_path):
+    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "refs.coalesce.json")}
+    schema = tools["feature"].inputSchema
+    compact = json.dumps(schema, separators=(",", ":")).encode()
+    assert len(compact) < 27_003  # dev was 24,503 bytes; keep mate growth below 2.5 KiB.
+    assert "$defs" not in schema
+    assert "$ref" not in json.dumps(schema)
+
+    create_schema = FEATURE_ACTION_SCHEMAS[("create", "assembly_mate")]
+    update_schema = FEATURE_ACTION_SCHEMAS[("update", "assembly_mate")]
+    published_create = schema["properties"]["parameters"]["oneOf"][-1]
+    published_update = schema["properties"]["set"]["oneOf"][-1]
+    _assert_required_shape_is_published(
+        create_schema["properties"]["parameters"]["oneOf"][-1], published_create
+    )
+    _assert_required_shape_is_published(
+        update_schema["properties"]["set"]["oneOf"][-1], published_update
+    )
+
+    reference = {"feature": "plate", "role": "cap_end", "cardinality": "one"}
+    sides = {
+        "first": {"occurrenceId": "fixed", "reference": reference},
+        "second": {"occurrenceId": "moved", "reference": reference},
+        "orientation": "aligned",
+        "offset": {"value": -13.25, "unit": "mm"},
+    }
+    samples = [
+        (
+            create_schema,
+            {
+                "action": "create",
+                "expectedRevision": 0,
+                "requestId": "schema-planar-create",
+                "kind": "assembly_mate",
+                "mateId": "seat",
+                "parameters": {"kind": "planar", **sides},
+            },
+        ),
+        (
+            update_schema,
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": "schema-planar-update",
+                "kind": "assembly_mate",
+                "mateId": "seat",
+                "set": sides,
+            },
+        ),
+        (
+            create_schema,
+            {
+                "action": "create",
+                "expectedRevision": 0,
+                "requestId": "schema-ground-create",
+                "kind": "assembly_mate",
+                "mateId": "fixed",
+                "parameters": {"kind": "ground", "occurrenceId": "fixed"},
+            },
+        ),
+        (
+            update_schema,
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": "schema-ground-update",
+                "kind": "assembly_mate",
+                "mateId": "fixed",
+                "set": {"occurrenceId": "moved"},
+            },
+        ),
+    ]
+    for full_schema, sample in samples:
+        validate(sample, full_schema)
+        validate(sample, schema)
+
+
+@pytest.mark.anyio
+async def test_relaxed_published_mate_reference_error_points_to_recovery(tmp_path):
+    reference = {"feature": "plate", "role": "cap_end", "cardinality": "any"}
+    result = (
+        await run_server(
+            tmp_path / "invalid-mate-reference.coalesce.json",
+            [
+                (
+                    "feature",
+                    {
+                        "action": "create",
+                        "expectedRevision": 0,
+                        "requestId": "invalid-mate-reference",
+                        "kind": "assembly_mate",
+                        "mateId": "seat",
+                        "parameters": {
+                            "kind": "planar",
+                            "first": {"occurrenceId": "fixed", "reference": reference},
+                            "second": {"occurrenceId": "moved", "reference": reference},
+                            "orientation": "aligned",
+                            "offset": {"value": 0, "unit": "mm"},
+                        },
+                    },
+                )
+            ],
+        )
+    )[0]
+
+    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert "face_roles" in result["error"]["hint"]
+    assert "coalesce://docs/assembly" in result["error"]["hint"]
 
 
 @pytest.mark.anyio

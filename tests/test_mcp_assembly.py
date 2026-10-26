@@ -449,3 +449,56 @@ def test_duplicate_mate_and_second_ground_fail_atomically(tmp_path):
     assert delete_occurrence["error"]["code"] == "HAS_DEPENDENTS"
     assert delete_occurrence["error"]["mateIds"] == ["fixture"]
     assert path.read_bytes() == before
+
+
+@pytest.mark.anyio
+async def test_real_stdio_face_roles_and_planar_mate(tmp_path):
+    def reference(role):
+        return {
+            "feature": "plate_extrude",
+            "role": role,
+            "cardinality": "one",
+            "source": {
+                "kind": "tool_cap",
+                "tool": "plate_extrude",
+                "role": role,
+            },
+            "body": {
+                "kind": "body_source",
+                "feature": "plate_extrude",
+                "entity": "outline",
+            },
+        }
+
+    planar = {
+        "action": "create",
+        "kind": "assembly_mate",
+        "expectedRevision": 4,
+        "requestId": "seat",
+        "mateId": "seat",
+        "parameters": {
+            "kind": "planar",
+            "first": {"occurrenceId": "a", "reference": reference("cap_end")},
+            "second": {"occurrenceId": "b", "reference": reference("cap_start")},
+            "orientation": "opposed",
+            "offset": {"value": 4, "unit": "mm"},
+        },
+    }
+    results = await run_server(
+        tmp_path / "planar-stdio.coalesce.json",
+        [
+            ("sketch", SKETCH),
+            ("feature", FEATURE),
+            ("feature", occurrence_create(2, "place-a", "a")),
+            ("feature", occurrence_create(3, "place-b", "b", 50)),
+            ("query", {"select": {"kind": "face_roles", "id": "plate_extrude"}}),
+            ("feature", planar),
+            ("query", {"select": {"kind": "assembly"}}),
+        ],
+    )
+
+    cap = next(role for role in results[4]["roles"] if role["role"] == "cap_end")
+    assert cap["exampleReference"]["source"]["kind"] == "tool_cap"
+    assert results[5]["ok"]
+    moved = next(row for row in results[6]["occurrences"] if row["occurrenceId"] == "b")
+    assert moved["remainingDof"] == 3

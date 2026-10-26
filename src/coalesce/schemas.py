@@ -136,6 +136,16 @@ REFERENCE_SOURCE = {
         {
             "type": "object",
             "properties": {
+                "kind": {"const": "tool_cap"},
+                "tool": {"type": "string", "minLength": 1},
+                "role": {"type": "string", "minLength": 1},
+            },
+            "required": ["kind", "tool", "role"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
                 "kind": {"const": "hole_surface"},
                 "feature": {"type": "string", "minLength": 1},
                 "name": {"type": "string", "minLength": 1},
@@ -911,12 +921,39 @@ GROUND_MATE_UPDATE = {
     "required": ["occurrenceId"],
     "additionalProperties": False,
 }
+MATE_SIDE = {
+    "type": "object",
+    "properties": {
+        "occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"],
+        "reference": REFERENCE,
+    },
+    "required": ["occurrenceId", "reference"],
+    "additionalProperties": False,
+}
+PLANAR_MATE_FIELDS = {
+    "first": MATE_SIDE,
+    "second": MATE_SIDE,
+    "orientation": {"enum": ["aligned", "opposed"]},
+    "offset": QUANTITY,
+}
+PLANAR_MATE_PARAMETERS = {
+    "type": "object",
+    "properties": {"kind": {"const": "planar"}, **PLANAR_MATE_FIELDS},
+    "required": ["kind", *PLANAR_MATE_FIELDS],
+    "additionalProperties": False,
+}
+PLANAR_MATE_UPDATE = {
+    "type": "object",
+    "properties": PLANAR_MATE_FIELDS,
+    "required": list(PLANAR_MATE_FIELDS),
+    "additionalProperties": False,
+}
 ASSEMBLY_MATE_CREATE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "create"},
         **ASSEMBLY_MATE_PROPERTIES,
-        "parameters": GROUND_MATE_PARAMETERS,
+        "parameters": {"oneOf": [GROUND_MATE_PARAMETERS, PLANAR_MATE_PARAMETERS]},
     },
     "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId", "parameters"],
     "additionalProperties": False,
@@ -926,7 +963,7 @@ ASSEMBLY_MATE_UPDATE_SCHEMA = {
     "properties": {
         "action": {"const": "update"},
         **ASSEMBLY_MATE_PROPERTIES,
-        "set": GROUND_MATE_UPDATE,
+        "set": {"oneOf": [GROUND_MATE_UPDATE, PLANAR_MATE_UPDATE]},
     },
     "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId", "set"],
     "additionalProperties": False,
@@ -1009,6 +1046,42 @@ for kind, changes in {
             "set": changes,
         },
     }
+
+
+# Codex compacts large schemas by blanking local refs; action schemas still validate full references.
+PUBLISHED_MATE_REFERENCE = {
+    "type": "object",
+    "properties": {
+        "feature": REFERENCE["properties"]["feature"],
+        "role": REFERENCE["properties"]["role"],
+    },
+    "required": ["feature", "role"],
+}
+PUBLISHED_MATE_SIDE = {
+    "type": "object",
+    "properties": {
+        "occurrenceId": {"type": "string"},
+        "reference": PUBLISHED_MATE_REFERENCE,
+    },
+    "required": ["occurrenceId", "reference"],
+}
+PUBLISHED_PLANAR_MATE_FIELDS = {
+    **PLANAR_MATE_FIELDS,
+    "first": PUBLISHED_MATE_SIDE,
+    "second": PUBLISHED_MATE_SIDE,
+}
+PUBLISHED_PLANAR_MATE_PARAMETERS = {
+    "type": "object",
+    "properties": {"kind": {"const": "planar"}, **PUBLISHED_PLANAR_MATE_FIELDS},
+    "required": ["kind", *PUBLISHED_PLANAR_MATE_FIELDS],
+}
+PUBLISHED_PLANAR_MATE_UPDATE = {
+    "type": "object",
+    "properties": PUBLISHED_PLANAR_MATE_FIELDS,
+    "required": list(PUBLISHED_PLANAR_MATE_FIELDS),
+}
+
+
 FEATURE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1021,12 +1094,20 @@ FEATURE_SCHEMA = {
         "occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"],
         "mateId": ASSEMBLY_MATE_PROPERTIES["mateId"],
         "parameters": {
-            "oneOf": [*FEATURE_PARAMETERS["oneOf"], GROUND_MATE_PARAMETERS],
+            "oneOf": [
+                *FEATURE_PARAMETERS["oneOf"],
+                GROUND_MATE_PARAMETERS,
+                PUBLISHED_PLANAR_MATE_PARAMETERS,
+            ],
             "description": "Required for create; not allowed for update.",
         },
         "set": {
-            "oneOf": [*FEATURE_UPDATE_SCHEMA["properties"]["set"]["oneOf"], GROUND_MATE_UPDATE],
-            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
+            "oneOf": [
+                *FEATURE_UPDATE_SCHEMA["properties"]["set"]["oneOf"],
+                GROUND_MATE_UPDATE,
+                PUBLISHED_PLANAR_MATE_UPDATE,
+            ],
+            "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
@@ -1130,6 +1211,7 @@ QUERY_SCHEMA = {
                         "feature",
                         "reference",
                         "edge_roles",
+                        "face_roles",
                         "server",
                         "assembly",
                     ]
@@ -1137,7 +1219,7 @@ QUERY_SCHEMA = {
                 "id": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Feature id required for feature or edge_roles queries.",
+                    "description": "Feature id required for feature, edge_roles, or face_roles queries.",
                 },
                 "base": {
                     "type": "string",
