@@ -18,7 +18,7 @@ from .assembly import (
     canonical_transform,
     locate_shape,
 )
-from .references import Candidate, Status, face_role_catalog, resolve
+from .references import Candidate, SketchSegmentSource, Status, face_role_catalog, resolve
 
 _LINEAR_TOLERANCE = 1e-7
 _ANGULAR_TOLERANCE = 1e-7
@@ -227,7 +227,23 @@ def _resolved_face(
     assert side is not None
     scoped = _part_candidates(resolved, provenance)
     resolution = resolve(side.reference, scoped)
-    if resolution.status is not Status.OK or len(resolution.candidates) != 1:
+    candidates = resolution.candidates
+    source = side.reference.source
+    if resolution.status is not Status.OK and isinstance(source, SketchSegmentSource):
+        candidates = [
+            candidate
+            for candidate in scoped.get(side.reference.feature, [])
+            if candidate.key.role == side.reference.role
+            and isinstance(candidate.key.source, SketchSegmentSource)
+            and (
+                candidate.key.source.sketch,
+                candidate.key.source.entity,
+                candidate.key.source.segment,
+            )
+            == (source.sketch, source.entity, source.segment)
+            and candidate.key.body == side.reference.body
+        ]
+    if len(candidates) != 1:
         details = {
             **(
                 resolution.error
@@ -247,7 +263,7 @@ def _resolved_face(
             occurrenceId=side.occurrence_id,
             resolution=details,
         )
-    face = resolution.candidates[0].entity
+    face = candidates[0].entity
     expected = GeomType.PLANE if mate.kind == "planar" else GeomType.CYLINDER
     if face.geom_type is not expected or float(face.area) <= _LINEAR_TOLERANCE:
         raise AssemblyError(

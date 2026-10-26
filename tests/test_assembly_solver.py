@@ -728,3 +728,38 @@ def test_named_hole_wall_concentric_reference_survives_diameter_edit(tmp_path):
     result = service.feature(edit)
     assert result["ok"]
     assert service.query({"select": {"kind": "assembly"}})["ok"]
+
+
+def test_revolve_segment_concentric_reference_survives_profile_edit(tmp_path):
+    from test_revolve import SHAFT, polyline_sketch, revolve
+
+    service = DocumentService(tmp_path / "revolve-axis.coalesce.json", warmup=False)
+    assert service.sketch(polyline_sketch(SHAFT))["ok"]
+    assert service.feature(revolve())["ok"]
+    fixed = occurrence_create(2, "fixed", "fixed")
+    fixed["parameters"]["partId"] = "part/outline"
+    moved = occurrence_create(3, "moved", "moved", 30)
+    moved["parameters"]["partId"] = "part/outline"
+    assert service.feature(fixed)["ok"]
+    assert service.feature(moved)["ok"]
+    roles = service.query({"select": {"kind": "face_roles", "id": "part"}})["roles"]
+    cylinder = next(
+        row["exampleReference"]
+        for row in roles
+        if row["surfaceType"] == "CYLINDER"
+        and row["exampleReference"]["source"]["kind"] == "sketch_segment"
+    )
+    assert service.feature(_concentric_create(4, cylinder, cylinder))["ok"]
+    edited = [[x, y + 2 if y else y] for x, y in SHAFT]
+    request = polyline_sketch(edited)
+    result = service.sketch(
+        {
+            "action": "update",
+            "expectedRevision": 5,
+            "requestId": "edit-profile",
+            "sketchId": "profile",
+            "set": {"entities": request["entities"]},
+        }
+    )
+    assert result["ok"]
+    assert service.query({"select": {"kind": "assembly"}})["ok"]
