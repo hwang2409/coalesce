@@ -19,9 +19,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .assembly import (
+    MAX_MATES,
     MAX_OCCURRENCES,
     Assembly,
     AssemblyError,
+    Mate,
     Occurrence,
     RigidTransform,
     normalize_transform,
@@ -349,6 +351,47 @@ class AssemblyOccurrenceDelete(_Operation):
     @classmethod
     def wire_fields(cls) -> set[str]:
         return {"action", "expectedRevision", "requestId", "occurrenceId", "kind"}
+
+
+@dataclass(frozen=True)
+class AssemblyMateCreate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    mateId: str
+    occurrence_id: str
+    kind: ClassVar[str] = "assembly_mate"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {"action", "expectedRevision", "requestId", "mateId", "kind", "parameters"}
+
+
+@dataclass(frozen=True)
+class AssemblyMateUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    mateId: str
+    occurrence_id: str
+    kind: ClassVar[str] = "assembly_mate"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {"action", "expectedRevision", "requestId", "mateId", "kind", "set"}
+
+
+@dataclass(frozen=True)
+class AssemblyMateDelete(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    mateId: str
+    kind: ClassVar[str] = "assembly_mate"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {"action", "expectedRevision", "requestId", "mateId", "kind"}
 
 
 @dataclass(frozen=True)
@@ -851,6 +894,9 @@ MutationOperation = (
     AssemblyOccurrenceCreate
     | AssemblyOccurrenceUpdate
     | AssemblyOccurrenceDelete
+    | AssemblyMateCreate
+    | AssemblyMateUpdate
+    | AssemblyMateDelete
     | BoardImportOperation
     | ImportDelete
     | SketchCreate
@@ -1794,6 +1840,27 @@ def _parse_assembly_occurrence(
             transform=transform,
         )
     return AssemblyOccurrenceUpdate(**common, transform=transform)
+
+
+def _parse_assembly_mate(
+    payload: dict[str, Any],
+) -> AssemblyMateCreate | AssemblyMateUpdate | AssemblyMateDelete:
+    common = {
+        "action": Action(payload.get("action")),
+        "expectedRevision": _finite_number(payload.get("expectedRevision"), "expectedRevision"),
+        "requestId": payload.get("requestId"),
+        "mateId": payload.get("mateId"),
+    }
+    action = common["action"]
+    if action is Action.DELETE:
+        return AssemblyMateDelete(**common)
+    values = payload.get("parameters", {}) if action is Action.CREATE else payload.get("set", {})
+    if action is Action.CREATE and values.get("kind") != "ground":
+        raise RequestError("INVALID_PARAMETER", "assembly mate kind must be ground")
+    occurrence_id = values.get("occurrenceId")
+    if action is Action.CREATE:
+        return AssemblyMateCreate(**common, occurrence_id=occurrence_id)
+    return AssemblyMateUpdate(**common, occurrence_id=occurrence_id)
 
 
 def _parse_feature(
@@ -4285,11 +4352,26 @@ class DocumentService:
             )
         return {**payload, "kind": expected_kind}
 
+    @staticmethod
+    def _ensure_occurrence_has_no_mates(assembly: Assembly, occurrence_id: str) -> None:
+        dependent_mates = sorted(
+            mate.id for mate in assembly.mates.values() if mate.occurrence_id == occurrence_id
+        )
+        if dependent_mates:
+            raise RequestError(
+                "HAS_DEPENDENTS",
+                f"assembly occurrence has dependent mates: {occurrence_id}",
+                occurrenceId=occurrence_id,
+                mateIds=dependent_mates,
+            )
+
     def _updated_assembly(
         self,
         parsed: AssemblyOccurrenceCreate | AssemblyOccurrenceUpdate | AssemblyOccurrenceDelete,
     ) -> tuple[Assembly, Occurrence]:
-        assembly = Assembly(dict(self._document.assembly.occurrences))
+        assembly = Assembly(
+            dict(self._document.assembly.occurrences), dict(self._document.assembly.mates)
+        )
         current = assembly.occurrences.get(parsed.occurrenceId)
         if not isinstance(parsed, AssemblyOccurrenceCreate):
             if current is None:
@@ -4299,6 +4381,7 @@ class DocumentService:
                     occurrenceId=parsed.occurrenceId,
                 )
             if isinstance(parsed, AssemblyOccurrenceDelete):
+                self._ensure_occurrence_has_no_mates(assembly, current.id)
                 del assembly.occurrences[current.id]
                 return assembly, current
             updated = Occurrence(current.id, current.part_id, parsed.transform)
@@ -4327,6 +4410,71 @@ class DocumentService:
         created = Occurrence(parsed.occurrenceId, parsed.part_id, parsed.transform)
         assembly.occurrences[created.id] = created
         return assembly, created
+
+    def _updated_mates(
+        self, parsed: AssemblyMateCreate | AssemblyMateUpdate | AssemblyMateDelete
+    ) -> tuple[Assembly, Mate]:
+        assembly = Assembly(
+            dict(self._document.assembly.occurrences), dict(self._document.assembly.mates)
+        )
+        current = assembly.mates.get(parsed.mateId)
+        if not isinstance(parsed, AssemblyMateCreate):
+            if current is None:
+                raise RequestError(
+                    "UNKNOWN_ID", f"unknown assembly mate: {parsed.mateId}", mateId=parsed.mateId
+                )
+            if isinstance(parsed, AssemblyMateDelete):
+                del assembly.mates[current.id]
+                return assembly, current
+        elif current is not None:
+            raise RequestError(
+                "DUPLICATE_ID", f"assembly mate already exists: {parsed.mateId}", mateId=parsed.mateId
+            )
+        elif len(assembly.mates) >= MAX_MATES:
+            raise RequestError(
+                "ASSEMBLY_MATE_LIMIT", "an assembly can contain at most 128 mates", limit=MAX_MATES
+            )
+        assert isinstance(parsed, (AssemblyMateCreate, AssemblyMateUpdate))
+        if parsed.occurrence_id not in assembly.occurrences:
+            raise RequestError(
+                "UNKNOWN_ID",
+                f"unknown assembly occurrence: {parsed.occurrence_id}",
+                occurrenceId=parsed.occurrence_id,
+            )
+        conflict_ids = sorted(
+            [
+                mate.id
+                for mate in assembly.mates.values()
+                if mate.occurrence_id == parsed.occurrence_id and mate.id != parsed.mateId
+            ]
+            + [parsed.mateId]
+        )
+        if len(conflict_ids) > 1:
+            raise RequestError(
+                "MATE_CONFLICT",
+                f"assembly occurrence {parsed.occurrence_id} cannot have more than one ground mate",
+                mateIds=conflict_ids,
+                occurrenceIds=[parsed.occurrence_id],
+                hint="edit or remove one of the ground mates",
+            )
+        updated = Mate(parsed.mateId, "ground", parsed.occurrence_id)
+        assembly.mates[updated.id] = updated
+        return assembly, updated
+
+    def _mate_response(self, payload: dict[str, Any], mate: Mate) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "revision": self._document.revision + 1,
+            "previousRevision": self._document.revision,
+            "requestId": payload["requestId"],
+            "units": "mm",
+            "mateId": mate.id,
+            "kind": mate.kind,
+            "occurrenceId": mate.occurrence_id,
+            "affectedMateIds": [mate.id],
+            "changedOccurrences": [],
+            "warnings": [],
+        }
 
     def _occurrence_response(
         self, payload: dict[str, Any], occurrence: Occurrence
@@ -4374,9 +4522,35 @@ class DocumentService:
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
                 return self._mutation_failure("feature", payload, error, None)
 
+    def _mutate_mate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            try:
+                parsed, body_hash, replay = self._mutation_request(payload, _parse_assembly_mate)
+                if replay is not None:
+                    return replay
+                assert isinstance(parsed, (AssemblyMateCreate, AssemblyMateUpdate, AssemblyMateDelete))
+                self._ensure_geometry()
+                assembly, mate = self._updated_mates(parsed)
+                response = self._mate_response(payload, mate)
+                document, durable = self._save_response(
+                    self._document.graph, assembly, response, body_hash
+                )
+                self._document = document
+                assert self._regen is not None
+                self._publish_regeneration(self._regen)
+                if not durable:
+                    _LOG.warning(
+                        "document rename committed but directory fsync failed; durability is unconfirmed"
+                    )
+                return response
+            except Exception as error:  # noqa: BLE001 - translate failures at this seam
+                return self._mutation_failure("feature", payload, error, None)
+
     def feature(self, payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("kind") == "assembly_occurrence":
             return self._mutate_occurrence(payload)
+        if payload.get("kind") == "assembly_mate":
+            return self._mutate_mate(payload)
 
         def parse(candidate: dict[str, Any]) -> MutationOperation:
             if candidate.get("action") == "update":
@@ -4636,6 +4810,37 @@ class DocumentService:
                     hint="check the target directory and retry with a new path",
                 )
 
+    @staticmethod
+    def _assembly_solve_payload(assembly: Assembly) -> dict[str, Any]:
+        mate_by_occurrence = {mate.occurrence_id: mate for mate in assembly.mates.values()}
+        free_motions = [
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ]
+        status_by_occurrence = {}
+        for occurrence_id in sorted(assembly.occurrences):
+            mate = mate_by_occurrence.get(occurrence_id)
+            status_by_occurrence[occurrence_id] = {
+                "grounded": mate is not None,
+                "remainingDof": 0 if mate is not None else 6,
+                "freeMotions": [] if mate is not None else free_motions,
+                "mateIds": [mate.id] if mate is not None else [],
+            }
+        under_constrained = [
+            occurrence_id
+            for occurrence_id, status in status_by_occurrence.items()
+            if not status["grounded"]
+        ]
+        return {
+            "solveStatus": "UNDER_CONSTRAINED" if under_constrained else "FULLY_CONSTRAINED",
+            "underConstrainedOccurrenceIds": under_constrained,
+            "statusByOccurrence": status_by_occurrence,
+        }
+
     def _assembly_query(self, base: dict[str, Any]) -> dict[str, Any]:
         assert self._regen is not None
         parts = terminal_parts(self._regen, role=None)
@@ -4650,6 +4855,7 @@ class DocumentService:
                 operation="query",
                 **error.details,
             )
+        solve = self._assembly_solve_payload(self._document.assembly)
         occurrences = [
             {
                 "occurrenceId": item.occurrence.id,
@@ -4661,6 +4867,7 @@ class DocumentService:
                 "volume": {"value": item.part.shape.volume, "unit": "mm^3"},
                 "area": {"value": item.part.shape.area, "unit": "mm^2"},
                 "referenceStatus": "OK",
+                **solve["statusByOccurrence"][item.occurrence.id],
             }
             for item in resolved
         ]
@@ -4673,7 +4880,29 @@ class DocumentService:
             }
             for part in sorted(parts, key=lambda item: item.part_id)
         ]
-        return {**base, "occurrences": occurrences, "availableParts": available}
+        mates = [
+            {"mateId": mate.id, "kind": mate.kind, "occurrenceId": mate.occurrence_id}
+            for mate in sorted(self._document.assembly.mates.values(), key=lambda item: item.id)
+        ]
+        components = [
+            {
+                "occurrenceIds": [item["occurrenceId"]],
+                "mateIds": item["mateIds"],
+                "status": "FULLY_CONSTRAINED" if item["grounded"] else "UNDER_CONSTRAINED",
+                "remainingDof": item["remainingDof"],
+                "grounded": item["grounded"],
+            }
+            for item in occurrences
+        ]
+        return {
+            **base,
+            "solveStatus": solve["solveStatus"],
+            "underConstrainedOccurrenceIds": solve["underConstrainedOccurrenceIds"],
+            "components": components,
+            "mates": mates,
+            "occurrences": occurrences,
+            "availableParts": available,
+        }
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:

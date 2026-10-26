@@ -891,6 +891,52 @@ ASSEMBLY_OCCURRENCE_DELETE_SCHEMA = {
     "required": ["action", "kind", *MUTATION_PROPERTIES, "occurrenceId"],
     "additionalProperties": False,
 }
+ASSEMBLY_MATE_PROPERTIES = {
+    **MUTATION_PROPERTIES,
+    "kind": {"const": "assembly_mate"},
+    "mateId": {"type": "string", "minLength": 1, "maxLength": 128},
+}
+GROUND_MATE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "kind": {"const": "ground"},
+        "occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"],
+    },
+    "required": ["kind", "occurrenceId"],
+    "additionalProperties": False,
+}
+GROUND_MATE_UPDATE = {
+    "type": "object",
+    "properties": {"occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"]},
+    "required": ["occurrenceId"],
+    "additionalProperties": False,
+}
+ASSEMBLY_MATE_CREATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "create"},
+        **ASSEMBLY_MATE_PROPERTIES,
+        "parameters": GROUND_MATE_PARAMETERS,
+    },
+    "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId", "parameters"],
+    "additionalProperties": False,
+}
+ASSEMBLY_MATE_UPDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"const": "update"},
+        **ASSEMBLY_MATE_PROPERTIES,
+        "set": GROUND_MATE_UPDATE,
+    },
+    "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId", "set"],
+    "additionalProperties": False,
+}
+ASSEMBLY_MATE_DELETE_SCHEMA = {
+    "type": "object",
+    "properties": {"action": {"const": "delete"}, **ASSEMBLY_MATE_PROPERTIES},
+    "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId"],
+    "additionalProperties": False,
+}
 
 FEATURE_DELETE_SCHEMA = {
     "type": "object",
@@ -928,6 +974,9 @@ FEATURE_ACTION_SCHEMAS = {
     ("create", "assembly_occurrence"): ASSEMBLY_OCCURRENCE_CREATE_SCHEMA,
     ("update", "assembly_occurrence"): ASSEMBLY_OCCURRENCE_UPDATE_SCHEMA,
     ("delete", "assembly_occurrence"): ASSEMBLY_OCCURRENCE_DELETE_SCHEMA,
+    ("create", "assembly_mate"): ASSEMBLY_MATE_CREATE_SCHEMA,
+    ("update", "assembly_mate"): ASSEMBLY_MATE_UPDATE_SCHEMA,
+    ("delete", "assembly_mate"): ASSEMBLY_MATE_DELETE_SCHEMA,
     **{
         ("create", kind): {
             **FEATURE_CREATE_SCHEMA,
@@ -968,15 +1017,16 @@ FEATURE_SCHEMA = {
             "description": "Use create with parameters, update to change a feature, or delete to remove it. Delete fails when dependents exist unless cascade is true.",
         },
         **FEATURE_PROPERTIES,
-        "kind": {"enum": [*FEATURE_KIND_SCHEMAS, "assembly_occurrence"]},
+        "kind": {"enum": [*FEATURE_KIND_SCHEMAS, "assembly_occurrence", "assembly_mate"]},
         "occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"],
+        "mateId": ASSEMBLY_MATE_PROPERTIES["mateId"],
         "parameters": {
-            **FEATURE_CREATE_SCHEMA["properties"]["parameters"],
+            "oneOf": [*FEATURE_PARAMETERS["oneOf"], GROUND_MATE_PARAMETERS],
             "description": "Required for create; not allowed for update.",
         },
         "set": {
-            **FEATURE_UPDATE_SCHEMA["properties"]["set"],
-            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, and enclosure dimensions.",
+            "oneOf": [*FEATURE_UPDATE_SCHEMA["properties"]["set"]["oneOf"], GROUND_MATE_UPDATE],
+            "description": "Required for update; not allowed for create or delete. Accepts feature changes, occurrence transforms, or a ground mate occurrenceId.",
         },
         "cascade": {"type": "boolean", "default": False},
     },

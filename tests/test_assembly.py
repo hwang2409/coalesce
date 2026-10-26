@@ -85,16 +85,16 @@ def test_document_store_dispatches_strictly_by_format_version(tmp_path):
         assert missing.value.error["code"] == "INVALID_DOCUMENT"
 
     path.write_text(
-        json.dumps({"formatVersion": 3, "graph": {"nodes": []}, "assembly": persisted})
+        json.dumps({"formatVersion": 4, "graph": {"nodes": []}, "assembly": persisted})
     )
     before = path.read_bytes()
-    with pytest.raises(GraphError, match="version 3.*newer coalesce") as future:
+    with pytest.raises(GraphError, match="version 4.*newer coalesce") as future:
         DocumentStore(path).load()
     assert future.value.error["code"] == "INVALID_DOCUMENT"
     assert path.read_bytes() == before
 
 
-def test_document_store_v2_round_trip_bytes_are_stable(tmp_path):
+def test_document_store_v3_round_trip_bytes_are_stable(tmp_path):
     path = tmp_path / "part.coalesce.json"
     store = DocumentStore(path)
     transform = normalize_transform(
@@ -110,4 +110,85 @@ def test_document_store_v2_round_trip_bytes_are_stable(tmp_path):
     before = path.read_bytes()
     store.save(store.load())
 
+    assert path.read_bytes() == before
+
+
+def test_ground_mates_round_trip_sorted_and_reject_invalid_documents():
+    payload = {
+        "occurrences": [
+            {
+                "id": "plate",
+                "partId": "plate/body",
+                "transform": {
+                    "translation": [0, 0, 0],
+                    "rotation": {"axis": [0, 0, 1], "angleDegrees": 0},
+                },
+            }
+        ],
+        "mates": [
+            {"id": "z-ground", "kind": "ground", "occurrenceId": "plate"},
+        ],
+    }
+    assembly = assembly_from_dict(payload)
+    assert assembly_to_dict(assembly) == payload
+
+    duplicate = {**payload, "mates": [payload["mates"][0], payload["mates"][0]]}
+    with pytest.raises(GraphError, match="duplicate assembly mate id") as duplicate_error:
+        assembly_from_dict(duplicate)
+    assert duplicate_error.value.error["code"] == "INVALID_DOCUMENT"
+
+    conflicting = {
+        **payload,
+        "mates": [
+            payload["mates"][0],
+            {"id": "second-ground", "kind": "ground", "occurrenceId": "plate"},
+        ],
+    }
+    with pytest.raises(GraphError, match="more than one ground") as conflict_error:
+        assembly_from_dict(conflicting)
+    assert conflict_error.value.error["code"] == "INVALID_DOCUMENT"
+
+
+def test_document_store_v3_mate_round_trip_is_byte_stable_and_v2_stays_old(tmp_path):
+    path = tmp_path / "mates.coalesce.json"
+    old_assembly = {
+        "occurrences": [
+            {
+                "id": "old",
+                "partId": "part/body",
+                "transform": {
+                    "translation": [0, 0, 0],
+                    "rotation": {"axis": [0, 0, 1], "angleDegrees": 0},
+                },
+            }
+        ]
+    }
+    path.write_text(json.dumps({"formatVersion": 2, "graph": {"nodes": []}, "assembly": old_assembly}))
+    loaded_old = DocumentStore(path).load().assembly
+    assert list(loaded_old.occurrences) == ["old"]
+    assert loaded_old.mates == {}
+
+    path.write_text(json.dumps({"formatVersion": 3, "graph": {"nodes": []}, "assembly": old_assembly}))
+    with pytest.raises(GraphError, match="occurrences and mates"):
+        DocumentStore(path).load()
+
+    path.write_text(
+        json.dumps(
+            {
+                "formatVersion": 3,
+                "graph": {"nodes": []},
+                "assembly": {"occurrences": [], "mates": []},
+            }
+        )
+    )
+    store = DocumentStore(path)
+    store.save(store.load())
+    before = path.read_bytes()
+    store.save(store.load())
+    assert path.read_bytes() == before
+
+    path.write_text(json.dumps({"formatVersion": 4, "graph": {"nodes": []}, "assembly": {"occurrences": [], "mates": []}}))
+    before = path.read_bytes()
+    with pytest.raises(GraphError, match="version 4.*newer coalesce"):
+        store.load()
     assert path.read_bytes() == before

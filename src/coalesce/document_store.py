@@ -21,14 +21,14 @@ def _assembly_for_payload(payload: dict[str, Any]) -> Assembly:
     version = payload.get("formatVersion")
     if type(version) is int and version == 1:
         return Assembly()
-    if type(version) is int and version == 2:
+    if type(version) is int and version in {2, 3}:
         if payload.get("assembly") is None:
             raise GraphError(
                 "INVALID_DOCUMENT",
-                "document format version 2 requires assembly",
+                f"document format version {version} requires assembly",
                 field="assembly",
             )
-        return assembly_from_dict(payload["assembly"])
+        return assembly_from_dict(payload["assembly"], require_mates=version == 3)
     raise GraphError(
         "INVALID_DOCUMENT",
         f"unsupported document format version {version}; a newer coalesce wrote it",
@@ -75,7 +75,7 @@ class DocumentStore:
     def save(self, document: Document) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "formatVersion": 2,
+            "formatVersion": 3,
             "units": "mm",
             "revision": document.revision,
             "graph": json.loads(dumps(document.graph)),
