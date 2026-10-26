@@ -103,6 +103,34 @@ def test_planar_mate_places_boxes_exactly_with_signed_offset_and_reports_three_d
     ) == pytest.approx(offset)
 
 
+def test_rotated_planar_transform_survives_json_restart_exactly(tmp_path):
+    from test_mcp_assembly import ground_create
+
+    path = tmp_path / "rotated-restart.coalesce.json"
+    service = DocumentService(path, warmup=False)
+    assert service.sketch(SKETCH)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    fixed = occurrence_create(2, "place-fixed", "fixed")
+    fixed["parameters"]["transform"] = transform(0, (1, 2, 3), 41)
+    moved = occurrence_create(3, "place-moved", "moved")
+    moved["parameters"]["transform"] = transform(0, (2, -1, 3), 123)
+    assert service.feature(fixed)["ok"]
+    assert service.feature(moved)["ok"]
+    assert service.feature(ground_create(4, "ground-fixed", "ground-fixed", "fixed"))["ok"]
+    first = _face_reference(service, "cap_end")
+    second = _face_reference(service, "cap_start")
+    assert service.feature(
+        _planar_create(5, first, second, offset=-13.25, orientation="aligned")
+    )["ok"]
+    before = service.query({"select": {"kind": "assembly"}})
+
+    restarted = DocumentService(path, warmup=False)
+    after = restarted.query({"select": {"kind": "assembly"}})
+
+    assert after["ok"]
+    assert after == before
+
+
 def test_planar_transform_is_byte_stable_across_restart_and_used_by_export_and_interference(tmp_path):
     path = tmp_path / "restart.coalesce.json"
     service = _setup_boxes(path)
@@ -171,6 +199,58 @@ def test_stale_face_reference_after_feature_edit_is_atomic_and_names_mate(tmp_pa
     assert result["error"]["code"] == "MATE_REFERENCE_STALE"
     assert result["error"]["mateId"] == "box-seat"
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("first_id", "first_offset", "second_id", "second_offset"),
+    [("m1", 5, "m2", 7), ("m2", 7, "m1", 5)],
+)
+def test_conflicting_planar_cycle_reports_every_mate_independent_of_id_order(
+    tmp_path, first_id, first_offset, second_id, second_offset
+):
+    service = _setup_boxes(tmp_path / f"conflict-{first_id}.coalesce.json")
+    first = _face_reference(service, "cap_end")
+    second = _face_reference(service, "cap_start")
+    initial = _planar_create(4, first, second, offset=first_offset, orientation="aligned")
+    initial["mateId"] = first_id
+    initial["requestId"] = f"create-{first_id}"
+    assert service.feature(initial)["ok"]
+    conflicting = _planar_create(5, first, second, offset=second_offset, orientation="aligned")
+    conflicting["mateId"] = second_id
+    conflicting["requestId"] = f"create-{second_id}"
+
+    result = service.feature(conflicting)
+
+    assert result["error"]["code"] == "MATE_CONFLICT"
+    assert result["error"]["mateIds"] == ["m1", "m2"]
+
+
+def test_explicit_transform_update_warns_when_planar_constraints_override_it(tmp_path):
+    service = _setup_boxes(tmp_path / "constrained-update.coalesce.json")
+    first = _face_reference(service, "cap_end")
+    second = _face_reference(service, "cap_start")
+    assert service.feature(_planar_create(4, first, second, orientation="aligned"))["ok"]
+    update = {
+        "action": "update",
+        "kind": "assembly_occurrence",
+        "expectedRevision": 5,
+        "requestId": "move-constrained",
+        "occurrenceId": "moved",
+        "set": {"transform": transform(80, (2, -1, 3), 123)},
+    }
+
+    result = service.feature(update)
+
+    assert result["ok"]
+    assert result["warnings"] == [
+        {
+            "code": "MATED_TRANSFORM_OVERRIDDEN",
+            "occurrenceId": "moved",
+            "constrainedCoordinates": ["normalAlignment", "normalOffset"],
+            "freeMotions": ["inPlaneX", "inPlaneY", "normalSpin"],
+        }
+    ]
+    assert result["transform"] != update["set"]["transform"]
 
 
 def test_duplicate_planar_restriction_reports_redundancy(tmp_path):
@@ -324,6 +404,11 @@ def test_all_stale_reference_statuses_name_the_mate(monkeypatch, status):
         "resolve",
         lambda *_: Resolution(Status(status), error={"status": status}),
     )
+    monkeypatch.setattr(
+        assembly_solver,
+        "face_role_catalog",
+        lambda *_: [{"role": "plane", "faceCount": 1}],
+    )
 
     with pytest.raises(assembly_solver.AssemblyError) as error:
         assembly_solver._resolved_face(mate, "first", resolved, {})
@@ -333,3 +418,6 @@ def test_all_stale_reference_statuses_name_the_mate(monkeypatch, status):
     assert error.value.details["side"] == "first"
     assert error.value.details["occurrenceId"] == "box"
     assert error.value.details["resolution"]["status"] == status
+    assert error.value.details["resolution"]["availableRoles"] == [
+        {"role": "plane", "faceCount": 1}
+    ]

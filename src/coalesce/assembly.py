@@ -75,6 +75,19 @@ def _finite_vector(value: Any, field_name: str) -> tuple[float, float, float]:
     return tuple(float(item) for item in value)
 
 
+_TRANSFORM_DECIMAL_PLACES = 12
+
+
+def canonical_transform(transform: RigidTransform) -> RigidTransform:
+    """Round below material tolerances so save/load and publication use one spelling."""
+    rounded = lambda value: round(value, _TRANSFORM_DECIMAL_PLACES) or 0.0
+    return RigidTransform(
+        tuple(rounded(value) for value in transform.translation),  # type: ignore[arg-type]
+        tuple(rounded(value) for value in transform.axis),  # type: ignore[arg-type]
+        rounded(transform.angle_degrees),
+    )
+
+
 def normalize_transform(value: Any) -> RigidTransform:
     """Validate and canonicalize one wire-format rigid transform."""
     try:
@@ -101,13 +114,15 @@ def normalize_transform(value: Any) -> RigidTransform:
     if angle >= 180.0:
         angle -= 360.0
     if angle == 0.0:
-        return RigidTransform(vector, (0.0, 0.0, 1.0), 0.0)
+        return canonical_transform(RigidTransform(vector, (0.0, 0.0, 1.0), 0.0))
     scale = max(abs(component) for component in axis)
     if scale == 0.0:
         raise AssemblyError("INVALID_PARAMETER", "rotation axis must be non-zero")
     scaled_axis = tuple(component / scale for component in axis)
     length = math.hypot(*scaled_axis)
-    return RigidTransform(vector, tuple(component / length for component in scaled_axis), angle)
+    return canonical_transform(
+        RigidTransform(vector, tuple(component / length for component in scaled_axis), angle)
+    )
 
 
 def transform_to_dict(transform: RigidTransform) -> dict[str, Any]:
@@ -235,30 +250,30 @@ def _mate_side_from_dict(
     return MateSide(occurrence_id, reference)
 
 
-def _mate_from_dict(row: Any, index: int, occurrences: dict[str, Occurrence]) -> Mate:
-    field = f"assembly.mates.{index}"
-    if not isinstance(row, dict):
-        raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
-    mate_id = row.get("id")
-    if not isinstance(mate_id, str) or not 1 <= len(mate_id) <= MAX_MATE_ID_LENGTH:
-        raise _invalid_document("assembly mate id is invalid", field=f"{field}.id")
-    if row.get("kind") == "ground":
-        if set(row) != {"id", "kind", "occurrenceId"}:
-            raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
-        occurrence_id = row["occurrenceId"]
-        if occurrence_id not in occurrences:
-            raise _invalid_document(
-                f"assembly mate references unknown occurrence: {occurrence_id}",
-                field=f"{field}.occurrenceId",
-                occurrenceId=occurrence_id,
-            )
-        return Mate(mate_id, "ground", occurrence_id)
-    if row.get("kind") != "planar" or set(row) != {
-        "id", "kind", "first", "second", "orientation", "offset"
-    }:
-        raise _invalid_document("assembly mate kind or fields are invalid", field=field)
+def _ground_mate_from_dict(
+    row: dict[str, Any], mate_id: str, field: str, occurrences: dict[str, Occurrence]
+) -> Mate:
+    if set(row) != {"id", "kind", "occurrenceId"}:
+        raise _invalid_document("assembly ground mate has invalid fields", field=field)
+    occurrence_id = row["occurrenceId"]
+    if occurrence_id not in occurrences:
+        raise _invalid_document(
+            f"assembly mate references unknown occurrence: {occurrence_id}",
+            field=f"{field}.occurrenceId",
+            occurrenceId=occurrence_id,
+        )
+    return Mate(mate_id, "ground", occurrence_id)
+
+
+def _planar_mate_from_dict(
+    row: dict[str, Any], mate_id: str, field: str, occurrences: dict[str, Occurrence]
+) -> Mate:
+    if set(row) != {"id", "kind", "first", "second", "orientation", "offset"}:
+        raise _invalid_document("assembly planar mate has invalid fields", field=field)
     if row["orientation"] not in {"aligned", "opposed"}:
-        raise _invalid_document("assembly planar mate orientation is invalid", field=f"{field}.orientation")
+        raise _invalid_document(
+            "assembly planar mate orientation is invalid", field=f"{field}.orientation"
+        )
     offset = row["offset"]
     if type(offset) not in (int, float) or not math.isfinite(offset):
         raise _invalid_document("assembly planar mate offset is invalid", field=f"{field}.offset")
@@ -266,7 +281,29 @@ def _mate_from_dict(row: Any, index: int, occurrences: dict[str, Occurrence]) ->
     second = _mate_side_from_dict(row["second"], f"{field}.second", occurrences)
     if first.occurrence_id == second.occurrence_id:
         raise _invalid_document("assembly planar mate must connect two occurrences", field=field)
-    return Mate(mate_id, "planar", first=first, second=second, orientation=row["orientation"], offset=float(offset))
+    return Mate(
+        mate_id,
+        "planar",
+        first=first,
+        second=second,
+        orientation=row["orientation"],
+        offset=float(offset),
+    )
+
+
+def _mate_from_dict(row: Any, index: int, occurrences: dict[str, Occurrence]) -> Mate:
+    field = f"assembly.mates.{index}"
+    if not isinstance(row, dict):
+        raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
+    mate_id = row.get("id")
+    if not isinstance(mate_id, str) or not 1 <= len(mate_id) <= MAX_MATE_ID_LENGTH:
+        raise _invalid_document("assembly mate id is invalid", field=f"{field}.id")
+    decoder = {"ground": _ground_mate_from_dict, "planar": _planar_mate_from_dict}.get(
+        row.get("kind")
+    )
+    if decoder is None:
+        raise _invalid_document("assembly mate kind is invalid", field=f"{field}.kind")
+    return decoder(row, mate_id, field, occurrences)
 
 
 def _mates_from_dict(rows: Any, occurrences: dict[str, Occurrence]) -> dict[str, Mate]:

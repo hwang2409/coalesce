@@ -15,6 +15,7 @@ from .assembly import (
     Occurrence,
     ResolvedOccurrence,
     RigidTransform,
+    canonical_transform,
     locate_shape,
 )
 from .references import Candidate, Status, face_role_catalog, resolve
@@ -159,13 +160,13 @@ def _transform(quaternion: tuple[float, float, float, float], translation: tuple
     w, x, y, z = quaternion
     vector_length = math.sqrt(x * x + y * y + z * z)
     if vector_length <= _ANGULAR_TOLERANCE:
-        return RigidTransform(translation, (0.0, 0.0, 1.0), 0.0)
+        return canonical_transform(RigidTransform(translation, (0.0, 0.0, 1.0), 0.0))
     axis = (x / vector_length, y / vector_length, z / vector_length)
     angle = math.degrees(2 * math.atan2(vector_length, max(-1.0, min(1.0, w))))
     if angle >= 180.0:
         angle -= 360.0
         axis = tuple(-value for value in axis)  # type: ignore[assignment]
-    return RigidTransform(translation, axis, angle)
+    return canonical_transform(RigidTransform(translation, axis, angle))
 
 
 def _matching_face(candidate: Candidate, faces: list[Face]) -> Face | None:
@@ -219,10 +220,12 @@ def _resolved_face(
     scoped = _part_candidates(resolved, provenance)
     resolution = resolve(side.reference, scoped)
     if resolution.status is not Status.OK or len(resolution.candidates) != 1:
-        details = resolution.error or {
-            "status": resolution.status.value,
-            "reference": side.reference.to_dict(),
-            "candidates": [],
+        details = {
+            **(resolution.error or {
+                "status": resolution.status.value,
+                "reference": side.reference.to_dict(),
+                "candidates": [],
+            }),
             "availableRoles": face_role_catalog(scoped, side.reference.feature),
         }
         raise AssemblyError(
@@ -265,6 +268,9 @@ def _solve_planar(
 ) -> Occurrence:
     assert mate.first is not None and mate.second is not None and mate.orientation is not None
     first_id, second_id = mate.first.occurrence_id, mate.second.occurrence_id
+    linear, angular = _residual(mate, occurrences, faces)
+    if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
+        return occurrences[moved_id]
     first_transform = occurrences[first_id].transform
     second_transform = occurrences[second_id].transform
     first_center, first_normal = _plane(faces[(mate.id, "first")], first_transform)
@@ -322,6 +328,7 @@ def _mate_faces(
 def _apply_pending_mate(
     mate: Mate,
     known: set[str],
+    provenance: dict[str, set[str]],
     occurrences: dict[str, Occurrence],
     faces: dict[tuple[str, str], tuple[Face, Any]],
     redundant: list[str],
@@ -330,9 +337,11 @@ def _apply_pending_mate(
     first, second = mate.first.occurrence_id, mate.second.occurrence_id
     if first in known and second not in known:
         occurrences[second] = _solve_planar(mate, second, occurrences, faces)
+        provenance[second] = provenance[first] | {mate.id}
         known.add(second)
     elif second in known and first not in known:
         occurrences[first] = _solve_planar(mate, first, occurrences, faces)
+        provenance[first] = provenance[second] | {mate.id}
         known.add(first)
     elif first in known and second in known:
         linear, angular = _residual(mate, occurrences, faces)
@@ -340,7 +349,7 @@ def _apply_pending_mate(
             raise AssemblyError(
                 "MATE_CONFLICT",
                 f"assembly mate {mate.id} conflicts with solved planar geometry",
-                mateIds=[mate.id],
+                mateIds=sorted(provenance[first] ^ provenance[second] | {mate.id}),
                 occurrenceIds=sorted([first, second]),
                 linearResidual={"value": linear, "unit": "mm"},
                 angularResidual=angular,
@@ -360,13 +369,16 @@ def _solve_component(
     redundant: list[str],
 ) -> None:
     known = {anchor}
+    provenance = {anchor: set()}
     pending = {mate.id: mate for member in component for _, mate in graph.adjacent[member]}
     while pending:
         solved_id = next(
             (
                 mate_id
                 for mate_id, mate in sorted(pending.items())
-                if _apply_pending_mate(mate, known, occurrences, faces, redundant)
+                if _apply_pending_mate(
+                    mate, known, provenance, occurrences, faces, redundant
+                )
             ),
             None,
         )

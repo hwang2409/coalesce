@@ -193,37 +193,38 @@ def _source_from_dict(
     raise ValueError(f"unknown reference source kind: {kind}")
 
 
+def _body_source_from_dict(body: Any) -> BodySource | None:
+    if body is None:
+        return None
+    if not isinstance(body, dict) or body.get("kind") != "body_source":
+        raise ValueError("reference body must be a body_source")
+    return BodySource(**{key: item for key, item in body.items() if key != "kind"})
+
+
+def _filter_from_dict(item: Any) -> Filter:
+    if not isinstance(item, dict):
+        raise TypeError("reference filter must be an object")
+    filter_type = {"Normal": Normal, "Position": Position, "MaxAlong": MaxAlong}.get(
+        item.get("kind")
+    )
+    if filter_type is None:
+        raise ValueError(f"unknown reference filter: {item.get('kind')}")
+    values = {key: value for key, value in item.items() if key != "kind"}
+    values["direction"] = tuple(values["direction"])
+    return filter_type(**values)
+
+
 def reference_from_dict(value: Any) -> Reference:
     if not isinstance(value, dict):
         raise TypeError("reference must be an object")
-    body = value.get("body")
-    if body is not None and (
-        not isinstance(body, dict) or body.get("kind") != "body_source"
-    ):
-        raise ValueError("reference body must be a body_source")
-    filters = []
-    filter_types = {"Normal": Normal, "Position": Position, "MaxAlong": MaxAlong}
-    for item in value.get("filters", []):
-        if not isinstance(item, dict):
-            raise TypeError("reference filter must be an object")
-        kind = item.get("kind")
-        if kind not in filter_types:
-            raise ValueError(f"unknown reference filter: {kind}")
-        values = {key: item_value for key, item_value in item.items() if key != "kind"}
-        values["direction"] = tuple(values["direction"])
-        filters.append(filter_types[kind](**values))
     return Reference(
         feature=value["feature"],
         role=value["role"],
         cardinality=Cardinality(value.get("cardinality", "one")),
         count=value.get("count"),
         source=_source_from_dict(value.get("source")),
-        body=(
-            BodySource(**{key: item for key, item in body.items() if key != "kind"})
-            if body is not None
-            else None
-        ),
-        filters=filters,
+        body=_body_source_from_dict(value.get("body")),
+        filters=[_filter_from_dict(item) for item in value.get("filters", [])],
     )
 
 

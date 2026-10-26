@@ -1046,6 +1046,39 @@ for kind, changes in {
             "set": changes,
         },
     }
+
+
+# Codex compacts large schemas by blanking local refs; action schemas still validate full references.
+PUBLISHED_MATE_REFERENCE = {"type": "object"}
+PUBLISHED_MATE_SIDE = {
+    **MATE_SIDE,
+    "properties": {
+        **MATE_SIDE["properties"],
+        "reference": PUBLISHED_MATE_REFERENCE,
+    },
+}
+PUBLISHED_PLANAR_MATE_FIELDS = {
+    **PLANAR_MATE_FIELDS,
+    "first": PUBLISHED_MATE_SIDE,
+    "second": PUBLISHED_MATE_SIDE,
+}
+PUBLISHED_PLANAR_MATE_PARAMETERS = {
+    **PLANAR_MATE_PARAMETERS,
+    "properties": {
+        **PLANAR_MATE_PARAMETERS["properties"],
+        **PUBLISHED_PLANAR_MATE_FIELDS,
+    },
+}
+PUBLISHED_PLANAR_MATE_UPDATE = {
+    **PLANAR_MATE_UPDATE,
+    "properties": {
+        **PUBLISHED_PLANAR_MATE_FIELDS,
+        "first": {"type": "object"},
+        "second": {"type": "object"},
+    },
+}
+
+
 FEATURE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1058,16 +1091,20 @@ FEATURE_SCHEMA = {
         "occurrenceId": ASSEMBLY_OCCURRENCE_PROPERTIES["occurrenceId"],
         "mateId": ASSEMBLY_MATE_PROPERTIES["mateId"],
         "parameters": {
-            "oneOf": [*FEATURE_PARAMETERS["oneOf"], GROUND_MATE_PARAMETERS, PLANAR_MATE_PARAMETERS],
+            "oneOf": [
+                *FEATURE_PARAMETERS["oneOf"],
+                GROUND_MATE_PARAMETERS,
+                PUBLISHED_PLANAR_MATE_PARAMETERS,
+            ],
             "description": "Required for create; not allowed for update.",
         },
         "set": {
             "oneOf": [
                 *FEATURE_UPDATE_SCHEMA["properties"]["set"]["oneOf"],
                 GROUND_MATE_UPDATE,
-                PLANAR_MATE_UPDATE,
+                PUBLISHED_PLANAR_MATE_UPDATE,
             ],
-            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
+            "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept feature parameters, occurrence transforms, or a ground mate occurrenceId.",
         },
         "cascade": {"type": "boolean", "default": False},
     },

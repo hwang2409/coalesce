@@ -45,6 +45,54 @@ async def test_tools_list_only_advertises_callable_feature_kinds_and_annotations
 
 
 @pytest.mark.anyio
+async def test_mate_tool_text_teaches_face_discovery_and_planar_semantics(tmp_path):
+    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "text.coalesce.json")}
+    feature = tools["feature"].description
+    query = tools["query"].description
+    assert "face_roles" in feature
+    assert "aligned" in feature and "opposed" in feature
+    assert "signed offset" in feature
+    assert "coalesce://docs/assembly" in feature
+    assert "face_roles" in query
+    assert "face_roles" in TOOLS_GUIDE
+    assert "aligned" in TOOLS_GUIDE and "opposed" in TOOLS_GUIDE
+    assert "signed offset" in TOOLS_GUIDE
+    assert "coalesce://docs/assembly" in TOOLS_GUIDE
+
+
+@pytest.mark.anyio
+async def test_feature_schema_keeps_references_compact_without_codex_unsafe_refs(tmp_path):
+    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "refs.coalesce.json")}
+    schema = tools["feature"].inputSchema
+    compact = json.dumps(schema, separators=(",", ":")).encode()
+    assert len(compact) < 26_503  # dev was 24,503 bytes; keep mate growth below 2 KiB.
+    assert "$defs" not in schema
+    assert "$ref" not in json.dumps(schema)
+    reference = {
+        "feature": "plate",
+        "role": "cap_end",
+        "cardinality": "one",
+    }
+    validate(
+        {
+            "action": "create",
+            "expectedRevision": 0,
+            "requestId": "schema-planar",
+            "kind": "assembly_mate",
+            "mateId": "seat",
+            "parameters": {
+                "kind": "planar",
+                "first": {"occurrenceId": "fixed", "reference": reference},
+                "second": {"occurrenceId": "moved", "reference": reference},
+                "orientation": "aligned",
+                "offset": {"value": -13.25, "unit": "mm"},
+            },
+        },
+        schema,
+    )
+
+
+@pytest.mark.anyio
 async def test_published_feature_schema_accepts_all_update_kinds(tmp_path):
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "tools.coalesce.json")}
     schema = tools["feature"].inputSchema

@@ -1850,6 +1850,35 @@ def _parse_assembly_occurrence(
     return AssemblyOccurrenceUpdate(**common, transform=transform)
 
 
+def _parse_planar_mate(values: dict[str, Any]) -> dict[str, Any]:
+    try:
+        first = MateSide(values["first"]["occurrenceId"], _reference(values["first"]["reference"]))
+        second = MateSide(
+            values["second"]["occurrenceId"], _reference(values["second"]["reference"])
+        )
+        orientation = values["orientation"]
+        offset = values["offset"]
+        if offset["unit"] != "mm":
+            raise RequestError("UNIT_MISMATCH", "planar mate offset unit must be mm")
+        offset_value = _finite_number(offset["value"], "offset.value")
+        if orientation not in {"aligned", "opposed"}:
+            raise RequestError(
+                "INVALID_PARAMETER", "planar mate orientation must be aligned or opposed"
+            )
+    except (KeyError, TypeError, ValueError) as error:
+        raise RequestError("INVALID_PARAMETER", "planar mate parameters are malformed") from error
+    if first.reference.cardinality is not Cardinality.ONE or second.reference.cardinality is not Cardinality.ONE:
+        raise RequestError("INVALID_PARAMETER", "planar mate references must have cardinality one")
+    if first.occurrence_id == second.occurrence_id:
+        raise RequestError("INVALID_PARAMETER", "planar mate must connect two occurrences")
+    return {
+        "first": first,
+        "second": second,
+        "orientation": orientation,
+        "offset": offset_value,
+    }
+
+
 def _parse_assembly_mate(
     payload: dict[str, Any],
 ) -> AssemblyMateCreate | AssemblyMateUpdate | AssemblyMateDelete:
@@ -1867,33 +1896,9 @@ def _parse_assembly_mate(
     operation_type = AssemblyMateCreate if action is Action.CREATE else AssemblyMateUpdate
     if mate_kind == "ground":
         return operation_type(**common, occurrence_id=values.get("occurrenceId"))
-    if mate_kind != "planar":
-        raise RequestError("INVALID_PARAMETER", "assembly mate kind must be ground or planar")
-    try:
-        first = MateSide(values["first"]["occurrenceId"], _reference(values["first"]["reference"]))
-        second = MateSide(values["second"]["occurrenceId"], _reference(values["second"]["reference"]))
-        orientation = values["orientation"]
-        offset = values["offset"]
-        if offset["unit"] != "mm":
-            raise RequestError("UNIT_MISMATCH", "planar mate offset unit must be mm")
-        offset_value = _finite_number(offset["value"], "offset.value")
-        if orientation not in {"aligned", "opposed"}:
-            raise RequestError(
-                "INVALID_PARAMETER", "planar mate orientation must be aligned or opposed"
-            )
-    except (KeyError, TypeError, ValueError) as error:
-        raise RequestError("INVALID_PARAMETER", "planar mate parameters are malformed") from error
-    if first.reference.cardinality is not Cardinality.ONE or second.reference.cardinality is not Cardinality.ONE:
-        raise RequestError("INVALID_PARAMETER", "planar mate references must have cardinality one")
-    if first.occurrence_id == second.occurrence_id:
-        raise RequestError("INVALID_PARAMETER", "planar mate must connect two occurrences")
-    return operation_type(
-        **common,
-        first=first,
-        second=second,
-        orientation=orientation,
-        offset=offset_value,
-    )
+    if mate_kind == "planar":
+        return operation_type(**common, **_parse_planar_mate(values))
+    raise RequestError("INVALID_PARAMETER", "assembly mate kind must be ground or planar")
 
 
 def _parse_feature(
@@ -4539,6 +4544,19 @@ class DocumentService:
                 solved = self._validate_assembly_references(self._regen, assembly=assembly)
                 effective = solved.assembly.occurrences.get(occurrence.id, occurrence)
                 response = self._occurrence_response(payload, effective)
+                status = solved.status_by_occurrence.get(occurrence.id, {})
+                if (
+                    isinstance(parsed, AssemblyOccurrenceUpdate)
+                    and occurrence.transform != effective.transform
+                    and status.get("mateIds")
+                    and not status.get("grounded")
+                ):
+                    response["warnings"] = [{
+                        "code": "MATED_TRANSFORM_OVERRIDDEN",
+                        "occurrenceId": occurrence.id,
+                        "constrainedCoordinates": ["normalAlignment", "normalOffset"],
+                        "freeMotions": status["freeMotions"],
+                    }]
                 document, durable = self._save_response(
                     self._document.graph, solved.assembly, response, body_hash
                 )

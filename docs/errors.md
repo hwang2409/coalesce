@@ -171,3 +171,4 @@ a successful operation can include `warnings`. a warning does not fail the reque
 | `CONNECTOR_HEIGHT_UNRESOLVED` | the board declares no 3D models, so connector heights for `footprintIds` are not measured. | treat port height clearance as unknown; ask for connector heights or add margin. |
 | `UNCLASSIFIED_BOARD_HOLES` | board holes in `holeIds` are not mounting holes, so no standoff is expected for them. | check that these holes need no standoff. |
 | `LID_OUTLINE_STALE` | a lid still uses its persisted outline while the base lineage has a different legal terminal source. | explicitly update the lid `outlineSource` to the reported `legalSource`, then run `lid_outline_match`. |
+| `MATED_TRANSFORM_OVERRIDDEN` | a planar mate replaced constrained coordinates in an explicit occurrence transform update. | use `freeMotions` for allowed edits and inspect the returned effective transform. |
