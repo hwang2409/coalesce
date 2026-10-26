@@ -69,7 +69,8 @@ async def test_mate_tool_text_teaches_face_discovery_and_planar_semantics(tmp_pa
     assert "breadth-first spanning tree" in assembly_docs
     assert "mates that close a cycle are not applied" in assembly_docs
     assert "failed cycle closer's exact fundamental cycle" in error_docs
-    assert "remaining degrees of freedom from its tree restrictions" in error_docs
+    assert "tree-restriction freedom" in error_docs and "can change that closer" in error_docs
+    assert "free motions the closer cannot see" in assembly_docs
 
 
 def _assert_required_shape_is_published(full, published):
