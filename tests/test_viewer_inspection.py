@@ -263,7 +263,7 @@ def test_fit_row_focuses_its_part_in_a_real_browser(module, viewport, tmp_path):
         assert fit["evidenceOpen"] is False
         if viewport[0] < 720:
             # the panel ends in a cue below the row it cuts, so more checks are not a surprise
-            assert fit["more"] == "Scroll for more checks and parts"
+            assert fit["more"] == "Scroll for more results and parts"
 
         view = shown["scene"]["view"]
         focused = step("fit-row-focused", do=[{"fitRow": 0}, {"settle": True}, {"fit": True}])
