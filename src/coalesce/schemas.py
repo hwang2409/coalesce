@@ -1104,7 +1104,7 @@ FEATURE_SCHEMA = {
                 GROUND_MATE_UPDATE,
                 PUBLISHED_PLANAR_MATE_UPDATE,
             ],
-            "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept feature parameters, occurrence transforms, or a ground mate occurrenceId.",
+            "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
