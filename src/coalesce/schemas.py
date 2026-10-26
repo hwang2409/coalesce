@@ -1026,7 +1026,7 @@ FEATURE_SCHEMA = {
         },
         "set": {
             "oneOf": [*FEATURE_UPDATE_SCHEMA["properties"]["set"]["oneOf"], GROUND_MATE_UPDATE],
-            "description": "Required for update; not allowed for create or delete. Accepts feature changes, occurrence transforms, or a ground mate occurrenceId.",
+            "description": "Required for update; not allowed for create or delete. Accepts extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
         },
         "cascade": {"type": "boolean", "default": False},
     },
