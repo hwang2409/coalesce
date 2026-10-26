@@ -34,8 +34,8 @@ MAX_SKETCH_SET_JSON_BYTES = 256 * 1024
 _TOOL_DESCRIPTIONS = {
     "import": "Snapshot one explicit absolute local kicad_pcb path as a persisted BoardImport and exact reference substrate. Reads regular files up to 16 MiB, with no network or environment-variable model resolution. Use refresh with an optional replacement absolute path to re-read the board explicitly. Use delete to remove the board asset; it fails when dependents exist unless cascade is true.",
     "sketch": "set.entities/set.constrained replace full definition; set.dimensionValues changes only named driving dimensions",
-    "feature": "Create, update, or delete features, assembly occurrences, and mates. Discover planar faces with query face_roles, then use aligned or opposed normals and a signed offset; see coalesce://docs/assembly. Ground fixes one named occurrence at its stored transform. Supports constant-radius fillet and symmetric one-distance chamfer; two-distance not supported. Holes use global +Z; plane normals are XY +Z, XZ -Y, YZ +X. Finite cuts use negative sketch normal for flip=false and positive sketch normal for flip=true; through-all is bidirectional. Routes: extrude/cut/fillet/chamfer -> coalesce://docs/tools; revolve -> coalesce://docs/revolve; hole/pattern -> coalesce://docs/hole; enclosure features -> coalesce://docs/enclosure; board refresh -> coalesce://docs/refresh.",
-    "query": "Read one feature, the graph, revision, assembly, exact mm metrics, or typed references. Use select.kind edge_roles before choosing treatment edges and face_roles before authoring planar mates. See coalesce://docs/assembly for mate details. Call select.kind enclosure before reporting enclosure dimensions.",
+    "feature": "Create, update, or delete features, assembly occurrences, and mates. Discover faces with query face_roles. Planar mates use aligned or opposed normals and a signed offset; concentric mates use cylinder axes from named hole walls or revolve side segments. See coalesce://docs/assembly. Ground fixes one named occurrence at its stored transform. Supports constant-radius fillet and symmetric one-distance chamfer; two-distance not supported. Holes use global +Z; plane normals are XY +Z, XZ -Y, YZ +X. Finite cuts use negative sketch normal for flip=false and positive sketch normal for flip=true; through-all is bidirectional. Routes: extrude/cut/fillet/chamfer -> coalesce://docs/tools; revolve -> coalesce://docs/revolve; hole/pattern -> coalesce://docs/hole; enclosure features -> coalesce://docs/enclosure; board refresh -> coalesce://docs/refresh.",
+    "query": "Read one feature, the graph, revision, assembly, exact mm metrics, or typed references. Use select.kind edge_roles before choosing treatment edges and face_roles before authoring planar or concentric mates. See coalesce://docs/assembly for mate details. Call select.kind enclosure before reporting enclosure dimensions.",
     "check": "Run revision-bound exact requirements against regenerated OCCT geometry. Use enclosure requirement kinds for wall/floor thickness, board-edge clearance, mounting coverage, lid interference, fit, exact lid_outline_match, screw_closure alignment and residual wall, connector clearance, and clean manufacturing bodies. assembly_interference measures exact common-solid volume for every pair among 2 to 16 selected occurrences and minimum clearance when requested; omit occurrenceIds only when the assembly has at most 16 occurrences. One request is capped at 120 total assembly pairs and a 10-second cooperative deadline. board_clearance accepts side left, right, front, back, or all and a minimum mm threshold. Every result is PASS, FAIL, UNKNOWN, or ERROR with measured evidence, threshold, stable ids, and revision; report UNKNOWN items instead of claiming readiness. Port evidence reports the board footprint libraryId, reference, and value; do not relabel a footprint as USB unless that data says so.",
     "export": "Preflight or publish at the current expectedRevision. action=preflight is read-only and validates in a fresh Python process. Publishing defaults to the unchanged compound STEP mode. mode=separate atomically publishes one labeled STEP per manufacturing definition plus a deterministic manifest. mode=assembly writes a verified XCAF product tree for all manufacturing occurrences, preserves occurrence names and placements, and lists excluded reference occurrences; it does not accept partIds. Exports never overwrite.",
 }
@@ -163,7 +163,7 @@ Export excludes the board reference geometry.
 Use `query` with `select.kind: assembly` to list canonical terminal `availableParts`, solve
 status, and per-occurrence degrees of freedom. Create named placements with
 `kind: assembly_occurrence`. Use `select.kind: face_roles` to discover exact face references,
-then create a planar mate with aligned or opposed normals and a signed offset. Use a ground mate
+then create a planar mate with aligned or opposed normals and a signed offset, or a concentric mate from named hole-wall or revolve-segment cylinder faces. Use a ground mate
 to fix one occurrence. See `coalesce://docs/assembly` for request shapes and update behavior.
 
 Ask the user before changing geometry when a dimension is vague, such as "a bit wider".
@@ -349,7 +349,9 @@ def _matching_kind_union(error: ValidationError) -> ValidationError | None:
 
 
 def _kind_discriminators(union: ValidationError) -> list[tuple[int, tuple[Any, ...]]]:
-    pairs = [(index, _kind_discriminator(branch)) for index, branch in enumerate(union.validator_value)]
+    pairs = [
+        (index, _kind_discriminator(branch)) for index, branch in enumerate(union.validator_value)
+    ]
     return [(index, values) for index, values in pairs if values]
 
 

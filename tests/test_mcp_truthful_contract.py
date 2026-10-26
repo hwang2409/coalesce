@@ -62,8 +62,8 @@ async def test_mate_tool_text_teaches_face_discovery_and_planar_semantics(tmp_pa
 
 
 def _assert_required_shape_is_published(full, published):
-    assert set(full.get("required", ())) <= set(published.get("required", ()))
-    for name in full.get("required", ()):
+    assert set(published.get("required", ())) <= set(full.get("required", ()))
+    for name in published.get("required", ()):
         full_property = full.get("properties", {}).get(name, {})
         published_property = published.get("properties", {}).get(name, {})
         if "type" in full_property:
@@ -77,7 +77,7 @@ async def test_feature_schema_keeps_required_mate_shape_without_codex_unsafe_ref
     tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "refs.coalesce.json")}
     schema = tools["feature"].inputSchema
     compact = json.dumps(schema, separators=(",", ":")).encode()
-    assert len(compact) < 27_003  # dev was 24,503 bytes; keep mate growth below 2.5 KiB.
+    assert len(compact) < 26_003  # dev was 24,503 bytes; keep slice growth below 1.5 KiB.
     assert "$defs" not in schema
     assert "$ref" not in json.dumps(schema)
 
@@ -85,12 +85,10 @@ async def test_feature_schema_keeps_required_mate_shape_without_codex_unsafe_ref
     update_schema = FEATURE_ACTION_SCHEMAS[("update", "assembly_mate")]
     published_create = schema["properties"]["parameters"]["oneOf"][-1]
     published_update = schema["properties"]["set"]["oneOf"][-1]
-    _assert_required_shape_is_published(
-        create_schema["properties"]["parameters"]["oneOf"][-1], published_create
-    )
-    _assert_required_shape_is_published(
-        update_schema["properties"]["set"]["oneOf"][-1], published_update
-    )
+    for full in create_schema["properties"]["parameters"]["oneOf"][1:]:
+        _assert_required_shape_is_published(full, published_create)
+    for full in update_schema["properties"]["set"]["oneOf"][1:]:
+        _assert_required_shape_is_published(full, published_update)
 
     reference = {"feature": "plate", "role": "cap_end", "cardinality": "one"}
     sides = {
@@ -120,6 +118,31 @@ async def test_feature_schema_keeps_required_mate_shape_without_codex_unsafe_ref
                 "kind": "assembly_mate",
                 "mateId": "seat",
                 "set": sides,
+            },
+        ),
+        (
+            create_schema,
+            {
+                "action": "create",
+                "expectedRevision": 0,
+                "requestId": "schema-concentric-create",
+                "kind": "assembly_mate",
+                "mateId": "coaxial",
+                "parameters": {
+                    "kind": "concentric",
+                    **{name: value for name, value in sides.items() if name != "offset"},
+                },
+            },
+        ),
+        (
+            update_schema,
+            {
+                "action": "update",
+                "expectedRevision": 0,
+                "requestId": "schema-concentric-update",
+                "kind": "assembly_mate",
+                "mateId": "coaxial",
+                "set": {name: value for name, value in sides.items() if name != "offset"},
             },
         ),
         (

@@ -21,7 +21,7 @@ from .assembly import (
 from .references import Candidate, Status, face_role_catalog, resolve
 
 _LINEAR_TOLERANCE = 1e-7
-_ANGULAR_TOLERANCE = 1e-9
+_ANGULAR_TOLERANCE = 1e-7
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class MateGraph:
             occurrence_id: [] for occurrence_id in assembly.occurrences
         }
         for mate in assembly.mates.values():
-            if mate.kind != "planar":
+            if mate.kind == "ground":
                 continue
             assert mate.first is not None and mate.second is not None
             first, second = mate.first.occurrence_id, mate.second.occurrence_id
@@ -95,7 +95,9 @@ def _dot(left: tuple[float, float, float], right: tuple[float, float, float]) ->
     return sum(a * b for a, b in zip(left, right, strict=True))
 
 
-def _cross(left: tuple[float, float, float], right: tuple[float, float, float]) -> tuple[float, float, float]:
+def _cross(
+    left: tuple[float, float, float], right: tuple[float, float, float]
+) -> tuple[float, float, float]:
     return (
         left[1] * right[2] - left[2] * right[1],
         left[2] * right[0] - left[0] * right[2],
@@ -107,14 +109,16 @@ def _scale(vector: tuple[float, float, float], factor: float) -> tuple[float, fl
     return tuple(value * factor for value in vector)  # type: ignore[return-value]
 
 
-def _add(left: tuple[float, float, float], right: tuple[float, float, float]) -> tuple[float, float, float]:
+def _add(
+    left: tuple[float, float, float], right: tuple[float, float, float]
+) -> tuple[float, float, float]:
     return tuple(a + b for a, b in zip(left, right, strict=True))  # type: ignore[return-value]
 
 
 def _unit(vector: tuple[float, float, float]) -> tuple[float, float, float]:
     length = math.sqrt(_dot(vector, vector))
     if length <= _ANGULAR_TOLERANCE:
-        raise AssemblyError("MATE_GEOMETRY_UNSUPPORTED", "planar face has no stable normal")
+        raise AssemblyError("MATE_GEOMETRY_UNSUPPORTED", "mate geometry has no stable direction")
     return _scale(vector, 1.0 / length)
 
 
@@ -137,7 +141,9 @@ def _multiply(
     )
 
 
-def _between(source: tuple[float, float, float], target: tuple[float, float, float]) -> tuple[float, float, float, float]:
+def _between(
+    source: tuple[float, float, float], target: tuple[float, float, float]
+) -> tuple[float, float, float, float]:
     source, target = _unit(source), _unit(target)
     cosine = max(-1.0, min(1.0, _dot(source, target)))
     if cosine > 1.0 - _ANGULAR_TOLERANCE:
@@ -152,7 +158,9 @@ def _between(source: tuple[float, float, float], target: tuple[float, float, flo
     return tuple(value / length for value in quaternion)  # type: ignore[return-value]
 
 
-def _transform(quaternion: tuple[float, float, float, float], translation: tuple[float, float, float]) -> RigidTransform:
+def _transform(
+    quaternion: tuple[float, float, float, float], translation: tuple[float, float, float]
+) -> RigidTransform:
     length = math.sqrt(sum(value * value for value in quaternion))
     quaternion = tuple(value / length for value in quaternion)  # type: ignore[assignment]
     if quaternion[0] < 0:
@@ -221,11 +229,14 @@ def _resolved_face(
     resolution = resolve(side.reference, scoped)
     if resolution.status is not Status.OK or len(resolution.candidates) != 1:
         details = {
-            **(resolution.error or {
-                "status": resolution.status.value,
-                "reference": side.reference.to_dict(),
-                "candidates": [],
-            }),
+            **(
+                resolution.error
+                or {
+                    "status": resolution.status.value,
+                    "reference": side.reference.to_dict(),
+                    "candidates": [],
+                }
+            ),
             "availableRoles": face_role_catalog(scoped, side.reference.feature),
         }
         raise AssemblyError(
@@ -237,15 +248,17 @@ def _resolved_face(
             resolution=details,
         )
     face = resolution.candidates[0].entity
-    if face.geom_type is not GeomType.PLANE or float(face.area) <= _LINEAR_TOLERANCE:
+    expected = GeomType.PLANE if mate.kind == "planar" else GeomType.CYLINDER
+    if face.geom_type is not expected or float(face.area) <= _LINEAR_TOLERANCE:
         raise AssemblyError(
             "MATE_GEOMETRY_UNSUPPORTED",
-            f"assembly mate {mate.id} {side_name} face must be planar with non-zero area",
+            f"assembly mate {mate.id} {side_name} face must be {expected.name.lower()} with non-zero area",
             mateId=mate.id,
             side=side_name,
             occurrenceId=side.occurrence_id,
             surfaceType=face.geom_type.name,
             area={"value": float(face.area), "unit": "mm^2"},
+            availableRoles=face_role_catalog(scoped, side.reference.feature),
         )
     return face, resolved.part.shape
 
@@ -260,6 +273,49 @@ def _plane(
     return (center.X, center.Y, center.Z), _unit((normal.X, normal.Y, normal.Z))
 
 
+def _cylinder_axis(
+    resolved_face: tuple[Face, Any], transform: RigidTransform
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    face, part_shape = resolved_face
+    located = face.moved(locate_shape(part_shape, transform).location)
+    axis = located.axis_of_rotation
+    return tuple(axis.position), _unit(tuple(axis.direction))
+
+
+def _solve_concentric(
+    mate: Mate,
+    moved_id: str,
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> Occurrence:
+    assert mate.first is not None and mate.second is not None and mate.orientation is not None
+    linear, angular = _concentric_residual(mate, occurrences, faces)
+    if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
+        return occurrences[moved_id]
+    first_id, second_id = mate.first.occurrence_id, mate.second.occurrence_id
+    moved_side = "first" if moved_id == first_id else "second"
+    fixed_side = "second" if moved_side == "first" else "first"
+    fixed_id = second_id if moved_side == "first" else first_id
+    fixed_point, fixed_axis = _cylinder_axis(
+        faces[(mate.id, fixed_side)], occurrences[fixed_id].transform
+    )
+    _, moved_axis = _cylinder_axis(faces[(mate.id, moved_side)], occurrences[moved_id].transform)
+    target_axis = fixed_axis if mate.orientation == "aligned" else _scale(fixed_axis, -1)
+    moved = occurrences[moved_id]
+    rotated = _transform(
+        _multiply(_between(moved_axis, target_axis), _quaternion(moved.transform)),
+        moved.transform.translation,
+    )
+    moved_point, _ = _cylinder_axis(faces[(mate.id, moved_side)], rotated)
+    delta = tuple(a - b for a, b in zip(fixed_point, moved_point, strict=True))
+    radial = tuple(
+        value - fixed_axis[index] * _dot(delta, fixed_axis) for index, value in enumerate(delta)
+    )
+    return replace(
+        moved, transform=_transform(_quaternion(rotated), _add(rotated.translation, radial))
+    )
+
+
 def _solve_planar(
     mate: Mate,
     moved_id: str,
@@ -268,7 +324,7 @@ def _solve_planar(
 ) -> Occurrence:
     assert mate.first is not None and mate.second is not None and mate.orientation is not None
     first_id, second_id = mate.first.occurrence_id, mate.second.occurrence_id
-    linear, angular = _residual(mate, occurrences, faces)
+    linear, angular = _planar_residual(mate, occurrences, faces)
     if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
         return occurrences[moved_id]
     first_transform = occurrences[first_id].transform
@@ -280,8 +336,13 @@ def _solve_planar(
     if moved_id == second_id:
         target_normal = first_normal if mate.orientation == "aligned" else _scale(first_normal, -1)
     else:
-        target_normal = second_normal if mate.orientation == "aligned" else _scale(second_normal, -1)
-    rotated = _transform(_multiply(_between(current_normal, target_normal), _quaternion(moved.transform)), moved.transform.translation)
+        target_normal = (
+            second_normal if mate.orientation == "aligned" else _scale(second_normal, -1)
+        )
+    rotated = _transform(
+        _multiply(_between(current_normal, target_normal), _quaternion(moved.transform)),
+        moved.transform.translation,
+    )
     trial = dict(occurrences)
     trial[moved_id] = replace(moved, transform=rotated)
     first_center, first_normal = _plane(faces[(mate.id, "first")], trial[first_id].transform)
@@ -289,8 +350,51 @@ def _solve_planar(
     residual = mate.offset - _dot(
         tuple(b - a for a, b in zip(first_center, second_center, strict=True)), first_normal
     )
-    translation = _add(rotated.translation, _scale(first_normal, residual if moved_id == second_id else -residual))
+    translation = _add(
+        rotated.translation, _scale(first_normal, residual if moved_id == second_id else -residual)
+    )
     return replace(moved, transform=_transform(_quaternion(rotated), translation))
+
+
+def _planar_residual(
+    mate: Mate,
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> tuple[float, float]:
+    assert mate.first is not None and mate.second is not None and mate.orientation is not None
+    first_center, first_normal = _plane(
+        faces[(mate.id, "first")], occurrences[mate.first.occurrence_id].transform
+    )
+    second_center, second_normal = _plane(
+        faces[(mate.id, "second")], occurrences[mate.second.occurrence_id].transform
+    )
+    target_dot = 1.0 if mate.orientation == "aligned" else -1.0
+    angular = math.acos(max(-1.0, min(1.0, _dot(first_normal, second_normal) * target_dot)))
+    linear = abs(
+        _dot(tuple(b - a for a, b in zip(first_center, second_center, strict=True)), first_normal)
+        - mate.offset
+    )
+    return linear, angular
+
+
+def _concentric_residual(
+    mate: Mate,
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> tuple[float, float]:
+    assert mate.first is not None and mate.second is not None and mate.orientation is not None
+    first_point, first_axis = _cylinder_axis(
+        faces[(mate.id, "first")], occurrences[mate.first.occurrence_id].transform
+    )
+    second_point, second_axis = _cylinder_axis(
+        faces[(mate.id, "second")], occurrences[mate.second.occurrence_id].transform
+    )
+    delta = tuple(b - a for a, b in zip(first_point, second_point, strict=True))
+    cross = _cross(delta, first_axis)
+    linear = math.sqrt(_dot(cross, cross))
+    target_sign = 1.0 if mate.orientation == "aligned" else -1.0
+    angular = math.acos(max(-1.0, min(1.0, _dot(first_axis, second_axis) * target_sign)))
+    return linear, angular
 
 
 def _residual(
@@ -298,13 +402,24 @@ def _residual(
     occurrences: dict[str, Occurrence],
     faces: dict[tuple[str, str], tuple[Face, Any]],
 ) -> tuple[float, float]:
-    assert mate.first is not None and mate.second is not None and mate.orientation is not None
-    first_center, first_normal = _plane(faces[(mate.id, "first")], occurrences[mate.first.occurrence_id].transform)
-    second_center, second_normal = _plane(faces[(mate.id, "second")], occurrences[mate.second.occurrence_id].transform)
-    target_dot = 1.0 if mate.orientation == "aligned" else -1.0
-    angular = abs(_dot(first_normal, second_normal) - target_dot)
-    linear = abs(_dot(tuple(b - a for a, b in zip(first_center, second_center, strict=True)), first_normal) - mate.offset)
-    return linear, angular
+    return (
+        _planar_residual(mate, occurrences, faces)
+        if mate.kind == "planar"
+        else _concentric_residual(mate, occurrences, faces)
+    )
+
+
+def _solve_mate(
+    mate: Mate,
+    moved_id: str,
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> Occurrence:
+    return (
+        _solve_planar(mate, moved_id, occurrences, faces)
+        if mate.kind == "planar"
+        else _solve_concentric(mate, moved_id, occurrences, faces)
+    )
 
 
 def _mate_faces(
@@ -314,7 +429,7 @@ def _mate_faces(
 ) -> dict[tuple[str, str], tuple[Face, Any]]:
     faces = {}
     for mate in sorted(assembly.mates.values(), key=lambda item: item.id):
-        if mate.kind == "planar":
+        if mate.kind in {"planar", "concentric"}:
             assert mate.first is not None and mate.second is not None
             faces[(mate.id, "first")] = _resolved_face(
                 mate, "first", resolved[mate.first.occurrence_id], provenance
@@ -325,6 +440,40 @@ def _mate_faces(
     return faces
 
 
+def _validate_or_compose_cycle(
+    mate: Mate,
+    first: str,
+    second: str,
+    provenance: dict[str, set[str]],
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+    redundant: list[str],
+    mates: dict[str, Mate],
+) -> None:
+    linear, angular = _residual(mate, occurrences, faces)
+    if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
+        redundant.append(mate.id)
+        return
+    cycle_ids = provenance[first] ^ provenance[second] | {mate.id}
+    moved_id = first if len(provenance[first]) > len(provenance[second]) else second
+    trial = dict(occurrences)
+    trial[moved_id] = _solve_mate(mate, moved_id, trial, faces)
+    if all(
+        max(_residual(mates[mate_id], trial, faces)) <= _LINEAR_TOLERANCE for mate_id in cycle_ids
+    ):
+        occurrences[moved_id] = trial[moved_id]
+        provenance[moved_id].add(mate.id)
+        return
+    raise AssemblyError(
+        "MATE_CONFLICT",
+        f"assembly mate {mate.id} conflicts with solved {mate.kind} geometry",
+        mateIds=sorted(cycle_ids),
+        occurrenceIds=sorted([first, second]),
+        linearResidual={"value": linear, "unit": "mm"},
+        angularResidual={"value": math.degrees(angular), "unit": "deg"},
+    )
+
+
 def _apply_pending_mate(
     mate: Mate,
     known: set[str],
@@ -332,32 +481,37 @@ def _apply_pending_mate(
     occurrences: dict[str, Occurrence],
     faces: dict[tuple[str, str], tuple[Face, Any]],
     redundant: list[str],
+    mates: dict[str, Mate],
 ) -> bool:
     assert mate.first is not None and mate.second is not None
     first, second = mate.first.occurrence_id, mate.second.occurrence_id
     if first in known and second not in known:
-        occurrences[second] = _solve_planar(mate, second, occurrences, faces)
+        occurrences[second] = _solve_mate(mate, second, occurrences, faces)
         provenance[second] = provenance[first] | {mate.id}
         known.add(second)
     elif second in known and first not in known:
-        occurrences[first] = _solve_planar(mate, first, occurrences, faces)
+        occurrences[first] = _solve_mate(mate, first, occurrences, faces)
         provenance[first] = provenance[second] | {mate.id}
         known.add(first)
     elif first in known and second in known:
-        linear, angular = _residual(mate, occurrences, faces)
-        if linear > _LINEAR_TOLERANCE or angular > _ANGULAR_TOLERANCE:
-            raise AssemblyError(
-                "MATE_CONFLICT",
-                f"assembly mate {mate.id} conflicts with solved planar geometry",
-                mateIds=sorted(provenance[first] ^ provenance[second] | {mate.id}),
-                occurrenceIds=sorted([first, second]),
-                linearResidual={"value": linear, "unit": "mm"},
-                angularResidual=angular,
-            )
-        redundant.append(mate.id)
+        _validate_or_compose_cycle(
+            mate, first, second, provenance, occurrences, faces, redundant, mates
+        )
     else:
         return False
     return True
+
+
+def _reject_unsupported_coupling(graph: MateGraph, component: tuple[str, ...]) -> None:
+    for occurrence_id in component:
+        edges = graph.adjacent[occurrence_id]
+        if len({other for other, _ in edges}) > 1 and len({mate.kind for _, mate in edges}) > 1:
+            raise AssemblyError(
+                "MATE_SOLVE_UNSUPPORTED",
+                "planar and concentric constraints to different neighbors are not supported",
+                mateIds=sorted(mate.id for _, mate in edges),
+                occurrenceIds=list(component),
+            )
 
 
 def _solve_component(
@@ -368,6 +522,7 @@ def _solve_component(
     faces: dict[tuple[str, str], tuple[Face, Any]],
     redundant: list[str],
 ) -> None:
+    _reject_unsupported_coupling(graph, component)
     known = {anchor}
     provenance = {anchor: set()}
     pending = {mate.id: mate for member in component for _, mate in graph.adjacent[member]}
@@ -377,7 +532,7 @@ def _solve_component(
                 mate_id
                 for mate_id, mate in sorted(pending.items())
                 if _apply_pending_mate(
-                    mate, known, provenance, occurrences, faces, redundant
+                    mate, known, provenance, occurrences, faces, redundant, graph.assembly.mates
                 )
             ),
             None,
@@ -399,14 +554,24 @@ def _occurrence_status(
     anchor: str,
 ) -> dict[str, Any]:
     grounded = any(mate.occurrence_id == occurrence_id for mate in grounds)
-    remaining = 0 if grounded else (6 if occurrence_id == anchor else 3)
-    incident = [mate.id for _, mate in graph.adjacent[occurrence_id]]
+    connected = [mate for _, mate in graph.adjacent[occurrence_id]]
+    kinds = {mate.kind for mate in connected}
+    if grounded:
+        remaining, motions = 0, []
+    elif occurrence_id == anchor:
+        remaining, motions = 6, ["globalRigidMotion"]
+    elif kinds == {"planar", "concentric"}:
+        remaining, motions = 1, ["axisSpin"]
+    elif "concentric" in kinds:
+        remaining, motions = 2, ["axisTranslation", "axisSpin"]
+    else:
+        remaining, motions = 3, ["inPlaneX", "inPlaneY", "normalSpin"]
+    incident = [mate.id for mate in connected]
     incident += [mate.id for mate in grounds if mate.occurrence_id == occurrence_id]
-    motions = ["globalRigidMotion"] if occurrence_id == anchor else ["inPlaneX", "inPlaneY", "normalSpin"]
     return {
         "grounded": grounded,
         "remainingDof": remaining,
-        "freeMotions": [] if grounded else motions,
+        "freeMotions": motions,
         "mateIds": sorted(incident),
     }
 
