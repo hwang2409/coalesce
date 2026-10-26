@@ -628,6 +628,34 @@ def test_near_parallel_concentric_axes_are_solved_to_angular_tolerance(tmp_path)
     assert angle <= 1e-7
 
 
+def test_final_residual_validation_rejects_and_does_not_persist_failed_tree_edge(
+    tmp_path, monkeypatch
+):
+    from coalesce import assembly_solver
+
+    path = tmp_path / "failed-final-residual.coalesce.json"
+    service = _concentric_setup(path)
+    for revision, occurrence_id, angle in ((4, "fixed", 0), (5, "moved", 1)):
+        update = {
+            "action": "update",
+            "kind": "assembly_occurrence",
+            "expectedRevision": revision,
+            "requestId": f"seed-{occurrence_id}",
+            "occurrenceId": occurrence_id,
+            "set": {"transform": transform(0, (1, 0, 0), angle)},
+        }
+        assert service.feature(update)["ok"]
+    cylinder = _face_reference(service, "side(circle)")
+    before = path.read_bytes()
+    monkeypatch.setattr(assembly_solver, "_between", lambda *_: (1.0, 0.0, 0.0, 0.0))
+
+    result = service.feature(_concentric_create(6, cylinder, cylinder))
+
+    assert result["error"]["code"] == "MATE_CONFLICT"
+    assert result["error"]["mateIds"] == ["coaxial"]
+    assert path.read_bytes() == before
+
+
 def test_parallel_plane_does_not_falsely_seat_a_concentric_occurrence():
     from coalesce.assembly import (
         Assembly,
