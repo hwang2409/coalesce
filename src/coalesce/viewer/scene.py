@@ -398,6 +398,7 @@ def _build_scene(
     change: dict | None,
     fit: list[dict],
     assembly_inspection: list[dict],
+    assembly_state: dict | None,
 ) -> tuple[dict, dict[str, bytes]]:
     """Validate and tessellate definitions once into scene JSON and mesh bytes."""
     items = list(items)
@@ -420,6 +421,7 @@ def _build_scene(
 
         scene["assemblyInspection"] = assembly_inspection
         scene["assemblyLinearTolerance"] = Precision.Confusion_s()
+        scene["assemblyState"] = copy.deepcopy(assembly_state)
     return scene, meshes
 
 
@@ -487,6 +489,7 @@ class ViewerSceneStore:
         fit: list[dict] | None = None,
         accepted_edit: dict | None = None,
         assembly_inspection: list[dict] | None = None,
+        assembly_state: dict | None = None,
     ) -> None:
         """``change`` says what the commit did, for the human: {"featureId", "summary"}.
 
@@ -497,7 +500,13 @@ class ViewerSceneStore:
                 raise ValueError(f"revision {revision} is not after {self._revision}")
         # tessellate outside the lock: readers keep serving the last scene meanwhile.
         scene, meshes = _build_scene(
-            revision, parts, self.TOLERANCE, change, fit or [], assembly_inspection or []
+            revision,
+            parts,
+            self.TOLERANCE,
+            change,
+            fit or [],
+            assembly_inspection or [],
+            assembly_state,
         )
 
         with self._changed:

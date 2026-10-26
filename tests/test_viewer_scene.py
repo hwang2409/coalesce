@@ -102,6 +102,42 @@ def test_off_origin_definition_mesh_and_payload_match_located_shape(transform):
         assert rendered[limit] == pytest.approx(expected[limit], abs=store.TOLERANCE)
 
 
+def test_assembly_solve_state_is_published_without_changing_occurrence_geometry():
+    store = ViewerSceneStore()
+    occurrence = SceneOccurrence(
+        "pin", ScenePart("pin/body", Cylinder(2, 8)), RigidTransform((0, 0, 0), (0, 0, 1), 0)
+    )
+    state = {
+        "solveStatus": "UNDER_CONSTRAINED",
+        "underConstrainedOccurrenceIds": ["pin"],
+        "conflicts": [],
+        "occurrences": [
+            {
+                "occurrenceId": "pin",
+                "grounded": False,
+                "remainingDof": 1,
+                "freeMotions": ["spin"],
+                "mateIds": ["pin-axis", "pin-seat"],
+            }
+        ],
+        "mates": [
+            {
+                "mateId": "pin-axis",
+                "kind": "concentric",
+                "occurrenceIds": ["ring", "pin"],
+                "orientation": "aligned",
+                "status": "satisfied",
+            }
+        ],
+    }
+
+    store.publish(1, [occurrence], assembly_state=state)
+
+    scene = store.scene(1)
+    assert scene["assemblyState"] == state
+    assert scene["parts"][0]["transform"]["translation"] == [0.0, 0.0, 0.0]
+
+
 def test_occurrence_facts_use_position_and_readable_rotation_text():
     store = ViewerSceneStore()
     definition = ScenePart("part", Box(1, 1, 1))

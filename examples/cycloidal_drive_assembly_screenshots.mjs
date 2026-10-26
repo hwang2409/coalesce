@@ -1,5 +1,4 @@
-import path from 'node:path';
-
+const path = await import('node:path');
 const [modulePath, url, output, revisionText] = process.argv.slice(2);
 const revision = Number(revisionText);
 const { chromium } = await import(modulePath);
@@ -7,22 +6,34 @@ const browser = await chromium.launch();
 const errors = [];
 
 try {
-  for (const [name, width, height] of [['desktop', 1280, 800], ['phone', 390, 844]]) {
-    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
-    try {
-      page.on('console', message => message.type() === 'error' && errors.push(`${name} console: ${message.text()}`));
-      page.on('pageerror', error => errors.push(`${name} page: ${error}`));
-      page.on('requestfailed', request => errors.push(`${name} request: ${request.url()} ${request.failure()?.errorText}`));
-      await page.addInitScript(() => { window.coalesceDebug = true; });
-      await page.goto(url);
-      await page.waitForFunction(expected => window.coalesceViewer?.drawn?.revision === expected, revision, { timeout: 30000 });
-      await page.waitForSelector('.assembly-row');
-      await page.screenshot({ path: path.join(output, `${name}-assembled.png`), fullPage: true });
-      await page.locator('.assembly-row').first().click();
-      await page.screenshot({ path: path.join(output, `${name}-pair-focused.png`), fullPage: true });
-    } finally {
-      await page.close();
-    }
+  const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
+  try {
+    desktop.on('console', message => message.type() === 'error' && errors.push(`desktop console: ${message.text()}`));
+    desktop.on('pageerror', error => errors.push(`desktop page: ${error}`));
+    desktop.on('requestfailed', request => errors.push(`desktop request: ${request.url()} ${request.failure()?.errorText}`));
+    await desktop.addInitScript(() => { window.coalesceDebug = true; });
+    await desktop.goto(url);
+    await desktop.waitForFunction(expected => window.coalesceViewer?.drawn?.revision === expected, revision, { timeout: 30000 });
+    await desktop.waitForSelector('[data-mate-id="pin-1-axis"]');
+    await desktop.screenshot({ path: path.join(output, 'desktop-assembled.png') });
+    await desktop.locator('[data-mate-id="pin-1-axis"]').click();
+    await desktop.screenshot({ path: path.join(output, 'desktop-pin-mate-focused.png') });
+  } finally {
+    await desktop.close();
+  }
+
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  try {
+    phone.on('console', message => message.type() === 'error' && errors.push(`phone console: ${message.text()}`));
+    phone.on('pageerror', error => errors.push(`phone page: ${error}`));
+    phone.on('requestfailed', request => errors.push(`phone request: ${request.url()} ${request.failure()?.errorText}`));
+    await phone.addInitScript(() => { window.coalesceDebug = true; });
+    await phone.goto(url);
+    await phone.waitForFunction(expected => window.coalesceViewer?.drawn?.revision === expected, revision, { timeout: 30000 });
+    await phone.waitForSelector('#assembly-state:not([hidden])');
+    await phone.screenshot({ path: path.join(output, 'phone.png') });
+  } finally {
+    await phone.close();
   }
   if (errors.length) throw new Error(errors.join('\n'));
 } finally {

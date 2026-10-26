@@ -161,6 +161,35 @@ button {
 .repair-field { color: var(--mute); font-size: 11px; }
 .repair-values { grid-column: 1 / -1; font-variant-numeric: tabular-nums; }
 
+.assembly-state {
+  padding: 14px 16px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+.assembly-state[hidden] { display: none; }
+.assembly-state h2 { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.solve-status { color: var(--live); font-size: 10px; font-weight: 650; letter-spacing: 0.03em; }
+.solve-warning { margin-top: 6px; color: var(--wait); font-size: 12px; overflow-wrap: anywhere; }
+.solve-summary { margin-top: 3px; color: var(--mute); font-size: 11px; }
+.assembly-state details { margin-top: 8px; }
+.assembly-state summary { min-height: 28px; cursor: pointer; font-weight: 600; }
+.assembly-state summary .unit { float: right; }
+#mate-rows { display: grid; gap: 2px; max-height: 244px; padding: 0; overflow-y: auto; list-style: none; }
+.mate-row {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+.mate-row:is(:hover, :focus) { background: rgba(29, 35, 41, 0.05); }
+.mate-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-shadow: inset 3px 0 0 var(--focus); }
+.mate-heading { overflow-wrap: anywhere; font-weight: 550; }
+.mate-relation, .mate-detail { color: var(--mute); font-size: 11px; overflow-wrap: anywhere; }
+
 .parts {
   flex: 1 0 auto;
   padding: 16px 8px;
@@ -346,6 +375,18 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
 }
 
 .part-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.occurrence-state {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(29, 35, 41, 0.05);
+  color: var(--mute);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.occurrence-state.grounded { color: var(--live); background: #edf6f0; }
 
 .part-name {
   min-width: 0;

@@ -483,6 +483,14 @@ function renderPartList(parts) {
     size.className = 'part-size';
     size.textContent = formatSize(part);
     button.append(title, size);
+    const solve = current?.assemblyState?.occurrences.find((row) => row.occurrenceId === part.occurrenceId);
+    if (solve) {
+      const placement = solve.grounded ? 'grounded' : solve.mateIds.length ? 'mated' : 'explicit';
+      const state = document.createElement('span');
+      state.className = `occurrence-state ${placement}`;
+      state.textContent = `${placement} · ${solve.remainingDof} DOF`;
+      title.append(state);
+    }
     if (part.role === 'reference') {
       const role = document.createElement('span');
       role.className = 'part-role';
@@ -518,6 +526,50 @@ function renderPartList(parts) {
     item.append(toggle, button);
     list.append(item);
   });
+}
+
+// ---- assembly solve: persisted mate intent and the effective occurrence freedom
+
+function renderAssemblyState(state) {
+  const section = $('assembly-state');
+  section.hidden = !state;
+  if (!state) return;
+  $('solve-status').textContent = state.solveStatus.replaceAll('_', ' ');
+  const warning = $('solve-warning');
+  warning.hidden = !state.underConstrainedOccurrenceIds.length;
+  warning.textContent = state.underConstrainedOccurrenceIds.length
+    ? `Under-constrained: ${state.underConstrainedOccurrenceIds.join(', ')}` : '';
+  const grounded = state.occurrences.filter((row) => row.grounded).length;
+  $('solve-summary').textContent = `${grounded} grounded · ${state.conflicts.length} conflicts`;
+  $('mate-count').textContent = `${state.mates.length}`;
+  const list = $('mate-rows');
+  list.replaceChildren();
+  for (const mate of state.mates) {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'mate-row';
+    button.dataset.mateId = mate.mateId;
+    const key = `mate/${mate.mateId}`;
+    button.setAttribute('aria-pressed', String(selected?.key === key));
+    const heading = document.createElement('span');
+    heading.className = 'mate-heading';
+    heading.textContent = `${mate.mateId} · ${mate.kind}`;
+    const relation = document.createElement('span');
+    relation.className = 'mate-relation';
+    relation.textContent = mate.occurrenceIds.join(' ↔ ');
+    const detail = document.createElement('span');
+    detail.className = 'mate-detail';
+    const setting = mate.offset ? `${mate.offset.value} ${mate.offset.unit}` : mate.orientation;
+    detail.textContent = [mate.status, setting].filter(Boolean).join(' · ');
+    button.append(heading, relation, detail);
+    button.addEventListener('click', () => {
+      if (selected?.key === key) showAll();
+      else showPart({ key, partIds: mate.occurrenceIds });
+    });
+    item.append(button);
+    list.append(item);
+  }
 }
 
 // ---- fit check: the enclosure inspection of this revision, one row per measurement
@@ -578,6 +630,7 @@ const fitRowFor = (key) => document.querySelector(`.fit-row[data-key="${CSS.esca
 
 function showPart(next) {
   selected = next;
+  renderAssemblyState(current.assemblyState);
   renderInspection(current.fit, current.assemblyInspection);
   applyMode();
   describeView();
@@ -1303,6 +1356,7 @@ function selectionExists(data, { partIds, key }) {
   const identities = new Set(data.parts.map((part) => part.occurrenceId ?? part.partId));
   if (!partIds.every((partId) => identities.has(partId))) return false;
   if (key.startsWith('assembly/')) return data.assemblyInspection?.some((row) => assemblyKey(data.revision, row) === key);
+  if (key.startsWith('mate/')) return data.assemblyState?.mates.some((mate) => `mate/${mate.mateId}` === key);
   return data.fit.some(({ baseId, rows }) => rows.some((row) => `${baseId}/${row.id}` === key && partIds.includes(row.partId)));
 }
 
@@ -1313,6 +1367,7 @@ function showScene(data, dropped, held) {
   data.parts.forEach((part, index) => model.add(partObject(part, geometries.get(part.mesh.id), ranks[index])));
   current = data;
   renderPartList(data.parts);
+  renderAssemblyState(data.assemblyState);
   renderInspection(data.fit, data.assemblyInspection);
   applyMode(); // the chosen review mode stays while it applies to the new revision
   showRevision(data);

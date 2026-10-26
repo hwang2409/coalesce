@@ -3571,6 +3571,46 @@ def _scene_parts(result: RegenResult, assembly: Assembly | None = None) -> Itera
         yield SceneOccurrence(occurrence.id, definitions[occurrence.part_id], occurrence.transform)
 
 
+def _viewer_assembly_state(result: RegenResult, assembly: Assembly) -> dict[str, Any] | None:
+    if not assembly.mates:
+        return None
+    from .assembly_solver import solve_assembly
+
+    solved = solve_assembly(
+        assembly,
+        resolve_occurrences(assembly, terminal_parts(result, role=None)),
+        result.provenance,
+    )
+    return {
+        "solveStatus": solved.solve_status,
+        "underConstrainedOccurrenceIds": solved.under_constrained_occurrence_ids,
+        "conflicts": [],
+        "occurrences": [
+            {"occurrenceId": occurrence_id, **solved.status_by_occurrence[occurrence_id]}
+            for occurrence_id in sorted(assembly.occurrences)
+        ],
+        "mates": [
+            {
+                "mateId": mate.id,
+                "kind": mate.kind,
+                "occurrenceIds": (
+                    [mate.occurrence_id]
+                    if mate.kind == "ground"
+                    else [mate.first.occurrence_id, mate.second.occurrence_id]
+                ),
+                "status": "satisfied",
+                **({"orientation": mate.orientation} if mate.orientation else {}),
+                **(
+                    {"offset": {"value": mate.offset, "unit": "mm"}}
+                    if mate.kind == "planar"
+                    else {}
+                ),
+            }
+            for mate in sorted(assembly.mates.values(), key=lambda item: item.id)
+        ],
+    }
+
+
 class _ScenePublisher:
     """Moves committed scene work off the MCP response path, in commit order."""
 
@@ -3621,6 +3661,7 @@ class _ScenePublisher:
                         change,
                         fit_summary(result, revision),
                         accepted_edit,
+                        assembly_state=_viewer_assembly_state(result, assembly),
                     )
                 elif method == "publish_assembly_inspection":
                     self._store.publish_assembly_inspection(*arguments)
