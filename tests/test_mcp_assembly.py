@@ -112,7 +112,12 @@ async def test_extreme_transform_create_query_save_and_restart(
 
     created = await run_server(
         path,
-        [("sketch", SKETCH), ("feature", FEATURE), ("feature", payload), ("query", {"select": {"kind": "assembly"}})],
+        [
+            ("sketch", SKETCH),
+            ("feature", FEATURE),
+            ("feature", payload),
+            ("query", {"select": {"kind": "assembly"}}),
+        ],
     )
     assert created[2]["ok"] is True
     stored = created[3]["occurrences"][0]["transform"]["rotation"]
@@ -335,7 +340,10 @@ async def test_malformed_transform_is_structured_invalid_parameter(tmp_path):
     service.sketch(SKETCH)
     service.feature(FEATURE)
     payload = occurrence_create(2, "bad", "bad")
-    payload["parameters"]["transform"]["rotation"] = {"axis": [0, 0], "angle": {"value": 0, "unit": "deg"}}
+    payload["parameters"]["transform"]["rotation"] = {
+        "axis": [0, 0],
+        "angle": {"value": 0, "unit": "deg"},
+    }
 
     from test_mcp_vertical import call_server_tool
 
@@ -502,3 +510,62 @@ async def test_real_stdio_face_roles_and_planar_mate(tmp_path):
     assert results[5]["ok"]
     moved = next(row for row in results[6]["occurrences"] if row["occurrenceId"] == "b")
     assert moved["remainingDof"] == 3
+
+
+@pytest.mark.anyio
+async def test_real_stdio_concentric_mate_uses_discovered_cylinder_role(tmp_path):
+    sketch = {
+        **SKETCH,
+        "entities": [
+            {
+                "id": "outline",
+                "kind": "circle",
+                "center": [0, 0],
+                "radius": {"value": 8, "unit": "mm"},
+                "rotation": {"value": 0, "unit": "deg"},
+            }
+        ],
+    }
+    reference = {
+        "feature": "plate_extrude",
+        "role": "side(circle)",
+        "cardinality": "one",
+        "source": {
+            "kind": "sketch_segment",
+            "sketch": "plate_profile",
+            "entity": "outline",
+            "segment": "circle",
+        },
+        "body": {"kind": "body_source", "feature": "plate_extrude", "entity": "outline"},
+    }
+    concentric = {
+        "action": "create",
+        "kind": "assembly_mate",
+        "expectedRevision": 4,
+        "requestId": "coaxial",
+        "mateId": "coaxial",
+        "parameters": {
+            "kind": "concentric",
+            "first": {"occurrenceId": "a", "reference": reference},
+            "second": {"occurrenceId": "b", "reference": reference},
+            "orientation": "aligned",
+        },
+    }
+    results = await run_server(
+        tmp_path / "concentric-stdio.coalesce.json",
+        [
+            ("sketch", sketch),
+            ("feature", FEATURE),
+            ("feature", occurrence_create(2, "place-a", "a")),
+            ("feature", occurrence_create(3, "place-b", "b", 50)),
+            ("query", {"select": {"kind": "face_roles", "id": "plate_extrude"}}),
+            ("feature", concentric),
+            ("query", {"select": {"kind": "assembly"}}),
+        ],
+    )
+
+    cylinder = next(role for role in results[4]["roles"] if role["surfaceType"] == "CYLINDER")
+    assert {key: cylinder["exampleReference"][key] for key in reference} == reference
+    assert results[5]["ok"]
+    moved = next(row for row in results[6]["occurrences"] if row["occurrenceId"] == "b")
+    assert moved["remainingDof"] == 2

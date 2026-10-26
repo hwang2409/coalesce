@@ -1,4 +1,4 @@
-# assembly occurrences and planar mates
+# assembly occurrences and mates
 
 ## document format
 
@@ -48,7 +48,7 @@ update a ground mate with `"set":{"occurrenceId":"other-occurrence"}`. a mate id
 
 an assembly query returns sorted `mates`, `solveStatus`, `underConstrainedOccurrenceIds`, and one status row per connected component. each occurrence reports `grounded`, `mateIds`, `remainingDof`, and `freeMotions`. a ground occurrence has zero remaining degrees of freedom. an unmated occurrence has six degrees of freedom and remains at its explicit stored transform. under-constraint is a successful state, not a failed solve.
 
-## face roles and planar mates
+## face roles, planar mates, and concentric mates
 
 query `face_roles` with a feature id before creating a planar mate. each role reports its exact face count, surface type, area, frame when unique, and an occurrence-independent typed provenance reference. put that reference beside an `occurrenceId` in the mate. do not use face indices or geometry proximity.
 
@@ -79,7 +79,11 @@ query `face_roles` with a feature id before creating a planar mate. each role re
 
 coalesce resolves both references on every regeneration, solves the component, validates residuals, and persists the resulting canonical occurrence transforms in the same revision. viewer scenes, interference checks, and assembly step export consume those transforms through the normal occurrence-placement path. restart recomputes the solve and rejects a materially different persisted transform as `INVALID_DOCUMENT`.
 
-one ground is allowed per connected mate component. connectivity and grounding are validated by the same mate graph that reports solve status. stale, split, merged, or ambiguous face references fail atomically with `MATE_REFERENCE_STALE` and name the mate and side. non-planar or zero-area faces fail with `MATE_GEOMETRY_UNSUPPORTED`. planar cycles that disagree fail with `MATE_CONFLICT`; a satisfied duplicate restriction is reported in `redundantMateIds`.
+a concentric mate accepts only one cylindrical face per side. `aligned` makes the cylinder-axis directions equal; `opposed` reverses the second direction. it removes radial translation and axis tilt while preserving seeded axis translation and spin. named hole walls use `side(hole)` with their `hole_surface` source; revolved cylinders use their stable `side(<segment>)` role. combine one concentric mate with one perpendicular planar seat to preserve only spin.
+
+one ground is allowed per connected mate component. the closed-form solver supports planar or concentric chains, one concentric-plus-perpendicular-planar seat between the same pair, and independent leaf solves around a grounded anchor. a moving occurrence cannot use mixed mate kinds with different neighbors; that topology fails with `MATE_SOLVE_UNSUPPORTED` and returns the involved mate and occurrence ids. a plane parallel to a concentric axis is not a seat and fails with `MATE_CONFLICT`.
+
+connectivity and grounding are validated by the same mate graph that reports solve status. stale, split, merged, or ambiguous face references fail atomically with `MATE_REFERENCE_STALE` and name the mate and side. non-planar or zero-area faces fail with `MATE_GEOMETRY_UNSUPPORTED`. every solved non-ground mate is checked once before return. an out-of-tolerance residual fails with `MATE_CONFLICT` and full culprit ids; it is never persisted. a satisfied duplicate restriction is reported in `redundantMateIds`, and degrees of freedom come only from independent non-redundant restrictions.
 
 ## exact interference and clearance
 

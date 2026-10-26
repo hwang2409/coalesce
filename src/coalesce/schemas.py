@@ -948,12 +948,31 @@ PLANAR_MATE_UPDATE = {
     "required": list(PLANAR_MATE_FIELDS),
     "additionalProperties": False,
 }
+CONCENTRIC_MATE_FIELDS = {
+    "first": MATE_SIDE,
+    "second": MATE_SIDE,
+    "orientation": {"enum": ["aligned", "opposed"]},
+}
+CONCENTRIC_MATE_PARAMETERS = {
+    "type": "object",
+    "properties": {"kind": {"const": "concentric"}, **CONCENTRIC_MATE_FIELDS},
+    "required": ["kind", *CONCENTRIC_MATE_FIELDS],
+    "additionalProperties": False,
+}
+CONCENTRIC_MATE_UPDATE = {
+    "type": "object",
+    "properties": CONCENTRIC_MATE_FIELDS,
+    "required": list(CONCENTRIC_MATE_FIELDS),
+    "additionalProperties": False,
+}
 ASSEMBLY_MATE_CREATE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"const": "create"},
         **ASSEMBLY_MATE_PROPERTIES,
-        "parameters": {"oneOf": [GROUND_MATE_PARAMETERS, PLANAR_MATE_PARAMETERS]},
+        "parameters": {
+            "oneOf": [GROUND_MATE_PARAMETERS, PLANAR_MATE_PARAMETERS, CONCENTRIC_MATE_PARAMETERS]
+        },
     },
     "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId", "parameters"],
     "additionalProperties": False,
@@ -963,7 +982,7 @@ ASSEMBLY_MATE_UPDATE_SCHEMA = {
     "properties": {
         "action": {"const": "update"},
         **ASSEMBLY_MATE_PROPERTIES,
-        "set": {"oneOf": [GROUND_MATE_UPDATE, PLANAR_MATE_UPDATE]},
+        "set": {"oneOf": [GROUND_MATE_UPDATE, PLANAR_MATE_UPDATE, CONCENTRIC_MATE_UPDATE]},
     },
     "required": ["action", "kind", *MUTATION_PROPERTIES, "mateId", "set"],
     "additionalProperties": False,
@@ -1048,13 +1067,10 @@ for kind, changes in {
     }
 
 
-# Codex compacts large schemas by blanking local refs; action schemas still validate full references.
+# Keep this inline: some model clients cannot follow local JSON Schema references.
 PUBLISHED_MATE_REFERENCE = {
     "type": "object",
-    "properties": {
-        "feature": REFERENCE["properties"]["feature"],
-        "role": REFERENCE["properties"]["role"],
-    },
+    "properties": {"feature": {"type": "string"}, "role": {"type": "string"}},
     "required": ["feature", "role"],
 }
 PUBLISHED_MATE_SIDE = {
@@ -1065,20 +1081,32 @@ PUBLISHED_MATE_SIDE = {
     },
     "required": ["occurrenceId", "reference"],
 }
-PUBLISHED_PLANAR_MATE_FIELDS = {
-    **PLANAR_MATE_FIELDS,
+PUBLISHED_MATE_CORE_FIELDS = {
     "first": PUBLISHED_MATE_SIDE,
     "second": PUBLISHED_MATE_SIDE,
+    "orientation": {"enum": ["aligned", "opposed"]},
 }
-PUBLISHED_PLANAR_MATE_PARAMETERS = {
+PUBLISHED_FACE_MATE_PARAMETERS = {
     "type": "object",
-    "properties": {"kind": {"const": "planar"}, **PUBLISHED_PLANAR_MATE_FIELDS},
-    "required": ["kind", *PUBLISHED_PLANAR_MATE_FIELDS],
+    "properties": {**PUBLISHED_MATE_CORE_FIELDS, "offset": {"type": "object"}},
+    "required": ["first", "second", "orientation"],
+    "oneOf": [
+        {
+            "properties": {"kind": {"const": "planar"}},
+            "required": ["kind", "offset"],
+        },
+        {
+            "properties": {"kind": {"const": "concentric"}},
+            "required": ["kind"],
+            "not": {"required": ["offset"]},
+        },
+    ],
 }
-PUBLISHED_PLANAR_MATE_UPDATE = {
+PUBLISHED_FACE_MATE_UPDATE = {
     "type": "object",
-    "properties": PUBLISHED_PLANAR_MATE_FIELDS,
-    "required": list(PUBLISHED_PLANAR_MATE_FIELDS),
+    "properties": {**PUBLISHED_MATE_CORE_FIELDS, "offset": {"type": "object"}},
+    "required": ["first", "second", "orientation"],
+    "oneOf": [{"required": ["offset"]}, {"not": {"required": ["offset"]}}],
 }
 
 
@@ -1097,7 +1125,7 @@ FEATURE_SCHEMA = {
             "oneOf": [
                 *FEATURE_PARAMETERS["oneOf"],
                 GROUND_MATE_PARAMETERS,
-                PUBLISHED_PLANAR_MATE_PARAMETERS,
+                PUBLISHED_FACE_MATE_PARAMETERS,
             ],
             "description": "Required for create; not allowed for update.",
         },
@@ -1105,7 +1133,7 @@ FEATURE_SCHEMA = {
             "oneOf": [
                 *FEATURE_UPDATE_SCHEMA["properties"]["set"]["oneOf"],
                 GROUND_MATE_UPDATE,
-                PUBLISHED_PLANAR_MATE_UPDATE,
+                PUBLISHED_FACE_MATE_UPDATE,
             ],
             "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
         },

@@ -183,9 +183,7 @@ class _KernelLoader:
 _KERNEL_LOADER = _KernelLoader()
 
 
-def regenerate(
-    graph: Any, solver: Callable[[Any], Any] = solve_sketch
-) -> RegenResult:
+def regenerate(graph: Any, solver: Callable[[Any], Any] = solve_sketch) -> RegenResult:
     availability = _solve_constrained_sketches(graph, solver)
     if not availability.geometry_available:
         return regen_module.RegenResult(graph, {}, {}, [], availability=availability)
@@ -240,9 +238,7 @@ def _positive_quantity(value: Any, field: str) -> float:
 
 def _angle(value: Any, field: str = "rotation") -> float:
     if not isinstance(value, dict) or set(value) != {"value", "unit"}:
-        raise RequestError(
-            "INVALID_PARAMETER", "angle must contain value and unit", field=field
-        )
+        raise RequestError("INVALID_PARAMETER", "angle must contain value and unit", field=field)
     if value["unit"] not in {"deg", "rad"}:
         raise RequestError(
             "UNIT_MISMATCH",
@@ -364,6 +360,7 @@ class AssemblyMateCreate(_Operation):
     second: MateSide | None = None
     orientation: str | None = None
     offset: float = 0.0
+    mate_kind: str | None = None
     kind: ClassVar[str] = "assembly_mate"
 
     @classmethod
@@ -382,6 +379,7 @@ class AssemblyMateUpdate(_Operation):
     second: MateSide | None = None
     orientation: str | None = None
     offset: float = 0.0
+    mate_kind: str | None = None
     kind: ClassVar[str] = "assembly_mate"
 
     @classmethod
@@ -1196,9 +1194,7 @@ def _parse_extrude(
         parameters=ExtrudeParameters(
             profile=ExtrudeProfile(
                 sketchId=profile.get("sketchId"),
-                profileIds=(
-                    tuple(profile["profileIds"]) if "profileIds" in profile else None
-                ),
+                profileIds=(tuple(profile["profileIds"]) if "profileIds" in profile else None),
             ),
             distance=_positive_quantity(parameters.get("distance"), "distance"),
             operation=parameters.get("operation"),
@@ -1229,9 +1225,7 @@ def _parse_revolve(payload: dict[str, Any], common: dict[str, Any]) -> RevolveCr
         parameters=RevolveParameters(
             profile=ExtrudeProfile(
                 sketchId=profile.get("sketchId"),
-                profileIds=(
-                    tuple(profile["profileIds"]) if "profileIds" in profile else None
-                ),
+                profileIds=(tuple(profile["profileIds"]) if "profileIds" in profile else None),
             ),
             axis=parameters["axis"],
             operation=parameters["operation"],
@@ -1355,7 +1349,9 @@ def _hole_pattern(value: Any) -> CircularHolePattern | LinearHolePattern:
     parsers = {"circular": _circular_hole_pattern, "linear": _linear_hole_pattern}
     if parser := parsers.get(value.get("kind")):
         return parser(value)
-    raise RequestError("INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind")
+    raise RequestError(
+        "INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind"
+    )
 
 
 def _circular_hole_pattern_changes(value: dict[str, Any]) -> CircularHolePatternChanges:
@@ -1364,9 +1360,7 @@ def _circular_hole_pattern_changes(value: dict[str, Any]) -> CircularHolePattern
         radius=_positive_quantity(value["radius"], "pattern.radius") if "radius" in value else None,
         count=_hole_count(value["count"]) if "count" in value else None,
         start_angle=(
-            _angle(value["startAngle"], "pattern.startAngle")
-            if "startAngle" in value
-            else None
+            _angle(value["startAngle"], "pattern.startAngle") if "startAngle" in value else None
         ),
         name_prefix=_name_prefix(value["namePrefix"]) if "namePrefix" in value else None,
     )
@@ -1393,7 +1387,9 @@ def _hole_pattern_changes(
     }
     if parser := parsers.get(value.get("kind")):
         return parser(value)
-    raise RequestError("INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind")
+    raise RequestError(
+        "INVALID_PARAMETER", "pattern.kind must be circular or linear", field="pattern.kind"
+    )
 
 
 def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate | HoleUpdate:
@@ -1408,9 +1404,7 @@ def _parse_hole(payload: dict[str, Any], common: dict[str, Any]) -> HoleCreate |
                     else None
                 ),
                 pattern=(
-                    _hole_pattern_changes(changes["pattern"])
-                    if "pattern" in changes
-                    else None
+                    _hole_pattern_changes(changes["pattern"]) if "pattern" in changes else None
                 ),
             ),
         )
@@ -1856,15 +1850,15 @@ _MATE_REFERENCE_HINT = (
 )
 
 
-def _parse_planar_mate(values: dict[str, Any]) -> dict[str, Any]:
+def _parse_face_mate(values: dict[str, Any], mate_kind: str) -> dict[str, Any]:
     try:
         first = MateSide(values["first"]["occurrenceId"], _reference(values["first"]["reference"]))
         second = MateSide(
             values["second"]["occurrenceId"], _reference(values["second"]["reference"])
         )
         orientation = values["orientation"]
-        offset = values["offset"]
-        if offset["unit"] != "mm":
+        offset = values.get("offset", {"value": 0, "unit": "mm"})
+        if mate_kind == "planar" and offset["unit"] != "mm":
             raise RequestError("UNIT_MISMATCH", "planar mate offset unit must be mm")
         offset_value = _finite_number(offset["value"], "offset.value")
         if orientation not in {"aligned", "opposed"}:
@@ -1874,22 +1868,26 @@ def _parse_planar_mate(values: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError) as error:
         raise RequestError(
             "INVALID_PARAMETER",
-            "planar mate parameters are malformed",
+            f"{mate_kind} mate parameters are malformed",
             hint=_MATE_REFERENCE_HINT,
         ) from error
-    if first.reference.cardinality is not Cardinality.ONE or second.reference.cardinality is not Cardinality.ONE:
+    if (
+        first.reference.cardinality is not Cardinality.ONE
+        or second.reference.cardinality is not Cardinality.ONE
+    ):
         raise RequestError(
             "INVALID_PARAMETER",
-            "planar mate references must have cardinality one",
+            f"{mate_kind} mate references must have cardinality one",
             hint=_MATE_REFERENCE_HINT,
         )
     if first.occurrence_id == second.occurrence_id:
-        raise RequestError("INVALID_PARAMETER", "planar mate must connect two occurrences")
+        raise RequestError("INVALID_PARAMETER", f"{mate_kind} mate must connect two occurrences")
     return {
         "first": first,
         "second": second,
         "orientation": orientation,
         "offset": offset_value,
+        "mate_kind": mate_kind,
     }
 
 
@@ -1906,13 +1904,19 @@ def _parse_assembly_mate(
     if action is Action.DELETE:
         return AssemblyMateDelete(**common)
     values = payload.get("parameters", {}) if action is Action.CREATE else payload.get("set", {})
-    mate_kind = values.get("kind") if action is Action.CREATE else ("planar" if "first" in values else "ground")
+    mate_kind = (
+        values.get("kind")
+        if action is Action.CREATE
+        else ("planar" if "offset" in values else ("concentric" if "first" in values else "ground"))
+    )
     operation_type = AssemblyMateCreate if action is Action.CREATE else AssemblyMateUpdate
     if mate_kind == "ground":
         return operation_type(**common, occurrence_id=values.get("occurrenceId"))
-    if mate_kind == "planar":
-        return operation_type(**common, **_parse_planar_mate(values))
-    raise RequestError("INVALID_PARAMETER", "assembly mate kind must be ground or planar")
+    if mate_kind in {"planar", "concentric"}:
+        return operation_type(**common, **_parse_face_mate(values, mate_kind))
+    raise RequestError(
+        "INVALID_PARAMETER", "assembly mate kind must be ground, planar, or concentric"
+    )
 
 
 def _parse_feature(
@@ -2321,9 +2325,7 @@ def _accept_constrained_sketch(
 ) -> None:
     try:
         result = (
-            model.solve(solver)
-            if type(model).solve is _CONSTRAINED_SKETCH_SOLVE
-            else model.solve()
+            model.solve(solver) if type(model).solve is _CONSTRAINED_SKETCH_SOLVE else model.solve()
         )
     except ImportError as error:
         raise RequestError("SKETCH_SOLVER_UNAVAILABLE", str(error)) from error
@@ -2419,9 +2421,7 @@ def _replace_dimension_values(
     dimensions = {dimension.id: dimension for dimension in model.dimensions}
     driving_ids = sorted(dimension.id for dimension in model.dimensions if dimension.driving)
     for dimension_id, value in values.items():
-        dimensions[dimension_id] = _updated_dimension(
-            dimension_id, value, dimensions, driving_ids
-        )
+        dimensions[dimension_id] = _updated_dimension(dimension_id, value, dimensions, driving_ids)
     return tuple(dimensions[dimension.id] for dimension in model.dimensions)
 
 
@@ -2440,9 +2440,7 @@ def _updated_circular_seeds(
     return replace(
         model,
         arcs=tuple(
-            replace(arc, radius=circular_radii[arc.id])
-            if arc.id in circular_radii
-            else arc
+            replace(arc, radius=circular_radii[arc.id]) if arc.id in circular_radii else arc
             for arc in model.arcs
         ),
         circles=tuple(
@@ -2454,9 +2452,7 @@ def _updated_circular_seeds(
     )
 
 
-def _updated_dimensions(
-    model: ConstrainedSketch, values: dict[str, float]
-) -> ConstrainedSketch:
+def _updated_dimensions(model: ConstrainedSketch, values: dict[str, float]) -> ConstrainedSketch:
     dimensions = _replace_dimension_values(model, values)
     model = _updated_circular_seeds(model, dimensions, set(values))
     return replace(model, dimensions=dimensions, solved=None)
@@ -2467,9 +2463,7 @@ def _stored_generated_profile_ids(
 ) -> list[str]:
     if not isinstance(feature, (Extrude, Revolve)) or feature.sketch != sketch_id:
         return []
-    return [
-        profile_id for profile_id in feature.profile_ids or () if profile_id in generated_ids
-    ]
+    return [profile_id for profile_id in feature.profile_ids or () if profile_id in generated_ids]
 
 
 def _stale_generated_profile_references(
@@ -2578,7 +2572,9 @@ def _profile_id_problems(
 ) -> tuple[list[str], list[str]]:
     expected_set = set(expected)
     counts = Counter(received)
-    unknown = list(dict.fromkeys(profile_id for profile_id in received if profile_id not in expected_set))
+    unknown = list(
+        dict.fromkeys(profile_id for profile_id in received if profile_id not in expected_set)
+    )
     duplicates = [profile_id for profile_id, count in counts.items() if count > 1]
     return unknown, duplicates
 
@@ -3350,9 +3346,7 @@ def _selection_state(graph: Any, node: Any) -> dict[str, Any] | None:
 
         return {
             "selector": "pattern",
-            "positions": {
-                position.name: list(position.point) for position in hole_positions(node)
-            },
+            "positions": {position.name: list(position.point) for position in hole_positions(node)},
             "referenced": _referenced_hole_members(graph, node.id),
         }
     return None
@@ -3366,9 +3360,7 @@ def _selection_snapshot(graph: Any) -> dict[str, dict[str, Any]]:
     }
 
 
-def _moved_pattern_members(
-    before: dict[str, Any], after: dict[str, Any]
-) -> list[dict[str, Any]]:
+def _moved_pattern_members(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
     old, new = before["positions"], after["positions"]
     referenced = before["referenced"] | after["referenced"]
     return [
@@ -3618,7 +3610,9 @@ class _ScenePublisher:
             method, arguments = self._jobs.get()
             try:
                 if method == "publish":
-                    revision, result, assembly, before, changed_id, change, accepted_edit = arguments
+                    revision, result, assembly, before, changed_id, change, accepted_edit = (
+                        arguments
+                    )
                     if change is None and changed_id:
                         change = _change(before, result, changed_id)
                     self._store.publish(
@@ -4172,9 +4166,7 @@ class DocumentService:
             **response_fields(graph, result, changed_id),
             **refresh_fields,
         }
-        document, durable = self._save_response(
-            graph, solved.assembly, response, body_hash
-        )
+        document, durable = self._save_response(graph, solved.assembly, response, body_hash)
         self._document = document
         self._regen = result
         self._graph_error = None
@@ -4476,7 +4468,9 @@ class DocumentService:
                 return assembly, current
         elif current is not None:
             raise RequestError(
-                "DUPLICATE_ID", f"assembly mate already exists: {parsed.mateId}", mateId=parsed.mateId
+                "DUPLICATE_ID",
+                f"assembly mate already exists: {parsed.mateId}",
+                mateId=parsed.mateId,
             )
         elif len(assembly.mates) >= MAX_MATES:
             raise RequestError(
@@ -4500,7 +4494,7 @@ class DocumentService:
             if parsed.occurrence_id is not None
             else Mate(
                 parsed.mateId,
-                "planar",
+                parsed.mate_kind,
                 first=parsed.first,
                 second=parsed.second,
                 orientation=parsed.orientation,
@@ -4540,6 +4534,23 @@ class DocumentService:
             "warnings": [],
         }
 
+    @staticmethod
+    def _mated_transform_warning(
+        occurrence: Occurrence, status: dict[str, Any], mates: dict[str, Mate]
+    ) -> dict[str, Any]:
+        mate_kinds = {mates[mate_id].kind for mate_id in status["mateIds"]}
+        constrained = []
+        if "planar" in mate_kinds:
+            constrained.extend(["normalAlignment", "normalOffset"])
+        if "concentric" in mate_kinds:
+            constrained.extend(["axisAlignment", "radialOffset"])
+        return {
+            "code": "MATED_TRANSFORM_OVERRIDDEN",
+            "occurrenceId": occurrence.id,
+            "constrainedCoordinates": constrained,
+            "freeMotions": status["freeMotions"],
+        }
+
     def _mutate_occurrence(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             try:
@@ -4565,12 +4576,11 @@ class DocumentService:
                     and status.get("mateIds")
                     and not status.get("grounded")
                 ):
-                    response["warnings"] = [{
-                        "code": "MATED_TRANSFORM_OVERRIDDEN",
-                        "occurrenceId": occurrence.id,
-                        "constrainedCoordinates": ["normalAlignment", "normalOffset"],
-                        "freeMotions": status["freeMotions"],
-                    }]
+                    response["warnings"] = [
+                        self._mated_transform_warning(
+                            occurrence, status, solved.assembly.mates
+                        )
+                    ]
                 document, durable = self._save_response(
                     self._document.graph, solved.assembly, response, body_hash
                 )
@@ -4591,7 +4601,9 @@ class DocumentService:
                 parsed, body_hash, replay = self._mutation_request(payload, _parse_assembly_mate)
                 if replay is not None:
                     return replay
-                assert isinstance(parsed, (AssemblyMateCreate, AssemblyMateUpdate, AssemblyMateDelete))
+                assert isinstance(
+                    parsed, (AssemblyMateCreate, AssemblyMateUpdate, AssemblyMateDelete)
+                )
                 self._ensure_geometry()
                 assembly, mate = self._updated_mates(parsed)
                 assert self._regen is not None
@@ -4803,7 +4815,9 @@ class DocumentService:
 
     def _assembly_export(self, payload: dict[str, Any]) -> dict[str, Any]:
         assert self._regen is not None
-        resolved = resolve_occurrences(self._document.assembly, terminal_parts(self._regen, role=None))
+        resolved = resolve_occurrences(
+            self._document.assembly, terminal_parts(self._regen, role=None)
+        )
         included = [item for item in resolved if item.part.role == "manufacturing"]
         excluded = sorted(item.occurrence.id for item in resolved if item.part.role == "reference")
         if not included:
@@ -4933,7 +4947,7 @@ class DocumentService:
                 if mate.kind == "ground"
                 else {
                     "mateId": mate.id,
-                    "kind": "planar",
+                    "kind": mate.kind,
                     "first": {
                         "occurrenceId": mate.first.occurrence_id,
                         "reference": mate.first.reference.to_dict(),
@@ -4943,7 +4957,11 @@ class DocumentService:
                         "reference": mate.second.reference.to_dict(),
                     },
                     "orientation": mate.orientation,
-                    "offset": {"value": mate.offset, "unit": "mm"},
+                    **(
+                        {"offset": {"value": mate.offset, "unit": "mm"}}
+                        if mate.kind == "planar"
+                        else {}
+                    ),
                 }
             )
             for mate in sorted(self._document.assembly.mates.values(), key=lambda item: item.id)
@@ -4966,7 +4984,15 @@ class DocumentService:
             if (
                 not graph_query
                 and kind
-                in {"measurements", "feature", "reference", "edge_roles", "face_roles", "enclosure", "assembly"}
+                in {
+                    "measurements",
+                    "feature",
+                    "reference",
+                    "edge_roles",
+                    "face_roles",
+                    "enclosure",
+                    "assembly",
+                }
                 and (failure := self._geometry_failure("query"))
             ):
                 return failure
@@ -5409,7 +5435,9 @@ class DocumentService:
                 return self._finish_check_locked(payload, requirements, [])
             revision = self._document.revision
 
-        results, inspection_rows = self._evaluate_assembly_requirements(selected, resolved, revision)
+        results, inspection_rows = self._evaluate_assembly_requirements(
+            selected, resolved, revision
+        )
 
         with self._lock:
             if self._document.revision != revision:

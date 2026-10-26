@@ -91,10 +91,10 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `ASSEMBLY_OCCURRENCE_LIMIT` | request | an assembly create would exceed 64 named occurrences | delete an occurrence before adding another |
 | `ASSEMBLY_MATE_LIMIT` | request | an assembly create would exceed 128 named mates | delete a mate before adding another |
 | `ASSEMBLY_REFERENCE_STALE` | reference | a graph edit would remove or split a part used by a named occurrence | delete the named occurrences first or preserve the canonical part ids |
-| `MATE_CONFLICT` | geometry | one connected component has more than one ground, or planar residuals conflict | inspect `mateIds`, `occurrenceIds`, and residuals, then edit or remove the conflicting mate |
-| `MATE_REFERENCE_STALE` | reference | a planar mate face resolves to empty, split, merged, or ambiguous provenance | inspect the named `mateId`, side, resolution, and current face roles; replace the reference |
-| `MATE_GEOMETRY_UNSUPPORTED` | geometry | a planar mate selects a non-planar or zero-area face | select one planar face with non-zero area from `face_roles` |
-| `MATE_SOLVE_UNSUPPORTED` | geometry | the connected mate pattern is outside the deterministic closed-form solver | simplify the component to supported planar chains |
+| `MATE_CONFLICT` | geometry | one component has more than one ground, a plane parallel to a concentric axis is used as a seat, or a final mate residual exceeds tolerance | inspect full `mateIds`, `occurrenceIds`, and residuals, then edit or remove the conflicting mate |
+| `MATE_REFERENCE_STALE` | reference | a mate face resolves to empty, split, merged, or ambiguous provenance | inspect the named `mateId`, side, resolution, and current face roles; replace the reference |
+| `MATE_GEOMETRY_UNSUPPORTED` | geometry | a mate selects the wrong surface type or a zero-area face | select one non-degenerate planar or cylindrical face from `face_roles` |
+| `MATE_SOLVE_UNSUPPORTED` | geometry | a moving occurrence uses mixed mate kinds with different neighbors, or the graph is outside the deterministic closed-form solver; independent leaves around a grounded anchor are supported | inspect `mateIds` and `occurrenceIds`, then split the coupling into supported chains or ground the shared anchor |
 | `ASSEMBLY_EXPORT_EMPTY` | export | an assembly export has no manufacturing occurrence | add a manufacturing occurrence before exporting |
 | `CYCLE` | dependency | the feature graph contains a dependency cycle | reorder or remove the cyclic dependency |
 | `HAS_DEPENDENTS` | dependency | non-cascade delete would orphan dependent nodes | inspect the listed dependents, then delete them or use cascade deliberately |
@@ -171,4 +171,4 @@ a successful operation can include `warnings`. a warning does not fail the reque
 | `CONNECTOR_HEIGHT_UNRESOLVED` | the board declares no 3D models, so connector heights for `footprintIds` are not measured. | treat port height clearance as unknown; ask for connector heights or add margin. |
 | `UNCLASSIFIED_BOARD_HOLES` | board holes in `holeIds` are not mounting holes, so no standoff is expected for them. | check that these holes need no standoff. |
 | `LID_OUTLINE_STALE` | a lid still uses its persisted outline while the base lineage has a different legal terminal source. | explicitly update the lid `outlineSource` to the reported `legalSource`, then run `lid_outline_match`. |
-| `MATED_TRANSFORM_OVERRIDDEN` | a planar mate replaced constrained coordinates in an explicit occurrence transform update. | use `freeMotions` for allowed edits and inspect the returned effective transform. |
+| `MATED_TRANSFORM_OVERRIDDEN` | a planar or concentric mate replaced constrained coordinates in an explicit occurrence transform update. | use `freeMotions` for allowed edits and inspect the returned effective transform. |
