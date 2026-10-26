@@ -1850,6 +1850,12 @@ def _parse_assembly_occurrence(
     return AssemblyOccurrenceUpdate(**common, transform=transform)
 
 
+_MATE_REFERENCE_HINT = (
+    "discover references with query select.kind face_roles; "
+    "see coalesce://docs/assembly for planar mate request shapes"
+)
+
+
 def _parse_planar_mate(values: dict[str, Any]) -> dict[str, Any]:
     try:
         first = MateSide(values["first"]["occurrenceId"], _reference(values["first"]["reference"]))
@@ -1866,9 +1872,17 @@ def _parse_planar_mate(values: dict[str, Any]) -> dict[str, Any]:
                 "INVALID_PARAMETER", "planar mate orientation must be aligned or opposed"
             )
     except (KeyError, TypeError, ValueError) as error:
-        raise RequestError("INVALID_PARAMETER", "planar mate parameters are malformed") from error
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "planar mate parameters are malformed",
+            hint=_MATE_REFERENCE_HINT,
+        ) from error
     if first.reference.cardinality is not Cardinality.ONE or second.reference.cardinality is not Cardinality.ONE:
-        raise RequestError("INVALID_PARAMETER", "planar mate references must have cardinality one")
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "planar mate references must have cardinality one",
+            hint=_MATE_REFERENCE_HINT,
+        )
     if first.occurrence_id == second.occurrence_id:
         raise RequestError("INVALID_PARAMETER", "planar mate must connect two occurrences")
     return {

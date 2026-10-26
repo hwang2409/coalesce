@@ -1049,13 +1049,21 @@ for kind, changes in {
 
 
 # Codex compacts large schemas by blanking local refs; action schemas still validate full references.
-PUBLISHED_MATE_REFERENCE = {"type": "object"}
-PUBLISHED_MATE_SIDE = {
-    **MATE_SIDE,
+PUBLISHED_MATE_REFERENCE = {
+    "type": "object",
     "properties": {
-        **MATE_SIDE["properties"],
+        "feature": REFERENCE["properties"]["feature"],
+        "role": REFERENCE["properties"]["role"],
+    },
+    "required": ["feature", "role"],
+}
+PUBLISHED_MATE_SIDE = {
+    "type": "object",
+    "properties": {
+        "occurrenceId": {"type": "string"},
         "reference": PUBLISHED_MATE_REFERENCE,
     },
+    "required": ["occurrenceId", "reference"],
 }
 PUBLISHED_PLANAR_MATE_FIELDS = {
     **PLANAR_MATE_FIELDS,
@@ -1063,19 +1071,14 @@ PUBLISHED_PLANAR_MATE_FIELDS = {
     "second": PUBLISHED_MATE_SIDE,
 }
 PUBLISHED_PLANAR_MATE_PARAMETERS = {
-    **PLANAR_MATE_PARAMETERS,
-    "properties": {
-        **PLANAR_MATE_PARAMETERS["properties"],
-        **PUBLISHED_PLANAR_MATE_FIELDS,
-    },
+    "type": "object",
+    "properties": {"kind": {"const": "planar"}, **PUBLISHED_PLANAR_MATE_FIELDS},
+    "required": ["kind", *PUBLISHED_PLANAR_MATE_FIELDS],
 }
 PUBLISHED_PLANAR_MATE_UPDATE = {
-    **PLANAR_MATE_UPDATE,
-    "properties": {
-        **PUBLISHED_PLANAR_MATE_FIELDS,
-        "first": {"type": "object"},
-        "second": {"type": "object"},
-    },
+    "type": "object",
+    "properties": PUBLISHED_PLANAR_MATE_FIELDS,
+    "required": list(PUBLISHED_PLANAR_MATE_FIELDS),
 }
 
 
