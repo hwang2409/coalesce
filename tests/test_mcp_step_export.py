@@ -1,8 +1,12 @@
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
+import threading
+import time
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -657,9 +661,44 @@ def test_stdio_export_keeps_occt_messages_off_jsonrpc_stdout(tmp_path):
     )
     assert process.stdin is not None
     assert process.stdout is not None
+    assert process.stderr is not None
 
+    stdout_lines = queue.Queue()
+    stderr_tail = deque(maxlen=20)
+    stderr_lock = threading.Lock()
     non_json_stdout = []
     request_id = 0
+
+    def read_stdout():
+        try:
+            for line in process.stdout:
+                stdout_lines.put(line)
+        finally:
+            stdout_lines.put(None)
+
+    def read_stderr():
+        for line in process.stderr:
+            with stderr_lock:
+                stderr_tail.append(line.rstrip())
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+    threading.Thread(target=read_stderr, daemon=True).start()
+
+    def drain_stderr():
+        with stderr_lock:
+            return "\n".join(stderr_tail) or "<empty>"
+
+    def next_stdout(deadline, context):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(f"timed out {context}; stderr tail:\n{drain_stderr()}")
+        try:
+            line = stdout_lines.get(timeout=remaining)
+        except queue.Empty:
+            pytest.fail(f"timed out {context}; stderr tail:\n{drain_stderr()}")
+        if line is None:
+            pytest.fail(f"stdio server exited {context}; stderr tail:\n{drain_stderr()}")
+        return line
 
     def request(method, params):
         nonlocal request_id
@@ -669,9 +708,9 @@ def test_stdio_export_keeps_occt_messages_off_jsonrpc_stdout(tmp_path):
             + "\n"
         )
         process.stdin.flush()
+        deadline = time.monotonic() + 120
         while True:
-            line = process.stdout.readline()
-            assert line, f"stdio server exited before response {request_id}"
+            line = next_stdout(deadline, f"before response {request_id}")
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
@@ -745,8 +784,26 @@ def test_stdio_export_keeps_occt_messages_off_jsonrpc_stdout(tmp_path):
                 },
             },
         )["structuredContent"]
+        process.stdin.close()
+        eof_deadline = time.monotonic() + 120
+        while True:
+            remaining = eof_deadline - time.monotonic()
+            if remaining <= 0:
+                pytest.fail(f"timed out waiting for stdout EOF; stderr tail:\n{drain_stderr()}")
+            try:
+                line = stdout_lines.get(timeout=remaining)
+            except queue.Empty:
+                pytest.fail(f"timed out waiting for stdout EOF; stderr tail:\n{drain_stderr()}")
+            if line is None:
+                break
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                non_json_stdout.append(line.rstrip())
+        process.wait(timeout=10)
     finally:
-        process.terminate()
+        if process.poll() is None:
+            process.kill()
         process.wait(timeout=10)
 
     assert assembly_target.read_bytes().startswith(b"ISO-10303-21;")
