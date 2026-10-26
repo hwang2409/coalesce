@@ -38,7 +38,6 @@ from .assembly_inspection import (
     inspection_deadline,
     inspection_pairs,
 )
-from .assembly_solver import AssemblySolveResult, solve_assembly
 from .availability import SketchFailure, SolveAvailability, UnavailableFeature
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
@@ -116,6 +115,7 @@ from .sketch_solver import (
 _CONSTRAINED_SKETCH_SOLVE = ConstrainedSketch.solve
 
 if TYPE_CHECKING:
+    from .assembly_solver import AssemblySolveResult
     from .regen import RegenResult
     from .viewer import ScenePart, ViewerSceneStore
 
@@ -3822,6 +3822,8 @@ class DocumentService:
         loading: bool = False,
         assembly: Assembly | None = None,
     ) -> AssemblySolveResult:
+        from .assembly_solver import solve_assembly
+
         assembly = self._document.assembly if assembly is None else assembly
         try:
             resolved = resolve_occurrences(assembly, terminal_parts(result, role=None))
@@ -4848,6 +4850,8 @@ class DocumentService:
                 )
 
     def _assembly_solve_payload(self, assembly: Assembly) -> AssemblySolveResult:
+        from .assembly_solver import solve_assembly
+
         assert self._regen is not None
         resolved = resolve_occurrences(assembly, terminal_parts(self._regen, role=None))
         return solve_assembly(assembly, resolved, self._regen.provenance)
