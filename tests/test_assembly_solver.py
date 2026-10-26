@@ -834,15 +834,14 @@ def test_grounded_concentric_chain_is_independent_of_mate_input_order(tmp_path):
     assert solved_transforms == [[pytest.approx(0, abs=1e-12)] * 2] * 2
 
 
-def test_coupled_mixed_neighbor_graph_fails_without_sequential_drift(tmp_path):
-    service = _concentric_setup(tmp_path / "unsupported-coupling.coalesce.json")
+def test_mixed_neighbor_tree_solves_without_sequential_drift(tmp_path):
+    service = _concentric_setup(tmp_path / "mixed-tree.coalesce.json")
     middle = occurrence_create(4, "place-middle", "middle", -25)
     assert service.feature(middle)["ok"]
     cylinder = _face_reference(service, "side(circle)")
     coaxial = _concentric_create(5, cylinder, cylinder)
     coaxial["parameters"]["second"]["occurrenceId"] = "middle"
     assert service.feature(coaxial)["ok"]
-    before = (tmp_path / "unsupported-coupling.coalesce.json").read_bytes()
     seat = _planar_create(
         6,
         _face_reference(service, "cap_end"),
@@ -851,9 +850,12 @@ def test_coupled_mixed_neighbor_graph_fails_without_sequential_drift(tmp_path):
     seat["parameters"]["first"]["occurrenceId"] = "middle"
     result = service.feature(seat)
 
-    assert result["error"]["code"] == "MATE_SOLVE_UNSUPPORTED"
-    assert result["error"]["mateIds"] == ["box-seat", "coaxial"]
-    assert (tmp_path / "unsupported-coupling.coalesce.json").read_bytes() == before
+    assert result["ok"]
+    status = {
+        row["occurrenceId"]: row
+        for row in service.query({"select": {"kind": "assembly"}})["occurrences"]
+    }
+    assert status["middle"]["remainingDof"] == 1
 
 
 def test_named_hole_wall_concentric_reference_survives_diameter_edit(tmp_path):
