@@ -3303,6 +3303,40 @@ def _added(node: Any, result: RegenResult) -> str:
     return summary
 
 
+def _pattern_edits(old: Any, new: Any) -> list[str]:
+    if old == new:
+        return []
+    if old is None or new is None or type(old) is not type(new):
+        before = "none" if old is None else type(old).__name__.removesuffix("HolePattern").lower()
+        after = "none" if new is None else type(new).__name__.removesuffix("HolePattern").lower()
+        return [f"pattern: {before} → {after}"]
+    def plain(before: Any, after: Any) -> str:
+        return f"{before} → {after}"
+
+    def mm(before: Any, after: Any) -> str:
+        return f"{_mm(before)} → {_mm(after)} mm"
+
+    formats = {
+        "center": ("center", mm),
+        "radius": ("radius", mm),
+        "count": ("count", plain),
+        "start_angle": (
+            "start angle",
+            lambda before, after: f"{_mm(before)} → {_mm(after)} deg",
+        ),
+        "name_prefix": ("name prefix", plain),
+        "start": ("start", mm),
+        "direction": ("direction", lambda before, after: f"{_mm(before)} → {_mm(after)}"),
+        "pitch": ("pitch", mm),
+    }
+    edits = []
+    for field, (label, display) in formats.items():
+        before, after = getattr(old, field, None), getattr(new, field, None)
+        if before != after:
+            edits.append(f"pattern {label}: {display(before, after)}")
+    return edits
+
+
 def _edited(old: Any, node: Any) -> str:
     if isinstance(node, ScrewClosure):
         return (
@@ -3313,7 +3347,7 @@ def _edited(old: Any, node: Any) -> str:
     if isinstance(node, BoardImport):
         same = old.source_digest == node.source_digest
         return f"refreshed board {node.id}, source {'unchanged' if same else 'changed'}"
-    edits = []
+    edits = _pattern_edits(old.pattern, node.pattern) if isinstance(node, Hole) else []
     for name, (word, values) in _EDITED_FIELDS.items():
         was, now = getattr(old, name, None), getattr(node, name, None)
         if was != now:
@@ -3571,6 +3605,46 @@ def _scene_parts(result: RegenResult, assembly: Assembly | None = None) -> Itera
         yield SceneOccurrence(occurrence.id, definitions[occurrence.part_id], occurrence.transform)
 
 
+def _viewer_assembly_state(result: RegenResult, assembly: Assembly) -> dict[str, Any] | None:
+    if not assembly.mates:
+        return None
+    from .assembly_solver import solve_assembly
+
+    solved = solve_assembly(
+        assembly,
+        resolve_occurrences(assembly, terminal_parts(result, role=None)),
+        result.provenance,
+    )
+    return {
+        "solveStatus": solved.solve_status,
+        "underConstrainedOccurrenceIds": solved.under_constrained_occurrence_ids,
+        "conflicts": [],
+        "occurrences": [
+            {"occurrenceId": occurrence_id, **solved.status_by_occurrence[occurrence_id]}
+            for occurrence_id in sorted(assembly.occurrences)
+        ],
+        "mates": [
+            {
+                "mateId": mate.id,
+                "kind": mate.kind,
+                "occurrenceIds": (
+                    [mate.occurrence_id]
+                    if mate.kind == "ground"
+                    else [mate.first.occurrence_id, mate.second.occurrence_id]
+                ),
+                "status": "satisfied",
+                **({"orientation": mate.orientation} if mate.orientation else {}),
+                **(
+                    {"offset": {"value": mate.offset, "unit": "mm"}}
+                    if mate.kind == "planar"
+                    else {}
+                ),
+            }
+            for mate in sorted(assembly.mates.values(), key=lambda item: item.id)
+        ],
+    }
+
+
 class _ScenePublisher:
     """Moves committed scene work off the MCP response path, in commit order."""
 
@@ -3621,6 +3695,7 @@ class _ScenePublisher:
                         change,
                         fit_summary(result, revision),
                         accepted_edit,
+                        assembly_state=_viewer_assembly_state(result, assembly),
                     )
                 elif method == "publish_assembly_inspection":
                     self._store.publish_assembly_inspection(*arguments)

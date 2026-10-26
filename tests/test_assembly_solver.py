@@ -121,6 +121,39 @@ def test_face_roles_discover_exact_typed_planar_references(tmp_path):
     )
 
 
+def test_planar_bspline_cap_is_reported_as_planar_and_accepted_by_a_mate(tmp_path):
+    service = DocumentService(tmp_path / "spline-cap.coalesce.json", warmup=False)
+    sketch = {
+        **SKETCH,
+        "entities": [
+            {
+                "id": "outline",
+                "kind": "spline",
+                "points": [[12, 0], [0, 10], [-12, 0], [0, -10]],
+                "closed": True,
+            }
+        ],
+    }
+    assert service.sketch(sketch)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    assert service.feature(occurrence_create(2, "place-fixed", "fixed"))["ok"]
+    assert service.feature(occurrence_create(3, "place-moved", "moved", 20))["ok"]
+    roles = service.query({"select": {"kind": "face_roles", "id": "plate_extrude"}})["roles"]
+    cap = next(row for row in roles if row["role"] == "cap_end")
+
+    assert cap["surfaceType"] == "PLANE"
+    curved = next(row for row in roles if row["surfaceType"] == "BSPLINE")
+    rejected = service.feature(
+        _planar_create(4, curved["exampleReference"], curved["exampleReference"])
+    )
+    assert rejected["error"]["code"] == "MATE_GEOMETRY_UNSUPPORTED"
+
+    result = service.feature(
+        _planar_create(4, cap["exampleReference"], cap["exampleReference"])
+    )
+    assert result["ok"], result
+
+
 @pytest.mark.parametrize(
     ("orientation", "offset", "normal_sign"),
     [("opposed", 7, -1), ("aligned", -25, 1)],

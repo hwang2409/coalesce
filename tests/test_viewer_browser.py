@@ -114,6 +114,30 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
             SceneOccurrence("pin-left", pin, RigidTransform((-8, 0, 0), (0, 0, 1), 0)),
             SceneOccurrence("pin-right", pin, RigidTransform((8, 0, 0), (0, 0, 1), 0)),
         ],
+        assembly_state={
+            "solveStatus": "UNDER_CONSTRAINED",
+            "underConstrainedOccurrenceIds": ["shaft", "pin-left", "pin-right"],
+            "conflicts": [],
+            "occurrences": [
+                {
+                    "occurrenceId": occurrence_id,
+                    "grounded": occurrence_id == "shaft-skew",
+                    "remainingDof": 0 if occurrence_id == "shaft-skew" else 1,
+                    "freeMotions": [] if occurrence_id == "shaft-skew" else ["axisSpin"],
+                    "mateIds": ["pin-axis"] if occurrence_id.startswith("pin-") else [],
+                }
+                for occurrence_id in ("shaft", "shaft-skew", "pin-left", "pin-right")
+            ],
+            "mates": [
+                {
+                    "mateId": "pin-axis",
+                    "kind": "concentric",
+                    "occurrenceIds": ["shaft-skew", "pin-left"],
+                    "orientation": "aligned",
+                    "status": "satisfied",
+                }
+            ],
+        },
         assembly_inspection=[
             *[
                 {
@@ -183,6 +207,22 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert process.returncode == 0, stderr
     data = json.loads(stdout)
     assert data["errors"] == []
+    assert data["initial"]["solveStatus"] == "solved · free motion remains"
+    assert data["initial"]["solveWarning"] == "shaft: spin · 2 pins: spin"
+    assert data["initial"]["solveSummary"] == "1 grounded · 0 conflicts"
+    assert data["initial"]["mateRows"] == [
+        "pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"
+    ]
+    assert data["initial"]["occurrenceStates"] == [
+        "explicit · 1 DOF",
+        "grounded · 0 DOF",
+        "mated · 1 DOF",
+        "mated · 1 DOF",
+    ]
+    assert data["initial"]["panelOverflowX"] is False
+    assert data["mateFocused"]["showing"] == (
+        "Showing shaft-skew and pin-left, other parts faded."
+    )
     assert data["initial"]["inspectionCount"] == "1 fail, 28 pass"
     assert data["initial"]["inspectionStatuses"] == ["FAIL", *("PASS" for _ in range(6))]
     assert data["initial"]["inspectionReasons"] == [

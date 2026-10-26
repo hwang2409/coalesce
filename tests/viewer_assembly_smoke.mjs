@@ -37,9 +37,18 @@ const state = async () => page.evaluate(() => ({
   partNames: [...document.querySelectorAll('.part')].map(node => node.getAttribute('aria-label')),
   partSizes: [...document.querySelectorAll('.part-size')].map(node => node.textContent),
   rawInspection: document.querySelector('#inspection-raw')?.textContent,
+  solveStatus: document.querySelector('#solve-status')?.textContent,
+  solveWarning: document.querySelector('#solve-warning')?.textContent,
+  solveSummary: document.querySelector('#solve-summary')?.textContent,
+  mateRows: [...document.querySelectorAll('.mate-row')].map(node => node.textContent),
+  occurrenceStates: [...document.querySelectorAll('.occurrence-state')].map(node => node.textContent),
+  panelOverflowX: document.querySelector('#panel-scroll').scrollWidth > document.querySelector('#panel-scroll').clientWidth,
 }));
 const initial = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-assembled-r2.png`, fullPage: true });
+await page.locator('.mate-row').first().click();
+const mateFocused = await state();
+await page.keyboard.press('Escape');
 const firstToggle = page.locator('.visibility').first();
 await firstToggle.click();
 const hidden = await state();
@@ -63,5 +72,5 @@ await page.locator('.assembly-more button').click();
 const collapsed = await state();
 await page.getByRole('button', { name: 'Section' }).click();
 const section = await state();
-console.log(JSON.stringify({ initial, hidden, focused, expanded, focusedPass, selectedCollapsed, refreshed, escaped, collapsed, section, errors }));
+console.log(JSON.stringify({ initial, mateFocused, hidden, focused, expanded, focusedPass, selectedCollapsed, refreshed, escaped, collapsed, section, errors }));
 await browser.close();

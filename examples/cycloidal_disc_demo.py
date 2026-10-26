@@ -57,8 +57,11 @@ def cycloid_points() -> list[list[float]]:
 
 
 def result_json(result) -> dict:
-    if result.structuredContent is not None:
-        return result.structuredContent
+    structured = getattr(result, "structuredContent", None)
+    if structured is None:
+        structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        return structured
     return json.loads(result.content[0].text)
 
 
