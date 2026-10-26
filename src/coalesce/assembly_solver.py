@@ -473,70 +473,6 @@ def _mate_faces(
     return faces
 
 
-def _validate_or_compose_cycle(
-    mate: Mate,
-    first: str,
-    second: str,
-    provenance: dict[str, set[str]],
-    occurrences: dict[str, Occurrence],
-    faces: dict[tuple[str, str], tuple[Face, Any]],
-    redundant: list[str],
-    mates: dict[str, Mate],
-) -> None:
-    linear, angular = _residual(mate, occurrences, faces)
-    cycle_ids = provenance[first] ^ provenance[second] | {mate.id}
-    if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
-        prior_kinds = {mates[mate_id].kind for mate_id in cycle_ids - {mate.id}}
-        if mate.kind in prior_kinds:
-            redundant.append(mate.id)
-        return
-    moved_id = first if len(provenance[first]) > len(provenance[second]) else second
-    trial = dict(occurrences)
-    trial[moved_id] = _solve_mate(mate, moved_id, trial, faces)
-    if all(
-        max(_residual(mates[mate_id], trial, faces)) <= _LINEAR_TOLERANCE for mate_id in cycle_ids
-    ):
-        occurrences[moved_id] = trial[moved_id]
-        provenance[moved_id].add(mate.id)
-        return
-    raise AssemblyError(
-        "MATE_CONFLICT",
-        f"assembly mate {mate.id} conflicts with solved {mate.kind} geometry",
-        mateIds=sorted(cycle_ids),
-        occurrenceIds=sorted([first, second]),
-        linearResidual={"value": linear, "unit": "mm"},
-        angularResidual={"value": math.degrees(angular), "unit": "deg"},
-    )
-
-
-def _apply_pending_mate(
-    mate: Mate,
-    known: set[str],
-    provenance: dict[str, set[str]],
-    occurrences: dict[str, Occurrence],
-    faces: dict[tuple[str, str], tuple[Face, Any]],
-    redundant: list[str],
-    mates: dict[str, Mate],
-) -> bool:
-    assert mate.first is not None and mate.second is not None
-    first, second = mate.first.occurrence_id, mate.second.occurrence_id
-    if first in known and second not in known:
-        occurrences[second] = _solve_mate(mate, second, occurrences, faces)
-        provenance[second] = provenance[first] | {mate.id}
-        known.add(second)
-    elif second in known and first not in known:
-        occurrences[first] = _solve_mate(mate, first, occurrences, faces)
-        provenance[first] = provenance[second] | {mate.id}
-        known.add(first)
-    elif first in known and second in known:
-        _validate_or_compose_cycle(
-            mate, first, second, provenance, occurrences, faces, redundant, mates
-        )
-    else:
-        return False
-    return True
-
-
 def _mate_side_for_occurrence(mate: Mate, occurrence_id: str) -> str:
     assert mate.first is not None and mate.second is not None
     return "first" if mate.first.occurrence_id == occurrence_id else "second"
@@ -609,20 +545,120 @@ def _classify_restrictions(
             )
 
 
+def _reachable_without(
+    graph: MateGraph, start: str, target: str, blocked: str
+) -> bool:
+    pending = [start]
+    seen = {blocked, start}
+    while pending:
+        current = pending.pop()
+        if current == target:
+            return True
+        for other, _ in graph.adjacent[current]:
+            if other not in seen:
+                seen.add(other)
+                pending.append(other)
+    return False
+
+
+def _cyclic_occurrence_ids(graph: MateGraph, component: tuple[str, ...]) -> set[str]:
+    cyclic = set()
+    for occurrence_id in component:
+        neighbors = sorted({other for other, _ in graph.adjacent[occurrence_id]})
+        if any(
+            _reachable_without(graph, first, second, occurrence_id)
+            for index, first in enumerate(neighbors)
+            for second in neighbors[index + 1 :]
+        ):
+            cyclic.add(occurrence_id)
+    return cyclic
+
+
+def _edge_is_cyclic(graph: MateGraph, first: str, second: str) -> bool:
+    pending = [first]
+    seen = {first}
+    while pending:
+        current = pending.pop()
+        for other, _ in graph.adjacent[current]:
+            if {current, other} == {first, second} or other in seen:
+                continue
+            if other == second:
+                return True
+            seen.add(other)
+            pending.append(other)
+    return False
+
+
+def _cycle_mate_ids(graph: MateGraph, component: tuple[str, ...]) -> list[str]:
+    return sorted(
+        {
+            mate.id
+            for first in component
+            for second, mate in graph.adjacent[first]
+            if first < second and _edge_is_cyclic(graph, first, second)
+        }
+    )
+
+
 def _reject_unsupported_coupling(
     graph: MateGraph, component: tuple[str, ...], grounded_ids: set[str]
 ) -> None:
+    cyclic = _cyclic_occurrence_ids(graph, component)
     for occurrence_id in component:
-        if occurrence_id in grounded_ids:
-            continue
         edges = graph.adjacent[occurrence_id]
-        if len({other for other, _ in edges}) > 1 and len({mate.kind for _, mate in edges}) > 1:
+        if (
+            occurrence_id not in grounded_ids
+            and occurrence_id in cyclic
+            and len({other for other, _ in edges}) > 1
+            and len({mate.kind for _, mate in edges}) > 1
+        ):
             raise AssemblyError(
                 "MATE_SOLVE_UNSUPPORTED",
-                "a moving occurrence cannot use mixed mate kinds with different neighbors",
-                mateIds=sorted(mate.id for _, mate in edges),
-                occurrenceIds=list(component),
+                "a cyclic moving occurrence cannot use mixed mate kinds with different neighbors",
+                mateIds=_cycle_mate_ids(graph, component),
+                occurrenceIds=sorted(cyclic),
             )
+
+
+def _tree_pairs(graph: MateGraph, anchor: str) -> list[tuple[str, str]]:
+    pairs = []
+    pending = [anchor]
+    seen = {anchor}
+    while pending:
+        parent = pending.pop(0)
+        for child in sorted({other for other, _ in graph.adjacent[parent]}):
+            if child not in seen:
+                seen.add(child)
+                pending.append(child)
+                pairs.append((parent, child))
+    return pairs
+
+
+def _pair_mates(graph: MateGraph, first: str, second: str) -> list[Mate]:
+    return sorted(
+        {mate.id: mate for other, mate in graph.adjacent[first] if other == second}.values(),
+        key=lambda mate: ({"concentric": 0, "planar": 1}[mate.kind], mate.id),
+    )
+
+
+def _apply_tree_pair(
+    graph: MateGraph,
+    parent: str,
+    child: str,
+    provenance: dict[str, set[str]],
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+    redundant: list[str],
+) -> None:
+    pair_mates = _pair_mates(graph, parent, child)
+    applied_kinds = set()
+    for mate in pair_mates:
+        linear, angular = _residual(mate, occurrences, faces)
+        if mate.kind in applied_kinds and max(linear, angular) <= _LINEAR_TOLERANCE:
+            redundant.append(mate.id)
+        occurrences[child] = _solve_mate(mate, child, occurrences, faces)
+        applied_kinds.add(mate.kind)
+    provenance[child] = provenance[parent] | {mate.id for mate in pair_mates}
 
 
 def _solve_component(
@@ -633,31 +669,48 @@ def _solve_component(
     occurrences: dict[str, Occurrence],
     faces: dict[tuple[str, str], tuple[Face, Any]],
     redundant: list[str],
-) -> None:
+) -> dict[str, set[str]]:
     _reject_unsupported_coupling(graph, component, grounded_ids)
     _classify_restrictions(graph, component, grounded_ids, occurrences, faces)
-    known = {anchor}
     provenance = {anchor: set()}
-    pending = {mate.id: mate for member in component for _, mate in graph.adjacent[member]}
-    while pending:
-        solved_id = next(
-            (
-                mate_id
-                for mate_id, mate in sorted(pending.items())
-                if _apply_pending_mate(
-                    mate, known, provenance, occurrences, faces, redundant, graph.assembly.mates
-                )
-            ),
-            None,
+    tree_pairs = _tree_pairs(graph, anchor)
+    for parent, child in tree_pairs:
+        _apply_tree_pair(
+            graph, parent, child, provenance, occurrences, faces, redundant
         )
-        if solved_id is None:
-            raise AssemblyError(
-                "MATE_SOLVE_UNSUPPORTED",
-                "assembly mate graph could not be solved deterministically",
-                mateIds=sorted(pending),
-                occurrenceIds=list(component),
-            )
-        del pending[solved_id]
+    tree_edges = {frozenset(pair) for pair in tree_pairs}
+    cycles = {}
+    for first in component:
+        for second, mate in graph.adjacent[first]:
+            if first < second and frozenset((first, second)) not in tree_edges:
+                cycles[mate.id] = provenance[first] ^ provenance[second] | {mate.id}
+    return cycles
+
+
+def _failed_residuals(
+    mates: dict[str, Mate],
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> list[tuple[Mate, float, float]]:
+    failed = []
+    for mate in sorted(mates.values(), key=lambda item: item.id):
+        linear, angular = _residual(mate, occurrences, faces)
+        if linear > _LINEAR_TOLERANCE or angular > _ANGULAR_TOLERANCE:
+            failed.append((mate, linear, angular))
+    return failed
+
+
+def _residual_culprit_ids(mate: Mate, mates: dict[str, Mate]) -> set[str]:
+    assert mate.first is not None and mate.second is not None
+    pair = {mate.first.occurrence_id, mate.second.occurrence_id}
+    return {
+        item.id
+        for item in mates.values()
+        if item.kind == mate.kind
+        and item.first is not None
+        and item.second is not None
+        and {item.first.occurrence_id, item.second.occurrence_id} == pair
+    }
 
 
 def _validate_component_residuals(
@@ -665,30 +718,31 @@ def _validate_component_residuals(
     component: tuple[str, ...],
     occurrences: dict[str, Occurrence],
     faces: dict[tuple[str, str], tuple[Face, Any]],
+    cycles: dict[str, set[str]],
 ) -> None:
     mates = {
         mate.id: mate
         for occurrence_id in component
         for _, mate in graph.adjacent[occurrence_id]
     }
-    failed = []
-    for mate in sorted(mates.values(), key=lambda item: item.id):
-        linear, angular = _residual(mate, occurrences, faces)
-        if linear > _LINEAR_TOLERANCE or angular > _ANGULAR_TOLERANCE:
-            failed.append((mate, linear, angular))
+    failed = _failed_residuals(mates, occurrences, faces)
     if not failed:
         return
     mate, linear, angular = failed[0]
+    culprit_ids = cycles.get(mate.id, _residual_culprit_ids(mate, mates))
     occurrence_ids = {
         side.occurrence_id
-        for failed_mate, _, _ in failed
-        for side in (failed_mate.first, failed_mate.second)
+        for mate_id in culprit_ids
+        for side in (
+            graph.assembly.mates[mate_id].first,
+            graph.assembly.mates[mate_id].second,
+        )
         if side is not None
     }
     raise AssemblyError(
         "MATE_CONFLICT",
         f"assembly mate {mate.id} exceeds the solved residual tolerance",
-        mateIds=[failed_mate.id for failed_mate, _, _ in failed],
+        mateIds=sorted(culprit_ids),
         occurrenceIds=sorted(occurrence_ids),
         linearResidual={"value": linear, "unit": "mm"},
         angularResidual={"value": math.degrees(angular), "unit": "deg"},
@@ -757,6 +811,30 @@ def _component_status(
     }
 
 
+def _solve_one_component(
+    graph: MateGraph,
+    component: tuple[str, ...],
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+    redundant: list[str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    grounds = graph.grounds(component)
+    anchor = grounds[0].occurrence_id if grounds else component[0]
+    assert anchor is not None
+    grounded_ids = {mate.occurrence_id for mate in grounds if mate.occurrence_id is not None}
+    cycles = _solve_component(
+        graph, component, anchor, grounded_ids, occurrences, faces, redundant
+    )
+    _validate_component_residuals(graph, component, occurrences, faces, cycles)
+    for mate_id, cycle_ids in cycles.items():
+        other_kinds = {
+            graph.assembly.mates[item].kind for item in cycle_ids - {mate_id}
+        }
+        if graph.assembly.mates[mate_id].kind in other_kinds:
+            redundant.append(mate_id)
+    return _component_status(graph, component, grounds, anchor, set(redundant))
+
+
 def solve_assembly(
     assembly: Assembly,
     resolved_occurrences: list[ResolvedOccurrence],
@@ -771,16 +849,8 @@ def solve_assembly(
     component_rows = []
     status: dict[str, dict[str, Any]] = {}
     for component in graph.components():
-        grounds = graph.grounds(component)
-        anchor = grounds[0].occurrence_id if grounds else component[0]
-        assert anchor is not None
-        grounded_ids = {mate.occurrence_id for mate in grounds if mate.occurrence_id is not None}
-        _solve_component(
-            graph, component, anchor, grounded_ids, occurrences, faces, redundant
-        )
-        _validate_component_residuals(graph, component, occurrences, faces)
-        component_status, component_row = _component_status(
-            graph, component, grounds, anchor, set(redundant)
+        component_status, component_row = _solve_one_component(
+            graph, component, occurrences, faces, redundant
         )
         status.update(component_status)
         component_rows.append(component_row)

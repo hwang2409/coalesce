@@ -60,14 +60,14 @@ async def test_mate_tool_text_teaches_face_discovery_and_planar_semantics(tmp_pa
     assert "aligned" in TOOLS_GUIDE and "opposed" in TOOLS_GUIDE
     assert "signed offset" in TOOLS_GUIDE
     assert "coalesce://docs/assembly" in TOOLS_GUIDE
-    assert "grounded anchor" in feature
-    assert "different neighbors" in feature
+    assert "grounded occurrence tree" in feature
+    assert "cycle is unsupported" in feature
     root = Path(__file__).parents[1]
     assembly_docs = (root / "docs/assembly.md").read_text()
     error_docs = (root / "docs/errors.md").read_text()
-    assert "grounded anchor" in assembly_docs
-    assert "different neighbors" in assembly_docs
-    assert "different neighbors" in error_docs
+    assert "breadth-first spanning tree" in assembly_docs
+    assert "mates that close a cycle are not applied" in assembly_docs
+    assert "ungrounded occurrence lies on a cycle" in error_docs
 
 
 def _assert_required_shape_is_published(full, published):
