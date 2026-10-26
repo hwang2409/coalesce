@@ -91,10 +91,10 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `ASSEMBLY_OCCURRENCE_LIMIT` | request | an assembly create would exceed 64 named occurrences | delete an occurrence before adding another |
 | `ASSEMBLY_MATE_LIMIT` | request | an assembly create would exceed 128 named mates | delete a mate before adding another |
 | `ASSEMBLY_REFERENCE_STALE` | reference | a graph edit would remove or split a part used by a named occurrence | delete the named occurrences first or preserve the canonical part ids |
-| `MATE_CONFLICT` | geometry | one connected component has more than one ground, or planar/concentric residuals conflict | inspect `mateIds`, `occurrenceIds`, and residuals, then edit or remove the conflicting mate |
+| `MATE_CONFLICT` | geometry | one component has more than one ground, a plane parallel to a concentric axis is used as a seat, or a final mate residual exceeds tolerance | inspect full `mateIds`, `occurrenceIds`, and residuals, then edit or remove the conflicting mate |
 | `MATE_REFERENCE_STALE` | reference | a mate face resolves to empty, split, merged, or ambiguous provenance | inspect the named `mateId`, side, resolution, and current face roles; replace the reference |
 | `MATE_GEOMETRY_UNSUPPORTED` | geometry | a mate selects the wrong surface type or a zero-area face | select one non-degenerate planar or cylindrical face from `face_roles` |
-| `MATE_SOLVE_UNSUPPORTED` | geometry | the connected mate pattern is outside the deterministic closed-form solver | simplify the component to supported planar/concentric chains |
+| `MATE_SOLVE_UNSUPPORTED` | geometry | a moving occurrence uses mixed mate kinds with different neighbors, or the graph is outside the deterministic closed-form solver; independent leaves around a grounded anchor are supported | inspect `mateIds` and `occurrenceIds`, then split the coupling into supported chains or ground the shared anchor |
 | `ASSEMBLY_EXPORT_EMPTY` | export | an assembly export has no manufacturing occurrence | add a manufacturing occurrence before exporting |
 | `CYCLE` | dependency | the feature graph contains a dependency cycle | reorder or remove the cyclic dependency |
 | `HAS_DEPENDENTS` | dependency | non-cascade delete would orphan dependent nodes | inspect the listed dependents, then delete them or use cascade deliberately |

@@ -4534,6 +4534,23 @@ class DocumentService:
             "warnings": [],
         }
 
+    @staticmethod
+    def _mated_transform_warning(
+        occurrence: Occurrence, status: dict[str, Any], mates: dict[str, Mate]
+    ) -> dict[str, Any]:
+        mate_kinds = {mates[mate_id].kind for mate_id in status["mateIds"]}
+        constrained = []
+        if "planar" in mate_kinds:
+            constrained.extend(["normalAlignment", "normalOffset"])
+        if "concentric" in mate_kinds:
+            constrained.extend(["axisAlignment", "radialOffset"])
+        return {
+            "code": "MATED_TRANSFORM_OVERRIDDEN",
+            "occurrenceId": occurrence.id,
+            "constrainedCoordinates": constrained,
+            "freeMotions": status["freeMotions"],
+        }
+
     def _mutate_occurrence(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             try:
@@ -4559,21 +4576,10 @@ class DocumentService:
                     and status.get("mateIds")
                     and not status.get("grounded")
                 ):
-                    mate_kinds = {
-                        solved.assembly.mates[mate_id].kind for mate_id in status["mateIds"]
-                    }
-                    constrained = []
-                    if "planar" in mate_kinds:
-                        constrained.extend(["normalAlignment", "normalOffset"])
-                    if "concentric" in mate_kinds:
-                        constrained.extend(["axisAlignment", "radialOffset"])
                     response["warnings"] = [
-                        {
-                            "code": "MATED_TRANSFORM_OVERRIDDEN",
-                            "occurrenceId": occurrence.id,
-                            "constrainedCoordinates": constrained,
-                            "freeMotions": status["freeMotions"],
-                        }
+                        self._mated_transform_warning(
+                            occurrence, status, solved.assembly.mates
+                        )
                     ]
                 document, durable = self._save_response(
                     self._document.graph, solved.assembly, response, body_hash
@@ -4941,7 +4947,7 @@ class DocumentService:
                 if mate.kind == "ground"
                 else {
                     "mateId": mate.id,
-                    "kind": "planar",
+                    "kind": mate.kind,
                     "first": {
                         "occurrenceId": mate.first.occurrence_id,
                         "reference": mate.first.reference.to_dict(),
@@ -4951,7 +4957,11 @@ class DocumentService:
                         "reference": mate.second.reference.to_dict(),
                     },
                     "orientation": mate.orientation,
-                    "offset": {"value": mate.offset, "unit": "mm"},
+                    **(
+                        {"offset": {"value": mate.offset, "unit": "mm"}}
+                        if mate.kind == "planar"
+                        else {}
+                    ),
                 }
             )
             for mate in sorted(self._document.assembly.mates.values(), key=lambda item: item.id)

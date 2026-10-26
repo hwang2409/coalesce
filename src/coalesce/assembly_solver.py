@@ -141,14 +141,23 @@ def _multiply(
     )
 
 
+def _angle_between(
+    source: tuple[float, float, float], target: tuple[float, float, float]
+) -> float:
+    source, target = _unit(source), _unit(target)
+    cross = _cross(source, target)
+    return math.atan2(math.sqrt(_dot(cross, cross)), max(-1.0, min(1.0, _dot(source, target))))
+
+
 def _between(
     source: tuple[float, float, float], target: tuple[float, float, float]
 ) -> tuple[float, float, float, float]:
     source, target = _unit(source), _unit(target)
     cosine = max(-1.0, min(1.0, _dot(source, target)))
-    if cosine > 1.0 - _ANGULAR_TOLERANCE:
+    angle = _angle_between(source, target)
+    if angle <= _ANGULAR_TOLERANCE:
         return (1.0, 0.0, 0.0, 0.0)
-    if cosine < -1.0 + _ANGULAR_TOLERANCE:
+    if math.pi - angle <= _ANGULAR_TOLERANCE:
         axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         axis = _unit(_cross(source, min(axes, key=lambda item: abs(_dot(source, item)))))
         return (0.0, *axis)
@@ -217,6 +226,27 @@ def _part_candidates(
     return {resolved.part.terminal_feature: selected}
 
 
+def _identity_segment_candidates(
+    reference: Any, scoped: dict[str, list[Candidate]]
+) -> list[Candidate]:
+    source = reference.source
+    if not isinstance(source, SketchSegmentSource):
+        return []
+    return [
+        candidate
+        for candidate in scoped.get(reference.feature, [])
+        if candidate.key.role == reference.role
+        and isinstance(candidate.key.source, SketchSegmentSource)
+        and (
+            candidate.key.source.sketch,
+            candidate.key.source.entity,
+            candidate.key.source.segment,
+        )
+        == (source.sketch, source.entity, source.segment)
+        and candidate.key.body == reference.body
+    ]
+
+
 def _resolved_face(
     mate: Mate,
     side_name: str,
@@ -228,21 +258,8 @@ def _resolved_face(
     scoped = _part_candidates(resolved, provenance)
     resolution = resolve(side.reference, scoped)
     candidates = resolution.candidates
-    source = side.reference.source
-    if resolution.status is not Status.OK and isinstance(source, SketchSegmentSource):
-        candidates = [
-            candidate
-            for candidate in scoped.get(side.reference.feature, [])
-            if candidate.key.role == side.reference.role
-            and isinstance(candidate.key.source, SketchSegmentSource)
-            and (
-                candidate.key.source.sketch,
-                candidate.key.source.entity,
-                candidate.key.source.segment,
-            )
-            == (source.sketch, source.entity, source.segment)
-            and candidate.key.body == side.reference.body
-        ]
+    if resolution.status is not Status.OK:
+        candidates = _identity_segment_candidates(side.reference, scoped)
     if len(candidates) != 1:
         details = {
             **(
@@ -384,8 +401,8 @@ def _planar_residual(
     second_center, second_normal = _plane(
         faces[(mate.id, "second")], occurrences[mate.second.occurrence_id].transform
     )
-    target_dot = 1.0 if mate.orientation == "aligned" else -1.0
-    angular = math.acos(max(-1.0, min(1.0, _dot(first_normal, second_normal) * target_dot)))
+    target_normal = first_normal if mate.orientation == "aligned" else _scale(first_normal, -1)
+    angular = _angle_between(target_normal, second_normal)
     linear = abs(
         _dot(tuple(b - a for a, b in zip(first_center, second_center, strict=True)), first_normal)
         - mate.offset
@@ -408,8 +425,8 @@ def _concentric_residual(
     delta = tuple(b - a for a, b in zip(first_point, second_point, strict=True))
     cross = _cross(delta, first_axis)
     linear = math.sqrt(_dot(cross, cross))
-    target_sign = 1.0 if mate.orientation == "aligned" else -1.0
-    angular = math.acos(max(-1.0, min(1.0, _dot(first_axis, second_axis) * target_sign)))
+    target_axis = first_axis if mate.orientation == "aligned" else _scale(first_axis, -1)
+    angular = _angle_between(target_axis, second_axis)
     return linear, angular
 
 
@@ -467,10 +484,12 @@ def _validate_or_compose_cycle(
     mates: dict[str, Mate],
 ) -> None:
     linear, angular = _residual(mate, occurrences, faces)
-    if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
-        redundant.append(mate.id)
-        return
     cycle_ids = provenance[first] ^ provenance[second] | {mate.id}
+    if linear <= _LINEAR_TOLERANCE and angular <= _ANGULAR_TOLERANCE:
+        prior_kinds = {mates[mate_id].kind for mate_id in cycle_ids - {mate.id}}
+        if mate.kind in prior_kinds:
+            redundant.append(mate.id)
+        return
     moved_id = first if len(provenance[first]) > len(provenance[second]) else second
     trial = dict(occurrences)
     trial[moved_id] = _solve_mate(mate, moved_id, trial, faces)
@@ -518,13 +537,89 @@ def _apply_pending_mate(
     return True
 
 
-def _reject_unsupported_coupling(graph: MateGraph, component: tuple[str, ...]) -> None:
+def _mate_side_for_occurrence(mate: Mate, occurrence_id: str) -> str:
+    assert mate.first is not None and mate.second is not None
+    return "first" if mate.first.occurrence_id == occurrence_id else "second"
+
+
+def _has_independent_seat(
+    occurrence_id: str,
+    concentric: list[Mate],
+    planar: list[Mate],
+    occurrence: Occurrence,
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> bool:
+    axes = [
+        _cylinder_axis(
+            faces[(mate.id, _mate_side_for_occurrence(mate, occurrence_id))],
+            occurrence.transform,
+        )[1]
+        for mate in concentric
+    ]
+    normals = [
+        _plane(
+            faces[(mate.id, _mate_side_for_occurrence(mate, occurrence_id))],
+            occurrence.transform,
+        )[1]
+        for mate in planar
+    ]
+    return any(
+        min(_angle_between(axis, normal), _angle_between(axis, _scale(normal, -1)))
+        <= _ANGULAR_TOLERANCE
+        for axis in axes
+        for normal in normals
+    )
+
+
+def _classify_occurrence_restrictions(
+    graph: MateGraph,
+    occurrence_id: str,
+    occurrence: Occurrence,
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> None:
+    incident = [mate for _, mate in graph.adjacent[occurrence_id]]
+    concentric = [mate for mate in incident if mate.kind == "concentric"]
+    planar = [mate for mate in incident if mate.kind == "planar"]
+    if not concentric or not planar or _has_independent_seat(
+        occurrence_id, concentric, planar, occurrence, faces
+    ):
+        return
+    raise AssemblyError(
+        "MATE_CONFLICT",
+        "a planar seat must be perpendicular to its concentric axis",
+        mateIds=sorted(mate.id for mate in incident),
+        occurrenceIds=sorted(
+            {occurrence_id, *(other for other, _ in graph.adjacent[occurrence_id])}
+        ),
+        hint="select a seating plane whose normal is parallel to the concentric axis",
+    )
+
+
+def _classify_restrictions(
+    graph: MateGraph,
+    component: tuple[str, ...],
+    grounded_ids: set[str],
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> None:
     for occurrence_id in component:
+        if occurrence_id not in grounded_ids:
+            _classify_occurrence_restrictions(
+                graph, occurrence_id, occurrences[occurrence_id], faces
+            )
+
+
+def _reject_unsupported_coupling(
+    graph: MateGraph, component: tuple[str, ...], grounded_ids: set[str]
+) -> None:
+    for occurrence_id in component:
+        if occurrence_id in grounded_ids:
+            continue
         edges = graph.adjacent[occurrence_id]
         if len({other for other, _ in edges}) > 1 and len({mate.kind for _, mate in edges}) > 1:
             raise AssemblyError(
                 "MATE_SOLVE_UNSUPPORTED",
-                "planar and concentric constraints to different neighbors are not supported",
+                "a moving occurrence cannot use mixed mate kinds with different neighbors",
                 mateIds=sorted(mate.id for _, mate in edges),
                 occurrenceIds=list(component),
             )
@@ -534,11 +629,13 @@ def _solve_component(
     graph: MateGraph,
     component: tuple[str, ...],
     anchor: str,
+    grounded_ids: set[str],
     occurrences: dict[str, Occurrence],
     faces: dict[tuple[str, str], tuple[Face, Any]],
     redundant: list[str],
 ) -> None:
-    _reject_unsupported_coupling(graph, component)
+    _reject_unsupported_coupling(graph, component, grounded_ids)
+    _classify_restrictions(graph, component, grounded_ids, occurrences, faces)
     known = {anchor}
     provenance = {anchor: set()}
     pending = {mate.id: mate for member in component for _, mate in graph.adjacent[member]}
@@ -563,22 +660,66 @@ def _solve_component(
         del pending[solved_id]
 
 
+def _validate_component_residuals(
+    graph: MateGraph,
+    component: tuple[str, ...],
+    occurrences: dict[str, Occurrence],
+    faces: dict[tuple[str, str], tuple[Face, Any]],
+) -> None:
+    mates = {
+        mate.id: mate
+        for occurrence_id in component
+        for _, mate in graph.adjacent[occurrence_id]
+    }
+    failed = []
+    for mate in sorted(mates.values(), key=lambda item: item.id):
+        linear, angular = _residual(mate, occurrences, faces)
+        if linear > _LINEAR_TOLERANCE or angular > _ANGULAR_TOLERANCE:
+            failed.append((mate, linear, angular))
+    if not failed:
+        return
+    mate, linear, angular = failed[0]
+    occurrence_ids = {
+        side.occurrence_id
+        for failed_mate, _, _ in failed
+        for side in (failed_mate.first, failed_mate.second)
+        if side is not None
+    }
+    raise AssemblyError(
+        "MATE_CONFLICT",
+        f"assembly mate {mate.id} exceeds the solved residual tolerance",
+        mateIds=[failed_mate.id for failed_mate, _, _ in failed],
+        occurrenceIds=sorted(occurrence_ids),
+        linearResidual={"value": linear, "unit": "mm"},
+        angularResidual={"value": math.degrees(angular), "unit": "deg"},
+    )
+
+
+def _restriction_count(independent: list[Mate]) -> int:
+    kinds = {mate.kind for mate in independent}
+    if "concentric" in kinds:
+        return 5 if "planar" in kinds else 4
+    return 3 if "planar" in kinds else 0
+
+
 def _occurrence_status(
     graph: MateGraph,
     occurrence_id: str,
     grounds: list[Mate],
     anchor: str,
+    redundant: set[str],
 ) -> dict[str, Any]:
     grounded = any(mate.occurrence_id == occurrence_id for mate in grounds)
     connected = [mate for _, mate in graph.adjacent[occurrence_id]]
-    kinds = {mate.kind for mate in connected}
+    independent = [mate for mate in connected if mate.id not in redundant]
+    restrictions = _restriction_count(independent)
     if grounded:
         remaining, motions = 0, []
     elif occurrence_id == anchor:
         remaining, motions = 6, ["globalRigidMotion"]
-    elif kinds == {"planar", "concentric"}:
+    elif restrictions == 5:
         remaining, motions = 1, ["axisSpin"]
-    elif "concentric" in kinds:
+    elif restrictions == 4:
         remaining, motions = 2, ["axisTranslation", "axisSpin"]
     else:
         remaining, motions = 3, ["inPlaneX", "inPlaneY", "normalSpin"]
@@ -597,10 +738,11 @@ def _component_status(
     component: tuple[str, ...],
     grounds: list[Mate],
     anchor: str,
+    redundant: set[str],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     grounded_id = grounds[0].occurrence_id if grounds else None
     status = {
-        occurrence_id: _occurrence_status(graph, occurrence_id, grounds, anchor)
+        occurrence_id: _occurrence_status(graph, occurrence_id, grounds, anchor, redundant)
         for occurrence_id in component
     }
     component_mates = {mate.id for member in component for _, mate in graph.adjacent[member]}
@@ -632,8 +774,14 @@ def solve_assembly(
         grounds = graph.grounds(component)
         anchor = grounds[0].occurrence_id if grounds else component[0]
         assert anchor is not None
-        _solve_component(graph, component, anchor, occurrences, faces, redundant)
-        component_status, component_row = _component_status(graph, component, grounds, anchor)
+        grounded_ids = {mate.occurrence_id for mate in grounds if mate.occurrence_id is not None}
+        _solve_component(
+            graph, component, anchor, grounded_ids, occurrences, faces, redundant
+        )
+        _validate_component_residuals(graph, component, occurrences, faces)
+        component_status, component_row = _component_status(
+            graph, component, grounds, anchor, set(redundant)
+        )
         status.update(component_status)
         component_rows.append(component_row)
     under = sorted(item for item, row in status.items() if row["remainingDof"] > 0)

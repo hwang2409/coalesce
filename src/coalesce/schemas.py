@@ -1067,8 +1067,12 @@ for kind, changes in {
     }
 
 
-# Codex compacts large schemas by blanking local refs; action schemas still validate full references.
-PUBLISHED_MATE_REFERENCE = {"type": "object"}
+# Keep this inline: some model clients cannot follow local JSON Schema references.
+PUBLISHED_MATE_REFERENCE = {
+    "type": "object",
+    "properties": {"feature": {"type": "string"}, "role": {"type": "string"}},
+    "required": ["feature", "role"],
+}
 PUBLISHED_MATE_SIDE = {
     "type": "object",
     "properties": {
@@ -1077,24 +1081,32 @@ PUBLISHED_MATE_SIDE = {
     },
     "required": ["occurrenceId", "reference"],
 }
-PUBLISHED_FACE_MATE_FIELDS = {
+PUBLISHED_MATE_CORE_FIELDS = {
     "first": PUBLISHED_MATE_SIDE,
     "second": PUBLISHED_MATE_SIDE,
     "orientation": {"enum": ["aligned", "opposed"]},
-    "offset": {"type": "object"},
 }
 PUBLISHED_FACE_MATE_PARAMETERS = {
     "type": "object",
-    "properties": {
-        "kind": {"enum": ["planar", "concentric"]},
-        **PUBLISHED_FACE_MATE_FIELDS,
-    },
-    "required": ["kind", "first", "second", "orientation"],
+    "properties": {**PUBLISHED_MATE_CORE_FIELDS, "offset": {"type": "object"}},
+    "required": ["first", "second", "orientation"],
+    "oneOf": [
+        {
+            "properties": {"kind": {"const": "planar"}},
+            "required": ["kind", "offset"],
+        },
+        {
+            "properties": {"kind": {"const": "concentric"}},
+            "required": ["kind"],
+            "not": {"required": ["offset"]},
+        },
+    ],
 }
 PUBLISHED_FACE_MATE_UPDATE = {
     "type": "object",
-    "properties": PUBLISHED_FACE_MATE_FIELDS,
+    "properties": {**PUBLISHED_MATE_CORE_FIELDS, "offset": {"type": "object"}},
     "required": ["first", "second", "orientation"],
+    "oneOf": [{"required": ["offset"]}, {"not": {"required": ["offset"]}}],
 }
 
 

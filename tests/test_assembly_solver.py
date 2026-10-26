@@ -1,7 +1,8 @@
 import json
+import math
 
 import pytest
-from build123d import GeomType
+from build123d import Box, Cylinder, GeomType
 from test_mcp_assembly import occurrence_create, transform
 from test_mcp_vertical import FEATURE, SKETCH
 
@@ -537,6 +538,17 @@ def test_concentric_mate_collinear_from_odd_rotations_and_restart_is_exact(
     assert path.read_bytes() == before
 
 
+def test_assembly_query_preserves_kind_specific_mate_fields(tmp_path):
+    service = _concentric_setup(tmp_path / "query-kind.coalesce.json")
+    cylinder = _face_reference(service, "side(circle)")
+    assert service.feature(_concentric_create(4, cylinder, cylinder))["ok"]
+
+    mate = service.query({"select": {"kind": "assembly"}})["mates"][0]
+
+    assert mate["kind"] == "concentric"
+    assert "offset" not in mate
+
+
 def test_concentric_plus_planar_seat_has_one_spin_dof_and_shared_outputs(tmp_path):
     path = tmp_path / "concentric-seat.coalesce.json"
     service = _concentric_setup(path)
@@ -578,6 +590,149 @@ def test_concentric_plus_planar_seat_has_one_spin_dof_and_shared_outputs(tmp_pat
         if row["occurrenceId"] == "moved"
     )["transform"]
     assert exported_transform["translation"] == moved["transform"]["translation"]["value"]
+
+
+def test_near_parallel_concentric_axes_are_solved_to_angular_tolerance(tmp_path):
+    service = _concentric_setup(tmp_path / "near-parallel.coalesce.json")
+    update = {
+        "action": "update",
+        "kind": "assembly_occurrence",
+        "expectedRevision": 4,
+        "requestId": "identity-fixed",
+        "occurrenceId": "fixed",
+        "set": {"transform": transform()},
+    }
+    assert service.feature(update)["ok"]
+    update.update({
+        "expectedRevision": 5,
+        "requestId": "near-parallel-seed",
+        "occurrenceId": "moved",
+        "set": {"transform": transform(0, (1, 0, 0), 0.01)},
+    })
+    assert service.feature(update)["ok"]
+    cylinder = _face_reference(service, "side(circle)")
+
+    result = service.feature(_concentric_create(6, cylinder, cylinder))
+
+    assert result["ok"]
+    by_id = {item.occurrence.id: item for item in service._resolved_assembly()}
+    axes = []
+    for occurrence_id in ("fixed", "moved"):
+        item = by_id[occurrence_id]
+        shape = locate_shape(item.part.shape, item.occurrence.transform)
+        axes.append(_axis(next(face for face in shape.faces() if face.geom_type is GeomType.CYLINDER)))
+    cross = _cross_for_test(axes[0][1], axes[1][1], (0.0, 0.0, 0.0))
+    angle = math.atan2(math.sqrt(sum(value * value for value in cross)), sum(
+        a * b for a, b in zip(axes[0][1], axes[1][1], strict=True)
+    ))
+    assert angle <= 1e-7
+
+
+def test_parallel_plane_does_not_falsely_seat_a_concentric_occurrence():
+    from coalesce.assembly import (
+        Assembly,
+        AssemblyError,
+        Mate,
+        MateSide,
+        Occurrence,
+        ResolvedOccurrence,
+        RigidTransform,
+    )
+    from coalesce.assembly_solver import solve_assembly
+    from coalesce.parts import TerminalPart
+    from coalesce.references import BodySource, Candidate, ElementKey, Reference
+
+    shape = Cylinder(8, 8) & Box(8, 16, 8)
+    cylinder = next(face for face in shape.faces() if face.geom_type is GeomType.CYLINDER)
+    plane = next(
+        face
+        for face in shape.faces()
+        if face.geom_type is GeomType.PLANE and abs(face.normal_at().Z) < 0.5
+    )
+    body = BodySource("part", "body")
+    part = TerminalPart("part/body", "part", "manufacturing", body, "part", shape)
+    cylinder_ref = Reference("part", "cylinder", body=body)
+    plane_ref = Reference("part", "plane", body=body)
+    identity = RigidTransform((0, 0, 0), (0, 0, 1), 0)
+    occurrences = {
+        "fixed": Occurrence("fixed", part.part_id, identity),
+        "moved": Occurrence("moved", part.part_id, RigidTransform((0, 0, 17), (0, 0, 1), 0)),
+    }
+    mates = {
+        "ground": Mate("ground", "ground", "fixed"),
+        "coaxial": Mate(
+            "coaxial", "concentric", first=MateSide("fixed", cylinder_ref),
+            second=MateSide("moved", cylinder_ref), orientation="aligned",
+        ),
+        "invalid-seat": Mate(
+            "invalid-seat", "planar", first=MateSide("fixed", plane_ref),
+            second=MateSide("moved", plane_ref), orientation="aligned",
+        ),
+    }
+    resolved = [ResolvedOccurrence(item, part, shape) for item in occurrences.values()]
+    provenance = {
+        "part": [
+            Candidate(ElementKey("part", "cylinder", body=body), cylinder),
+            Candidate(ElementKey("part", "plane", body=body), plane),
+        ]
+    }
+
+    with pytest.raises(AssemblyError) as error:
+        solve_assembly(Assembly(occurrences, mates), resolved, provenance)
+
+    assert error.value.code == "MATE_CONFLICT"
+    assert error.value.details["mateIds"] == ["coaxial", "invalid-seat"]
+
+
+def test_grounded_anchor_supports_shaft_and_eight_independent_seated_pins(tmp_path):
+    from test_mcp_assembly import ground_create
+
+    service = DocumentService(tmp_path / "grounded-star.coalesce.json", warmup=False)
+    sketch = {
+        **SKETCH,
+        "entities": [{
+            "id": "outline", "kind": "circle", "center": [0, 0],
+            "radius": {"value": 8, "unit": "mm"},
+            "rotation": {"value": 0, "unit": "deg"},
+        }],
+    }
+    assert service.sketch(sketch)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    names = ["ring", "shaft", *(f"pin-{index}" for index in range(8))]
+    for revision, name in enumerate(names, start=2):
+        request = occurrence_create(revision, f"place-{name}", name, revision * 3)
+        assert service.feature(request)["ok"]
+    revision = 12
+    assert service.feature(ground_create(revision, "ground-ring", "ground-ring", "ring"))["ok"]
+    revision += 1
+    cylinder = _face_reference(service, "side(circle)")
+    cap_end = _face_reference(service, "cap_end")
+    cap_start = _face_reference(service, "cap_start")
+    shaft = _concentric_create(revision, cylinder, cylinder, mate_id="shaft-axis")
+    shaft["parameters"]["first"]["occurrenceId"] = "ring"
+    shaft["parameters"]["second"]["occurrenceId"] = "shaft"
+    assert service.feature(shaft)["ok"]
+    revision += 1
+    for index in range(8):
+        pin_id = f"pin-{index}"
+        axis = _concentric_create(revision, cylinder, cylinder, mate_id=f"{pin_id}-axis")
+        axis["parameters"]["first"]["occurrenceId"] = "ring"
+        axis["parameters"]["second"]["occurrenceId"] = pin_id
+        assert service.feature(axis)["ok"]
+        revision += 1
+        seat = _planar_create(revision, cap_end, cap_start)
+        seat["mateId"] = f"{pin_id}-seat"
+        seat["requestId"] = f"{pin_id}-seat"
+        seat["parameters"]["first"]["occurrenceId"] = "ring"
+        seat["parameters"]["second"]["occurrenceId"] = pin_id
+        assert service.feature(seat)["ok"]
+        revision += 1
+
+    query = service.query({"select": {"kind": "assembly"}})
+    status = {row["occurrenceId"]: row for row in query["occurrences"]}
+    assert status["ring"]["remainingDof"] == 0
+    assert status["shaft"]["remainingDof"] == 2
+    assert all(status[f"pin-{index}"]["remainingDof"] == 1 for index in range(8))
 
 
 def test_concentric_rejects_planar_face_with_role_catalog(tmp_path):

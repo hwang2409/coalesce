@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from jsonschema import validate
@@ -59,6 +60,14 @@ async def test_mate_tool_text_teaches_face_discovery_and_planar_semantics(tmp_pa
     assert "aligned" in TOOLS_GUIDE and "opposed" in TOOLS_GUIDE
     assert "signed offset" in TOOLS_GUIDE
     assert "coalesce://docs/assembly" in TOOLS_GUIDE
+    assert "grounded anchor" in feature
+    assert "different neighbors" in feature
+    root = Path(__file__).parents[1]
+    assembly_docs = (root / "docs/assembly.md").read_text()
+    error_docs = (root / "docs/errors.md").read_text()
+    assert "grounded anchor" in assembly_docs
+    assert "different neighbors" in assembly_docs
+    assert "different neighbors" in error_docs
 
 
 def _assert_required_shape_is_published(full, published):
@@ -74,10 +83,13 @@ def _assert_required_shape_is_published(full, published):
 
 @pytest.mark.anyio
 async def test_feature_schema_keeps_required_mate_shape_without_codex_unsafe_refs(tmp_path):
-    tools = {tool.name: tool for tool in await list_server_tools(tmp_path / "refs.coalesce.json")}
+    listed = await list_server_tools(tmp_path / "refs.coalesce.json")
+    tools = {tool.name: tool for tool in listed}
     schema = tools["feature"].inputSchema
-    compact = json.dumps(schema, separators=(",", ":")).encode()
-    assert len(compact) < 26_003  # dev was 24,503 bytes; keep slice growth below 1.5 KiB.
+    compact = json.dumps(
+        [tool.model_dump(by_alias=True) for tool in listed], separators=(",", ":")
+    ).encode()
+    assert len(compact) < 57_466  # dev was 55,966 bytes; keep slice growth below 1.5 KiB.
     assert "$defs" not in schema
     assert "$ref" not in json.dumps(schema)
 
@@ -85,10 +97,17 @@ async def test_feature_schema_keeps_required_mate_shape_without_codex_unsafe_ref
     update_schema = FEATURE_ACTION_SCHEMAS[("update", "assembly_mate")]
     published_create = schema["properties"]["parameters"]["oneOf"][-1]
     published_update = schema["properties"]["set"]["oneOf"][-1]
-    for full in create_schema["properties"]["parameters"]["oneOf"][1:]:
+    full_create = create_schema["properties"]["parameters"]["oneOf"][1:]
+    full_update = update_schema["properties"]["set"]["oneOf"][1:]
+    for full in full_create:
         _assert_required_shape_is_published(full, published_create)
-    for full in update_schema["properties"]["set"]["oneOf"][1:]:
+    for full in full_update:
         _assert_required_shape_is_published(full, published_update)
+    planar, concentric = published_create["oneOf"]
+    assert planar["properties"]["kind"] == {"const": "planar"}
+    assert concentric["properties"]["kind"] == {"const": "concentric"}
+    assert "offset" in planar["required"]
+    assert concentric["not"] == {"required": ["offset"]}
 
     reference = {"feature": "plate", "role": "cap_end", "cardinality": "one"}
     sides = {
