@@ -712,7 +712,7 @@ function assemblyKey(revision, row) {
 
 function groupAssemblyRows(rows) {
   const groups = new Map();
-  for (const row of rows) {
+  for (const row of rows.toSorted((a, b) => a.requirementId.localeCompare(b.requirementId, undefined, { numeric: true }))) {
     const key = JSON.stringify(row.occurrenceIds.toSorted());
     const current = groups.get(key);
     const requirementIds = [...(current?.requirementIds ?? []), row.requirementId]
@@ -859,7 +859,7 @@ function updateMore() {
   const below = panel.scrollTop + panel.clientHeight < panel.scrollHeight - 4;
   const checks = !$('inspection').hidden && $('inspection').getBoundingClientRect().bottom > bottom;
   $('more').hidden = !below;
-  $('more').textContent = checks ? 'Scroll for more checks and parts' : 'Scroll for more parts';
+  $('more').textContent = checks ? 'Scroll for more results and parts' : 'Scroll for more parts';
 }
 panel.addEventListener('scroll', updateMore, { passive: true });
 // what a disclosure opens would otherwise start under the panel's bottom edge
