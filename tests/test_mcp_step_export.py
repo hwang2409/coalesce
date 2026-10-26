@@ -1,5 +1,7 @@
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -638,6 +640,120 @@ async def test_non_export_tool_is_unaffected(tmp_path):
     )
 
     assert result == {"ok": True, "revision": 7, "units": "mm"}
+
+
+def test_stdio_export_keeps_occt_messages_off_jsonrpc_stdout(tmp_path):
+    document = tmp_path / "stdio-isolation.coalesce.json"
+    assembly_target = tmp_path / "assembly.step"
+    part_target = tmp_path / "part.step"
+    process = subprocess.Popen(
+        [shutil.which("coalesce") or "coalesce", "--document", str(document)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+
+    non_json_stdout = []
+    request_id = 0
+
+    def request(method, params):
+        nonlocal request_id
+        request_id += 1
+        process.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+            + "\n"
+        )
+        process.stdin.flush()
+        while True:
+            line = process.stdout.readline()
+            assert line, f"stdio server exited before response {request_id}"
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                non_json_stdout.append(line.rstrip())
+                continue
+            if message.get("id") == request_id:
+                assert "error" not in message
+                result = message["result"]
+                if method == "tools/call":
+                    assert result["structuredContent"]["ok"] is True, result
+                return result
+
+    try:
+        request(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "stdio-isolation-test", "version": "1"},
+            },
+        )
+        process.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+            + "\n"
+        )
+        process.stdin.flush()
+        for tool_name, arguments in enclosure_calls()[:2]:
+            request("tools/call", {"name": tool_name, "arguments": arguments})
+        request(
+            "tools/call",
+            {
+                "name": "feature",
+                "arguments": {
+                    "action": "create",
+                    "kind": "assembly_occurrence",
+                    "expectedRevision": 2,
+                    "requestId": "place-plate",
+                    "occurrenceId": "plate-instance",
+                    "parameters": {
+                        "partId": "plate/plate",
+                        "transform": {
+                            "translation": {"value": [0, 0, 0], "unit": "mm"},
+                            "rotation": {
+                                "axis": [0, 0, 1],
+                                "angle": {"value": 0, "unit": "deg"},
+                            },
+                        },
+                    },
+                },
+            },
+        )
+        assembly = request(
+            "tools/call",
+            {
+                "name": "export",
+                "arguments": {
+                    "mode": "assembly",
+                    "expectedRevision": 3,
+                    "path": str(assembly_target),
+                },
+            },
+        )["structuredContent"]
+        part = request(
+            "tools/call",
+            {
+                "name": "export",
+                "arguments": {
+                    "expectedRevision": 3,
+                    "partIds": ["plate/plate"],
+                    "path": str(part_target),
+                },
+            },
+        )["structuredContent"]
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+    assert assembly_target.read_bytes().startswith(b"ISO-10303-21;")
+    assert part_target.read_bytes().startswith(b"ISO-10303-21;")
+    assert assembly["validation"]["xcaf"]["occurrenceCount"] == 1
+    assert part["validation"]["reimport"]["solidCount"] == 1
+    assert non_json_stdout == []
 
 
 @pytest.mark.anyio

@@ -22,6 +22,14 @@ RELATIVE_TOLERANCE = 1e-7
 ABSOLUTE_TOLERANCE = 1e-7
 
 
+def _silence_occt_messages() -> None:
+    from OCP.Message import Message
+
+    messenger = Message.DefaultMessenger_s()
+    for printer in list(messenger.Printers()):
+        messenger.RemovePrinter(printer)
+
+
 @dataclass(frozen=True)
 class ExportFailure(Exception):
     code: str
@@ -109,6 +117,7 @@ def _metrics(shapes: list[Any], labels: list[str]) -> dict[str, Any]:
 def _read_step_metrics(path: Path) -> dict[str, Any]:
     from build123d import import_step
 
+    _silence_occt_messages()
     imported = import_step(path)
     shapes = list(imported.children) if imported.children else [imported]
     return _metrics(shapes, [shape.label for shape in shapes])
@@ -222,6 +231,7 @@ def _validated_step_bytes(
 ) -> tuple[bytes, str, dict[str, Any]]:
     from build123d import Compound, export_step
 
+    _silence_occt_messages()
     temporary_directory = Path(tempfile.mkdtemp())
     temporary_path = temporary_directory / "export.step"
     try:
@@ -682,6 +692,7 @@ def _read_assembly_step(path: Path) -> dict[str, Any]:
     from OCP.TDocStd import TDocStd_Document
     from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
 
+    _silence_occt_messages()
     document = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
     reader = STEPCAFControl_Reader()
     reader.SetNameMode(True)
@@ -805,6 +816,7 @@ def write_assembly_step_bytes(
         raise ExportFailure(
             "ASSEMBLY_EXPORT_EMPTY", "assembly export has no manufacturing occurrences"
         )
+    _silence_occt_messages()
     document = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
     shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
     shape_tool.SetAutoNaming_s(False)
