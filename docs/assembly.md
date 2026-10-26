@@ -1,10 +1,10 @@
-# explicit assembly occurrences
+# assembly occurrences and ground mates
 
 ## document format
 
-files written by this version cannot be opened by earlier coalesce builds.
+format version 3 stores occurrences and mates. version 1 still loads without assembly state, and version 2 still loads its occurrence-only assembly. both older versions upgrade to version 3 on the next accepted save; the stored geometry and occurrences do not change, and `mates` is written as an empty list. newer versions fail with `INVALID_DOCUMENT` and name the unsupported version. files written by this version cannot be opened by earlier coalesce builds.
 
-coalesce stores an assembly as caller-named occurrences outside the manufacturing feature graph. use the existing `feature` tool with `kind: "assembly_occurrence"` to create, update, or delete a placement. every mutation requires `expectedRevision` and `requestId`.
+coalesce stores an assembly as caller-named occurrences and mates outside the manufacturing feature graph. use the existing `feature` tool with `kind: "assembly_occurrence"` to create, update, or delete a placement. every mutation requires `expectedRevision` and `requestId`.
 
 an occurrence references a canonical terminal `partId`. use `query` with `{"select":{"kind":"assembly"}}` to list `availableParts`; do not infer a part id from array order. more than one occurrence can reference the same part.
 
@@ -28,6 +28,25 @@ placements use a translation in mm and an axis-angle rotation in degrees or radi
 ```
 
 graph edits fail atomically with `ASSEMBLY_REFERENCE_STALE` when they would remove or split a referenced part. delete affected occurrences in an earlier revision before deleting their parts. an assembly can contain at most 64 occurrences.
+
+## ground mates and solve status
+
+use `feature` with `kind: "assembly_mate"` to create, update, or delete a ground mate. a ground mate fixes one occurrence at its current explicit transform and leaves its transform compatible with the viewer, checks, interference, and export paths.
+
+```json
+{
+  "action": "create",
+  "kind": "assembly_mate",
+  "expectedRevision": 3,
+  "requestId": "ground-base",
+  "mateId": "base-ground",
+  "parameters": {"kind": "ground", "occurrenceId": "plate-left"}
+}
+```
+
+update a ground mate with `"set":{"occurrenceId":"other-occurrence"}`. a mate id is caller-supplied and unique. one occurrence can have at most one ground mate; a second ground fails atomically with `MATE_CONFLICT`. an occurrence with a mate cannot be deleted until its mate is deleted.
+
+an assembly query returns sorted `mates`, `solveStatus`, `underConstrainedOccurrenceIds`, and one status row per connected component. each occurrence reports `grounded`, `mateIds`, `remainingDof`, and `freeMotions`. a ground occurrence has zero remaining degrees of freedom. an unmated occurrence has six degrees of freedom and remains at its explicit stored transform. under-constraint is a successful state, not a failed solve.
 
 ## exact interference and clearance
 
@@ -59,5 +78,3 @@ on an apple m5 pro, 120 repeated box pairs took 0.108 seconds for touching commo
 use `export` with `mode: "assembly"` to preserve the product tree, named occurrences, shared definitions, and rigid placements. assembly mode exports all manufacturing occurrences and rejects `partIds`; reference occurrences are returned in `excludedOccurrenceIds`. `action: "preflight"` accepts assembly mode without a path and verifies the same structure without publishing.
 
 fresh-process validation uses xcaf labels and references, not only geometry reimport. publication stages a private sibling file and commits it with one exclusive rename, so validation and write failures publish nothing. compound mode and separate manufacturing manifests keep their existing behavior.
-
-mates are not available yet.

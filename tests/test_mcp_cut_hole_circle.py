@@ -119,6 +119,7 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
         "port_cutout",
         "screw_closure",
         "assembly_occurrence",
+        "assembly_mate",
     ]
     assert set(feature_schema["properties"]["set"]["oneOf"][0]["properties"]) == {"distance"}
     hole_update = feature_schema["properties"]["set"]["oneOf"][1]["properties"]

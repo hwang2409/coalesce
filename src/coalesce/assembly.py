@@ -10,7 +10,9 @@ from .graph import GraphError
 from .parts import TerminalPart
 
 MAX_OCCURRENCES = 64
+MAX_MATES = 128
 MAX_OCCURRENCE_ID_LENGTH = 128
+MAX_MATE_ID_LENGTH = 128
 
 
 class AssemblyError(ValueError):
@@ -34,9 +36,17 @@ class Occurrence:
     transform: RigidTransform
 
 
+@dataclass(frozen=True)
+class Mate:
+    id: str
+    kind: str
+    occurrence_id: str
+
+
 @dataclass
 class Assembly:
     occurrences: dict[str, Occurrence] = field(default_factory=dict)
+    mates: dict[str, Mate] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -114,7 +124,11 @@ def assembly_to_dict(assembly: Assembly) -> dict[str, Any]:
                 },
             }
             for occurrence in sorted(assembly.occurrences.values(), key=lambda item: item.id)
-        ]
+        ],
+        "mates": [
+            {"id": mate.id, "kind": mate.kind, "occurrenceId": mate.occurrence_id}
+            for mate in sorted(assembly.mates.values(), key=lambda item: item.id)
+        ],
     }
 
 
@@ -154,13 +168,7 @@ def _occurrence_from_dict(row: Any, index: int) -> Occurrence:
     return Occurrence(occurrence_id, part_id, transform)
 
 
-def assembly_from_dict(value: Any) -> Assembly:
-    """Load a persisted assembly while rejecting malformed or duplicate identities."""
-    if value is None:
-        return Assembly()
-    if not isinstance(value, dict) or set(value) != {"occurrences"}:
-        raise _invalid_document("assembly must contain only occurrences", field="assembly")
-    rows = value["occurrences"]
+def _occurrences_from_dict(rows: Any) -> dict[str, Occurrence]:
     if not isinstance(rows, list):
         raise _invalid_document("assembly occurrences must be a list", field="assembly.occurrences")
     if len(rows) > MAX_OCCURRENCES:
@@ -175,7 +183,65 @@ def assembly_from_dict(value: Any) -> Assembly:
                 occurrenceId=occurrence.id,
             )
         occurrences[occurrence.id] = occurrence
-    return Assembly(occurrences)
+    return occurrences
+
+
+def _mate_from_dict(row: Any, index: int, occurrences: dict[str, Occurrence]) -> Mate:
+    field = f"assembly.mates.{index}"
+    if not isinstance(row, dict) or set(row) != {"id", "kind", "occurrenceId"}:
+        raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
+    mate_id = row["id"]
+    occurrence_id = row["occurrenceId"]
+    if not isinstance(mate_id, str) or not 1 <= len(mate_id) <= MAX_MATE_ID_LENGTH:
+        raise _invalid_document("assembly mate id is invalid", field=f"{field}.id")
+    if row["kind"] != "ground":
+        raise _invalid_document("assembly mate kind is invalid", field=f"{field}.kind")
+    if occurrence_id not in occurrences:
+        raise _invalid_document(
+            f"assembly mate references unknown occurrence: {occurrence_id}",
+            field=f"{field}.occurrenceId",
+            occurrenceId=occurrence_id,
+        )
+    return Mate(mate_id, "ground", occurrence_id)
+
+
+def _mates_from_dict(rows: Any, occurrences: dict[str, Occurrence]) -> dict[str, Mate]:
+    if not isinstance(rows, list):
+        raise _invalid_document("assembly mates must be a list", field="assembly.mates")
+    if len(rows) > MAX_MATES:
+        raise _invalid_document("assembly exceeds the 128 mate limit", field="assembly.mates")
+    mates: dict[str, Mate] = {}
+    grounded: dict[str, str] = {}
+    for index, row in enumerate(rows):
+        mate = _mate_from_dict(row, index, occurrences)
+        if mate.id in mates:
+            raise _invalid_document(
+                f"duplicate assembly mate id: {mate.id}",
+                field=f"assembly.mates.{index}.id",
+                mateId=mate.id,
+            )
+        if mate.occurrence_id in grounded:
+            raise _invalid_document(
+                f"assembly occurrence {mate.occurrence_id} has more than one ground mate",
+                field=f"assembly.mates.{index}.occurrenceId",
+                mateIds=sorted([grounded[mate.occurrence_id], mate.id]),
+                occurrenceId=mate.occurrence_id,
+            )
+        mates[mate.id] = mate
+        grounded[mate.occurrence_id] = mate.id
+    return mates
+
+
+def assembly_from_dict(value: Any, *, require_mates: bool = True) -> Assembly:
+    """Load a persisted assembly while rejecting malformed or duplicate identities."""
+    if value is None:
+        return Assembly()
+    expected_fields = {"occurrences", "mates"} if require_mates else {"occurrences"}
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        description = "occurrences and mates" if require_mates else "only occurrences"
+        raise _invalid_document(f"assembly must contain {description}", field="assembly")
+    occurrences = _occurrences_from_dict(value["occurrences"])
+    return Assembly(occurrences, _mates_from_dict(value["mates"], occurrences) if require_mates else {})
 
 
 def _reference_reason(part_id: str, part_ids: set[str]) -> str | None:

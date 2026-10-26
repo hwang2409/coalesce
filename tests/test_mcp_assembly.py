@@ -345,3 +345,107 @@ async def test_malformed_transform_is_structured_invalid_parameter(tmp_path):
     assert result["error"]["occurrenceId"] == "bad"
     assert "parameters.transform.rotation.axis" in result["error"]["message"]
     assert result["revision"] == 2
+
+
+def ground_create(revision, request_id, mate_id, occurrence_id):
+    return {
+        "action": "create",
+        "kind": "assembly_mate",
+        "expectedRevision": revision,
+        "requestId": request_id,
+        "mateId": mate_id,
+        "parameters": {"kind": "ground", "occurrenceId": occurrence_id},
+    }
+
+
+@pytest.mark.anyio
+async def test_real_stdio_ground_create_update_delete_replay_and_restart(tmp_path):
+    path = tmp_path / "ground.coalesce.json"
+    create_a = occurrence_create(2, "place-a", "a")
+    create_b = occurrence_create(3, "place-b", "b", 20)
+    ground = ground_create(4, "ground-a", "fixture", "a")
+    update = {
+        "action": "update",
+        "kind": "assembly_mate",
+        "expectedRevision": 5,
+        "requestId": "ground-b",
+        "mateId": "fixture",
+        "set": {"occurrenceId": "b"},
+    }
+    first = await run_server(
+        path,
+        [
+            ("sketch", SKETCH),
+            ("feature", FEATURE),
+            ("feature", create_a),
+            ("feature", create_b),
+            ("feature", ground),
+            ("feature", ground),
+            ("feature", update),
+            ("query", {"select": {"kind": "assembly"}}),
+        ],
+    )
+    assert first[5] == first[4]
+    assert first[7]["solveStatus"] == "UNDER_CONSTRAINED"
+    assert first[7]["underConstrainedOccurrenceIds"] == ["a"]
+    assert first[7]["mates"] == [{"mateId": "fixture", "kind": "ground", "occurrenceId": "b"}]
+    by_id = {row["occurrenceId"]: row for row in first[7]["occurrences"]}
+    assert (by_id["a"]["grounded"], by_id["a"]["remainingDof"]) == (False, 6)
+    assert (by_id["b"]["grounded"], by_id["b"]["remainingDof"]) == (True, 0)
+    assert by_id["a"]["mateIds"] == []
+    assert by_id["b"]["mateIds"] == ["fixture"]
+
+    restarted = await run_server(path, [("query", {"select": {"kind": "assembly"}})])
+    assert restarted[0] == first[7]
+
+    deleted = await run_server(
+        path,
+        [
+            (
+                "feature",
+                {
+                    "action": "delete",
+                    "kind": "assembly_mate",
+                    "expectedRevision": 6,
+                    "requestId": "unground",
+                    "mateId": "fixture",
+                },
+            ),
+            ("query", {"select": {"kind": "assembly"}}),
+        ],
+    )
+    assert deleted[0]["mateId"] == "fixture"
+    assert deleted[1]["underConstrainedOccurrenceIds"] == ["a", "b"]
+
+
+def test_duplicate_mate_and_second_ground_fail_atomically(tmp_path):
+    path = tmp_path / "ground-atomic.coalesce.json"
+    service = DocumentService(path, warmup=False)
+    assert service.sketch(SKETCH)["ok"]
+    assert service.feature(FEATURE)["ok"]
+    assert service.feature(occurrence_create(2, "place", "plate"))["ok"]
+    assert service.feature(ground_create(3, "ground", "fixture", "plate"))["ok"]
+    before = path.read_bytes()
+
+    duplicate = service.feature(ground_create(4, "duplicate", "fixture", "plate"))
+    assert duplicate["error"]["code"] == "DUPLICATE_ID"
+    assert path.read_bytes() == before
+
+    conflict = service.feature(ground_create(4, "second", "fixture-2", "plate"))
+    assert conflict["error"]["code"] == "MATE_CONFLICT"
+    assert conflict["error"]["mateIds"] == ["fixture", "fixture-2"]
+    assert conflict["error"]["occurrenceIds"] == ["plate"]
+    assert path.read_bytes() == before
+
+    delete_occurrence = service.feature(
+        {
+            "action": "delete",
+            "kind": "assembly_occurrence",
+            "expectedRevision": 4,
+            "requestId": "delete-grounded",
+            "occurrenceId": "plate",
+        }
+    )
+    assert delete_occurrence["error"]["code"] == "HAS_DEPENDENTS"
+    assert delete_occurrence["error"]["mateIds"] == ["fixture"]
+    assert path.read_bytes() == before

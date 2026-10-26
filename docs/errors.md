@@ -89,7 +89,9 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `STALE_REVISION` | request | export was requested from an old revision | query revision, review the model, and export that revision |
 | `INVALID_DOCUMENT` | request | a saved document cannot be loaded under the current format | correct or migrate the named field before starting coalesce |
 | `ASSEMBLY_OCCURRENCE_LIMIT` | request | an assembly create would exceed 64 named occurrences | delete an occurrence before adding another |
+| `ASSEMBLY_MATE_LIMIT` | request | an assembly create would exceed 128 named mates | delete a mate before adding another |
 | `ASSEMBLY_REFERENCE_STALE` | reference | a graph edit would remove or split a part used by a named occurrence | delete the named occurrences first or preserve the canonical part ids |
+| `MATE_CONFLICT` | geometry | one connected component would have more than one ground | inspect `mateIds` and `occurrenceIds`, then edit or remove one ground mate |
 | `ASSEMBLY_EXPORT_EMPTY` | export | an assembly export has no manufacturing occurrence | add a manufacturing occurrence before exporting |
 | `CYCLE` | dependency | the feature graph contains a dependency cycle | reorder or remove the cyclic dependency |
 | `HAS_DEPENDENTS` | dependency | non-cascade delete would orphan dependent nodes | inspect the listed dependents, then delete them or use cascade deliberately |

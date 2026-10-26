@@ -20,6 +20,12 @@ from coalesce.regen import regenerate as real_regenerate
 from coalesce.schemas import ACTION_SCHEMAS, TOOL_SCHEMAS
 from coalesce.server import _call_tool, create_server
 from coalesce.service import (
+    AssemblyMateCreate,
+    AssemblyMateDelete,
+    AssemblyMateUpdate,
+    AssemblyOccurrenceCreate,
+    AssemblyOccurrenceDelete,
+    AssemblyOccurrenceUpdate,
     DocumentService,
     ExtrudeCreate,
     ExtrudeUpdate,
@@ -681,12 +687,25 @@ def test_mutation_schema_fields_match_typed_operations():
         },
     }
 
+    published_operation_types = {
+        **operation_types,
+        "feature": {
+            **operation_types["feature"],
+            "occurrence_create": AssemblyOccurrenceCreate,
+            "occurrence_update": AssemblyOccurrenceUpdate,
+            "occurrence_delete": AssemblyOccurrenceDelete,
+            "mate_create": AssemblyMateCreate,
+            "mate_update": AssemblyMateUpdate,
+            "mate_delete": AssemblyMateDelete,
+        },
+    }
+
     for tool, actions in operation_types.items():
         published = TOOL_SCHEMAS[tool]
         assert set(published["properties"]["action"]["enum"]) == set(actions)
-        expected_fields = set().union(*(operation.wire_fields() for operation in actions.values()))
-        if tool == "feature":
-            expected_fields.add("occurrenceId")
+        expected_fields = set().union(
+            *(operation.wire_fields() for operation in published_operation_types[tool].values())
+        )
         assert set(published["properties"]) == expected_fields
         for action, operation_type in actions.items():
             private = ACTION_SCHEMAS[tool][action]
