@@ -2,7 +2,7 @@ import itertools
 import json
 
 import pytest
-from build123d import Cylinder, GeomType
+from build123d import Box, Compound, Cylinder, GeomType, Pos
 
 from coalesce.assembly import (
     Assembly,
@@ -160,21 +160,178 @@ def test_inconsistent_cycle_reports_full_culprit_cycle():
     assert error.value.details["occurrenceIds"] == ["a", "b", "c"]
 
 
-def test_coupled_cycle_that_needs_free_dof_is_unsupported():
-    ids = ("a", "b", "c")
-    occurrences, resolved, provenance, references = _fixture(ids)
+def _custom_fixture(shape, roles, transforms):
+    body = BodySource("part", "body")
+    part = TerminalPart("part/body", "part", "manufacturing", body, "part", shape)
+    references = {
+        role: Reference("part", role, source=role, body=body) for role in roles
+    }
+    provenance = {
+        "part": [
+            Candidate(ElementKey("part", role, source=role, body=body), face)
+            for role, face in roles.items()
+        ]
+    }
+    occurrences = {
+        occurrence_id: Occurrence(occurrence_id, part.part_id, transform)
+        for occurrence_id, transform in transforms.items()
+    }
+    resolved = [ResolvedOccurrence(item, part, shape) for item in occurrences.values()]
+    return occurrences, resolved, provenance, references
+
+
+def _planar_cycle(c_translation):
+    shape = Box(10, 10, 10)
+    roles = {}
+    for face in shape.faces():
+        normal = tuple(face.normal_at())
+        axis = max(range(3), key=lambda index: abs(normal[index]))
+        roles[f"{'xyz'[axis]}{'p' if normal[axis] > 0 else 'm'}"] = face
+    identity = RigidTransform((0, 0, 0), (0, 0, 1), 0)
+    occurrences, resolved, provenance, references = _custom_fixture(
+        shape,
+        roles,
+        {
+            "a": identity,
+            "b": RigidTransform((0, 30, 5), (0, 0, 1), 0),
+            "c": RigidTransform(c_translation, (0, 0, 1), 0),
+        },
+    )
+
+    def planar(mate_id, first, first_role, second, second_role):
+        return Mate(
+            mate_id,
+            "planar",
+            first=MateSide(first, references[first_role]),
+            second=MateSide(second, references[second_role]),
+            orientation="opposed",
+        )
+
     mates = [
         Mate("ground", "ground", "a"),
-        _mate("ab-axis", "concentric", "a", "b", references),
-        _mate("bc-seat", "planar", "b", "c", references),
-        _mate("ca-axis", "concentric", "c", "a", references),
+        planar("ab", "a", "zp", "b", "zm"),
+        planar("ac", "a", "yp", "c", "ym"),
+        planar("bc", "b", "xp", "c", "xm"),
     ]
+    return occurrences, resolved, provenance, references, mates, planar
+
+
+def test_planar_cycle_that_tree_seed_misses_is_unsupported_with_exact_cycle():
+    occurrences, resolved, provenance, _, mates, _ = _planar_cycle((30, 5, 0))
 
     with pytest.raises(AssemblyError) as error:
         _solve(occurrences, resolved, provenance, mates)
 
     assert error.value.code == "MATE_SOLVE_UNSUPPORTED"
-    assert error.value.details["mateIds"] == ["ab-axis", "bc-seat", "ca-axis"]
+    assert error.value.details["mateIds"] == ["ab", "ac", "bc"]
+    assert error.value.details["occurrenceIds"] == ["a", "b", "c"]
+
+
+def test_planar_cycle_passes_when_tree_seed_satisfies_closer():
+    occurrences, resolved, provenance, _, mates, _ = _planar_cycle((10, 5, 0))
+
+    result = _solve(occurrences, resolved, provenance, mates)
+
+    assert result.redundant_mate_ids == ["bc"]
+
+
+def _concentric_cycle(c_angle):
+    shape = Compound(children=[Cylinder(2, 10), Pos(10, 0, 0) * Cylinder(2, 10)])
+    cylinders = sorted(
+        (face for face in shape.faces() if face.geom_type is GeomType.CYLINDER),
+        key=lambda face: face.center().X,
+    )
+    roles = {"axis0": cylinders[0], "axis1": cylinders[1]}
+    occurrences, resolved, provenance, references = _custom_fixture(
+        shape,
+        roles,
+        {
+            "a": RigidTransform((0, 0, 0), (0, 0, 1), 0),
+            "b": RigidTransform((0, 0, 0), (0, 0, 1), 0),
+            "c": RigidTransform((0, 0, 0), (0, 0, 1), c_angle),
+        },
+    )
+
+    def concentric(mate_id, first, first_role, second, second_role):
+        return Mate(
+            mate_id,
+            "concentric",
+            first=MateSide(first, references[first_role]),
+            second=MateSide(second, references[second_role]),
+            orientation="aligned",
+        )
+
+    mates = [
+        Mate("ground", "ground", "a"),
+        concentric("ab", "a", "axis0", "b", "axis0"),
+        concentric("ac", "a", "axis0", "c", "axis0"),
+        concentric("bc", "b", "axis1", "c", "axis1"),
+    ]
+    return occurrences, resolved, provenance, mates
+
+
+def test_concentric_cycle_that_tree_seed_misses_is_unsupported_with_exact_cycle():
+    occurrences, resolved, provenance, mates = _concentric_cycle(90)
+
+    with pytest.raises(AssemblyError) as error:
+        _solve(occurrences, resolved, provenance, mates)
+
+    assert error.value.code == "MATE_SOLVE_UNSUPPORTED"
+    assert error.value.details["mateIds"] == ["ab", "ac", "bc"]
+    assert error.value.details["occurrenceIds"] == ["a", "b", "c"]
+
+
+def test_concentric_cycle_passes_when_tree_seed_satisfies_closer():
+    occurrences, resolved, provenance, mates = _concentric_cycle(0)
+
+    result = _solve(occurrences, resolved, provenance, mates)
+
+    assert result.redundant_mate_ids == ["bc"]
+
+
+@pytest.mark.parametrize("grounded", ["a", "b"])
+def test_consistent_planar_cycle_with_concentric_leaf_solves_for_either_ground(grounded):
+    occurrences, resolved, provenance, references = _fixture(("a", "b", "c", "d"))
+    cycle_mates = [
+        Mate("ground", "ground", grounded),
+        _mate("ab", "planar", "a", "b", references, offset=10),
+        _mate("bc", "planar", "b", "c", references, offset=10),
+        _mate("ca", "planar", "a", "c", references, offset=30),
+        _mate("bd", "concentric", "b", "d", references),
+    ]
+
+    result = _solve(occurrences, resolved, provenance, cycle_mates)
+
+    assert set(result.redundant_mate_ids) <= {"ab", "bc", "ca"}
+    assert len(result.redundant_mate_ids) == 1
+
+
+def test_fully_constrained_inconsistent_cycle_is_conflict_with_exact_cycle():
+    occurrences, resolved, provenance, _, _, planar = _planar_cycle((0, 0, 0))
+    mates = [Mate("ground", "ground", "a")]
+    for pair, first, second in (("ab", "a", "b"), ("ac", "a", "c")):
+        mates.extend(
+            [
+                planar(f"{pair}-x", first, "xp", second, "xm"),
+                planar(f"{pair}-y", first, "yp", second, "ym"),
+                planar(f"{pair}-z", first, "zp", second, "zm"),
+            ]
+        )
+    mates.append(planar("bc-conflict", "b", "xp", "c", "xp"))
+
+    with pytest.raises(AssemblyError) as error:
+        _solve(occurrences, resolved, provenance, mates)
+
+    assert error.value.code == "MATE_CONFLICT"
+    assert error.value.details["mateIds"] == [
+        "ab-x",
+        "ab-y",
+        "ab-z",
+        "ac-x",
+        "ac-y",
+        "ac-z",
+        "bc-conflict",
+    ]
     assert error.value.details["occurrenceIds"] == ["a", "b", "c"]
 
 
