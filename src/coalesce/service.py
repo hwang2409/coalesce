@@ -24,6 +24,7 @@ from .assembly import (
     Assembly,
     AssemblyError,
     Mate,
+    MateSide,
     Occurrence,
     RigidTransform,
     normalize_transform,
@@ -37,6 +38,7 @@ from .assembly_inspection import (
     inspection_deadline,
     inspection_pairs,
 )
+from .assembly_solver import AssemblySolveResult, solve_assembly
 from .availability import SketchFailure, SolveAvailability, UnavailableFeature
 from .board_import import BoardImportError, mounting_holes, read_kicad_board
 from .constrained_sketch import ConstrainedSketch, ConstrainedSketchPayloadError, result_payload
@@ -93,12 +95,10 @@ from .references import (
     BodySource,
     Cardinality,
     HoleSurfaceSource,
-    MaxAlong,
-    Normal,
-    Position,
     Reference,
-    SketchSegmentSource,
     edge_role_catalog,
+    face_role_catalog,
+    reference_from_dict,
 )
 from .refresh_delta import bounded_summary, format_summary, refresh_delta
 from .requirements import InvalidHoleIds, reduce_gate
@@ -359,7 +359,11 @@ class AssemblyMateCreate(_Operation):
     expectedRevision: float
     requestId: str
     mateId: str
-    occurrence_id: str
+    occurrence_id: str | None = None
+    first: MateSide | None = None
+    second: MateSide | None = None
+    orientation: str | None = None
+    offset: float = 0.0
     kind: ClassVar[str] = "assembly_mate"
 
     @classmethod
@@ -373,7 +377,11 @@ class AssemblyMateUpdate(_Operation):
     expectedRevision: float
     requestId: str
     mateId: str
-    occurrence_id: str
+    occurrence_id: str | None = None
+    first: MateSide | None = None
+    second: MateSide | None = None
+    orientation: str | None = None
+    offset: float = 0.0
     kind: ClassVar[str] = "assembly_mate"
 
     @classmethod
@@ -1855,12 +1863,37 @@ def _parse_assembly_mate(
     if action is Action.DELETE:
         return AssemblyMateDelete(**common)
     values = payload.get("parameters", {}) if action is Action.CREATE else payload.get("set", {})
-    if action is Action.CREATE and values.get("kind") != "ground":
-        raise RequestError("INVALID_PARAMETER", "assembly mate kind must be ground")
-    occurrence_id = values.get("occurrenceId")
-    if action is Action.CREATE:
-        return AssemblyMateCreate(**common, occurrence_id=occurrence_id)
-    return AssemblyMateUpdate(**common, occurrence_id=occurrence_id)
+    mate_kind = values.get("kind") if action is Action.CREATE else ("planar" if "first" in values else "ground")
+    operation_type = AssemblyMateCreate if action is Action.CREATE else AssemblyMateUpdate
+    if mate_kind == "ground":
+        return operation_type(**common, occurrence_id=values.get("occurrenceId"))
+    if mate_kind != "planar":
+        raise RequestError("INVALID_PARAMETER", "assembly mate kind must be ground or planar")
+    try:
+        first = MateSide(values["first"]["occurrenceId"], _reference(values["first"]["reference"]))
+        second = MateSide(values["second"]["occurrenceId"], _reference(values["second"]["reference"]))
+        orientation = values["orientation"]
+        offset = values["offset"]
+        if offset["unit"] != "mm":
+            raise RequestError("UNIT_MISMATCH", "planar mate offset unit must be mm")
+        offset_value = _finite_number(offset["value"], "offset.value")
+        if orientation not in {"aligned", "opposed"}:
+            raise RequestError(
+                "INVALID_PARAMETER", "planar mate orientation must be aligned or opposed"
+            )
+    except (KeyError, TypeError, ValueError) as error:
+        raise RequestError("INVALID_PARAMETER", "planar mate parameters are malformed") from error
+    if first.reference.cardinality is not Cardinality.ONE or second.reference.cardinality is not Cardinality.ONE:
+        raise RequestError("INVALID_PARAMETER", "planar mate references must have cardinality one")
+    if first.occurrence_id == second.occurrence_id:
+        raise RequestError("INVALID_PARAMETER", "planar mate must connect two occurrences")
+    return operation_type(
+        **common,
+        first=first,
+        second=second,
+        orientation=orientation,
+        offset=offset_value,
+    )
 
 
 def _parse_feature(
@@ -2024,32 +2057,10 @@ def _availability_request_error(availability: SolveAvailability) -> RequestError
 
 
 def _reference(payload: dict[str, Any]) -> Reference:
-    source = payload.get("source")
-    if isinstance(source, dict) and source.get("kind") == "sketch_segment":
-        source = SketchSegmentSource(source["sketch"], source["entity"], source["segment"])
-    elif isinstance(source, dict) and source.get("kind") == "hole_surface":
-        source = HoleSurfaceSource(source["feature"], source["surface"], source["name"])
-    body = payload.get("body")
-    if isinstance(body, dict) and body.get("kind") == "body_source":
-        body = BodySource(body["feature"], body["entity"])
-    filters = []
-    for item in payload.get("filters", []):
-        kind = item.get("kind")
-        cls = {"Normal": Normal, "Position": Position, "MaxAlong": MaxAlong}.get(kind)
-        if cls is None:
-            raise RequestError("INVALID_PARAMETER", f"unknown reference filter: {kind}")
-        values = {key: value for key, value in item.items() if key != "kind"}
-        values["direction"] = tuple(values["direction"])
-        filters.append(cls(**values))
-    return Reference(
-        feature=payload["feature"],
-        role=payload["role"],
-        cardinality=Cardinality(payload.get("cardinality", "one")),
-        count=payload.get("count"),
-        source=source,
-        body=body,
-        filters=filters,
-    )
+    try:
+        return reference_from_dict(payload)
+    except ValueError as error:
+        raise RequestError("INVALID_PARAMETER", str(error)) from error
 
 
 def _camel_key(value: str) -> str:
@@ -3810,10 +3821,18 @@ class DocumentService:
         *,
         loading: bool = False,
         assembly: Assembly | None = None,
-    ) -> None:
+    ) -> AssemblySolveResult:
         assembly = self._document.assembly if assembly is None else assembly
         try:
-            resolve_occurrences(assembly, terminal_parts(result, role=None))
+            resolved = resolve_occurrences(assembly, terminal_parts(result, role=None))
+            solved = solve_assembly(assembly, resolved, result.provenance)
+            if loading and solved.assembly.occurrences != assembly.occurrences:
+                raise AssemblyError(
+                    "INVALID_DOCUMENT",
+                    "persisted assembly transforms disagree with regenerated mate solution",
+                    occurrenceIds=sorted(assembly.occurrences),
+                )
+            return solved
         except AssemblyError as error:
             if loading:
                 raise GraphError(
@@ -3822,6 +3841,10 @@ class DocumentService:
                     **error.details,
                 ) from error
             raise RequestError(error.code, str(error), **error.details) from error
+
+    def _resolved_assembly(self):
+        assert self._regen is not None
+        return resolve_occurrences(self._document.assembly, terminal_parts(self._regen, role=None))
 
     def _assert_effect(self, operation: MutationOperation, result: RegenResult) -> None:
         if not isinstance(operation, (CutCreate, HoleCreate)):
@@ -4099,7 +4122,7 @@ class DocumentService:
             raise _availability_request_error(result.availability)
         self._assert_effect(parsed, result)
         self._validate_treatment_parts(parsed, result, changed_id)
-        self._validate_assembly_references(result)
+        solved = self._validate_assembly_references(result)
         deletion_fields, deletion_change = _deletion_result_fields(deletion, result)
         previous = self._document.revision
         before = self._document.graph
@@ -4129,7 +4152,7 @@ class DocumentService:
             **refresh_fields,
         }
         document, durable = self._save_response(
-            graph, self._document.assembly, response, body_hash
+            graph, solved.assembly, response, body_hash
         )
         self._document = document
         self._regen = result
@@ -4355,7 +4378,11 @@ class DocumentService:
     @staticmethod
     def _ensure_occurrence_has_no_mates(assembly: Assembly, occurrence_id: str) -> None:
         dependent_mates = sorted(
-            mate.id for mate in assembly.mates.values() if mate.occurrence_id == occurrence_id
+            mate.id
+            for mate in assembly.mates.values()
+            if mate.occurrence_id == occurrence_id
+            or (mate.first is not None and mate.first.occurrence_id == occurrence_id)
+            or (mate.second is not None and mate.second.occurrence_id == occurrence_id)
         )
         if dependent_mates:
             raise RequestError(
@@ -4435,29 +4462,30 @@ class DocumentService:
                 "ASSEMBLY_MATE_LIMIT", "an assembly can contain at most 128 mates", limit=MAX_MATES
             )
         assert isinstance(parsed, (AssemblyMateCreate, AssemblyMateUpdate))
-        if parsed.occurrence_id not in assembly.occurrences:
+        occurrence_ids = (
+            [parsed.occurrence_id]
+            if parsed.occurrence_id is not None
+            else [parsed.first.occurrence_id, parsed.second.occurrence_id]
+        )
+        unknown = [item for item in occurrence_ids if item not in assembly.occurrences]
+        if unknown:
             raise RequestError(
                 "UNKNOWN_ID",
-                f"unknown assembly occurrence: {parsed.occurrence_id}",
-                occurrenceId=parsed.occurrence_id,
+                f"unknown assembly occurrence: {unknown[0]}",
+                occurrenceId=unknown[0],
             )
-        conflict_ids = sorted(
-            [
-                mate.id
-                for mate in assembly.mates.values()
-                if mate.occurrence_id == parsed.occurrence_id and mate.id != parsed.mateId
-            ]
-            + [parsed.mateId]
+        updated = (
+            Mate(parsed.mateId, "ground", parsed.occurrence_id)
+            if parsed.occurrence_id is not None
+            else Mate(
+                parsed.mateId,
+                "planar",
+                first=parsed.first,
+                second=parsed.second,
+                orientation=parsed.orientation,
+                offset=parsed.offset,
+            )
         )
-        if len(conflict_ids) > 1:
-            raise RequestError(
-                "MATE_CONFLICT",
-                f"assembly occurrence {parsed.occurrence_id} cannot have more than one ground mate",
-                mateIds=conflict_ids,
-                occurrenceIds=[parsed.occurrence_id],
-                hint="edit or remove one of the ground mates",
-            )
-        updated = Mate(parsed.mateId, "ground", parsed.occurrence_id)
         assembly.mates[updated.id] = updated
         return assembly, updated
 
@@ -4470,7 +4498,7 @@ class DocumentService:
             "units": "mm",
             "mateId": mate.id,
             "kind": mate.kind,
-            "occurrenceId": mate.occurrence_id,
+            **({"occurrenceId": mate.occurrence_id} if mate.kind == "ground" else {}),
             "affectedMateIds": [mate.id],
             "changedOccurrences": [],
             "warnings": [],
@@ -4506,10 +4534,11 @@ class DocumentService:
                 self._ensure_geometry()
                 assembly, occurrence = self._updated_assembly(parsed)
                 assert self._regen is not None
-                self._validate_assembly_references(self._regen, assembly=assembly)
-                response = self._occurrence_response(payload, occurrence)
+                solved = self._validate_assembly_references(self._regen, assembly=assembly)
+                effective = solved.assembly.occurrences.get(occurrence.id, occurrence)
+                response = self._occurrence_response(payload, effective)
                 document, durable = self._save_response(
-                    self._document.graph, assembly, response, body_hash
+                    self._document.graph, solved.assembly, response, body_hash
                 )
                 self._document = document
                 assert self._regen is not None
@@ -4531,9 +4560,17 @@ class DocumentService:
                 assert isinstance(parsed, (AssemblyMateCreate, AssemblyMateUpdate, AssemblyMateDelete))
                 self._ensure_geometry()
                 assembly, mate = self._updated_mates(parsed)
+                assert self._regen is not None
+                solved = self._validate_assembly_references(self._regen, assembly=assembly)
                 response = self._mate_response(payload, mate)
+                response["changedOccurrences"] = [
+                    occurrence_id
+                    for occurrence_id in sorted(assembly.occurrences)
+                    if assembly.occurrences[occurrence_id].transform
+                    != solved.assembly.occurrences[occurrence_id].transform
+                ]
                 document, durable = self._save_response(
-                    self._document.graph, assembly, response, body_hash
+                    self._document.graph, solved.assembly, response, body_hash
                 )
                 self._document = document
                 assert self._regen is not None
@@ -4810,36 +4847,10 @@ class DocumentService:
                     hint="check the target directory and retry with a new path",
                 )
 
-    @staticmethod
-    def _assembly_solve_payload(assembly: Assembly) -> dict[str, Any]:
-        mate_by_occurrence = {mate.occurrence_id: mate for mate in assembly.mates.values()}
-        free_motions = [
-            "translateX",
-            "translateY",
-            "translateZ",
-            "rotateX",
-            "rotateY",
-            "rotateZ",
-        ]
-        status_by_occurrence = {}
-        for occurrence_id in sorted(assembly.occurrences):
-            mate = mate_by_occurrence.get(occurrence_id)
-            status_by_occurrence[occurrence_id] = {
-                "grounded": mate is not None,
-                "remainingDof": 0 if mate is not None else 6,
-                "freeMotions": [] if mate is not None else free_motions,
-                "mateIds": [mate.id] if mate is not None else [],
-            }
-        under_constrained = [
-            occurrence_id
-            for occurrence_id, status in status_by_occurrence.items()
-            if not status["grounded"]
-        ]
-        return {
-            "solveStatus": "UNDER_CONSTRAINED" if under_constrained else "FULLY_CONSTRAINED",
-            "underConstrainedOccurrenceIds": under_constrained,
-            "statusByOccurrence": status_by_occurrence,
-        }
+    def _assembly_solve_payload(self, assembly: Assembly) -> AssemblySolveResult:
+        assert self._regen is not None
+        resolved = resolve_occurrences(assembly, terminal_parts(self._regen, role=None))
+        return solve_assembly(assembly, resolved, self._regen.provenance)
 
     def _assembly_query(self, base: dict[str, Any]) -> dict[str, Any]:
         assert self._regen is not None
@@ -4867,7 +4878,7 @@ class DocumentService:
                 "volume": {"value": item.part.shape.volume, "unit": "mm^3"},
                 "area": {"value": item.part.shape.area, "unit": "mm^2"},
                 "referenceStatus": "OK",
-                **solve["statusByOccurrence"][item.occurrence.id],
+                **solve.status_by_occurrence[item.occurrence.id],
             }
             for item in resolved
         ]
@@ -4881,24 +4892,32 @@ class DocumentService:
             for part in sorted(parts, key=lambda item: item.part_id)
         ]
         mates = [
-            {"mateId": mate.id, "kind": mate.kind, "occurrenceId": mate.occurrence_id}
+            (
+                {"mateId": mate.id, "kind": "ground", "occurrenceId": mate.occurrence_id}
+                if mate.kind == "ground"
+                else {
+                    "mateId": mate.id,
+                    "kind": "planar",
+                    "first": {
+                        "occurrenceId": mate.first.occurrence_id,
+                        "reference": mate.first.reference.to_dict(),
+                    },
+                    "second": {
+                        "occurrenceId": mate.second.occurrence_id,
+                        "reference": mate.second.reference.to_dict(),
+                    },
+                    "orientation": mate.orientation,
+                    "offset": {"value": mate.offset, "unit": "mm"},
+                }
+            )
             for mate in sorted(self._document.assembly.mates.values(), key=lambda item: item.id)
-        ]
-        components = [
-            {
-                "occurrenceIds": [item["occurrenceId"]],
-                "mateIds": item["mateIds"],
-                "status": "FULLY_CONSTRAINED" if item["grounded"] else "UNDER_CONSTRAINED",
-                "remainingDof": item["remainingDof"],
-                "grounded": item["grounded"],
-            }
-            for item in occurrences
         ]
         return {
             **base,
-            "solveStatus": solve["solveStatus"],
-            "underConstrainedOccurrenceIds": solve["underConstrainedOccurrenceIds"],
-            "components": components,
+            "solveStatus": solve.solve_status,
+            "underConstrainedOccurrenceIds": solve.under_constrained_occurrence_ids,
+            "redundantMateIds": solve.redundant_mate_ids,
+            "components": solve.components,
             "mates": mates,
             "occurrences": occurrences,
             "availableParts": available,
@@ -4911,7 +4930,7 @@ class DocumentService:
             if (
                 not graph_query
                 and kind
-                in {"measurements", "feature", "reference", "edge_roles", "enclosure", "assembly"}
+                in {"measurements", "feature", "reference", "edge_roles", "face_roles", "enclosure", "assembly"}
                 and (failure := self._geometry_failure("query"))
             ):
                 return failure
@@ -4948,6 +4967,8 @@ class DocumentService:
                 return self._query_reference(select, base)
             if kind == "edge_roles":
                 return self._query_edge_roles(select, base)
+            if kind == "face_roles":
+                return self._query_face_roles(select, base)
             return _safe_error(
                 self._document.revision,
                 None,
@@ -5056,6 +5077,22 @@ class DocumentService:
             **base,
             "featureId": feature,
             "roles": edge_role_catalog(self._regen.provenance, feature),
+        }
+
+    def _query_face_roles(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+        feature = select.get("id")
+        if feature not in self._document.graph.nodes:
+            return _safe_error(
+                self._document.revision,
+                None,
+                "UNKNOWN_ID",
+                f"unknown feature: {feature}",
+                operation="query.face_roles",
+            )
+        return {
+            **base,
+            "featureId": feature,
+            "roles": face_role_catalog(self._regen.provenance, feature),
         }
 
     def _query_reference(self, select: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:

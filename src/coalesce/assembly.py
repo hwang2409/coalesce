@@ -8,6 +8,7 @@ from typing import Any
 
 from .graph import GraphError
 from .parts import TerminalPart
+from .references import Reference, reference_from_dict
 
 MAX_OCCURRENCES = 64
 MAX_MATES = 128
@@ -37,10 +38,20 @@ class Occurrence:
 
 
 @dataclass(frozen=True)
+class MateSide:
+    occurrence_id: str
+    reference: Reference
+
+
+@dataclass(frozen=True)
 class Mate:
     id: str
     kind: str
-    occurrence_id: str
+    occurrence_id: str | None = None
+    first: MateSide | None = None
+    second: MateSide | None = None
+    orientation: str | None = None
+    offset: float = 0.0
 
 
 @dataclass
@@ -126,7 +137,24 @@ def assembly_to_dict(assembly: Assembly) -> dict[str, Any]:
             for occurrence in sorted(assembly.occurrences.values(), key=lambda item: item.id)
         ],
         "mates": [
-            {"id": mate.id, "kind": mate.kind, "occurrenceId": mate.occurrence_id}
+            (
+                {"id": mate.id, "kind": "ground", "occurrenceId": mate.occurrence_id}
+                if mate.kind == "ground"
+                else {
+                    "id": mate.id,
+                    "kind": "planar",
+                    "first": {
+                        "occurrenceId": mate.first.occurrence_id,
+                        "reference": mate.first.reference.to_dict(),
+                    },
+                    "second": {
+                        "occurrenceId": mate.second.occurrence_id,
+                        "reference": mate.second.reference.to_dict(),
+                    },
+                    "orientation": mate.orientation,
+                    "offset": mate.offset,
+                }
+            )
             for mate in sorted(assembly.mates.values(), key=lambda item: item.id)
         ],
     }
@@ -186,23 +214,59 @@ def _occurrences_from_dict(rows: Any) -> dict[str, Occurrence]:
     return occurrences
 
 
-def _mate_from_dict(row: Any, index: int, occurrences: dict[str, Occurrence]) -> Mate:
-    field = f"assembly.mates.{index}"
-    if not isinstance(row, dict) or set(row) != {"id", "kind", "occurrenceId"}:
-        raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
-    mate_id = row["id"]
-    occurrence_id = row["occurrenceId"]
-    if not isinstance(mate_id, str) or not 1 <= len(mate_id) <= MAX_MATE_ID_LENGTH:
-        raise _invalid_document("assembly mate id is invalid", field=f"{field}.id")
-    if row["kind"] != "ground":
-        raise _invalid_document("assembly mate kind is invalid", field=f"{field}.kind")
+def _mate_side_from_dict(
+    value: Any, field: str, occurrences: dict[str, Occurrence]
+) -> MateSide:
+    if not isinstance(value, dict) or set(value) != {"occurrenceId", "reference"}:
+        raise _invalid_document("assembly planar mate side is malformed", field=field)
+    occurrence_id = value["occurrenceId"]
     if occurrence_id not in occurrences:
         raise _invalid_document(
             f"assembly mate references unknown occurrence: {occurrence_id}",
             field=f"{field}.occurrenceId",
             occurrenceId=occurrence_id,
         )
-    return Mate(mate_id, "ground", occurrence_id)
+    try:
+        reference = reference_from_dict(value["reference"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise _invalid_document("assembly planar mate reference is malformed", field=f"{field}.reference") from error
+    if reference.cardinality.value != "one":
+        raise _invalid_document("assembly mate references must have cardinality one", field=f"{field}.reference.cardinality")
+    return MateSide(occurrence_id, reference)
+
+
+def _mate_from_dict(row: Any, index: int, occurrences: dict[str, Occurrence]) -> Mate:
+    field = f"assembly.mates.{index}"
+    if not isinstance(row, dict):
+        raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
+    mate_id = row.get("id")
+    if not isinstance(mate_id, str) or not 1 <= len(mate_id) <= MAX_MATE_ID_LENGTH:
+        raise _invalid_document("assembly mate id is invalid", field=f"{field}.id")
+    if row.get("kind") == "ground":
+        if set(row) != {"id", "kind", "occurrenceId"}:
+            raise _invalid_document(f"assembly mate {index} has invalid fields", field=field)
+        occurrence_id = row["occurrenceId"]
+        if occurrence_id not in occurrences:
+            raise _invalid_document(
+                f"assembly mate references unknown occurrence: {occurrence_id}",
+                field=f"{field}.occurrenceId",
+                occurrenceId=occurrence_id,
+            )
+        return Mate(mate_id, "ground", occurrence_id)
+    if row.get("kind") != "planar" or set(row) != {
+        "id", "kind", "first", "second", "orientation", "offset"
+    }:
+        raise _invalid_document("assembly mate kind or fields are invalid", field=field)
+    if row["orientation"] not in {"aligned", "opposed"}:
+        raise _invalid_document("assembly planar mate orientation is invalid", field=f"{field}.orientation")
+    offset = row["offset"]
+    if type(offset) not in (int, float) or not math.isfinite(offset):
+        raise _invalid_document("assembly planar mate offset is invalid", field=f"{field}.offset")
+    first = _mate_side_from_dict(row["first"], f"{field}.first", occurrences)
+    second = _mate_side_from_dict(row["second"], f"{field}.second", occurrences)
+    if first.occurrence_id == second.occurrence_id:
+        raise _invalid_document("assembly planar mate must connect two occurrences", field=field)
+    return Mate(mate_id, "planar", first=first, second=second, orientation=row["orientation"], offset=float(offset))
 
 
 def _mates_from_dict(rows: Any, occurrences: dict[str, Occurrence]) -> dict[str, Mate]:
@@ -220,7 +284,7 @@ def _mates_from_dict(rows: Any, occurrences: dict[str, Occurrence]) -> dict[str,
                 field=f"assembly.mates.{index}.id",
                 mateId=mate.id,
             )
-        if mate.occurrence_id in grounded:
+        if mate.kind == "ground" and mate.occurrence_id in grounded:
             raise _invalid_document(
                 f"assembly occurrence {mate.occurrence_id} has more than one ground mate",
                 field=f"assembly.mates.{index}.occurrenceId",
@@ -228,7 +292,9 @@ def _mates_from_dict(rows: Any, occurrences: dict[str, Occurrence]) -> dict[str,
                 occurrenceId=mate.occurrence_id,
             )
         mates[mate.id] = mate
-        grounded[mate.occurrence_id] = mate.id
+        if mate.kind == "ground":
+            assert mate.occurrence_id is not None
+            grounded[mate.occurrence_id] = mate.id
     return mates
 
 

@@ -193,6 +193,40 @@ def _source_from_dict(
     raise ValueError(f"unknown reference source kind: {kind}")
 
 
+def reference_from_dict(value: Any) -> Reference:
+    if not isinstance(value, dict):
+        raise TypeError("reference must be an object")
+    body = value.get("body")
+    if body is not None and (
+        not isinstance(body, dict) or body.get("kind") != "body_source"
+    ):
+        raise ValueError("reference body must be a body_source")
+    filters = []
+    filter_types = {"Normal": Normal, "Position": Position, "MaxAlong": MaxAlong}
+    for item in value.get("filters", []):
+        if not isinstance(item, dict):
+            raise TypeError("reference filter must be an object")
+        kind = item.get("kind")
+        if kind not in filter_types:
+            raise ValueError(f"unknown reference filter: {kind}")
+        values = {key: item_value for key, item_value in item.items() if key != "kind"}
+        values["direction"] = tuple(values["direction"])
+        filters.append(filter_types[kind](**values))
+    return Reference(
+        feature=value["feature"],
+        role=value["role"],
+        cardinality=Cardinality(value.get("cardinality", "one")),
+        count=value.get("count"),
+        source=_source_from_dict(value.get("source")),
+        body=(
+            BodySource(**{key: item for key, item in body.items() if key != "kind"})
+            if body is not None
+            else None
+        ),
+        filters=filters,
+    )
+
+
 @dataclass
 class Resolution:
     status: Status
@@ -230,6 +264,55 @@ def _edge_orientation(entity: Any) -> str:
     if isclose(z, 0.0, abs_tol=1e-6):
         return "horizontal"
     return "angled"
+
+
+def _face_role_entry(feature: str, role: str, candidates: list[Candidate]) -> dict[str, Any]:
+    types = {candidate.entity.geom_type.name for candidate in candidates}
+    areas = [float(candidate.entity.area) for candidate in candidates]
+    descriptor = candidates[0].descriptor
+    frame = None
+    if len(candidates) == 1 and {"center", "normal"} <= descriptor.keys():
+        frame = {
+            "origin": list(descriptor["center"]),
+            "normal": list(descriptor["normal"]),
+        }
+    area = (
+        {"value": areas[0], "unit": "mm^2"}
+        if len(areas) == 1
+        else {"minimum": min(areas), "maximum": max(areas), "unit": "mm^2"}
+    )
+    example = Reference(
+        feature,
+        role,
+        source=candidates[0].key.source,
+        body=candidates[0].key.body,
+    ).to_dict()
+    return {
+        "role": role,
+        "faceCount": len(candidates),
+        "surfaceType": next(iter(types)) if len(types) == 1 else "MIXED",
+        "area": area,
+        "frame": frame,
+        "exampleReference": example,
+    }
+
+
+def face_role_catalog(
+    provenance: dict[str, list[Candidate]], feature: str
+) -> list[dict[str, Any]]:
+    from build123d import Face
+
+    by_role: dict[str, list[Candidate]] = {}
+    candidates = (candidate for group in provenance.values() for candidate in group)
+    for candidate in candidates:
+        if candidate.key.feature == feature and isinstance(candidate.entity, Face):
+            role_candidates = by_role.setdefault(candidate.key.role, [])
+            if not any(candidate.entity.is_same(item.entity) for item in role_candidates):
+                role_candidates.append(candidate)
+    return [
+        _face_role_entry(feature, role, candidates)
+        for role, candidates in sorted(by_role.items())
+    ]
 
 
 def edge_role_catalog(

@@ -91,7 +91,10 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `ASSEMBLY_OCCURRENCE_LIMIT` | request | an assembly create would exceed 64 named occurrences | delete an occurrence before adding another |
 | `ASSEMBLY_MATE_LIMIT` | request | an assembly create would exceed 128 named mates | delete a mate before adding another |
 | `ASSEMBLY_REFERENCE_STALE` | reference | a graph edit would remove or split a part used by a named occurrence | delete the named occurrences first or preserve the canonical part ids |
-| `MATE_CONFLICT` | geometry | one connected component would have more than one ground | inspect `mateIds` and `occurrenceIds`, then edit or remove one ground mate |
+| `MATE_CONFLICT` | geometry | one connected component has more than one ground, or planar residuals conflict | inspect `mateIds`, `occurrenceIds`, and residuals, then edit or remove the conflicting mate |
+| `MATE_REFERENCE_STALE` | reference | a planar mate face resolves to empty, split, merged, or ambiguous provenance | inspect the named `mateId`, side, resolution, and current face roles; replace the reference |
+| `MATE_GEOMETRY_UNSUPPORTED` | geometry | a planar mate selects a non-planar or zero-area face | select one planar face with non-zero area from `face_roles` |
+| `MATE_SOLVE_UNSUPPORTED` | geometry | the connected mate pattern is outside the deterministic closed-form solver | simplify the component to supported planar chains |
 | `ASSEMBLY_EXPORT_EMPTY` | export | an assembly export has no manufacturing occurrence | add a manufacturing occurrence before exporting |
 | `CYCLE` | dependency | the feature graph contains a dependency cycle | reorder or remove the cyclic dependency |
 | `HAS_DEPENDENTS` | dependency | non-cascade delete would orphan dependent nodes | inspect the listed dependents, then delete them or use cascade deliberately |
