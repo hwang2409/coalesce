@@ -38,6 +38,11 @@ const state = async () => page.evaluate(() => ({
   partSizes: [...document.querySelectorAll('.part-size')].map(node => node.textContent),
   rawInspection: document.querySelector('#inspection-raw')?.textContent,
   solveStatus: document.querySelector('#solve-status')?.textContent,
+  solveLabelLines: (() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector('.solve-label'));
+    return range.getClientRects().length;
+  })(),
   solveWarning: document.querySelector('#solve-warning')?.textContent,
   solveSummary: document.querySelector('#solve-summary')?.textContent,
   mateRows: [...document.querySelectorAll('.mate-row')].map(node => node.textContent),
@@ -58,7 +63,7 @@ const focused = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r2.png`, fullPage: true });
 await page.locator('.assembly-more button').click();
 const expanded = await state();
-await page.locator('.assembly-row[data-status="PASS"]').nth(10).click();
+await page.locator('.assembly-row[data-status="PASS"]').nth(7).click();
 const focusedPass = await state();
 await page.locator('.assembly-more button').click();
 const selectedCollapsed = await state();
