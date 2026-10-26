@@ -38,6 +38,11 @@ const state = async () => page.evaluate(() => ({
   partSizes: [...document.querySelectorAll('.part-size')].map(node => node.textContent),
   rawInspection: document.querySelector('#inspection-raw')?.textContent,
   solveStatus: document.querySelector('#solve-status')?.textContent,
+  solveLabelLines: (() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector('.solve-label'));
+    return range.getClientRects().length;
+  })(),
   solveWarning: document.querySelector('#solve-warning')?.textContent,
   solveSummary: document.querySelector('#solve-summary')?.textContent,
   mateRows: [...document.querySelectorAll('.mate-row')].map(node => node.textContent),
@@ -56,21 +61,12 @@ await firstToggle.click();
 await page.locator('.assembly-row').first().click();
 const focused = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r2.png`, fullPage: true });
-await page.locator('.assembly-more button').click();
-const expanded = await state();
-await page.locator('.assembly-row[data-status="PASS"]').nth(10).click();
-const focusedPass = await state();
-await page.locator('.assembly-more button').click();
-const selectedCollapsed = await state();
-await page.locator('.assembly-more button').click();
 await writeFile(refreshTrigger, 'ready');
 await page.waitForSelector('.fit-reason:has-text("refreshed-clearance")');
 const refreshed = await state();
 await page.keyboard.press('Escape');
 const escaped = await state();
-await page.locator('.assembly-more button').click();
-const collapsed = await state();
 await page.getByRole('button', { name: 'Section' }).click();
 const section = await state();
-console.log(JSON.stringify({ initial, mateFocused, hidden, focused, expanded, focusedPass, selectedCollapsed, refreshed, escaped, collapsed, section, errors }));
+console.log(JSON.stringify({ initial, mateFocused, hidden, focused, refreshed, escaped, section, errors }));
 await browser.close();

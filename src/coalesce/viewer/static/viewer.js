@@ -707,7 +707,20 @@ function pointEvidence(row) {
 }
 
 function assemblyKey(revision, row) {
-  return `assembly/${JSON.stringify([revision, row.requirementId, row.occurrenceIds.toSorted()])}`;
+  return `assembly/${JSON.stringify([revision, row.occurrenceIds.toSorted()])}`;
+}
+
+function groupAssemblyRows(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = JSON.stringify(row.occurrenceIds.toSorted());
+    const current = groups.get(key);
+    const requirementIds = [...(current?.requirementIds ?? []), row.requirementId]
+      .toSorted((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const evidence = !current || severity(row) < severity(current) ? row : current;
+    groups.set(key, { ...evidence, requirementIds });
+  }
+  return [...groups.values()];
 }
 
 function assemblyValue(row) {
@@ -732,7 +745,7 @@ function assemblyRow(row, key) {
     ['fit-status', row.status],
     ['fit-label', titles.join(' ↔ ')],
     ['fit-value', value],
-    ['fit-reason', row.requirementId],
+    ['fit-reason', row.requirementIds.join(' · ')],
   ]) {
     const cell = document.createElement('span');
     cell.className = className;
@@ -753,7 +766,8 @@ function assemblyRow(row, key) {
 function renderInspection(fit, assembly = []) {
   $('inspection').hidden = !fit.length && !assembly.length;
   $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
-  const rows = [...fit.flatMap((summary) => summary.rows), ...assembly];
+  const assemblyRows = groupAssemblyRows(assembly);
+  const rows = [...fit.flatMap((summary) => summary.rows), ...assemblyRows];
   const counts = Object.entries(STATUS_TEXT)
     .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
     .filter(([count]) => count)
@@ -782,7 +796,7 @@ function renderInspection(fit, assembly = []) {
     }
   }
   const natural = new Intl.Collator(undefined, { numeric: true }).compare;
-  const orderedAssembly = assembly.toSorted((a, b) => {
+  const orderedAssembly = assemblyRows.toSorted((a, b) => {
     const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
     const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
       ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
@@ -809,8 +823,8 @@ function renderInspection(fit, assembly = []) {
     button.type = 'button';
     button.setAttribute('aria-expanded', String(passingExpanded));
     button.textContent = passingExpanded
-      ? `Hide ${affected.length} passing checks`
-      : `Show ${affected.length} more passing checks`;
+      ? `Hide ${affected.length} passing pairs`
+      : `Show ${affected.length} more passing pairs`;
     button.addEventListener('click', () => {
       passingExpanded = !passingExpanded;
       renderInspection(current.fit, current.assemblyInspection);
@@ -821,7 +835,7 @@ function renderInspection(fit, assembly = []) {
   }
   for (const row of orderedAssembly) {
     const line = document.createElement('li');
-    line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()}`;
+    line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()} — ${row.requirementIds.join(' · ')}`;
     evidence.append(line);
   }
   const raw = {

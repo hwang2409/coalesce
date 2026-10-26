@@ -153,7 +153,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
                     ),
                     "overlapVolume": {"value": 0, "unit": "mm^3"},
                     "clearance": {
-                        "value": {1: 0.0004, 2: 0.0003}.get(index, float(index)),
+                        "value": {1: 0.0004, 2: 0.0003}.get(index, 3),
                         "unit": "mm",
                     },
                     "interferes": False,
@@ -223,47 +223,35 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["mateFocused"]["showing"] == (
         "Showing shaft-skew and pin-left, other parts faded."
     )
-    assert data["initial"]["inspectionCount"] == "1 fail, 28 pass"
-    assert data["initial"]["inspectionStatuses"] == ["FAIL", *("PASS" for _ in range(6))]
+    assert data["initial"]["solveLabelLines"] == 1
+    assert data["initial"]["inspectionCount"] == "1 fail, 2 pass"
+    assert data["initial"]["inspectionStatuses"] == ["FAIL", "PASS", "PASS"]
     assert data["initial"]["inspectionReasons"] == [
-        "assembly-clearance",
-        "clearance-01",
+        "assembly-clearance · clearance-01",
         "clearance-02",
-        "clearance-03",
-        "clearance-04",
-        "clearance-05",
-        "clearance-06",
+        (
+            "clearance-03 · clearance-04 · clearance-05 · clearance-06 · clearance-07 · "
+            "clearance-08 · clearance-09 · clearance-10 · clearance-11 · clearance-12 · "
+            "clearance-13 · clearance-14 · clearance-15 · clearance-16 · clearance-17 · "
+            "clearance-18 · clearance-19 · clearance-20 · clearance-21 · clearance-22 · "
+            "clearance-23 · clearance-24 · clearance-25 · clearance-26 · clearance-27 · "
+            "clearance-28"
+        ),
     ]
-    assert data["initial"]["inspectionLabels"][:3] == [
-        "shaft ↔ pin-left",
+    assert data["initial"]["inspectionLabels"] == [
         "shaft ↔ pin-left",
         "shaft ↔ pin-right",
+        "pin-left ↔ pin-right",
     ]
-    assert data["initial"]["inspectionValues"][:3] == [
+    assert data["initial"]["inspectionValues"] == [
         "< 0.001 mm³ overlap",
         "< 0.001 mm clearance",
-        "< 0.001 mm clearance",
+        "3 mm clearance",
     ]
-    assert data["initial"]["morePassing"] == "Show 22 more passing checks"
-    assert data["initial"]["disclosureExpanded"] == "false"
-    assert data["expanded"]["disclosureExpanded"] == "true"
-    assert data["expanded"]["morePassing"] == "Hide 22 passing checks"
-    assert data["expanded"]["activeConnected"] is True
-    assert data["focusedPass"]["disclosureExpanded"] == "true"
-    assert data["focusedPass"]["activeConnected"] is True
-    assert data["focusedPass"]["activeKey"] is not None
-    assert data["selectedCollapsed"]["disclosureExpanded"] == "false"
-    assert data["selectedCollapsed"]["pairPressed"] == "true"
-    assert data["selectedCollapsed"]["morePassing"] == "Show 21 more passing checks"
-    assert data["selectedCollapsed"]["activeConnected"] is True
-    assert len(data["selectedCollapsed"]["inspectionStatuses"]) == 8
-    assert data["refreshed"]["disclosureExpanded"] == "true"
+    assert data["initial"]["morePassing"] is None
+    assert data["initial"]["disclosureExpanded"] is None
     assert data["refreshed"]["activeConnected"] is True
-    assert data["escaped"]["disclosureExpanded"] == "true"
     assert data["escaped"]["activeConnected"] is True
-    assert data["collapsed"]["disclosureExpanded"] == "false"
-    assert data["collapsed"]["activeConnected"] is True
-    assert len(data["collapsed"]["inspectionStatuses"]) == 7
     assert '"value": 0.0003' in data["initial"]["rawInspection"]
     assert data["initial"]["partNames"] == ["shaft", "shaft-skew", "pin-left", "pin-right"]
     assert data["initial"]["partSizes"][:2] == ["30 × 4 × 8", "30 × 4 × 8"]
