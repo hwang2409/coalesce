@@ -10,6 +10,7 @@ from test_viewer_review_flow import call, module, open_driver, wait_for  # noqa:
 
 import coalesce.revolution as revolution_module
 from coalesce.fit_summary import _diameter_fact
+from coalesce.server import _TOOL_DESCRIPTIONS
 from coalesce.service import DocumentService, _scene_parts
 from coalesce.viewer import ViewerSceneStore, ViewerServer
 
@@ -469,7 +470,13 @@ def test_revolve_guide_example_is_json_and_registered():
     guide = Path("docs/revolve.md").read_text(encoding="utf-8")
     payload = json.loads(guide.split("```json\n", 1)[1].split("\n```", 1)[0])
     assert payload["kind"] == "revolve"
-    assert payload["parameters"]["angle"] == {"value": 360, "unit": "deg"}
+    assert payload["parameters"]["angle"] == {"value": 90, "unit": "deg"}
+    sentence = (
+        "Revolve creates one new solid by rotating one closed sketch profile through a positive "
+        "angle up to 360 degrees from the sketch-local zero plane around the local x or y axis."
+    )
+    assert sentence in guide
+    assert sentence in _TOOL_DESCRIPTIONS["feature"]
 
 
 def test_revolve_diameters_round_once_at_display():

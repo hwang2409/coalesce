@@ -1,4 +1,4 @@
-"""Build one full-revolution body with profile-segment provenance."""
+"""Build one-sided revolution bodies with profile-segment provenance."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .constrained_profile import build_constrained_profile
 from .extrusion import _profile, sketch_location
 from .graph import GraphError, PrimitiveEntity, Revolve, Sketch
 from .provenance import candidate, derive_edge_candidates
-from .references import BodySource, Candidate, SketchSegmentSource
+from .references import BodySource, Candidate, SketchSegmentSource, ToolCapSource
 
 _AXIS_TOLERANCE = 1e-7
 
@@ -131,7 +131,7 @@ def _make_revolution(node: Revolve, profile: _RevolutionProfile, location: Locat
                 gp_Pnt(origin.X, origin.Y, origin.Z),
                 gp_Dir(direction.X, direction.Y, direction.Z),
             ),
-            2 * pi,
+            node.angle * pi / 180,
             True,
         )
         maker.Build()
@@ -203,7 +203,36 @@ def _profile_diameters(profile: _RevolutionProfile, axis: str) -> dict[str, list
     return {kind: sorted(values) for kind, values in dimensions.items()}
 
 
-def _face_candidates(node: Revolve, sketch: Sketch, profile: _RevolutionProfile, maker, axis_segments: set[str]) -> list[Candidate]:
+def _cap_face(node: Revolve, shape: Shape, cap: str, history_shape) -> Face:
+    try:
+        history = Shape.cast(history_shape)
+    except Exception as error:
+        raise GraphError(
+            "HISTORY_MISSING",
+            f"revolve {node.id} did not provide one {cap} cap face",
+            feature=node.id,
+            role=cap,
+        ) from error
+    matches = [face for face in shape.faces() if face.wrapped.IsSame(history.wrapped)]
+    if not isinstance(history, Face) or len(matches) != 1:
+        raise GraphError(
+            "HISTORY_MISSING",
+            f"revolve {node.id} did not map {cap} to exactly one result face",
+            feature=node.id,
+            role=cap,
+            historyCount=len(matches),
+        )
+    return matches[0]
+
+
+def _face_candidates(
+    node: Revolve,
+    sketch: Sketch,
+    profile: _RevolutionProfile,
+    maker,
+    shape: Shape,
+    axis_segments: set[str],
+) -> list[Candidate]:
     body = BodySource(node.id, profile.entity_id)
     faces = []
     for segment, edge in profile.segments.items():
@@ -217,17 +246,36 @@ def _face_candidates(node: Revolve, sketch: Sketch, profile: _RevolutionProfile,
             profile.topology.get(segment, ()),
         )
         faces.append(candidate(node.id, f"side({segment})", source, generated, body=body))
+    if node.angle < 360:
+        cap_start = _cap_face(node, shape, "cap_start", maker.FirstShape())
+        cap_end = _cap_face(node, shape, "cap_end", maker.LastShape())
+        if cap_start.is_same(cap_end):
+            raise GraphError(
+                "HISTORY_MISSING",
+                f"revolve {node.id} cap history is ambiguous",
+                feature=node.id,
+                roles=["cap_start", "cap_end"],
+            )
+        faces.extend(
+            candidate(node.id, role, ToolCapSource(node.id, role), face, body=body)
+            for role, face in (("cap_start", cap_start), ("cap_end", cap_end))
+        )
     return faces
 
 
 def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
-    if node.operation != "new_body" or node.axis not in {"x", "y"}:
+    if (
+        node.operation != "new_body"
+        or node.axis not in {"x", "y"}
+        or not 0 < node.angle <= 360
+    ):
         raise GraphError(
             "INVALID_REVOLVE",
-            f"revolve {node.id} supports only a full new_body around local x or y",
+            f"revolve {node.id} supports 0 < angle <= 360 for new_body around local x or y",
             feature=node.id,
             operation=node.operation,
             axis=node.axis,
+            angle=node.angle,
         )
     entity = _selected_profile(node, sketch)
     local = _profile_for_revolution(sketch, Location(), entity)
@@ -236,6 +284,6 @@ def revolve_sketch(node: Revolve, sketch: Sketch) -> RevolutionResult:
     profile = _profile_for_revolution(sketch, location, entity)
     maker, shape = _make_revolution(node, profile, location)
     _validate_result(node, shape)
-    faces = _face_candidates(node, sketch, profile, maker, axis_segments)
+    faces = _face_candidates(node, sketch, profile, maker, shape, axis_segments)
     candidates = [*faces, *derive_edge_candidates(node.id, shape, faces)]
     return RevolutionResult(shape, candidates, _profile_diameters(local, node.axis))

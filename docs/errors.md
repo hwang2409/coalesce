@@ -111,12 +111,12 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `HISTORY_MISSING` | reference | occt did not provide required provenance history | change the operation; do not guess a replacement face |
 | `BOOLEAN_FAILED` | geometry | an exact cut, fuse, or enclosure boolean did not complete | change the inputs or use a verified remedy when present |
 | `INVALID_BREP` | geometry | regeneration produced an invalid b-rep | change the last geometric edit |
-| `INVALID_REVOLVE` | geometry | a saved revolve has an unsupported axis or operation | use a full `new_body` revolution around local `x` or `y` |
+| `INVALID_REVOLVE` | geometry | a saved revolve has an unsupported angle, axis, or operation | use `new_body` with `0 < angle <= 360` around local `x` or `y` |
 | `REVOLVE_AXIS_CROSSING` | geometry | a revolve profile has area on both sides of its local axis | move or reshape the profile onto one side of the axis |
 | `REVOLVE_AXIS_CONTACT` | geometry | a profile touches the axis only at a point or along a non-linear segment | separate it from the axis or add one complete straight axis boundary |
 | `REVOLVE_MULTIPLE_PROFILES` | geometry | a revolve sketch has multiple profiles or an inner loop | use one outer profile; offset it from the axis to make a bore |
 | `REVOLVE_MULTIPLE_SOLIDS` | geometry | the kernel result is not exactly one solid | simplify the profile so one connected solid results |
-| `REVOLVE_FAILED` | geometry | occt could not complete the full revolution | repair the profile or axis relationship; the document is unchanged |
+| `REVOLVE_FAILED` | geometry | occt could not complete the revolution | repair the profile, angle, or axis relationship; the document is unchanged |
 | `KERNEL_OPERATION_FAILED` | geometry | an unexpected or unmapped modeling failure occurred | inspect the structured context and change the edit; report reproducible cases |
 | `TOUCHING_PROFILES` | geometry | two sketch profile boundaries only touch | separate them or make the intended overlap/nesting explicit |
 | `OVERLAPPING_PROFILES` | geometry | profiles overlap without valid nesting | remove the overlap or make one profile fully nested |

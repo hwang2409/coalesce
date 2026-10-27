@@ -30,7 +30,7 @@ GUIDES = (
     Guide("coalesce hole guide", "coalesce://docs/hole", "hole.md", "Hole placement, patterns, and updates."),
     Guide("coalesce enclosure guide", "coalesce://docs/enclosure", "enclosures.md", "PCB enclosure workflow and checks."),
     Guide("coalesce refresh guide", "coalesce://docs/refresh", "refresh.md", "Board refresh behavior and repair guidance."),
-    Guide("coalesce revolve guide", "coalesce://docs/revolve", "revolve.md", "Full-revolution feature workflow and provenance roles."),
+    Guide("coalesce revolve guide", "coalesce://docs/revolve", "revolve.md", "One-sided revolve workflow and provenance roles."),
     Guide("coalesce assembly guide", "coalesce://docs/assembly", "assembly.md", "Named occurrences and explicit rigid placements."),
     Guide(
         "cycloidal disc example",

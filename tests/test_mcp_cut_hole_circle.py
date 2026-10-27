@@ -122,7 +122,8 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
         "assembly_mate",
     ]
     assert set(feature_schema["properties"]["set"]["oneOf"][0]["properties"]) == {"distance"}
-    hole_update = feature_schema["properties"]["set"]["oneOf"][1]["properties"]
+    assert set(feature_schema["properties"]["set"]["oneOf"][1]["properties"]) == {"angle"}
+    hole_update = feature_schema["properties"]["set"]["oneOf"][2]["properties"]
     assert set(hole_update) == {"target", "pattern"}
     pattern_kinds = hole_update["pattern"]["oneOf"]
     assert [branch["properties"]["kind"]["const"] for branch in pattern_kinds] == [
@@ -130,6 +131,7 @@ async def test_tools_advertise_cut_hole_circles_and_origin_planes(tmp_path):
         "linear",
     ]
     assert "extrude" in feature_schema["properties"]["set"]["description"]
+    assert "revolve" in feature_schema["properties"]["set"]["description"]
     assert "cut" in feature_schema["properties"]["set"]["description"]
     assert "hole" in feature_schema["properties"]["set"]["description"]
     sketch = tools["sketch"].inputSchema

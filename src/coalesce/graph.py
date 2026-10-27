@@ -177,6 +177,7 @@ class Revolve(Feature):
     axis: str = "x"
     operation: str = "new_body"
     profile_ids: tuple[str, ...] | None = None
+    angle: float = 360
 
 
 @dataclass
