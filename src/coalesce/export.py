@@ -662,8 +662,10 @@ def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
         path, warnings = _publish_atomic_bytes(path, content)
     else:
         path, warnings = _publish_bytes(path, content, digest), []
-    fields = _export_fields(path, parts, digest, actual)
-    return {**fields, "byteCount": len(content), "warnings": warnings}
+    result = {**_export_fields(path, parts, digest, actual), "byteCount": len(content)}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _label_name(label: Any) -> str:

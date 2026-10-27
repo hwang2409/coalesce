@@ -16,6 +16,39 @@ PHASE_TIMEOUT_SECONDS = 60
 DIAGNOSTIC_TIMEOUT_SECONDS = 5
 
 
+def _windows_process_tree_command(root_pid):
+    script = (
+        f"$root={root_pid}; $all=@(Get-CimInstance Win32_Process); "
+        "$ids=@($root); do { $before=$ids.Count; $ids += @($all | "
+        "Where-Object { $ids -contains $_.ParentProcessId } | "
+        "Select-Object -ExpandProperty ProcessId); $ids=@($ids | Sort-Object -Unique) "
+        "} while ($ids.Count -gt $before); $all | "
+        "Where-Object { $ids -contains $_.ProcessId } | "
+        "Select-Object ProcessId,ParentProcessId,Name,CommandLine | "
+        "ConvertTo-Json -Compress"
+    )
+    return ["powershell.exe", "-NoProfile", "-Command", script]
+
+
+def _format_posix_process_tree(root_pid, output):
+    rows = [line.strip() for line in output.splitlines()]
+    descendants = {root_pid}
+    while True:
+        before = len(descendants)
+        for row in rows:
+            fields = row.split(maxsplit=3)
+            if len(fields) >= 2 and int(fields[1]) in descendants:
+                descendants.add(int(fields[0]))
+        if len(descendants) == before:
+            break
+    selected = [
+        row
+        for row in rows
+        if (fields := row.split(maxsplit=3)) and int(fields[0]) in descendants
+    ]
+    return "\n".join(selected) or "<empty>"
+
+
 class StdioServer:
     def __init__(self, document: Path):
         self.command = [
@@ -69,20 +102,11 @@ class StdioServer:
             return "\n".join(self._stderr) or "<empty>"
 
     def _process_tree(self):
-        if sys.platform == "win32":
-            script = (
-                f"$root={self.process.pid}; $all=@(Get-CimInstance Win32_Process); "
-                "$ids=@($root); do { $before=$ids.Count; $ids += @($all | "
-                "Where-Object { $ids -contains $_.ParentProcessId } | "
-                "Select-Object -ExpandProperty ProcessId); $ids=@($ids | Sort-Object -Unique) "
-                "} while ($ids.Count -gt $before); $all | "
-                "Where-Object { $ids -contains $_.ProcessId } | "
-                "Select-Object ProcessId,ParentProcessId,Name,CommandLine | "
-                "ConvertTo-Json -Compress"
-            )
-            command = ["powershell.exe", "-NoProfile", "-Command", script]
-        else:
-            command = ["ps", "-eo", "pid=,ppid=,stat=,args="]
+        command = (
+            _windows_process_tree_command(self.process.pid)
+            if sys.platform == "win32"
+            else ["ps", "-eo", "pid=,ppid=,stat=,args="]
+        )
         try:
             result = subprocess.run(
                 command,
@@ -95,23 +119,7 @@ class StdioServer:
             return f"<process tree unavailable: {error}>"
         if sys.platform == "win32":
             return result.stdout.strip() or f"<empty; diagnostic stderr: {result.stderr[-500:]}>"
-
-        rows = [line.strip() for line in result.stdout.splitlines()]
-        descendants = {self.process.pid}
-        selected = []
-        while True:
-            before = len(descendants)
-            for row in rows:
-                fields = row.split(maxsplit=3)
-                if len(fields) >= 2 and int(fields[1]) in descendants:
-                    descendants.add(int(fields[0]))
-            if len(descendants) == before:
-                break
-        for row in rows:
-            fields = row.split(maxsplit=3)
-            if fields and int(fields[0]) in descendants:
-                selected.append(row)
-        return "\n".join(selected) or "<empty>"
+        return _format_posix_process_tree(self.process.pid, result.stdout)
 
     def _fail_timeout(self, phase, started):
         elapsed = time.monotonic() - started
@@ -198,6 +206,29 @@ def _tool(server, name, arguments, phase):
     )["structuredContent"]
     assert result["ok"] is True, json.dumps(result, indent=2)[:8000]
     return result
+
+
+def test_format_posix_process_tree_selects_descendants():
+    output = "10 1 S root\n11 10 S child\n12 11 S grandchild\n20 1 S unrelated"
+
+    assert _format_posix_process_tree(10, output).splitlines() == [
+        "10 1 S root",
+        "11 10 S child",
+        "12 11 S grandchild",
+    ]
+
+
+def _assert_durability_warnings(compound, assembly):
+    warning_code = "EXPORT_DURABILITY_UNCONFIRMED"
+    if sys.platform == "win32":
+        for response in (compound, assembly):
+            assert warning_code in {warning["code"] for warning in response["warnings"]}
+    else:
+        assert "warnings" not in compound
+        for response in (compound, assembly):
+            assert warning_code not in {
+                warning["code"] for warning in response.get("warnings", [])
+            }
 
 
 def test_windows_stdio_query_compound_and_xcaf_export_lifecycle(tmp_path):
@@ -323,6 +354,7 @@ def test_windows_stdio_query_compound_and_xcaf_export_lifecycle(tmp_path):
         )
         assert preflight["validation"]["xcaf"]["occurrenceCount"] == 1
         assert published["validation"]["xcaf"]["occurrenceCount"] == 1
+        _assert_durability_warnings(compound, published)
         assert compound_target.read_bytes().startswith(b"ISO-10303-21;")
         assert assembly_target.read_bytes().startswith(b"ISO-10303-21;")
         server.close()
