@@ -434,6 +434,7 @@ class ExtrudeParameters:
 class RevolveParameters:
     profile: ExtrudeProfile
     axis: str
+    angle: float
     operation: str
 
 
@@ -540,6 +541,11 @@ class ScrewClosureParameters:
 @dataclass(frozen=True)
 class ExtrudeChanges:
     distance: float
+
+
+@dataclass(frozen=True)
+class RevolveChanges:
+    angle: float
 
 
 @dataclass(frozen=True)
@@ -769,6 +775,20 @@ class ExtrudeUpdate(_Operation):
 
 
 @dataclass(frozen=True)
+class RevolveUpdate(_Operation):
+    action: Action
+    expectedRevision: float
+    requestId: str
+    featureId: str
+    set: RevolveChanges
+    kind: ClassVar[str] = "revolve"
+
+    @classmethod
+    def wire_fields(cls) -> set[str]:
+        return {*super().wire_fields(), "kind"}
+
+
+@dataclass(frozen=True)
 class PcbBaseUpdate(_Operation):
     action: Action
     expectedRevision: float
@@ -911,6 +931,7 @@ MutationOperation = (
     | FeatureDelete
     | ExtrudeCreate
     | RevolveCreate
+    | RevolveUpdate
     | CutCreate
     | HoleCreate
     | FilletCreate
@@ -1208,18 +1229,34 @@ def _parse_extrude(
     )
 
 
-def _parse_revolve(payload: dict[str, Any], common: dict[str, Any]) -> RevolveCreate:
+def _revolve_angle(value: Any) -> float:
+    angle = _angle(value, "angle")
+    if not 0 < angle <= 360:
+        raise RequestError(
+            "INVALID_PARAMETER",
+            "revolve angle must be greater than 0 and at most 360 degrees",
+            field="angle",
+        )
+    return angle
+
+
+def _parse_revolve(
+    payload: dict[str, Any], common: dict[str, Any]
+) -> RevolveCreate | RevolveUpdate:
     if common["action"] is Action.UPDATE:
-        raise RequestError("INVALID_PARAMETER", "revolve is updated through its source sketch")
+        changes = payload.get("set")
+        if not isinstance(changes, dict) or set(changes) != {"angle"}:
+            raise RequestError("INVALID_PARAMETER", "revolve update requires set.angle")
+        return RevolveUpdate(
+            **common,
+            set=RevolveChanges(angle=_revolve_angle(changes["angle"])),
+        )
     parameters = payload.get("parameters", {})
     profile = parameters.get("profile", {})
-    angle = parameters.get("angle", {})
     if parameters.get("operation") != "new_body" or parameters.get("axis") not in {"x", "y"}:
         raise RequestError(
             "INVALID_PARAMETER", "revolve supports only new_body around local x or y"
         )
-    if angle != {"value": 360, "unit": "deg"}:
-        raise RequestError("INVALID_PARAMETER", "revolve angle must be exactly 360 deg")
     return RevolveCreate(
         **common,
         parameters=RevolveParameters(
@@ -1228,6 +1265,7 @@ def _parse_revolve(payload: dict[str, Any], common: dict[str, Any]) -> RevolveCr
                 profileIds=(tuple(profile["profileIds"]) if "profileIds" in profile else None),
             ),
             axis=parameters["axis"],
+            angle=_revolve_angle(parameters.get("angle", {"value": 360, "unit": "deg"})),
             operation=parameters["operation"],
         ),
     )
@@ -1924,6 +1962,7 @@ def _parse_feature(
 ) -> (
     ExtrudeCreate
     | RevolveCreate
+    | RevolveUpdate
     | CutCreate
     | HoleCreate
     | FilletCreate
@@ -1984,6 +2023,9 @@ def _canonical(value: Any) -> Any:
 
 def _hash(operation: MutationOperation) -> str:
     intent = {"type": type(operation).__name__, **asdict(operation)}
+    # Full revolves predate the angle field, so their replay identity keeps the legacy shape.
+    if isinstance(operation, RevolveCreate) and operation.parameters.angle == 360:
+        del intent["parameters"]["angle"]
     return hashlib.sha256(
         json.dumps(
             _canonical(intent), sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -2652,7 +2694,14 @@ def _apply_extrude(graph: Any, operation: ExtrudeCreate | ExtrudeUpdate) -> str:
     return operation.featureId
 
 
-def _apply_revolve(graph: Any, operation: RevolveCreate) -> str:
+def _apply_revolve(graph: Any, operation: RevolveCreate | RevolveUpdate) -> str:
+    if isinstance(operation, RevolveUpdate):
+        node = graph.nodes.get(operation.featureId)
+        if not isinstance(node, Revolve):
+            raise RequestError("UNKNOWN_ID", f"unknown revolve: {operation.featureId}")
+        node.angle = operation.set.angle
+        return operation.featureId
+
     parameters = operation.parameters
     sketch = graph.nodes.get(parameters.profile.sketchId)
     if not isinstance(sketch, Sketch):
@@ -2672,6 +2721,7 @@ def _apply_revolve(graph: Any, operation: RevolveCreate) -> str:
             axis=parameters.axis,
             operation=parameters.operation,
             profile_ids=profile_ids,
+            angle=parameters.angle,
         )
     )
     return operation.featureId
@@ -3105,6 +3155,7 @@ def _apply_feature(
         ExtrudeCreate: _apply_extrude,
         ExtrudeUpdate: _apply_extrude,
         RevolveCreate: _apply_revolve,
+        RevolveUpdate: _apply_revolve,
         CutCreate: _apply_cut,
         CutUpdate: _apply_cut,
         HoleCreate: _apply_hole,
@@ -3571,7 +3622,14 @@ def _step_validation_feature_ids(
         }
     if isinstance(
         operation,
-        (RevolveCreate, FilletCreate, FilletUpdate, ChamferCreate, ChamferUpdate),
+        (
+            RevolveCreate,
+            RevolveUpdate,
+            FilletCreate,
+            FilletUpdate,
+            ChamferCreate,
+            ChamferUpdate,
+        ),
     ):
         return {changed_id}
     return set()

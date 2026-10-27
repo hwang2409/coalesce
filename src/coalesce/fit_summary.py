@@ -455,7 +455,7 @@ def _diameter_fact(values: list[float], singular: str, plural: str) -> str | Non
 
 def _revolve_fact(result: Any, node: Revolve) -> dict[str, Any]:
     dimensions = result.metadata.get(node.id, {})
-    details = [f"360° about the {node.axis.upper()} axis of sketch {node.sketch}"]
+    details = [f"{node.angle:g}° about the {node.axis.upper()} axis of sketch {node.sketch}"]
     if bores := _diameter_fact(dimensions.get("bores", []), "Bore", "Bores"):
         details.append(bores)
     if outer := _diameter_fact(

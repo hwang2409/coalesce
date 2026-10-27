@@ -385,10 +385,10 @@ REVOLVE_PARAMETERS = {
     "properties": {
         "profile": PROFILE,
         "axis": {"enum": ["x", "y"]},
-        "angle": {"const": {"value": 360, "unit": "deg"}},
+        "angle": ANGLE,
         "operation": {"const": "new_body"},
     },
-    "required": ["profile", "axis", "angle", "operation"],
+    "required": ["profile", "axis", "operation"],
     "additionalProperties": False,
 }
 EXTRUDE_PARAMETERS = {
@@ -708,6 +708,12 @@ EXTRUDE_UPDATE_SET = {
     "required": ["distance"],
     "additionalProperties": False,
 }
+REVOLVE_UPDATE_SET = {
+    "type": "object",
+    "properties": {"angle": ANGLE},
+    "required": ["angle"],
+    "additionalProperties": False,
+}
 FILLET_UPDATE_SET = {
     "type": "object",
     "properties": {"radius": POSITIVE_QUANTITY},
@@ -1013,6 +1019,7 @@ FEATURE_UPDATE_SCHEMA = {
         "set": {
             "oneOf": [
                 EXTRUDE_UPDATE_SET,
+                REVOLVE_UPDATE_SET,
                 HOLE_UPDATE_SET,
                 FILLET_UPDATE_SET,
                 PCB_BASE_UPDATE_SET,
@@ -1047,6 +1054,7 @@ FEATURE_ACTION_SCHEMAS = {
 }
 for kind, changes in {
     "extrude": EXTRUDE_UPDATE_SET,
+    "revolve": REVOLVE_UPDATE_SET,
     "cut": TARGET_UPDATE_SET,
     "hole": HOLE_UPDATE_SET,
     "fillet": FILLET_UPDATE_SET,
@@ -1135,7 +1143,7 @@ FEATURE_SCHEMA = {
                 GROUND_MATE_UPDATE,
                 PUBLISHED_FACE_MATE_UPDATE,
             ],
-            "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept extrude distance, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
+            "description": "Required for update; not allowed for create or delete. Planar mate updates replace both face references, aligned or opposed orientation, and signed offset; see coalesce://docs/assembly. Other updates accept extrude distance, revolve angle, cut or hole target.featureId, hole pattern intent, fillet radius, chamfer distance, enclosure dimensions, occurrence transforms, or a ground mate occurrenceId.",
         },
         "cascade": {"type": "boolean", "default": False},
     },

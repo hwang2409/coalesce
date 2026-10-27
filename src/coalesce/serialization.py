@@ -166,6 +166,13 @@ def _extrude_payload(node: Extrude, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _revolve_payload(node: Revolve, payload: dict[str, Any]) -> dict[str, Any]:
+    payload = _profile_feature_payload(node, payload)
+    if node.angle == 360:
+        payload.pop("angle")
+    return payload
+
+
 def _lid_payload(node: PcbLid, payload: dict[str, Any]) -> dict[str, Any]:
     payload.pop("outline_source")
     if node.outline_source is not None:
@@ -211,7 +218,7 @@ _SERIALIZERS = {
     BoardImport: _board_payload,
     Sketch: _sketch_payload,
     Extrude: _extrude_payload,
-    Revolve: _profile_feature_payload,
+    Revolve: _revolve_payload,
     PcbLid: _lid_payload,
     Hole: _hole_payload,
     Fillet: _treatment_payload,

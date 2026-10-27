@@ -1,0 +1,368 @@
+{
+  "assembly": {
+    "mates": [],
+    "occurrences": []
+  },
+  "formatVersion": 3,
+  "graph": {
+    "nodes": [
+      {
+        "entities": [
+          {
+            "closed": true,
+            "id": "outline",
+            "id_explicit": true,
+            "point_ids": [
+              "axis_left",
+              "axis_right",
+              "small_end",
+              "shoulder_inner",
+              "shoulder_outer",
+              "large_end"
+            ],
+            "point_ids_explicit": true,
+            "points": [
+              [
+                0.0,
+                0.0
+              ],
+              [
+                30.0,
+                0.0
+              ],
+              [
+                30.0,
+                6.0
+              ],
+              [
+                20.0,
+                6.0
+              ],
+              [
+                20.0,
+                10.0
+              ],
+              [
+                0.0,
+                10.0
+              ]
+            ],
+            "type": "Polyline"
+          }
+        ],
+        "id": "profile",
+        "plane": {
+          "name": "XY",
+          "offset": 0.0
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "type": "Sketch"
+      },
+      {
+        "axis": "x",
+        "depends_on": [],
+        "id": "shaft",
+        "operation": "new_body",
+        "profile_ids": [
+          "outline"
+        ],
+        "sketch": "profile",
+        "type": "Revolve"
+      },
+      {
+        "depends_on": [],
+        "edges": [
+          {
+            "body": null,
+            "cardinality": "one",
+            "count": null,
+            "feature": "shaft",
+            "filters": [],
+            "role": "between(side(seg-shoulder_inner-shoulder_outer),side(seg-small_end-shoulder_inner))",
+            "source": {
+              "items": [
+                {
+                  "body": {
+                    "entity": "outline",
+                    "feature": "shaft",
+                    "kind": "body_source"
+                  },
+                  "feature": "shaft",
+                  "kind": "element_key",
+                  "role": "side(seg-shoulder_inner-shoulder_outer)",
+                  "source": {
+                    "entity": "outline",
+                    "kind": "sketch_segment",
+                    "segment": "seg-shoulder_inner-shoulder_outer",
+                    "sketch": "profile",
+                    "topology": [
+                      "shoulder_inner",
+                      "shoulder_outer"
+                    ]
+                  }
+                },
+                {
+                  "body": {
+                    "entity": "outline",
+                    "feature": "shaft",
+                    "kind": "body_source"
+                  },
+                  "feature": "shaft",
+                  "kind": "element_key",
+                  "role": "side(seg-small_end-shoulder_inner)",
+                  "source": {
+                    "entity": "outline",
+                    "kind": "sketch_segment",
+                    "segment": "seg-small_end-shoulder_inner",
+                    "sketch": "profile",
+                    "topology": [
+                      "small_end",
+                      "shoulder_inner"
+                    ]
+                  }
+                }
+              ],
+              "kind": "element_keys"
+            }
+          }
+        ],
+        "id": "shoulder_fillet",
+        "radius": 0.5,
+        "target": "shaft",
+        "type": "Fillet"
+      }
+    ]
+  },
+  "receipts": [
+    {
+      "requestHash": "568e8ea376733fe5473daf954d4bf26b76960d88522a90d320cae59eef87da62",
+      "requestId": "eval-create-shaft-profile",
+      "response": {
+        "changedFeatureIds": [
+          "profile"
+        ],
+        "entitySegments": {
+          "outline": [
+            "seg-axis_left-axis_right",
+            "seg-axis_right-small_end",
+            "seg-small_end-shoulder_inner",
+            "seg-shoulder_inner-shoulder_outer",
+            "seg-shoulder_outer-large_end",
+            "seg-large_end-axis_left"
+          ]
+        },
+        "frame": {
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "origin": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "xAxis": [
+            1.0,
+            0.0,
+            -0.0
+          ],
+          "yAxis": [
+            -0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "ok": true,
+        "previousRevision": 0,
+        "regeneration": {
+          "status": "OK",
+          "valid": true
+        },
+        "requestId": "eval-create-shaft-profile",
+        "revision": 1,
+        "selectionChanges": [],
+        "sketchId": "profile",
+        "units": "mm",
+        "warnings": []
+      },
+      "revision": 1
+    },
+    {
+      "requestHash": "cdacf8f008ff6240a9d508640cfaa287e3d02cc7fe7a9e57eda3391bbe5ea00e",
+      "requestId": "eval-create-shaft-revolve",
+      "response": {
+        "changedFeatureIds": [
+          "shaft"
+        ],
+        "featureId": "shaft",
+        "ok": true,
+        "previousRevision": 1,
+        "regeneration": {
+          "status": "OK",
+          "valid": true
+        },
+        "requestId": "eval-create-shaft-revolve",
+        "revision": 2,
+        "selectionChanges": [],
+        "units": "mm",
+        "warnings": []
+      },
+      "revision": 2
+    },
+    {
+      "requestHash": "b30a69bfeb3d1508f5fac2667bdce479ecf2c575f280134d61bf843a3992db92",
+      "requestId": "eval-create-shoulder-fillet",
+      "response": {
+        "changedFeatureIds": [
+          "shoulder_fillet"
+        ],
+        "edgeTreatment": {
+          "generatedFaces": [
+            {
+              "role": "blend(ElementKey(feature='shaft', role='between(side(seg-shoulder_inner-shoulder_outer),side(seg-small_end-shoulder_inner))', source=(ElementKey(feature='shaft', role='side(seg-shoulder_inner-shoulder_outer)', source=SketchSegmentSource(sketch='profile', entity='outline', segment='seg-shoulder_inner-shoulder_outer', topology=('shoulder_inner', 'shoulder_outer')), body=BodySource(feature='shaft', entity='outline')), ElementKey(feature='shaft', role='side(seg-small_end-shoulder_inner)', source=SketchSegmentSource(sketch='profile', entity='outline', segment='seg-small_end-shoulder_inner', topology=('small_end', 'shoulder_inner')), body=BodySource(feature='shaft', entity='outline'))), body=BodySource(feature='shaft', entity='outline')))",
+              "source": {
+                "body": {
+                  "entity": "outline",
+                  "feature": "shaft"
+                },
+                "feature": "shaft",
+                "role": "between(side(seg-shoulder_inner-shoulder_outer),side(seg-small_end-shoulder_inner))",
+                "source": [
+                  {
+                    "body": {
+                      "entity": "outline",
+                      "feature": "shaft"
+                    },
+                    "feature": "shaft",
+                    "role": "side(seg-shoulder_inner-shoulder_outer)",
+                    "source": {
+                      "entity": "outline",
+                      "segment": "seg-shoulder_inner-shoulder_outer",
+                      "sketch": "profile",
+                      "topology": [
+                        "shoulder_inner",
+                        "shoulder_outer"
+                      ]
+                    }
+                  },
+                  {
+                    "body": {
+                      "entity": "outline",
+                      "feature": "shaft"
+                    },
+                    "feature": "shaft",
+                    "role": "side(seg-small_end-shoulder_inner)",
+                    "source": {
+                      "entity": "outline",
+                      "segment": "seg-small_end-shoulder_inner",
+                      "sketch": "profile",
+                      "topology": [
+                        "small_end",
+                        "shoulder_inner"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "kind": "fillet",
+          "sources": [
+            {
+              "body": null,
+              "cardinality": "one",
+              "count": null,
+              "feature": "shaft",
+              "filters": [],
+              "role": "between(side(seg-shoulder_inner-shoulder_outer),side(seg-small_end-shoulder_inner))",
+              "source": {
+                "items": [
+                  {
+                    "body": {
+                      "entity": "outline",
+                      "feature": "shaft",
+                      "kind": "body_source"
+                    },
+                    "feature": "shaft",
+                    "kind": "element_key",
+                    "role": "side(seg-shoulder_inner-shoulder_outer)",
+                    "source": {
+                      "entity": "outline",
+                      "kind": "sketch_segment",
+                      "segment": "seg-shoulder_inner-shoulder_outer",
+                      "sketch": "profile",
+                      "topology": [
+                        "shoulder_inner",
+                        "shoulder_outer"
+                      ]
+                    }
+                  },
+                  {
+                    "body": {
+                      "entity": "outline",
+                      "feature": "shaft",
+                      "kind": "body_source"
+                    },
+                    "feature": "shaft",
+                    "kind": "element_key",
+                    "role": "side(seg-small_end-shoulder_inner)",
+                    "source": {
+                      "entity": "outline",
+                      "kind": "sketch_segment",
+                      "segment": "seg-small_end-shoulder_inner",
+                      "sketch": "profile",
+                      "topology": [
+                        "small_end",
+                        "shoulder_inner"
+                      ]
+                    }
+                  }
+                ],
+                "kind": "element_keys"
+              }
+            }
+          ]
+        },
+        "featureId": "shoulder_fillet",
+        "ok": true,
+        "previousRevision": 2,
+        "regeneration": {
+          "status": "OK",
+          "valid": true
+        },
+        "requestId": "eval-create-shoulder-fillet",
+        "revision": 3,
+        "selectionChanges": [],
+        "units": "mm",
+        "warnings": []
+      },
+      "revision": 3
+    }
+  ],
+  "requestHashes": [
+    {
+      "requestHash": "568e8ea376733fe5473daf954d4bf26b76960d88522a90d320cae59eef87da62",
+      "requestId": "eval-create-shaft-profile"
+    },
+    {
+      "requestHash": "cdacf8f008ff6240a9d508640cfaa287e3d02cc7fe7a9e57eda3391bbe5ea00e",
+      "requestId": "eval-create-shaft-revolve"
+    },
+    {
+      "requestHash": "b30a69bfeb3d1508f5fac2667bdce479ecf2c575f280134d61bf843a3992db92",
+      "requestId": "eval-create-shoulder-fillet"
+    }
+  ],
+  "revision": 3,
+  "units": "mm"
+}
