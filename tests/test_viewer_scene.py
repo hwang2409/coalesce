@@ -261,6 +261,31 @@ def test_assembly_overlap_mesh_is_omitted_over_the_scene_size_cap(monkeypatch):
     assert row["overlapMeshOmitted"] == "mesh exceeds the viewer size limit"
 
 
+def test_assembly_overlap_meshes_share_a_pair_ordered_publication_budget(monkeypatch):
+    store = ViewerSceneStore()
+    store.publish(1, [ScenePart("body", Box(1, 1, 1))])
+    monkeypatch.setattr(store, "MAX_TOTAL_OVERLAP_MESH_BYTES", 9)
+
+    def sized_mesh(part, _tolerance):
+        size = round(part.shape.volume)
+        return bytes(size), {"vertexCount": 1, "triangleCount": 1, "edgeVertexCount": 0}, (), ()
+
+    monkeypatch.setattr("coalesce.viewer.scene._tessellate", sized_mesh)
+    rows = [
+        {"occurrenceIds": pair, "overlapVolume": {"value": size, "unit": "mm^3"},
+         "_overlapShape": Box(size, 1, 1)}
+        for pair, size in [(["z", "b"], 6), (["m", "b"], 4), (["a", "b"], 5)]
+    ]
+
+    store.publish_assembly_inspection(1, rows)
+
+    published = {tuple(row["occurrenceIds"]): row for row in store.scene(1)["assemblyInspection"]}
+    assert "overlapMesh" in published[("a", "b")]
+    assert "overlapMesh" in published[("m", "b")]
+    assert published[("z", "b")]["overlapMeshOmitted"] == "publication overlap budget exhausted"
+    assert sum(row.get("overlapMesh", {}).get("byteCount", 0) for row in published.values()) == 9
+
+
 def test_curved_part_mesh_stays_within_tolerance_and_has_brep_edges():
     store = ViewerSceneStore()
     shape = Cylinder(10, 5)

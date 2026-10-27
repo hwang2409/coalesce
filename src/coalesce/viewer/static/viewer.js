@@ -190,9 +190,18 @@ function visibleBox() {
   return box;
 }
 
-// fits the visible parts; a null name keeps the current view direction
-function setView(name) {
-  const box = visibleBox();
+function focusBox() {
+  const box = new THREE.Box3();
+  for (const partId of selected?.partIds ?? []) {
+    const part = current.parts.find((item) => (item.occurrenceId ?? item.partId) === partId);
+    const group = part && model.getObjectByName(part.name);
+    if (group?.visible) box.expandByObject(surfaceOf(group));
+  }
+  if (overlap.children.length) box.expandByObject(overlap);
+  return box;
+}
+
+function fitBox(box, name) {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1);
@@ -220,6 +229,11 @@ function setView(name) {
   showRefit(false);
   describeView();
   requestRender();
+}
+
+// fits the visible parts; a null name keeps the current view direction
+function setView(name) {
+  fitBox(visibleBox(), name);
 }
 
 let activeView = 'iso'; // null after an orbit, pan or zoom
@@ -665,6 +679,7 @@ function showPart(next) {
   renderAssemblyState(current.assemblyState);
   renderInspection(current.fit, current.assemblyInspection);
   applyMode();
+  if (selected?.overlapMesh) fitBox(focusBox(), activeView);
   describeView();
   requestRender();
 }
@@ -672,8 +687,9 @@ function showPart(next) {
 // every part again, and the canvas says so. focus goes back to the fit row that showed the part, else
 // to the part's row, else to the parts heading: the row it was on may be gone in a new revision
 function showAll(focus = true) {
-  const { key, partIds } = selected;
+  const { key, partIds, overlapMesh } = selected;
   showPart(null);
+  if (overlapMesh) applyView(activeView);
   const row = fitRowFor(key);
   if (focus) (row || partRow(partIds[0]) || $('parts-title')).focus();
   $('view-description').textContent = `All parts shown. ${$('view-description').textContent}`;
@@ -767,6 +783,54 @@ function assemblyRow(row, key) {
   return item;
 }
 
+function orderedAssemblyRows(rows) {
+  const natural = new Intl.Collator(undefined, { numeric: true }).compare;
+  const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
+  const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
+    ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
+  return rows.toSorted((a, b) => rank(a) - rank(b)
+    || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
+    || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/')));
+}
+
+function renderAssemblyList(rows, list, evidence) {
+  const ordered = orderedAssemblyRows(rows);
+  const passing = ordered.filter((row) => row.status === 'PASS');
+  const extraPassing = passing.slice(6);
+  const shown = passingExpanded
+    ? ordered
+    : ordered.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6
+      || assemblyKey(current.revision, row) === selected?.key);
+  for (const row of shown) {
+    const item = document.createElement('li');
+    item.append(assemblyRow(row, assemblyKey(current.revision, row)));
+    list.append(item);
+  }
+  if (extraPassing.length) {
+    const item = document.createElement('li');
+    item.className = 'assembly-more';
+    const button = document.createElement('button');
+    const affected = extraPassing.filter((row) => assemblyKey(current.revision, row) !== selected?.key);
+    button.type = 'button';
+    button.setAttribute('aria-expanded', String(passingExpanded));
+    button.textContent = passingExpanded
+      ? `Hide ${affected.length} passing pairs`
+      : `Show ${affected.length} more passing pairs`;
+    button.addEventListener('click', () => {
+      passingExpanded = !passingExpanded;
+      renderInspection(current.fit, current.assemblyInspection);
+      document.querySelector('.assembly-more button')?.focus();
+    });
+    item.append(button);
+    list.append(item);
+  }
+  for (const row of ordered) {
+    const line = document.createElement('li');
+    line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()} — ${row.requirementIds.join(' · ')}`;
+    evidence.append(line);
+  }
+}
+
 function renderInspection(fit, assembly = []) {
   $('inspection').hidden = !fit.length && !assembly.length;
   $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
@@ -803,49 +867,7 @@ function renderInspection(fit, assembly = []) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
-  const natural = new Intl.Collator(undefined, { numeric: true }).compare;
-  const orderedAssembly = assemblyRows.toSorted((a, b) => {
-    const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
-    const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
-      ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
-    return rank(a) - rank(b)
-      || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
-      || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/'));
-  });
-  const passing = orderedAssembly.filter((row) => row.status === 'PASS');
-  const extraPassing = passing.slice(6);
-  const shownAssembly = passingExpanded
-    ? orderedAssembly
-    : orderedAssembly.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6
-      || assemblyKey(current.revision, row) === selected?.key);
-  for (const row of shownAssembly) {
-    const item = document.createElement('li');
-    item.append(assemblyRow(row, assemblyKey(current.revision, row)));
-    list.append(item);
-  }
-  if (extraPassing.length) {
-    const item = document.createElement('li');
-    item.className = 'assembly-more';
-    const button = document.createElement('button');
-    const affected = extraPassing.filter((row) => assemblyKey(current.revision, row) !== selected?.key);
-    button.type = 'button';
-    button.setAttribute('aria-expanded', String(passingExpanded));
-    button.textContent = passingExpanded
-      ? `Hide ${affected.length} passing pairs`
-      : `Show ${affected.length} more passing pairs`;
-    button.addEventListener('click', () => {
-      passingExpanded = !passingExpanded;
-      renderInspection(current.fit, current.assemblyInspection);
-      document.querySelector('.assembly-more button')?.focus();
-    });
-    item.append(button);
-    list.append(item);
-  }
-  for (const row of orderedAssembly) {
-    const line = document.createElement('li');
-    line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()} — ${row.requirementIds.join(' · ')}`;
-    evidence.append(line);
-  }
+  renderAssemblyList(assemblyRows, list, evidence);
   const raw = {
     fit: fit.map(({ baseId, rows: measured }) => ({
       baseId,
@@ -1017,18 +1039,24 @@ function fade(group, on) {
 }
 
 const INSPECTION_COLORS = { FAIL: 0xc62828, ERROR: 0xc77800, UNKNOWN: 0xc77800, PASS: 0x2f7a46 };
+const OVERLAP_PAIR_COLORS = [0xc62828, 0x2367c9];
 
 function showOverlap() {
   clearGroup(overlap, { ownsGeometry: false });
   const mesh = selected?.status === 'FAIL' && selected.overlapVolume?.value > 0
     ? selected.overlapMesh : null;
   if (!mesh) return;
-  const object = new THREE.Mesh(geometries.get(mesh.id).surface, new THREE.MeshStandardMaterial({
-    color: 0xe02020, transparent: true, opacity: 0.58, depthWrite: false, roughness: 0.8,
+  const geometry = geometries.get(mesh.id);
+  const surface = new THREE.Mesh(geometry.surface, new THREE.MeshBasicMaterial({
+    color: 0xffc400, transparent: true, opacity: 0.92, depthTest: false, depthWrite: false,
   }));
-  object.name = 'exact-overlap';
-  object.renderOrder = 10;
-  overlap.add(object);
+  const edges = new THREE.LineSegments(geometry.edges, new THREE.LineBasicMaterial({
+    color: 0x4a2100, depthTest: false, depthWrite: false,
+  }));
+  surface.name = 'exact-overlap';
+  edges.name = 'exact-overlap-edges';
+  surface.renderOrder = edges.renderOrder = 10;
+  overlap.add(surface, edges);
 }
 
 // the enclosure-only review modes apply only when the scene has an enclosure fit check
@@ -1069,10 +1097,16 @@ function applyPartMode(part, index, offsets, toggle) {
   const lifted = mode === 'lid-off' && isLid(part);
   group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
   setCut(group, part, index, mode === 'section');
-  const focused = selected?.partIds.includes(part.occurrenceId ?? part.partId);
-  group.children[0].material.color.set(focused && INSPECTION_COLORS[selected.status]
-    ? INSPECTION_COLORS[selected.status] : part.color);
+  const identity = part.occurrenceId ?? part.partId;
+  const focused = selected?.partIds.includes(identity);
+  const pairIndex = selected?.overlapMesh ? selected.partIds.indexOf(identity) : -1;
+  const color = pairIndex >= 0 ? OVERLAP_PAIR_COLORS[pairIndex] : INSPECTION_COLORS[selected?.status];
+  group.children[0].material.color.set(focused && color ? color : part.color);
+  group.children[1].material.color.set(pairIndex >= 0 ? color : EDGE);
   fade(group, Boolean(selected) && !focused);
+  if (pairIndex >= 0) Object.assign(group.children[0].material, {
+    transparent: true, opacity: 0.32, depthWrite: false, needsUpdate: true,
+  });
   if (mode === 'section') positionCutFace(group, part);
   toggle.disabled = lifted;
   toggle.title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggle.dataset.title}`;
@@ -1599,6 +1633,19 @@ if (window.coalesceDebug === true) {
   });
   // world points [x, y, z] in normalized device coordinates, through the camera that drew the frame
   window.coalesceViewer.project = (points) => points.map((p) => new THREE.Vector3(...p).project(camera).toArray().slice(0, 2));
+  window.coalesceViewer.overlapScreenBounds = () => {
+    if (!overlap.children.length) return null;
+    const rect = canvas.getBoundingClientRect();
+    const projected = corners(new THREE.Box3().setFromObject(overlap)).map((point) => point.project(camera));
+    const xs = projected.map((point) => rect.left + (point.x + 1) * rect.width / 2);
+    const ys = projected.map((point) => rect.top + (1 - point.y) * rect.height / 2);
+    return {
+      x: Math.floor(Math.min(...xs)),
+      y: Math.floor(Math.min(...ys)),
+      width: Math.ceil(Math.max(...xs)) - Math.floor(Math.min(...xs)),
+      height: Math.ceil(Math.max(...ys)) - Math.floor(Math.min(...ys)),
+    };
+  };
   // scene identity and render state, so the test waits for a finished frame, not a timer
   Object.defineProperty(window.coalesceViewer, 'drawn', {
     get: () => ({
@@ -1618,7 +1665,10 @@ if (window.coalesceDebug === true) {
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
       colors: model.children.map((group) => `#${group.children[0].material.color.getHexString()}`),
+      opacities: model.children.map((group) => group.children[0].material.opacity),
       overlapCount: overlap.children.length,
+      focusProjected: focusBox().isEmpty() ? null
+        : corners(focusBox()).map((point) => point.project(camera).toArray().slice(0, 2)),
       edgeStyles: model.children.map((group) => ({
         color: `#${group.children[1].material.color.getHexString()}`,
         opacity: group.children[1].material.opacity,

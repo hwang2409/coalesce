@@ -298,8 +298,18 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["focused"]["showing"] == "Showing shaft and pin-left, other parts faded."
     assert "shaft and pin-left" in data["focused"]["description"]
     assert data["focused"]["selectionEvidence"] == "Exact overlap: < 0.001 mm³"
-    assert data["focused"]["overlapCount"] == 1
-    assert data["focused"]["colors"][0] == data["focused"]["colors"][2] == "#c62828"
+    assert data["focused"]["overlapCount"] == 2  # saturated volume plus its edges
+    assert data["focused"]["colors"][0] == "#c62828"
+    assert data["focused"]["colors"][2] == "#2367c9"
+    assert data["focused"]["opacities"][0] == data["focused"]["opacities"][2] == 0.32
+    pixels = data["focused"]["overlapPixels"]
+    assert pixels["sampled"] > 0
+    assert pixels["dominant"] / pixels["sampled"] > 0.02, pixels
+    assert pixels["dominant"] > pixels["pairTint"], pixels
+    projected = data["focused"]["focusProjected"]
+    assert max(point[0] for point in projected) - min(point[0] for point in projected) > 0.5
+    assert max(point[1] for point in projected) - min(point[1] for point in projected) > 0.5
+    assert all(-1 <= coordinate <= 1 for point in projected for coordinate in point)
     assert data["escaped"]["overlapCount"] == 0
     assert data["escaped"]["colors"] == data["initial"]["colors"]
     assert data["touching"]["selectionEvidence"] == "Touching · no collision"

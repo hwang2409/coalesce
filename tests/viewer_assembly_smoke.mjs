@@ -26,7 +26,9 @@ const state = async () => page.evaluate(() => ({
   memory: window.coalesceViewer.memory,
   worldBounds: window.coalesceViewer.drawn.worldBounds,
   colors: window.coalesceViewer.drawn.colors,
+  opacities: window.coalesceViewer.drawn.opacities,
   overlapCount: window.coalesceViewer.drawn.overlapCount,
+  focusProjected: window.coalesceViewer.drawn.focusProjected,
   selectionEvidence: document.querySelector('#selection-evidence:not([hidden])')?.textContent ?? null,
   inspectionCount: document.querySelector('#inspection-count')?.textContent,
   inspectionStatuses: [...document.querySelectorAll('.assembly-row')].map(node => node.dataset.status),
@@ -52,6 +54,31 @@ const state = async () => page.evaluate(() => ({
   occurrenceStates: [...document.querySelectorAll('.occurrence-state')].map(node => node.textContent),
   panelOverflowX: document.querySelector('#panel-scroll').scrollWidth > document.querySelector('#panel-scroll').clientWidth,
 }));
+const overlapPixels = async () => {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const bounds = await page.evaluate(() => window.coalesceViewer.overlapScreenBounds());
+  const source = `data:image/png;base64,${(await page.screenshot()).toString('base64')}`;
+  return page.evaluate(async ({ bounds, source }) => {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    const sample = document.createElement('canvas');
+    sample.width = image.naturalWidth;
+    sample.height = image.naturalHeight;
+    const context = sample.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(bounds.x, bounds.y, bounds.width, bounds.height).data;
+    let dominant = 0;
+    let pairTint = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const [red, green, blue] = pixels.slice(index, index + 3);
+      if (red > 150 && green > 100 && red > blue * 1.5 && green > blue * 1.2) dominant += 1;
+      if ((red > 120 && red > green * 1.3 && red > blue * 1.2)
+          || (blue > 120 && blue > red * 1.2 && blue > green * 1.1)) pairTint += 1;
+    }
+    return { sampled: pixels.length / 4, dominant, pairTint, bounds };
+  }, { bounds, source });
+};
 const initial = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-assembled-r2.png`, fullPage: true });
 await page.locator('.mate-row').first().click();
@@ -64,8 +91,11 @@ await firstToggle.click();
 await page.locator('.assembly-row[data-status="ERROR"]').first().click();
 const errorFocused = await state();
 await page.keyboard.press('Escape');
+const beforeFocusFrames = await page.evaluate(() => window.coalesceViewer.drawn.frames);
 await page.locator('.assembly-row[data-status="FAIL"]').first().click();
+await page.waitForFunction(frames => window.coalesceViewer.drawn.frames > frames, beforeFocusFrames);
 const focused = await state();
+focused.overlapPixels = await overlapPixels();
 if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r2.png`, fullPage: true });
 await page.locator('.assembly-more button').click();
 const expanded = await state();

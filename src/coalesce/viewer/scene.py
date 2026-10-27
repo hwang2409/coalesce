@@ -57,6 +57,7 @@ _SPLIT_GUARD = 12
 MAX_REPAIR_FEATURES = 32
 MAX_REPAIR_FIELDS = 8
 MAX_OVERLAP_MESH_BYTES = 2 * 1024 * 1024
+MAX_TOTAL_OVERLAP_MESH_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -393,28 +394,32 @@ def _scene_bounds(lows: list[tuple], highs: list[tuple]) -> dict:
 
 
 def _inspection_assets(
-    rows: list[dict], tolerance: float, maximum_bytes: int
+    rows: list[dict], tolerance: float, maximum_bytes: int, total_bytes: int
 ) -> tuple[list[dict], dict[str, bytes]]:
-    published, meshes = [], {}
-    for index, source in enumerate(rows):
-        row = {key: value for key, value in source.items() if key != "_overlapShape"}
+    published = [{key: value for key, value in row.items() if key != "_overlapShape"} for row in rows]
+    meshes, used = {}, 0
+    # Pair identity order makes the same limited set visible even if requirement rows are reordered.
+    ordered = sorted(enumerate(rows), key=lambda item: tuple(sorted(item[1]["occurrenceIds"])))
+    for index, source in ordered:
         shape = source.get("_overlapShape")
-        if shape is not None:
-            data, counts, _, _ = _tessellate(
-                ScenePart(f"overlap-{index}", shape), tolerance
-            )
-            if len(data) <= maximum_bytes:
-                digest = hashlib.sha256(data).hexdigest()[:32]
-                row["overlapMesh"] = {
-                    "id": digest,
-                    "url": f"/api/mesh/{digest}",
-                    **counts,
-                    "byteCount": len(data),
-                }
-                meshes[digest] = data
-            else:
-                row["overlapMeshOmitted"] = "mesh exceeds the viewer size limit"
-        published.append(row)
+        if shape is None:
+            continue
+        data, counts, _, _ = _tessellate(ScenePart(f"overlap-{index}", shape), tolerance)
+        if len(data) > maximum_bytes:
+            published[index]["overlapMeshOmitted"] = "mesh exceeds the viewer size limit"
+            continue
+        if used + len(data) > total_bytes:
+            published[index]["overlapMeshOmitted"] = "publication overlap budget exhausted"
+            continue
+        digest = hashlib.sha256(data).hexdigest()[:32]
+        published[index]["overlapMesh"] = {
+            "id": digest,
+            "url": f"/api/mesh/{digest}",
+            **counts,
+            "byteCount": len(data),
+        }
+        meshes[digest] = data
+        used += len(data)
     return published, meshes
 
 
@@ -443,7 +448,10 @@ def _build_scene(
     definitions = _definitions(items)
     assets, meshes = _definition_assets(definitions, tolerance)
     assembly_inspection, inspection_meshes = _inspection_assets(
-        assembly_inspection, tolerance, MAX_OVERLAP_MESH_BYTES
+        assembly_inspection,
+        tolerance,
+        MAX_OVERLAP_MESH_BYTES,
+        MAX_TOTAL_OVERLAP_MESH_BYTES,
     )
     meshes.update(inspection_meshes)
     rows = [_scene_row(item, assets) for item in items]
@@ -510,6 +518,7 @@ class ViewerSceneStore:
     TOLERANCE = 0.05
     ANGULAR_TOLERANCE = 0.2
     MAX_OVERLAP_MESH_BYTES = MAX_OVERLAP_MESH_BYTES
+    MAX_TOTAL_OVERLAP_MESH_BYTES = MAX_TOTAL_OVERLAP_MESH_BYTES
 
     def __init__(self) -> None:
         self._changed = threading.Condition()
@@ -569,7 +578,10 @@ class ViewerSceneStore:
             if revision not in self._scenes:
                 return
         published, meshes = _inspection_assets(
-            rows, self.TOLERANCE, self.MAX_OVERLAP_MESH_BYTES
+            rows,
+            self.TOLERANCE,
+            self.MAX_OVERLAP_MESH_BYTES,
+            self.MAX_TOTAL_OVERLAP_MESH_BYTES,
         )
         with self._changed:
             scene = self._scenes.get(revision)
