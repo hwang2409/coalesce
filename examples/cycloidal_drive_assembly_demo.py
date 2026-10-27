@@ -670,6 +670,14 @@ async def run_demo(output: Path, *, screenshots: bool) -> None:
                 {"action": "preflight", "mode": "assembly", "expectedRevision": revision},
             )
             xcaf = preflight["validation"]["xcaf"]
+            bom = assembly["bom"]
+            if len(bom["rows"]) != xcaf["definitionCount"] or sum(
+                row["count"] for row in bom["rows"]
+            ) != xcaf["occurrenceCount"]:
+                raise DemoFailure("XCAF preflight counts do not agree with the assembly BOM")
+            pin_row = next(row for row in bom["rows"] if row["partId"] == "pin/pin")
+            if len(bom["rows"]) != 4 or pin_row["count"] != 8:
+                raise DemoFailure("assembly BOM did not preserve four definitions and eight pins")
             if (xcaf["definitionCount"], xcaf["occurrenceCount"]) != (4, 11):
                 raise DemoFailure("XCAF preflight did not preserve four definitions and 11 occurrences")
             await call(
