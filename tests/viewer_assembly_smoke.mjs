@@ -50,6 +50,9 @@ const state = async () => page.evaluate(() => ({
   })(),
   solveWarning: document.querySelector('#solve-warning')?.textContent,
   solveSummary: document.querySelector('#solve-summary')?.textContent,
+  bomCount: document.querySelector('#bom-count')?.textContent,
+  bomRows: [...document.querySelectorAll('.bom-row')].map(node => node.textContent),
+  bomExpanded: document.querySelector('#bom-rows')?.closest('details')?.open ?? false,
   mateRows: [...document.querySelectorAll('.mate-row')].map(node => node.textContent),
   occurrenceStates: [...document.querySelectorAll('.occurrence-state')].map(node => node.textContent),
   panelOverflowX: document.querySelector('#panel-scroll').scrollWidth > document.querySelector('#panel-scroll').clientWidth,
@@ -80,7 +83,7 @@ const overlapPixels = async () => {
   }, { bounds, source });
 };
 const initial = await state();
-if (shots) await page.screenshot({ path: `${shots}/${width}-assembled-r2.png`, fullPage: true });
+if (shots) await page.screenshot({ path: `${shots}/${width}-assembled-r3.png`, fullPage: true });
 await page.locator('.mate-row').first().click();
 const mateFocused = await state();
 await page.keyboard.press('Escape');
@@ -96,7 +99,7 @@ await page.locator('.assembly-row[data-status="FAIL"]').first().click();
 await page.waitForFunction(frames => window.coalesceViewer.drawn.frames > frames, beforeFocusFrames);
 const focused = await state();
 focused.overlapPixels = await overlapPixels();
-if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r2.png`, fullPage: true });
+if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r3.png`, fullPage: true });
 await page.locator('.assembly-more button').click();
 const expanded = await state();
 await page.locator('.assembly-row[data-status="PASS"]').nth(7).click();

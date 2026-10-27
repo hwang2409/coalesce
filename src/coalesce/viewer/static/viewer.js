@@ -587,6 +587,19 @@ function renderAssemblyState(state) {
     : motion.text;
   const grounded = state.occurrences.filter((row) => row.grounded).length;
   $('solve-summary').textContent = `${grounded} grounded · ${state.conflicts.length} conflicts`;
+  const bom = state.bom ?? { rows: [], excluded: [] };
+  $('bom-count').textContent = `${bom.rows.length} ${bom.rows.length === 1 ? 'definition' : 'definitions'}`;
+  const bomList = $('bom-rows');
+  bomList.replaceChildren();
+  for (const row of bom.rows) {
+    const item = document.createElement('li');
+    item.className = 'bom-row';
+    item.textContent = `${row.label} · ${row.count}`;
+    bomList.append(item);
+  }
+  $('bom-excluded').textContent = bom.excluded.length
+    ? `${bom.excluded.length} reference ${bom.excluded.length === 1 ? 'part' : 'parts'} excluded`
+    : '';
   $('mate-count').textContent = `${state.mates.length}`;
   const list = $('mate-rows');
   list.replaceChildren();

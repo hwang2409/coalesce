@@ -67,6 +67,33 @@ class ResolvedOccurrence:
     shape: Any
 
 
+def bill_of_materials(occurrences: list[ResolvedOccurrence]) -> dict[str, list[dict[str, Any]]]:
+    """Return one deterministic manufacturing row per canonical part definition."""
+    grouped: dict[str, dict[str, Any]] = {}
+    excluded: list[dict[str, Any]] = []
+    for item in sorted(occurrences, key=lambda row: row.occurrence.id):
+        if item.part.role != "manufacturing":
+            excluded.append({
+                "occurrenceId": item.occurrence.id,
+                "partId": item.part.part_id,
+                "label": item.part.label,
+                "reason": "reference part",
+            })
+            continue
+        row = grouped.setdefault(item.part.part_id, {
+            "partId": item.part.part_id,
+            "label": item.part.label,
+            "count": 0,
+            "occurrenceIds": [],
+        })
+        row["count"] += 1
+        row["occurrenceIds"].append(item.occurrence.id)
+    return {
+        "rows": [grouped[key] for key in sorted(grouped)],
+        "excluded": excluded,
+    }
+
+
 def _finite_vector(value: Any, field_name: str) -> tuple[float, float, float]:
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise AssemblyError("INVALID_PARAMETER", f"{field_name} must contain exactly three numbers")

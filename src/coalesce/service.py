@@ -27,6 +27,7 @@ from .assembly import (
     MateSide,
     Occurrence,
     RigidTransform,
+    bill_of_materials,
     normalize_transform,
     resolve_occurrences,
     transform_to_dict,
@@ -3664,16 +3665,14 @@ def _scene_parts(result: RegenResult, assembly: Assembly | None = None) -> Itera
 
 
 def _viewer_assembly_state(result: RegenResult, assembly: Assembly) -> dict[str, Any] | None:
-    if not assembly.mates:
+    if not assembly.occurrences:
         return None
     from .assembly_solver import solve_assembly
 
-    solved = solve_assembly(
-        assembly,
-        resolve_occurrences(assembly, terminal_parts(result, role=None)),
-        result.provenance,
-    )
+    resolved = resolve_occurrences(assembly, terminal_parts(result, role=None))
+    solved = solve_assembly(assembly, resolved, result.provenance)
     return {
+        "bom": bill_of_materials(resolved),
         "solveStatus": solved.solve_status,
         "underConstrainedOccurrenceIds": solved.under_constrained_occurrence_ids,
         "conflicts": [],
@@ -4979,6 +4978,7 @@ class DocumentService:
             "ok": True,
             "revision": self._document.revision,
             "units": "mm",
+            "bom": bill_of_materials(resolved),
             "excludedOccurrenceIds": excluded,
             **fields,
         }
@@ -5074,6 +5074,7 @@ class DocumentService:
             }
             for part in sorted(parts, key=lambda item: item.part_id)
         ]
+        bom = bill_of_materials(resolved)
         mates = [
             (
                 {"mateId": mate.id, "kind": "ground", "occurrenceId": mate.occurrence_id}
@@ -5108,6 +5109,7 @@ class DocumentService:
             "mates": mates,
             "occurrences": occurrences,
             "availableParts": available,
+            "bom": bom,
         }
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:

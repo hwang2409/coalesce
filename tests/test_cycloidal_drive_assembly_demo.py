@@ -99,6 +99,14 @@ def test_cycloidal_drive_assembly_demo(tmp_path):
     assembly = _entry(transcript, "query assembly")
     restarted = _entry(transcript, "restart assembly query")
     assert restarted["response"] == assembly["response"]
+    bom = assembly["response"]["bom"]
+    assert [row["partId"] for row in bom["rows"]] == sorted(row["partId"] for row in bom["rows"])
+    assert len(bom["rows"]) == 4
+    assert next(row for row in bom["rows"] if row["partId"] == "pin/pin")["count"] == 8
+    preflight = _entry(transcript, "fresh-process assembly preflight")["response"]
+    xcaf = preflight["validation"]["xcaf"]
+    assert len(bom["rows"]) == xcaf["definitionCount"]
+    assert sum(row["count"] for row in bom["rows"]) == xcaf["occurrenceCount"]
     occurrences = assembly["response"]["occurrences"]
     assert {item["occurrenceId"] for item in occurrences} == {
         "ring",
