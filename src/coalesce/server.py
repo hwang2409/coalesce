@@ -428,10 +428,20 @@ def _schema_error_field(error: ValidationError) -> str:
     return field
 
 
+def _is_unit_schema_error(error: ValidationError) -> bool:
+    return (
+        error.validator in {"enum", "const"}
+        and bool(error.absolute_path)
+        and error.absolute_path[-1] == "unit"
+    )
+
+
 def _schema_error_details(
     name: str, arguments: dict[str, Any], error: ValidationError
 ) -> dict[str, Any]:
     details: dict[str, Any] = {"field": _schema_error_field(error)}
+    if _is_unit_schema_error(error):
+        details.update(expected=error.validator_value, actual=error.instance)
     if name == "feature" and error.validator == "enum" and list(error.path) == ["kind"]:
         details["allowedKinds"] = TOOL_SCHEMAS["feature"]["properties"]["kind"]["enum"]
     if name == "check" and error.validator == "enum":
@@ -510,6 +520,7 @@ async def _schema_failure(
     if name == "feature" and arguments.get("action") == "update":
         error = _prefer_unknown_field(error)
     details = _schema_error_details(name, arguments, error)
+    code = "UNIT_MISMATCH" if _is_unit_schema_error(error) else "INVALID_PARAMETER"
     message = schema_error_message(error)
     if (
         name == "sketch"
@@ -527,7 +538,7 @@ async def _schema_failure(
             service,
             name,
             arguments,
-            "INVALID_PARAMETER",
+            code,
             message,
             details,
             publish=name in ("sketch", "feature"),

@@ -67,7 +67,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | code | family | when it happens | agent recovery |
 |---|---|---|---|
 | `INVALID_PARAMETER` | request | a field, action, or combination is not accepted | correct the named field and resend with a new request id |
-| `UNIT_MISMATCH` | request | a quantity uses a unit not accepted by that field | convert and send an accepted unit |
+| `UNIT_MISMATCH` | request | schema validation rejected a quantity or angle unit, or a service-level unit check rejected it; schema failures include the JSON `field`, `expected`, and `actual` values | convert and send an accepted unit |
 | `DUPLICATE_ID` | request | a node id already exists | choose a new stable id |
 | `DUPLICATE_ENTITY_ID` | request | one sketch repeats an entity id | give each sketch entity a unique id |
 | `UNKNOWN_ID` | request | a requested node, part, or revision is not retained | query the graph or listed valid parts and use an existing id |

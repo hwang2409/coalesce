@@ -1265,7 +1265,7 @@ def _parse_revolve(
                 profileIds=(tuple(profile["profileIds"]) if "profileIds" in profile else None),
             ),
             axis=parameters["axis"],
-            angle=_revolve_angle(parameters.get("angle")),
+            angle=_revolve_angle(parameters.get("angle", {"value": 360, "unit": "deg"})),
             operation=parameters["operation"],
         ),
     )

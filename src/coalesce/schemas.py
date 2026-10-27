@@ -10,7 +10,7 @@ SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT
 
 QUANTITY = {
     "type": "object",
-    "properties": {"value": {"type": "number"}, "unit": {"type": "string"}},
+    "properties": {"value": {"type": "number"}, "unit": {"const": "mm"}},
     "required": ["value", "unit"],
     "additionalProperties": False,
 }
@@ -25,7 +25,7 @@ ANGLE = {
     "type": "object",
     "properties": {
         "value": {"type": "number"},
-        "unit": {"type": "string"},
+        "unit": {"enum": ["deg", "rad"]},
     },
     "required": ["value", "unit"],
     "additionalProperties": False,
@@ -388,7 +388,7 @@ REVOLVE_PARAMETERS = {
         "angle": ANGLE,
         "operation": {"const": "new_body"},
     },
-    "required": ["profile", "axis", "angle", "operation"],
+    "required": ["profile", "axis", "operation"],
     "additionalProperties": False,
 }
 EXTRUDE_PARAMETERS = {

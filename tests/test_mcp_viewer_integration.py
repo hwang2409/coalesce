@@ -1081,7 +1081,7 @@ async def test_schema_invalid_sketch_shows_coalesce_wording_in_viewer(tmp_path, 
 
 
 @pytest.mark.anyio
-async def test_wrong_sketch_angle_unit_shows_unit_mismatch_in_viewer(tmp_path):
+async def test_wrong_sketch_angle_unit_shows_schema_unit_mismatch_in_viewer(tmp_path):
     arguments = {
         **SKETCH,
         "expectedRevision": 2,
@@ -1092,7 +1092,7 @@ async def test_wrong_sketch_angle_unit_shows_unit_mismatch_in_viewer(tmp_path):
 
     assert failure["error"] == {
         "code": "UNIT_MISMATCH",
-        "message": "expected deg or rad; received turn",
+        "message": "unit must be one of 'deg', 'rad' (field: entities[0].rotation.unit)",
     }
 
 
