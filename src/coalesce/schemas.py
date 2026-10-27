@@ -10,7 +10,7 @@ SUPPORTED_REQUIREMENT_KINDS = tuple(sorted(("valid_brep", *EVALUATED_REQUIREMENT
 
 QUANTITY = {
     "type": "object",
-    "properties": {"value": {"type": "number"}, "unit": {"const": "mm"}},
+    "properties": {"value": {"type": "number"}, "unit": {"type": "string"}},
     "required": ["value", "unit"],
     "additionalProperties": False,
 }
@@ -25,7 +25,7 @@ ANGLE = {
     "type": "object",
     "properties": {
         "value": {"type": "number"},
-        "unit": {"enum": ["deg", "rad"]},
+        "unit": {"type": "string"},
     },
     "required": ["value", "unit"],
     "additionalProperties": False,

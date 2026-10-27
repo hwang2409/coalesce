@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 import pytest
 from build123d import import_step
@@ -8,6 +9,7 @@ from test_revolve import PULLEY, polyline_sketch, revolve
 import coalesce.revolution as revolution_module
 from coalesce.references import Status, reference_from_dict, resolve
 from coalesce.serialization import dumps
+from coalesce.server import _call_tool
 from coalesce.service import DocumentService, _scene_parts
 
 
@@ -186,6 +188,58 @@ def test_ambiguous_partial_cap_history_fails_atomically(tmp_path, monkeypatch):
     assert result["error"]["code"] == "HISTORY_MISSING"
     assert result["revision"] == 1
     assert document.read_bytes() == before
+
+
+def test_legacy_full_revolve_request_replays_and_saves_byte_identically(tmp_path):
+    fixture = Path(__file__).parent / "fixtures/revolve/legacy-full-revolve.coalesce.json"
+    document = tmp_path / "legacy.coalesce.json"
+    document.write_bytes(fixture.read_bytes())
+    before = document.read_bytes()
+    service = DocumentService(document, warmup=False)
+    request = {
+        "action": "create",
+        "expectedRevision": 1,
+        "requestId": "eval-create-shaft-revolve",
+        "featureId": "shaft",
+        "kind": "revolve",
+        "parameters": {
+            "profile": {"sketchId": "profile", "profileIds": ["outline"]},
+            "axis": "x",
+            "angle": {"value": 360, "unit": "deg"},
+            "operation": "new_body",
+        },
+    }
+    stored = next(
+        receipt["response"]
+        for receipt in service._document.receipts
+        if receipt["requestId"] == request["requestId"]
+    )
+
+    assert service.feature(request) == stored
+    request["parameters"]["angle"] = {"value": 2 * math.pi, "unit": "rad"}
+    assert service.feature(request) == stored
+    assert service.store.save(service._document) is True
+    assert document.read_bytes() == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["create", "update"])
+async def test_mcp_revolve_wrong_angle_unit_reports_unit_mismatch(tmp_path, action):
+    service = DocumentService(tmp_path / f"wrong-angle-{action}.json", warmup=False)
+    assert service.sketch(polyline_sketch(PULLEY))["ok"]
+    if action == "create":
+        request = partial_revolve(angle=90)
+        request["parameters"]["angle"]["unit"] = "mm"
+    else:
+        assert service.feature(partial_revolve(angle=90))["ok"]
+        request = angle_update(180)
+        request["set"]["angle"]["unit"] = "mm"
+
+    result = (await _call_tool(service, "feature", request)).structuredContent
+
+    assert result["error"]["code"] == "UNIT_MISMATCH"
+    assert result["error"]["expected"] == ["deg", "rad"]
+    assert result["error"]["actual"] == "mm"
 
 
 def test_partial_angle_is_serialized_and_shown_in_viewer_facts(tmp_path):

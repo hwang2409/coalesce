@@ -2023,6 +2023,9 @@ def _canonical(value: Any) -> Any:
 
 def _hash(operation: MutationOperation) -> str:
     intent = {"type": type(operation).__name__, **asdict(operation)}
+    # Full revolves predate the angle field, so their replay identity keeps the legacy shape.
+    if isinstance(operation, RevolveCreate) and operation.parameters.angle == 360:
+        del intent["parameters"]["angle"]
     return hashlib.sha256(
         json.dumps(
             _canonical(intent), sort_keys=True, separators=(",", ":"), allow_nan=False
