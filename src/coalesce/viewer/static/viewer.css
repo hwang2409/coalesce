@@ -775,6 +775,15 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
   font-weight: 500;
 }
 
+.showing strong {
+  padding: 3px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.showing strong[data-status="FAIL"] { color: var(--fail); background: var(--fail-wash); }
+.showing strong:is([data-status="ERROR"], [data-status="UNKNOWN"]) { color: var(--wait); background: #fbf3e4; }
+.showing strong[data-status="PASS"] { color: var(--live); background: #edf6f0; }
+
 .showing button {
   min-height: 28px;
   padding: 0 8px;

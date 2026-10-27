@@ -56,6 +56,8 @@ _SPLIT_VARIANTS = ((0, 0), (math.radians(45), 0.02), (math.radians(-45), 0.02), 
 _SPLIT_GUARD = 12
 MAX_REPAIR_FEATURES = 32
 MAX_REPAIR_FIELDS = 8
+MAX_OVERLAP_MESH_BYTES = 2 * 1024 * 1024
+MAX_TOTAL_OVERLAP_MESH_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -391,6 +393,48 @@ def _scene_bounds(lows: list[tuple], highs: list[tuple]) -> dict:
     return {"min": [min(c) for c in zip(*lows)], "max": [max(c) for c in zip(*highs)]}
 
 
+def _inspection_assets(
+    rows: list[dict], tolerance: float, maximum_bytes: int, total_bytes: int
+) -> tuple[list[dict], dict[str, bytes]]:
+    published = [{key: value for key, value in row.items() if key != "_overlapShape"} for row in rows]
+    meshes, used, exhausted = {}, 0, False
+    # Pair identity order makes the same limited set visible even if requirement rows are reordered.
+    ordered = sorted(enumerate(rows), key=lambda item: tuple(sorted(item[1]["occurrenceIds"])))
+    for index, source in ordered:
+        shape = source.get("_overlapShape")
+        if shape is None:
+            continue
+        if exhausted:
+            published[index]["overlapMeshOmitted"] = "publication overlap budget exhausted"
+            continue
+        data, counts, _, _ = _tessellate(ScenePart(f"overlap-{index}", shape), tolerance)
+        if len(data) > maximum_bytes:
+            published[index]["overlapMeshOmitted"] = "mesh exceeds the viewer size limit"
+            continue
+        if used + len(data) > total_bytes:
+            published[index]["overlapMeshOmitted"] = "publication overlap budget exhausted"
+            exhausted = True
+            continue
+        digest = hashlib.sha256(data).hexdigest()[:32]
+        published[index]["overlapMesh"] = {
+            "id": digest,
+            "url": f"/api/mesh/{digest}",
+            **counts,
+            "byteCount": len(data),
+        }
+        meshes[digest] = data
+        used += len(data)
+    return published, meshes
+
+
+def _scene_mesh_ids(scene: dict) -> set[str]:
+    return {part["mesh"]["id"] for part in scene["parts"]} | {
+        row["overlapMesh"]["id"]
+        for row in scene.get("assemblyInspection", [])
+        if "overlapMesh" in row
+    }
+
+
 def _build_scene(
     revision: int,
     items: Iterable[ScenePart | SceneOccurrence],
@@ -407,6 +451,13 @@ def _build_scene(
         raise ValueError(f"duplicate part names in {names}")
     definitions = _definitions(items)
     assets, meshes = _definition_assets(definitions, tolerance)
+    assembly_inspection, inspection_meshes = _inspection_assets(
+        assembly_inspection,
+        tolerance,
+        MAX_OVERLAP_MESH_BYTES,
+        MAX_TOTAL_OVERLAP_MESH_BYTES,
+    )
+    meshes.update(inspection_meshes)
     rows = [_scene_row(item, assets) for item in items]
     scene = {
         "revision": revision,
@@ -470,6 +521,8 @@ class ViewerSceneStore:
     # with part size when metre-scale models arrive.
     TOLERANCE = 0.05
     ANGULAR_TOLERANCE = 0.2
+    MAX_OVERLAP_MESH_BYTES = MAX_OVERLAP_MESH_BYTES
+    MAX_TOTAL_OVERLAP_MESH_BYTES = MAX_TOTAL_OVERLAP_MESH_BYTES
 
     def __init__(self) -> None:
         self._changed = threading.Condition()
@@ -516,7 +569,7 @@ class ViewerSceneStore:
             scene["repairHistory"] = list(self._repair_history.values())
             self._scenes = {r: s for r, s in self._scenes.items() if r == self._revision}
             self._scenes[revision] = scene
-            live = {p["mesh"]["id"] for s in self._scenes.values() for p in s["parts"]}
+            live = {mesh for scene in self._scenes.values() for mesh in _scene_mesh_ids(scene)}
             self._meshes = {d: b for d, b in {**self._meshes, **meshes}.items() if d in live}
             self._revision = revision
             self._failure = None
@@ -526,9 +579,28 @@ class ViewerSceneStore:
     def publish_assembly_inspection(self, revision: int, rows: list[dict]) -> None:
         """Attach already-measured pair rows to the matching committed scene."""
         with self._changed:
+            if revision not in self._scenes:
+                return
+        published, meshes = _inspection_assets(
+            rows,
+            self.TOLERANCE,
+            self.MAX_OVERLAP_MESH_BYTES,
+            self.MAX_TOTAL_OVERLAP_MESH_BYTES,
+        )
+        with self._changed:
             scene = self._scenes.get(revision)
             if scene is not None:
-                scene["assemblyInspection"] = copy.deepcopy(rows)
+                scene["assemblyInspection"] = published
+                live = {
+                    mesh
+                    for stored in self._scenes.values()
+                    for mesh in _scene_mesh_ids(stored)
+                }
+                self._meshes = {
+                    digest: data
+                    for digest, data in {**self._meshes, **meshes}.items()
+                    if digest in live
+                }
                 self._version += 1
                 self._changed.notify_all()
 
