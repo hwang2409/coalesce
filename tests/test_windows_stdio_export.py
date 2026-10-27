@@ -196,7 +196,7 @@ def _tool(server, name, arguments, phase):
     result = server.request(
         "tools/call", {"name": name, "arguments": arguments}, phase
     )["structuredContent"]
-    assert result["ok"] is True, result
+    assert result["ok"] is True, json.dumps(result, indent=2)[:8000]
     return result
 
 
