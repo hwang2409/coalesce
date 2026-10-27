@@ -397,12 +397,15 @@ def _inspection_assets(
     rows: list[dict], tolerance: float, maximum_bytes: int, total_bytes: int
 ) -> tuple[list[dict], dict[str, bytes]]:
     published = [{key: value for key, value in row.items() if key != "_overlapShape"} for row in rows]
-    meshes, used = {}, 0
+    meshes, used, exhausted = {}, 0, False
     # Pair identity order makes the same limited set visible even if requirement rows are reordered.
     ordered = sorted(enumerate(rows), key=lambda item: tuple(sorted(item[1]["occurrenceIds"])))
     for index, source in ordered:
         shape = source.get("_overlapShape")
         if shape is None:
+            continue
+        if exhausted:
+            published[index]["overlapMeshOmitted"] = "publication overlap budget exhausted"
             continue
         data, counts, _, _ = _tessellate(ScenePart(f"overlap-{index}", shape), tolerance)
         if len(data) > maximum_bytes:
@@ -410,6 +413,7 @@ def _inspection_assets(
             continue
         if used + len(data) > total_bytes:
             published[index]["overlapMeshOmitted"] = "publication overlap budget exhausted"
+            exhausted = True
             continue
         digest = hashlib.sha256(data).hexdigest()[:32]
         published[index]["overlapMesh"] = {
