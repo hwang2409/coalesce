@@ -78,7 +78,12 @@ def _sketch_solve_timeout(value: str) -> float:
 
 
 async def _run(
-    document: Path, *, viewer_enabled: bool, open_browser: bool, sketch_solve_timeout: float
+    document: Path,
+    *,
+    viewer_enabled: bool,
+    open_browser: bool,
+    sketch_solve_timeout: float,
+    viewer_port: int,
 ) -> None:
     if not viewer_enabled:
         service = await asyncio.to_thread(
@@ -90,7 +95,7 @@ async def _run(
     from .viewer import ViewerSceneStore, ViewerServer
 
     store = ViewerSceneStore()
-    with ViewerServer(store) as viewer:
+    with ViewerServer(store, port=viewer_port) as viewer:
         # Load persisted structure off the event loop; exact geometry starts in the background.
         service = await asyncio.to_thread(
             _load_service,
@@ -114,6 +119,7 @@ def main() -> None:
         help="*.coalesce.json document path (or set COALESCE_DOCUMENT)",
     )
     parser.add_argument("--no-viewer", action="store_true", help="do not start the local viewer")
+    parser.add_argument("--viewer-port", type=int, default=0, help="local viewer port (0 chooses a free port)")
     parser.add_argument(
         "--sketch-solve-timeout",
         type=_sketch_solve_timeout,
@@ -144,6 +150,7 @@ def main() -> None:
                 viewer_enabled=not arguments.no_viewer,
                 open_browser=arguments.open,
                 sketch_solve_timeout=arguments.sketch_solve_timeout,
+                viewer_port=arguments.viewer_port,
             )
         )
     except _DocumentLoadFailure as error:

@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PIN_RADIUS = 4
 
@@ -41,6 +42,13 @@ def viewer_url(errlog):
         if "coalesce viewer:" in line:
             return line.split("coalesce viewer:", 1)[1].strip()
     return ""
+
+
+def viewer_port(url: str) -> int:
+    port = urlsplit(url).port
+    if port is None:
+        raise DemoFailure("the server did not publish a viewer port")
+    return port
 
 
 async def _run_process(*command, timeout):
@@ -620,6 +628,9 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
         ) as session:
             await session.initialize()
             url = viewer_url(errlog)
+            if not url:
+                raise DemoFailure("the server did not publish a viewer URL")
+            print(f"viewer URL: {url}", flush=True)
             guide = await session.read_resource(GUIDE_URI)
             record(
                 {
@@ -758,32 +769,40 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                 else:
                     await _screenshots(module, url, output, revision)
 
-    print(f"viewer URL: {url or 'not available'}")
     print(f"definitions: {xcaf["definitionCount"]}; occurrences: {xcaf["occurrenceCount"]}; overlap: PASS; STEP: {step}")
     print("mate solve: static, not simulated motion")
 
-    restart_server = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "coalesce", "--document", str(document)],
-        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
-    )
-    async with stdio_client(restart_server) as (read, write), ClientSession(
-        read, write
-    ) as session:
-        await session.initialize()
-        restarted = result_json(await session.call_tool("query", {"select": {"kind": "assembly"}}))
-        record(
-            {
-                "method": "tools/call",
-                "label": "restart assembly query",
-                "name": "query",
-                "arguments": {"select": {"kind": "assembly"}},
-                "revision": restarted.get("revision"),
-                "response": restarted,
-            }
+    with tempfile.TemporaryFile(mode="w+") as restart_errlog:
+        restart_server = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "coalesce", "--document", str(document), "--viewer-port", str(viewer_port(url))],
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
         )
-        if restarted != assembly:
-            raise DemoFailure("assembly changed after restart")
+        async with stdio_client(restart_server, errlog=restart_errlog) as (read, write), ClientSession(
+            read, write
+        ) as session:
+            await session.initialize()
+            restarted_url = viewer_url(restart_errlog)
+            if not restarted_url:
+                raise DemoFailure("the restarted server did not publish a viewer URL")
+            if viewer_port(restarted_url) != viewer_port(url):
+                raise DemoFailure("the restarted server changed the viewer port")
+            restarted = result_json(await session.call_tool("query", {"select": {"kind": "assembly"}}))
+            record(
+                {
+                    "method": "tools/call",
+                    "label": "restart assembly query",
+                    "name": "query",
+                    "arguments": {"select": {"kind": "assembly"}},
+                    "revision": restarted.get("revision"),
+                    "response": restarted,
+                }
+            )
+            if restarted != assembly:
+                raise DemoFailure("assembly changed after restart")
+            if open_browser or pace:
+                print(f"viewer live at {restarted_url}; press Ctrl-C to exit", flush=True)
+                await asyncio.Event().wait()
 
 
 def main() -> None:
@@ -798,6 +817,8 @@ def main() -> None:
         parser.error("--pace must be non-negative")
     try:
         asyncio.run(run_demo(output, screenshots=arguments.screenshots, pace=arguments.pace, open_browser=arguments.open))
+    except KeyboardInterrupt:
+        return
     except (DemoFailure, OSError, FileExistsError) as error:
         print(f"demo failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

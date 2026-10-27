@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.request import urlopen
 
 import pytest
 
@@ -178,6 +179,7 @@ def test_sigint_during_paced_demo_stops_server_child(tmp_path):
         text=True,
     )
     assert process.stdout is not None
+    assert process.stdout.readline().startswith("viewer URL: ")
     assert process.stdout.readline().strip() == "beat: build"
     child_pids = []
     for _ in range(100):
@@ -194,25 +196,42 @@ def test_sigint_during_paced_demo_stops_server_child(tmp_path):
     assert child_pids
     process.send_signal(signal.SIGINT)
     process.communicate(timeout=30)
-    assert process.returncode != 0
+    assert process.returncode == 0
     for pid in child_pids:
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
 
 
-def test_paced_demo_prints_story_beats_in_order(tmp_path):
-    completed = subprocess.run(
+def test_paced_demo_prints_live_viewer_and_reuses_port(tmp_path):
+    process = subprocess.Popen(
         [sys.executable, "-m", "coalesce.demo", "--output", str(tmp_path / "paced"), "--pace", "0.01"],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=180,
-        check=False,
     )
-
-    assert completed.returncode == 0, completed.stderr
-    assert [
-        line for line in completed.stdout.splitlines() if line.startswith("beat: ")
-    ] == [
+    assert process.stdout is not None
+    lines = []
+    while True:
+        line = process.stdout.readline()
+        assert line
+        lines.append(line.strip())
+        if line.startswith("viewer URL: "):
+            first_url = line.split(": ", 1)[1]
+            break
+    assert urlopen(first_url).status == 200
+    while True:
+        line = process.stdout.readline()
+        assert line
+        lines.append(line.strip())
+        if line.startswith("viewer live at "):
+            final_url = line.split(" at ", 1)[1].split(";", 1)[0]
+            break
+    assert urlopen(final_url).status == 200
+    assert first_url.split(":")[2].split("/", 1)[0] == final_url.split(":")[2].split("/", 1)[0]
+    process.send_signal(signal.SIGINT)
+    _, stderr = process.communicate(timeout=30)
+    assert process.returncode == 0, stderr
+    assert [line for line in lines if line.startswith("beat: ")] == [
         "beat: build",
         "beat: edit/lost-contact failure",
         "beat: restore + interference pass",
