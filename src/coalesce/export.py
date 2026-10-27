@@ -129,6 +129,7 @@ def verify_step_fresh(path: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [sys.executable, "-m", "coalesce.export", "--verify", str(path)],
             check=False,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=120,
@@ -750,6 +751,7 @@ def verify_assembly_step_fresh(path: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [sys.executable, "-m", "coalesce.export", "--verify-assembly", str(path)],
             check=False,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=120,
