@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -50,7 +52,21 @@ async def _run_process(*command, timeout):
     return process.returncode, stdout.decode(), stderr.decode()
 
 
-async def playwright_module():
+async def playwright_module() -> str | None:
+    if not shutil.which("node"):
+        return None
+    candidates = [os.environ.get("PLAYWRIGHT_MODULE")]
+    candidates.extend(sorted(glob.glob(os.path.expanduser("~/.npm/_npx/*/node_modules/playwright/index.mjs"))))
+    probe = "const m=await import(process.argv[1]);await(await m.chromium.launch()).close()"
+    for candidate in filter(None, candidates):
+        try:
+            returncode, _, _ = await _run_process(
+                "node", "--input-type=module", "-e", probe, candidate, timeout=60
+            )
+        except TimeoutError:
+            continue
+        if returncode == 0:
+            return candidate
     return None
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -777,7 +793,7 @@ def main() -> None:
     parser.add_argument("--pace", type=float, default=0, metavar="SECONDS")
     parser.add_argument("--screenshots", action="store_true")
     arguments = parser.parse_args()
-    output = arguments.output or Path(tempfile.mkdtemp(prefix="coalesce-demo-"))
+    output = arguments.output or Path(tempfile.gettempdir()) / f"coalesce-demo-{os.urandom(8).hex()}"
     if arguments.pace < 0:
         parser.error("--pace must be non-negative")
     try:

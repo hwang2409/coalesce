@@ -13,6 +13,7 @@ import pytest
 from coalesce.export import verify_assembly_step_fresh
 
 DEMO = Path(__file__).parents[1] / "examples/cycloidal_drive_assembly_demo.py"
+PACKAGED_DEMO = Path(__file__).parents[1] / "src/coalesce/demo.py"
 MAX_DISC_PIN_CLEARANCE_MM = 1e-6
 
 
@@ -123,6 +124,27 @@ def test_installed_demo_command_publishes_complete_artifacts(tmp_path):
     assert sum(row["count"] for row in bom["rows"]) == xcaf["occurrenceCount"]
 
 
+def test_demo_default_output_path_is_new_and_publishes_artifacts(tmp_path):
+    completed = subprocess.run(
+        [sys.executable, "-m", "coalesce.demo"],
+        cwd=tmp_path,
+        env={**os.environ, "TMPDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    outputs = list(tmp_path.glob("coalesce-demo-*"))
+    assert len(outputs) == 1
+    assert sorted(path.name for path in outputs[0].iterdir()) == [
+        "cycloidal-drive-assembly.coalesce.json",
+        "cycloidal-drive-assembly.step",
+        "transcript.json",
+    ]
+
+
 def test_demo_rejects_existing_output_directory_without_changing_it(tmp_path):
     output = tmp_path / "existing"
     output.mkdir()
@@ -199,7 +221,7 @@ def test_paced_demo_prints_story_beats_in_order(tmp_path):
 
 
 def test_drive_demo_models_the_eccentric_journal_in_the_shaft_definition():
-    source = DEMO.read_text(encoding="utf-8")
+    source = PACKAGED_DEMO.read_text(encoding="utf-8")
 
     assert '("eccentric", "pin/pin"' not in source
     assert '"operation": "join"' in source
