@@ -604,6 +604,42 @@ async def _screenshots(module: str, url: str, output: Path, revision: int) -> No
         raise DemoFailure(f"screenshot capture failed: {stderr.strip() or stdout.strip()}")
 
 
+async def _verify_restart(
+    document: Path, url: str, assembly: dict, record, *, open_browser: bool, pace: float
+) -> None:
+    with tempfile.TemporaryFile(mode="w+") as restart_errlog:
+        restart_server = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "coalesce", "--document", str(document), "--viewer-port", str(viewer_port(url))],
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
+        )
+        async with stdio_client(restart_server, errlog=restart_errlog) as (read, write), ClientSession(
+            read, write
+        ) as session:
+            await session.initialize()
+            restarted_url = viewer_url(restart_errlog)
+            if not restarted_url:
+                raise DemoFailure("the restarted server did not publish a viewer URL")
+            if viewer_port(restarted_url) != viewer_port(url):
+                raise DemoFailure("the restarted server changed the viewer port")
+            restarted = result_json(await session.call_tool("query", {"select": {"kind": "assembly"}}))
+            record(
+                {
+                    "method": "tools/call",
+                    "label": "restart assembly query",
+                    "name": "query",
+                    "arguments": {"select": {"kind": "assembly"}},
+                    "revision": restarted.get("revision"),
+                    "response": restarted,
+                }
+            )
+            if restarted != assembly:
+                raise DemoFailure("assembly changed after restart")
+            if open_browser or pace:
+                print(f"viewer live at {restarted_url}; press Ctrl-C to exit", flush=True)
+                await asyncio.Event().wait()
+
+
 async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, open_browser: bool = False) -> None:
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -772,37 +808,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
     print(f"definitions: {xcaf["definitionCount"]}; occurrences: {xcaf["occurrenceCount"]}; overlap: PASS; STEP: {step}")
     print("mate solve: static, not simulated motion")
 
-    with tempfile.TemporaryFile(mode="w+") as restart_errlog:
-        restart_server = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "coalesce", "--document", str(document), "--viewer-port", str(viewer_port(url))],
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
-        )
-        async with stdio_client(restart_server, errlog=restart_errlog) as (read, write), ClientSession(
-            read, write
-        ) as session:
-            await session.initialize()
-            restarted_url = viewer_url(restart_errlog)
-            if not restarted_url:
-                raise DemoFailure("the restarted server did not publish a viewer URL")
-            if viewer_port(restarted_url) != viewer_port(url):
-                raise DemoFailure("the restarted server changed the viewer port")
-            restarted = result_json(await session.call_tool("query", {"select": {"kind": "assembly"}}))
-            record(
-                {
-                    "method": "tools/call",
-                    "label": "restart assembly query",
-                    "name": "query",
-                    "arguments": {"select": {"kind": "assembly"}},
-                    "revision": restarted.get("revision"),
-                    "response": restarted,
-                }
-            )
-            if restarted != assembly:
-                raise DemoFailure("assembly changed after restart")
-            if open_browser or pace:
-                print(f"viewer live at {restarted_url}; press Ctrl-C to exit", flush=True)
-                await asyncio.Event().wait()
+    await _verify_restart(document, url, assembly, record, open_browser=open_browser, pace=pace)
 
 
 def main() -> None:

@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from coalesce.__main__ import main
+from coalesce.__main__ import _viewer_port, main
 
 
 @pytest.mark.parametrize(
@@ -62,3 +62,23 @@ def test_oserror_after_document_load_is_not_mapped_to_invalid_document(tmp_path,
 
     with pytest.raises(OSError, match="stdio failed"):
         main()
+
+
+
+@pytest.mark.parametrize("value", ["0", "65535"])
+def test_viewer_port_accepts_socket_range(value):
+    assert _viewer_port(value) == int(value)
+
+
+@pytest.mark.parametrize("value", ["-1", "65536", "not-a-port"])
+def test_viewer_port_rejects_invalid_values_without_traceback(value):
+    completed = subprocess.run(
+        [sys.executable, "-m", "coalesce", "--viewer-port", value],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "usage:" in completed.stderr
+    assert "traceback" not in completed.stderr.lower()

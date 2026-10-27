@@ -64,6 +64,16 @@ def _load_service(document: Path, **kwargs) -> DocumentService:
     raise _DocumentLoadFailure(0, failure) from None
 
 
+def _viewer_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer between 0 and 65535") from error
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError("must be an integer between 0 and 65535")
+    return port
+
+
 def _sketch_solve_timeout(value: str) -> float:
     try:
         timeout = float(value)
@@ -119,7 +129,12 @@ def main() -> None:
         help="*.coalesce.json document path (or set COALESCE_DOCUMENT)",
     )
     parser.add_argument("--no-viewer", action="store_true", help="do not start the local viewer")
-    parser.add_argument("--viewer-port", type=int, default=0, help="local viewer port (0 chooses a free port)")
+    parser.add_argument(
+        "--viewer-port",
+        type=_viewer_port,
+        default=0,
+        help="local viewer port (0 chooses a free port)",
+    )
     parser.add_argument(
         "--sketch-solve-timeout",
         type=_sketch_solve_timeout,

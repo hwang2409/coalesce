@@ -1,10 +1,12 @@
 import ast
 import json
 import os
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.request import urlopen
@@ -202,6 +204,27 @@ def test_sigint_during_paced_demo_stops_server_child(tmp_path):
             os.kill(pid, 0)
 
 
+def _start_line_reader(stream):
+    lines = queue.Queue()
+
+    def read_lines():
+        for line in iter(stream.readline, ""):
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=read_lines, daemon=True).start()
+    return lines
+
+
+def _readline_with_deadline(lines, timeout=30):
+    try:
+        line = lines.get(timeout=timeout)
+    except queue.Empty as error:
+        raise AssertionError("timed out waiting for demo output") from error
+    assert line is not None, "demo exited before expected output"
+    return line
+
+
 def test_paced_demo_prints_live_viewer_and_reuses_port(tmp_path):
     process = subprocess.Popen(
         [sys.executable, "-m", "coalesce.demo", "--output", str(tmp_path / "paced"), "--pace", "0.01"],
@@ -210,33 +233,41 @@ def test_paced_demo_prints_live_viewer_and_reuses_port(tmp_path):
         text=True,
     )
     assert process.stdout is not None
+    output_lines = _start_line_reader(process.stdout)
     lines = []
-    while True:
-        line = process.stdout.readline()
-        assert line
-        lines.append(line.strip())
-        if line.startswith("viewer URL: "):
-            first_url = line.split(": ", 1)[1]
-            break
-    assert urlopen(first_url).status == 200
-    while True:
-        line = process.stdout.readline()
-        assert line
-        lines.append(line.strip())
-        if line.startswith("viewer live at "):
-            final_url = line.split(" at ", 1)[1].split(";", 1)[0]
-            break
-    assert urlopen(final_url).status == 200
-    assert first_url.split(":")[2].split("/", 1)[0] == final_url.split(":")[2].split("/", 1)[0]
-    process.send_signal(signal.SIGINT)
-    _, stderr = process.communicate(timeout=30)
-    assert process.returncode == 0, stderr
-    assert [line for line in lines if line.startswith("beat: ")] == [
-        "beat: build",
-        "beat: edit/lost-contact failure",
-        "beat: restore + interference pass",
-        "beat: STEP publish",
-    ]
+    try:
+        while True:
+            line = _readline_with_deadline(output_lines)
+            lines.append(line.strip())
+            if line.startswith("viewer URL: "):
+                first_url = line.split(": ", 1)[1]
+                break
+        assert urlopen(first_url, timeout=5).status == 200
+        while True:
+            line = _readline_with_deadline(output_lines)
+            lines.append(line.strip())
+            if line.startswith("viewer live at "):
+                final_url = line.split(" at ", 1)[1].split(";", 1)[0]
+                break
+        assert urlopen(final_url, timeout=5).status == 200
+        assert first_url.split(":")[2].split("/", 1)[0] == final_url.split(":")[2].split("/", 1)[0]
+        assert [line for line in lines if line.startswith("beat: ")] == [
+            "beat: build",
+            "beat: edit/lost-contact failure",
+            "beat: restore + interference pass",
+            "beat: STEP publish",
+        ]
+        process.send_signal(signal.SIGINT)
+        process.wait(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    assert process.returncode == 0
 
 
 def test_drive_demo_models_the_eccentric_journal_in_the_shaft_definition():
