@@ -568,6 +568,8 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
 
 
 def _sync_directory(path: Path) -> None:
+    if os.name == "nt":
+        raise OSError(errno.ENOTSUP, "directory fsync is unavailable on Windows")
     directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         os.fsync(directory_fd)
