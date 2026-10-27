@@ -101,6 +101,18 @@ jobs:
           test "${#selected[@]}" -gt 0
           uv run --extra test --extra sketch pytest -q --durations=20 "${selected[@]}"
 
+  windows-stdio-export:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v10.3.2
+        with: {version: latest}
+      - name: run bounded stdio and STEP export portability test
+        run: uv run --extra test pytest -q tests/test_windows_stdio_export.py
+
   goldens:
     runs-on: ubuntu-26.04
     steps:
