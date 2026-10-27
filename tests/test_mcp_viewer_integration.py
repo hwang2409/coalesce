@@ -1031,7 +1031,7 @@ async def _wait_for_failure(store, previous):
     return store.snapshot()[2]
 
 
-async def _schema_failure(tmp_path, tool, arguments):
+async def _schema_failure(tmp_path, tool, arguments, code="INVALID_PARAMETER"):
     store = ViewerSceneStore()
     service = DocumentService(tmp_path / "plate.coalesce.json", scene_store=store)
     await call_server_tool(service, "sketch", SKETCH)
@@ -1042,7 +1042,7 @@ async def _schema_failure(tmp_path, tool, arguments):
     good = store.scene(2)
     result = await call_server_tool(service, tool, arguments)
     failure = await _wait_for_failure(store, None)
-    assert result["error"]["code"] == "INVALID_PARAMETER"
+    assert result["error"]["code"] == code
     assert result["error"]["message"] == failure["error"]["message"]
     assert store.current_revision == 2
     assert store.scene(2) == good
@@ -1064,10 +1064,6 @@ def _entity(**changes):
             "missing required field 'height' (field: entities[0])",
         ),
         (
-            {"entities": _entity(rotation={"value": 1, "unit": "turn"})},
-            "unit must be one of 'deg', 'rad' (field: entities[0].rotation.unit)",
-        ),
-        (
             {"plane": {"kind": "origin", "name": "ZX"}},
             "name must be one of 'XY', 'XZ', 'YZ' (field: plane.name)",
         ),
@@ -1081,6 +1077,22 @@ async def test_schema_invalid_sketch_shows_coalesce_wording_in_viewer(tmp_path, 
         "revision": 2,
         "featureIds": ["plate_profile"],
         "error": {"code": "INVALID_PARAMETER", "message": message},
+    }
+
+
+@pytest.mark.anyio
+async def test_wrong_sketch_angle_unit_shows_unit_mismatch_in_viewer(tmp_path):
+    arguments = {
+        **SKETCH,
+        "expectedRevision": 2,
+        "requestId": "bad-sketch-unit",
+        "entities": _entity(rotation={"value": 1, "unit": "turn"}),
+    }
+    failure = await _schema_failure(tmp_path, "sketch", arguments, "UNIT_MISMATCH")
+
+    assert failure["error"] == {
+        "code": "UNIT_MISMATCH",
+        "message": "expected deg or rad; received turn",
     }
 
 
