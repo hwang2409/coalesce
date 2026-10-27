@@ -831,25 +831,16 @@ function renderAssemblyList(rows, list, evidence) {
   }
 }
 
-function renderInspection(fit, assembly = []) {
-  $('inspection').hidden = !fit.length && !assembly.length;
-  $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
-  const assemblyRows = groupAssemblyRows(assembly);
-  if (selected?.key.startsWith('assembly/')) {
-    const refreshed = assemblyRows.find((row) => assemblyKey(current.revision, row) === selected.key);
-    if (refreshed) selected = { ...refreshed, key: selected.key, partIds: refreshed.occurrenceIds };
-  }
-  const rows = [...fit.flatMap((summary) => summary.rows), ...assemblyRows];
+function renderInspectionCount(rows) {
   const counts = Object.entries(STATUS_TEXT)
     .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
     .filter(([count]) => count)
     .map(([count, text]) => Object.assign(document.createElement('span'), { textContent: `${count} ${text}` }));
   $('inspection-count').replaceChildren(...counts.flatMap((count, i) => (i ? [', ', count] : [count])));
   $('inspection-note').hidden = !rows.some((row) => row.status === 'MEASURED');
-  const list = $('inspection-rows');
-  const evidence = $('inspection-evidence');
-  list.replaceChildren();
-  evidence.replaceChildren();
+}
+
+function renderFitList(fit, list, evidence) {
   for (const summary of fit) {
     if (fit.length > 1) {
       const heading = document.createElement('li');
@@ -867,15 +858,9 @@ function renderInspection(fit, assembly = []) {
       evidence.append(line, ...pointEvidence(row));
     }
   }
-  renderAssemblyList(assemblyRows, list, evidence);
-  const raw = {
-    fit: fit.map(({ baseId, rows: measured }) => ({
-      baseId,
-      rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
-    })),
-    assembly,
-  };
-  $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
+}
+
+function renderSelectionEvidence() {
   $('showing').hidden = !selected;
   $('showing-text').textContent = selected ? `Showing ${selected.partIds.map(partTitle).join(' and ')}, other parts faded.` : '';
   const badge = $('selection-evidence');
@@ -888,6 +873,31 @@ function renderInspection(fit, assembly = []) {
     : overlapValue > 0 ? `Exact overlap: ${formatAssemblyMm(overlapValue)} mm³`
     : selected.clearance?.value <= current.assemblyLinearTolerance ? 'Touching · no collision'
     : selected.status === 'PASS' ? 'Pass · no overlap' : selected.status;
+}
+
+function renderInspection(fit, assembly = []) {
+  $('inspection').hidden = !fit.length && !assembly.length;
+  $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
+  const assemblyRows = groupAssemblyRows(assembly);
+  if (selected?.key.startsWith('assembly/')) {
+    const refreshed = assemblyRows.find((row) => assemblyKey(current.revision, row) === selected.key);
+    if (refreshed) selected = { ...refreshed, key: selected.key, partIds: refreshed.occurrenceIds };
+  }
+  renderInspectionCount([...fit.flatMap((summary) => summary.rows), ...assemblyRows]);
+  const list = $('inspection-rows');
+  const evidence = $('inspection-evidence');
+  list.replaceChildren();
+  evidence.replaceChildren();
+  renderFitList(fit, list, evidence);
+  renderAssemblyList(assemblyRows, list, evidence);
+  $('inspection-raw').textContent = JSON.stringify({
+    fit: fit.map(({ baseId, rows }) => ({
+      baseId,
+      rows: rows.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
+    })),
+    assembly,
+  }, null, 1);
+  renderSelectionEvidence();
   updateMore();
 }
 
