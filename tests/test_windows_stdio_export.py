@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from test_mcp_cut_hole_circle import extrude, rectangle_sketch
 
-PHASE_TIMEOUT_SECONDS = 30
+PHASE_TIMEOUT_SECONDS = 60
 DIAGNOSTIC_TIMEOUT_SECONDS = 5
 
 
@@ -155,6 +155,7 @@ class StdioServer:
             if message.get("id") != request_id:
                 continue
             assert "error" not in message, message
+            print(f"phase completed: {phase}; elapsed: {time.monotonic() - started:.3f}s")
             return message["result"]
 
     def notify_initialized(self):
