@@ -8,12 +8,12 @@ the assembly uses geometry-backed intent instead of calculated pin placements:
 - the shaft's joined journal is offset 2 mm from the drive axis;
 - the disc bore is concentric with the journal, and the planar spline cap is seated on the shaft shoulder.
 
-the result is a static pose of the mechanism. the seeded shaft spin is preserved at 0 degrees, so the eccentric journal points along +x and the solve places the disc at x = 2 mm. the shaft, disc, and pins each retain only spin; the demo does not animate coupled cycloidal motion.
+the result is a static pose of the mechanism. the mate solve is static, not simulated motion. the seeded shaft spin is preserved at 0 degrees, so the eccentric journal points along +x and the solve places the disc at x = 2 mm. the shaft, disc, and pins each retain only spin; the demo does not animate coupled cycloidal motion.
 
 run the reproducible workflow without browser capture:
 
 ```bash
-uv run --extra sketch python examples/cycloidal_drive_assembly_demo.py --out /tmp/cycloidal-drive-assembly
+coalesce-demo --output ./cycloidal-drive-assembly-demo
 ```
 
 add `--screenshots` to capture a desktop assembled view, a desktop pin-mate focus, and a phone view when a launchable playwright chromium is available. the helper always closes each page and the browser.
