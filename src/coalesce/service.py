@@ -7,8 +7,10 @@ import hashlib
 import json
 import logging
 import math
+import os
 import queue
 import re
+import sys
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -161,10 +163,18 @@ class _KernelLoader:
 
     def _load(self) -> None:
         global regen_module, RegenResult, BRepCheck_Analyzer, Compound
+        debug_imports = os.environ.get("COALESCE_DEBUG_MODULES")
         try:
+            if debug_imports:
+                print("kernel load: importing build123d", file=sys.stderr, flush=True)
             from build123d import Compound as _Compound
+
+            if debug_imports:
+                print("kernel load: importing OCP", file=sys.stderr, flush=True)
             from OCP.BRepCheck import BRepCheck_Analyzer as _BRepCheck_Analyzer
 
+            if debug_imports:
+                print("kernel load: importing regen", file=sys.stderr, flush=True)
             from . import regen as _regen_module
             from .regen import RegenResult as _RegenResult
 
@@ -173,6 +183,8 @@ class _KernelLoader:
             RegenResult = _RegenResult
             regen_module = _regen_module
             result = _KernelLoadResult()
+            if debug_imports:
+                print("kernel load: complete", file=sys.stderr, flush=True)
         except Exception as error:  # noqa: BLE001 - preserve the original startup failure
             result = _KernelLoadResult(error=error)
         with self._lock:
