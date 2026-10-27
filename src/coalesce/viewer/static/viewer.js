@@ -860,19 +860,22 @@ function renderFitList(fit, list, evidence) {
   }
 }
 
+function selectionEvidenceText(row) {
+  if (!row?.status) return '';
+  if (row.status === 'ERROR') return 'Inspection error';
+  if (row.status === 'UNKNOWN') return 'Inspection unknown';
+  if (row.overlapVolume?.value > 0) return `Exact overlap: ${formatAssemblyMm(row.overlapVolume.value)} mm³`;
+  if (row.clearance?.value <= current.assemblyLinearTolerance) return 'Touching · no collision';
+  return row.status === 'PASS' ? 'Pass · no overlap' : row.status;
+}
+
 function renderSelectionEvidence() {
   $('showing').hidden = !selected;
   $('showing-text').textContent = selected ? `Showing ${selected.partIds.map(partTitle).join(' and ')}, other parts faded.` : '';
   const badge = $('selection-evidence');
-  const overlapValue = selected?.overlapVolume?.value;
   badge.hidden = !selected?.status;
   badge.dataset.status = selected?.status ?? '';
-  badge.textContent = !selected?.status ? ''
-    : selected.status === 'ERROR' ? 'Inspection error'
-    : selected.status === 'UNKNOWN' ? 'Inspection unknown'
-    : overlapValue > 0 ? `Exact overlap: ${formatAssemblyMm(overlapValue)} mm³`
-    : selected.clearance?.value <= current.assemblyLinearTolerance ? 'Touching · no collision'
-    : selected.status === 'PASS' ? 'Pass · no overlap' : selected.status;
+  badge.textContent = selectionEvidenceText(selected);
 }
 
 function renderInspection(fit, assembly = []) {
