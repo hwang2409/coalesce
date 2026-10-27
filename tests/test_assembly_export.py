@@ -6,7 +6,13 @@ import pytest
 from build123d import Box, Cylinder
 
 from coalesce import export as export_module
-from coalesce.assembly import Occurrence, ResolvedOccurrence, RigidTransform, locate_shape
+from coalesce.assembly import (
+    Occurrence,
+    ResolvedOccurrence,
+    RigidTransform,
+    bill_of_materials,
+    locate_shape,
+)
 from coalesce.export import (
     ExportFailure,
     export_assembly,
@@ -59,6 +65,38 @@ def _resolved():
             locate_shape(definitions[part_id].shape, transform),
         )
         for name, part_id, transform in rows
+    ]
+
+
+def test_bill_of_materials_groups_definitions_and_excludes_references():
+    rows = _resolved()
+    rows.append(
+        ResolvedOccurrence(
+            Occurrence("board", "board/body", RigidTransform((0, 0, 0), (0, 0, 1), 0)),
+            TerminalPart(
+                "board/body",
+                "board",
+                "reference",
+                BodySource("board", "body"),
+                "board",
+                Box(1, 1, 1).solids()[0],
+            ),
+            Box(1, 1, 1).solids()[0],
+        )
+    )
+    bom = bill_of_materials(rows)
+    assert [(row["partId"], row["count"], row["occurrenceIds"]) for row in bom["rows"]] == [
+        ("disc/body", 1, ["disc"]),
+        ("pin/body", 8, [f"ring-pin-{index}" for index in range(1, 9)]),
+        ("shaft/body", 1, ["shaft"]),
+    ]
+    assert bom["excluded"] == [
+        {
+            "occurrenceId": "board",
+            "partId": "board/body",
+            "label": "board",
+            "reason": "reference part",
+        }
     ]
 
 
