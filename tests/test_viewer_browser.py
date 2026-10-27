@@ -151,7 +151,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
                 "status": "PASS",
             }
             for pair, clearance, requirement in [
-                (["shaft", "pin-right"], 0.0003, "clearance-02"),
+                (["shaft", "pin-right"], 0, "clearance-02"),
                 (["pin-right", "shaft"], 0.0003, "clearance-reversed"),
                 (["shaft", "shaft-skew"], 1, "clearance-03"),
                 (["shaft", "pin-top"], 2, "clearance-04"),
@@ -172,6 +172,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
                 "revision": 1,
                 "requirementId": "assembly-clearance",
                 "status": "FAIL",
+                "_overlapShape": Box(1, 1, 1),
             },
             {
                 "occurrenceIds": ["pin-left", "pin-right"],
@@ -258,7 +259,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["initial"]["inspectionValues"][:3] == [
         "clearance solver failed",
         "< 0.001 mm³ overlap",
-        "< 0.001 mm clearance",
+        "touching",
     ]
     assert data["initial"]["morePassing"] == "Show 2 more passing pairs"
     assert data["initial"]["disclosureExpanded"] == "false"
@@ -290,11 +291,30 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
             assert data["hidden"]["worldBounds"][name][limit] == pytest.approx(
                 bounds[limit], abs=store.TOLERANCE
             )
+    assert data["errorFocused"]["selectionEvidence"] == "Inspection error"
+    assert data["errorFocused"]["colors"][2] == data["errorFocused"]["colors"][3] == "#c77800"
     assert data["focused"]["pairPressed"] == "true"
-    assert data["focused"]["memory"] == data["hidden"]["memory"]
-    assert data["focused"]["memory"]["cachedMeshes"] == 2
-    assert data["focused"]["showing"] == "Showing pin-left and pin-right, other parts faded."
-    assert "pin-left and pin-right" in data["focused"]["description"]
+    assert data["focused"]["memory"]["cachedMeshes"] == 3
+    assert data["focused"]["showing"] == "Showing shaft and pin-left, other parts faded."
+    assert "shaft and pin-left" in data["focused"]["description"]
+    assert data["focused"]["selectionEvidence"] == "Exact overlap: < 0.001 mm³"
+    assert data["focused"]["overlapCount"] == 2  # saturated volume plus its edges
+    assert data["focused"]["colors"][0] == "#c62828"
+    assert data["focused"]["colors"][2] == "#2367c9"
+    assert data["focused"]["opacities"][0] == data["focused"]["opacities"][2] == 0.32
+    pixels = data["focused"]["overlapPixels"]
+    assert pixels["sampled"] > 0
+    assert pixels["dominant"] / pixels["sampled"] > 0.02, pixels
+    assert pixels["dominant"] > pixels["pairTint"], pixels
+    projected = data["focused"]["focusProjected"]
+    assert max(point[0] for point in projected) - min(point[0] for point in projected) > 0.5
+    assert max(point[1] for point in projected) - min(point[1] for point in projected) > 0.5
+    assert all(-1 <= coordinate <= 1 for point in projected for coordinate in point)
+    assert data["escaped"]["overlapCount"] == 0
+    assert data["escaped"]["colors"] == data["initial"]["colors"]
+    assert data["touching"]["selectionEvidence"] == "Touching · no collision"
+    assert data["touching"]["overlapCount"] == 0
+    assert data["touching"]["colors"][0] == data["touching"]["colors"][3] == "#2f7a46"
     assert data["refreshed"]["pairPressed"] == "true"
     assert data["escaped"]["pairPressed"] == "false"
     assert data["escaped"]["description"].startswith("All parts shown.")

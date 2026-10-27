@@ -36,10 +36,11 @@ controls.enableDamping = false;
 controls.addEventListener('change', () => { markUserMoved(); requestRender(); });
 
 const model = new THREE.Group();
+const overlap = new THREE.Group();
 const diagnostic = new THREE.Group();
 const helpers = new THREE.Group();
 diagnostic.renderOrder = 20;
-scene.add(helpers, model, diagnostic);
+scene.add(helpers, model, overlap, diagnostic);
 
 // corner axes, drawn into their own small viewport
 const gizmoScene = new THREE.Scene();
@@ -189,9 +190,18 @@ function visibleBox() {
   return box;
 }
 
-// fits the visible parts; a null name keeps the current view direction
-function setView(name) {
-  const box = visibleBox();
+function focusBox() {
+  const box = new THREE.Box3();
+  for (const partId of selected?.partIds ?? []) {
+    const part = current.parts.find((item) => (item.occurrenceId ?? item.partId) === partId);
+    const group = part && model.getObjectByName(part.name);
+    if (group?.visible) box.expandByObject(surfaceOf(group));
+  }
+  if (overlap.children.length) box.expandByObject(overlap);
+  return box;
+}
+
+function fitBox(box, name) {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1);
@@ -219,6 +229,11 @@ function setView(name) {
   showRefit(false);
   describeView();
   requestRender();
+}
+
+// fits the visible parts; a null name keeps the current view direction
+function setView(name) {
+  fitBox(visibleBox(), name);
 }
 
 let activeView = 'iso'; // null after an orbit, pan or zoom
@@ -287,7 +302,10 @@ function clearGroup(group, { ownsGeometry }) {
 
 // frees every cached part geometry that the shown revision does not use
 function pruneGeometries() {
-  const used = new Set(current?.parts.map((part) => part.mesh.id));
+  const used = new Set([
+    ...(current?.parts.map((part) => part.mesh.id) ?? []),
+    ...(current?.assemblyInspection?.flatMap((row) => row.overlapMesh?.id ?? []) ?? []),
+  ]);
   for (const [id, geometry] of geometries) {
     if (used.has(id)) continue;
     geometry.surface.dispose();
@@ -661,6 +679,7 @@ function showPart(next) {
   renderAssemblyState(current.assemblyState);
   renderInspection(current.fit, current.assemblyInspection);
   applyMode();
+  if (selected?.overlapMesh) fitBox(focusBox(), activeView);
   describeView();
   requestRender();
 }
@@ -668,8 +687,9 @@ function showPart(next) {
 // every part again, and the canvas says so. focus goes back to the fit row that showed the part, else
 // to the part's row, else to the parts heading: the row it was on may be gone in a new revision
 function showAll(focus = true) {
-  const { key, partIds } = selected;
+  const { key, partIds, overlapMesh } = selected;
   showPart(null);
+  if (overlapMesh) applyView(activeView);
   const row = fitRowFor(key);
   if (focus) (row || partRow(partIds[0]) || $('parts-title')).focus();
   $('view-description').textContent = `All parts shown. ${$('view-description').textContent}`;
@@ -757,60 +777,31 @@ function assemblyRow(row, key) {
   item.setAttribute('aria-label', `${shown ? 'Show all parts again' : `Focus ${titles.join(' and ')}`}: ${row.status}, ${value}`);
   item.addEventListener('click', () => {
     if (shown) return showAll();
-    showPart({ key, partIds: row.occurrenceIds });
+    showPart({ ...row, key, partIds: row.occurrenceIds });
     fitRowFor(key)?.focus();
   });
   return item;
 }
 
-function renderInspection(fit, assembly = []) {
-  $('inspection').hidden = !fit.length && !assembly.length;
-  $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
-  const assemblyRows = groupAssemblyRows(assembly);
-  const rows = [...fit.flatMap((summary) => summary.rows), ...assemblyRows];
-  const counts = Object.entries(STATUS_TEXT)
-    .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
-    .filter(([count]) => count)
-    .map(([count, text]) => Object.assign(document.createElement('span'), { textContent: `${count} ${text}` }));
-  $('inspection-count').replaceChildren(...counts.flatMap((count, i) => (i ? [', ', count] : [count])));
-  $('inspection-note').hidden = !rows.some((row) => row.status === 'MEASURED');
-  const list = $('inspection-rows');
-  const evidence = $('inspection-evidence');
-  list.replaceChildren();
-  evidence.replaceChildren();
-  for (const summary of fit) {
-    if (fit.length > 1) {
-      const heading = document.createElement('li');
-      heading.className = 'fit-base';
-      heading.textContent = summary.baseId;
-      list.append(heading);
-      evidence.append(heading.cloneNode(true));
-    }
-    for (const row of summary.rows.toSorted((a, b) => severity(a) - severity(b))) {
-      const item = document.createElement('li');
-      item.append(fitRow(row, `${summary.baseId}/${row.id}`));
-      list.append(item);
-      const line = document.createElement('li');
-      line.textContent = evidenceLine(row);
-      evidence.append(line, ...pointEvidence(row));
-    }
-  }
+function orderedAssemblyRows(rows) {
   const natural = new Intl.Collator(undefined, { numeric: true }).compare;
-  const orderedAssembly = assemblyRows.toSorted((a, b) => {
-    const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
-    const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
-      ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
-    return rank(a) - rank(b)
-      || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
-      || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/'));
-  });
-  const passing = orderedAssembly.filter((row) => row.status === 'PASS');
+  const rank = (row) => row.status === 'ERROR' ? 0 : row.status === 'FAIL' ? 1 : 2;
+  const clearance = (row) => row.clearance?.value <= current.assemblyLinearTolerance
+    ? 0 : Number((row.clearance?.value ?? Infinity).toFixed(3));
+  return rows.toSorted((a, b) => rank(a) - rank(b)
+    || (a.status === 'PASS' ? clearance(a) - clearance(b) : 0)
+    || natural(a.occurrenceIds.join('/'), b.occurrenceIds.join('/')));
+}
+
+function renderAssemblyList(rows, list, evidence) {
+  const ordered = orderedAssemblyRows(rows);
+  const passing = ordered.filter((row) => row.status === 'PASS');
   const extraPassing = passing.slice(6);
-  const shownAssembly = passingExpanded
-    ? orderedAssembly
-    : orderedAssembly.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6
+  const shown = passingExpanded
+    ? ordered
+    : ordered.filter((row) => row.status !== 'PASS' || passing.indexOf(row) < 6
       || assemblyKey(current.revision, row) === selected?.key);
-  for (const row of shownAssembly) {
+  for (const row of shown) {
     const item = document.createElement('li');
     item.append(assemblyRow(row, assemblyKey(current.revision, row)));
     list.append(item);
@@ -833,21 +824,83 @@ function renderInspection(fit, assembly = []) {
     item.append(button);
     list.append(item);
   }
-  for (const row of orderedAssembly) {
+  for (const row of ordered) {
     const line = document.createElement('li');
     line.textContent = `${row.occurrenceIds.map(partTitle).join(' and ')}: ${row.status.toLowerCase()} — ${row.requirementIds.join(' · ')}`;
     evidence.append(line);
   }
-  const raw = {
-    fit: fit.map(({ baseId, rows: measured }) => ({
-      baseId,
-      rows: measured.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
-    })),
-    assembly,
-  };
-  $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
+}
+
+function renderInspectionCount(rows) {
+  const counts = Object.entries(STATUS_TEXT)
+    .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
+    .filter(([count]) => count)
+    .map(([count, text]) => Object.assign(document.createElement('span'), { textContent: `${count} ${text}` }));
+  $('inspection-count').replaceChildren(...counts.flatMap((count, i) => (i ? [', ', count] : [count])));
+  $('inspection-note').hidden = !rows.some((row) => row.status === 'MEASURED');
+}
+
+function renderFitList(fit, list, evidence) {
+  for (const summary of fit) {
+    if (fit.length > 1) {
+      const heading = document.createElement('li');
+      heading.className = 'fit-base';
+      heading.textContent = summary.baseId;
+      list.append(heading);
+      evidence.append(heading.cloneNode(true));
+    }
+    for (const row of summary.rows.toSorted((a, b) => severity(a) - severity(b))) {
+      const item = document.createElement('li');
+      item.append(fitRow(row, `${summary.baseId}/${row.id}`));
+      list.append(item);
+      const line = document.createElement('li');
+      line.textContent = evidenceLine(row);
+      evidence.append(line, ...pointEvidence(row));
+    }
+  }
+}
+
+function selectionEvidenceText(row) {
+  if (!row?.status) return '';
+  if (row.status === 'ERROR') return 'Inspection error';
+  if (row.status === 'UNKNOWN') return 'Inspection unknown';
+  if (row.overlapVolume?.value > 0) return `Exact overlap: ${formatAssemblyMm(row.overlapVolume.value)} mm³`;
+  if (row.clearance?.value <= current.assemblyLinearTolerance) return 'Touching · no collision';
+  return row.status === 'PASS' ? 'Pass · no overlap' : row.status;
+}
+
+function renderSelectionEvidence() {
   $('showing').hidden = !selected;
   $('showing-text').textContent = selected ? `Showing ${selected.partIds.map(partTitle).join(' and ')}, other parts faded.` : '';
+  const badge = $('selection-evidence');
+  badge.hidden = !selected?.status;
+  badge.dataset.status = selected?.status ?? '';
+  badge.textContent = selectionEvidenceText(selected);
+}
+
+function renderInspection(fit, assembly = []) {
+  $('inspection').hidden = !fit.length && !assembly.length;
+  $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
+  const assemblyRows = groupAssemblyRows(assembly);
+  if (selected?.key.startsWith('assembly/')) {
+    const refreshed = assemblyRows.find((row) => assemblyKey(current.revision, row) === selected.key);
+    if (refreshed) selected = { ...refreshed, key: selected.key, partIds: refreshed.occurrenceIds };
+  }
+  renderInspectionCount([...fit.flatMap((summary) => summary.rows), ...assemblyRows]);
+  const list = $('inspection-rows');
+  const evidence = $('inspection-evidence');
+  list.replaceChildren();
+  evidence.replaceChildren();
+  renderFitList(fit, list, evidence);
+  renderAssemblyList(assemblyRows, list, evidence);
+  $('inspection-raw').textContent = JSON.stringify({
+    fit: fit.map(({ baseId, rows }) => ({
+      baseId,
+      rows: rows.map(({ id, status, evidence: data }) => ({ id, status, evidence: data })),
+    })),
+    assembly,
+  }, null, 1);
+  renderSelectionEvidence();
   updateMore();
 }
 
@@ -998,6 +1051,27 @@ function fade(group, on) {
   }
 }
 
+const INSPECTION_COLORS = { FAIL: 0xc62828, ERROR: 0xc77800, UNKNOWN: 0xc77800, PASS: 0x2f7a46 };
+const OVERLAP_PAIR_COLORS = [0xc62828, 0x2367c9];
+
+function showOverlap() {
+  clearGroup(overlap, { ownsGeometry: false });
+  const mesh = selected?.status === 'FAIL' && selected.overlapVolume?.value > 0
+    ? selected.overlapMesh : null;
+  if (!mesh) return;
+  const geometry = geometries.get(mesh.id);
+  const surface = new THREE.Mesh(geometry.surface, new THREE.MeshBasicMaterial({
+    color: 0xffc400, transparent: true, opacity: 0.92, depthTest: false, depthWrite: false,
+  }));
+  const edges = new THREE.LineSegments(geometry.edges, new THREE.LineBasicMaterial({
+    color: 0x4a2100, depthTest: false, depthWrite: false,
+  }));
+  surface.name = 'exact-overlap';
+  edges.name = 'exact-overlap-edges';
+  surface.renderOrder = edges.renderOrder = 10;
+  overlap.add(surface, edges);
+}
+
 // the enclosure-only review modes apply only when the scene has an enclosure fit check
 function hasEnclosure() {
   return Boolean(current?.fit?.length);
@@ -1036,7 +1110,16 @@ function applyPartMode(part, index, offsets, toggle) {
   const lifted = mode === 'lid-off' && isLid(part);
   group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
   setCut(group, part, index, mode === 'section');
-  fade(group, Boolean(selected) && !selected.partIds.includes(part.occurrenceId ?? part.partId));
+  const identity = part.occurrenceId ?? part.partId;
+  const focused = selected?.partIds.includes(identity);
+  const pairIndex = selected?.overlapMesh ? selected.partIds.indexOf(identity) : -1;
+  const color = pairIndex >= 0 ? OVERLAP_PAIR_COLORS[pairIndex] : INSPECTION_COLORS[selected?.status];
+  group.children[0].material.color.set(focused && color ? color : part.color);
+  group.children[1].material.color.set(pairIndex >= 0 ? color : EDGE);
+  fade(group, Boolean(selected) && !focused);
+  if (pairIndex >= 0) Object.assign(group.children[0].material, {
+    transparent: true, opacity: 0.32, depthWrite: false, needsUpdate: true,
+  });
   if (mode === 'section') positionCutFace(group, part);
   toggle.disabled = lifted;
   toggle.title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggle.dataset.title}`;
@@ -1069,6 +1152,7 @@ function applyMode() {
   if (mode === 'section') setSection(parts);
   const toggles = document.querySelectorAll('#parts .visibility');
   parts.forEach((part, index) => applyPartMode(part, index, offsets, toggles[index]));
+  showOverlap();
   renderModeControls(parts, enclosure);
   $('modes').classList.toggle('single', !enclosure);
   $('section-help').textContent = enclosure ? 'Escape returns to the Assembled view.' : 'Escape returns to the default view.';
@@ -1439,7 +1523,11 @@ async function loadOne(revision) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     if (data.superseded) throw new Superseded();
-    await loadMeshes(data.parts);
+    await loadMeshes([
+      ...data.parts,
+      ...(data.assemblyInspection ?? []).filter((row) => row.overlapMesh)
+        .map((row) => ({ mesh: row.overlapMesh })),
+    ]);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     // a shown part outlives a new revision while its fit row still points at it; else all parts again,
     // and focus on its row follows to the replacement row
@@ -1558,6 +1646,19 @@ if (window.coalesceDebug === true) {
   });
   // world points [x, y, z] in normalized device coordinates, through the camera that drew the frame
   window.coalesceViewer.project = (points) => points.map((p) => new THREE.Vector3(...p).project(camera).toArray().slice(0, 2));
+  window.coalesceViewer.overlapScreenBounds = () => {
+    if (!overlap.children.length) return null;
+    const rect = canvas.getBoundingClientRect();
+    const projected = corners(new THREE.Box3().setFromObject(overlap)).map((point) => point.project(camera));
+    const xs = projected.map((point) => rect.left + (point.x + 1) * rect.width / 2);
+    const ys = projected.map((point) => rect.top + (1 - point.y) * rect.height / 2);
+    return {
+      x: Math.floor(Math.min(...xs)),
+      y: Math.floor(Math.min(...ys)),
+      width: Math.ceil(Math.max(...xs)) - Math.floor(Math.min(...xs)),
+      height: Math.ceil(Math.max(...ys)) - Math.floor(Math.min(...ys)),
+    };
+  };
   // scene identity and render state, so the test waits for a finished frame, not a timer
   Object.defineProperty(window.coalesceViewer, 'drawn', {
     get: () => ({
@@ -1576,6 +1677,11 @@ if (window.coalesceDebug === true) {
       })),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
+      colors: model.children.map((group) => `#${group.children[0].material.color.getHexString()}`),
+      opacities: model.children.map((group) => group.children[0].material.opacity),
+      overlapCount: overlap.children.length,
+      focusProjected: focusBox().isEmpty() ? null
+        : corners(focusBox()).map((point) => point.project(camera).toArray().slice(0, 2)),
       edgeStyles: model.children.map((group) => ({
         color: `#${group.children[1].material.color.getHexString()}`,
         opacity: group.children[1].material.opacity,

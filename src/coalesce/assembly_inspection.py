@@ -112,7 +112,12 @@ def _boxes_overlap(first: Any, second: Any) -> bool:
     return not first.IsOut(second)
 
 
-def _common_volume(first: Any, second: Any, symbols: _KernelSymbols | None = None) -> float:
+def _common_volume(
+    first: Any,
+    second: Any,
+    symbols: _KernelSymbols | None = None,
+    captured: list[Any] | None = None,
+) -> float:
     symbols = symbols or _load_kernel_symbols(False)
     arguments = symbols.shape_list()
     arguments.Append(first.wrapped)
@@ -129,7 +134,10 @@ def _common_volume(first: Any, second: Any, symbols: _KernelSymbols | None = Non
     common = symbols.shape.cast(operation.Shape())
     if not symbols.analyzer(common.wrapped).IsValid():
         raise ValueError("exact common-volume operation returned an invalid shape")
-    return sum(solid.volume for solid in common.solids())
+    volume = sum(solid.volume for solid in common.solids())
+    if captured is not None and volume > INTERFERENCE_VOLUME_TOLERANCE_MM3:
+        captured.append(common)
+    return volume
 
 
 def _minimum_clearance(first: Any, second: Any, symbols: _KernelSymbols | None = None) -> float:
@@ -211,7 +219,9 @@ def _inspect_pair(
     revision: int,
     measure_clearance: bool,
     symbols: _KernelSymbols,
+    capture_overlap_shape: bool,
 ) -> dict[str, Any]:
+    captured: list[Any] | None = [] if capture_overlap_shape else None
     try:
         if isinstance(first_box, BaseException):
             raise first_box
@@ -228,7 +238,7 @@ def _inspect_pair(
             and _all_solid_points_outside(second.shape, first.shape, symbols)
         )
         overlap = (
-            _common_volume(first.shape, second.shape, symbols)
+            _common_volume(first.shape, second.shape, symbols, captured)
             if boxes_overlap and not exactly_separated
             else 0.0
         )
@@ -244,6 +254,7 @@ def _inspect_pair(
         "overlapVolume": {"value": overlap, "unit": "mm^3"},
         "interferes": interferes,
         "revision": revision,
+        **({"_overlapShape": captured[0]} if captured else {}),
     }
     if clearance is not None:
         row["clearance"] = {"value": clearance, "unit": "mm"}
@@ -257,6 +268,7 @@ def inspect_assembly(
     *,
     measure_clearance: bool = True,
     deadline: float | None = None,
+    capture_overlap_shapes: bool = False,
 ) -> list[dict[str, Any]]:
     """Return stable exact pair evidence until the cooperative deadline."""
     pairs = inspection_pairs(occurrences, occurrence_ids)
@@ -283,6 +295,7 @@ def inspect_assembly(
                 revision,
                 measure_clearance,
                 symbols,
+                capture_overlap_shapes,
             )
         )
     return rows

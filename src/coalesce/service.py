@@ -5418,26 +5418,48 @@ class DocumentService:
             )
 
     @staticmethod
+    def _evaluate_assembly_requirement(
+        requirement: dict[str, Any], resolved: list[Any], revision: int, deadline: float
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        inspection = inspect_assembly(
+            resolved,
+            requirement.get("occurrenceIds"),
+            revision,
+            measure_clearance="minimumClearance" in requirement,
+            deadline=deadline,
+            capture_overlap_shapes=True,
+        )
+        overlap_shapes = {
+            tuple(row["occurrenceIds"]): row.pop("_overlapShape")
+            for row in inspection
+            if "_overlapShape" in row
+        }
+        [result] = evaluate_requirements([requirement], inspection, revision)["results"]
+        failed = result.get("measured", {}).get("failedPairs", [])
+        rows = []
+        for row in inspection:
+            status = "ERROR" if "error" in row else "FAIL" if row in failed else "PASS"
+            shape = overlap_shapes.get(tuple(row["occurrenceIds"]))
+            rows.append({
+                **row,
+                "requirementId": requirement["id"],
+                "status": status,
+                **({"_overlapShape": shape} if shape is not None else {}),
+            })
+        return result, rows
+
+    @staticmethod
     def _evaluate_assembly_requirements(
         requirements: list[dict[str, Any]], resolved: list[Any], revision: int
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         deadline = inspection_deadline()
-        results, rows = [], []
-        for requirement in requirements:
-            inspection = inspect_assembly(
-                resolved,
-                requirement.get("occurrenceIds"),
-                revision,
-                measure_clearance="minimumClearance" in requirement,
-                deadline=deadline,
+        evaluated = [
+            DocumentService._evaluate_assembly_requirement(
+                requirement, resolved, revision, deadline
             )
-            [result] = evaluate_requirements([requirement], inspection, revision)["results"]
-            results.append(result)
-            failed = result.get("measured", {}).get("failedPairs", [])
-            for row in inspection:
-                status = "ERROR" if "error" in row else "FAIL" if row in failed else "PASS"
-                rows.append({**row, "requirementId": requirement["id"], "status": status})
-        return results, rows
+            for requirement in requirements
+        ]
+        return [result for result, _ in evaluated], [row for _, rows in evaluated for row in rows]
 
     def _evaluate_enclosure_requirements(
         self, payload: dict[str, Any], requirements: list[dict[str, Any]]

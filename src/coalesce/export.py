@@ -129,6 +129,7 @@ def verify_step_fresh(path: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [sys.executable, "-m", "coalesce.export", "--verify", str(path)],
             check=False,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=120,
@@ -246,7 +247,7 @@ def _validated_step_bytes(
         shutil.rmtree(temporary_directory)
 
 
-def _open_directory(path: Path) -> tuple[Path, int]:
+def _resolved_destination(path: Path) -> Path:
     if not path.is_absolute():
         raise ExportFailure(
             "EXPORT_WRITE_FAILED",
@@ -260,7 +261,12 @@ def _open_directory(path: Path) -> tuple[Path, int]:
             "export parent directory does not exist or is not writable",
             hint="create a writable parent directory and retry with a new path",
         )
-    resolved_path = parent / path.name
+    return parent / path.name
+
+
+def _open_directory(path: Path) -> tuple[Path, int]:
+    resolved_path = _resolved_destination(path)
+    parent = resolved_path.parent
     try:
         directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as error:
@@ -541,6 +547,9 @@ def _existing_directory_failure(path: Path, entries: list[str]) -> ExportFailure
 
 
 def _rename_new_directory(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        os.rename(source, destination)
+        return
     libc = ctypes.CDLL(None, use_errno=True)
     source_bytes = os.fsencode(source)
     destination_bytes = os.fsencode(destination)
@@ -559,6 +568,8 @@ def _rename_new_directory(source: Path, destination: Path) -> None:
 
 
 def _sync_directory(path: Path) -> None:
+    if os.name == "nt":
+        raise OSError(errno.ENOTSUP, "directory fsync is unavailable on Windows")
     directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         os.fsync(directory_fd)
@@ -647,9 +658,14 @@ def export_parts_separately(
 def export_parts(path: Path, parts: list[Any]) -> dict[str, Any]:
     """Validate STEP bytes, then publish them once without replacement."""
     content, digest, actual = _validated_part_bytes(parts)
-    path = _publish_bytes(path, content, digest)
-    fields = _export_fields(path, parts, digest, actual)
-    return {**fields, "byteCount": len(content)}
+    if os.name == "nt":
+        path, warnings = _publish_atomic_bytes(path, content)
+    else:
+        path, warnings = _publish_bytes(path, content, digest), []
+    result = {**_export_fields(path, parts, digest, actual), "byteCount": len(content)}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _label_name(label: Any) -> str:
@@ -750,6 +766,7 @@ def verify_assembly_step_fresh(path: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [sys.executable, "-m", "coalesce.export", "--verify-assembly", str(path)],
             check=False,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=120,
@@ -871,8 +888,7 @@ def write_assembly_step_bytes(
 
 
 def _publish_atomic_bytes(path: Path, content: bytes) -> tuple[Path, list[dict[str, str]]]:
-    destination, directory_fd = _open_directory(path)
-    os.close(directory_fd)
+    destination = _resolved_destination(path)
     if destination.exists() or destination.is_symlink():
         raise _existing_path_failure(destination)
     descriptor, temporary_name = tempfile.mkstemp(
