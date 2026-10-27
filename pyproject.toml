@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 coalesce = "coalesce.__main__:main"
+coalesce-demo = "coalesce.demo:main"
 
 [project.optional-dependencies]
 sketch = ["planegcs==0.9.6"]
@@ -33,6 +34,7 @@ packages = ["src/coalesce"]
 "docs/assembly.md" = "coalesce/guides/assembly.md"
 "docs/examples/cycloidal-disc.md" = "coalesce/guides/examples/cycloidal-disc.md"
 "docs/examples/cycloidal-drive-assembly.md" = "coalesce/guides/examples/cycloidal-drive-assembly.md"
+"src/coalesce/cycloidal_drive_assembly_screenshots.mjs" = "coalesce/cycloidal_drive_assembly_screenshots.mjs"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
