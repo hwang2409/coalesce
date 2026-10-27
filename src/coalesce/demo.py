@@ -62,6 +62,17 @@ EDITED_PATTERN_RADIUS = 31
 PIN_COUNT = 8
 
 
+def _assert_bom_matches_xcaf(assembly, xcaf):
+    bom = assembly["bom"]
+    if len(bom["rows"]) != xcaf["definitionCount"] or sum(
+        row["count"] for row in bom["rows"]
+    ) != xcaf["occurrenceCount"]:
+        raise DemoFailure("XCAF preflight counts do not agree with the assembly BOM")
+    pin_row = next((row for row in bom["rows"] if row["partId"] == "pin/pin"), None)
+    if len(bom["rows"]) != 4 or pin_row is None or pin_row["count"] != 8:
+        raise DemoFailure("assembly BOM did not preserve four definitions and eight pins")
+
+
 def _transform(translation=(0, 0, 0), axis=(0, 0, 1), angle=0):
     return {
         "translation": {"value": list(translation), "unit": "mm"},
@@ -710,6 +721,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                 {"action": "preflight", "mode": "assembly", "expectedRevision": revision},
             )
             xcaf = preflight["validation"]["xcaf"]
+            _assert_bom_matches_xcaf(assembly, xcaf)
             if (xcaf["definitionCount"], xcaf["occurrenceCount"]) != (4, 11):
                 raise DemoFailure("XCAF preflight did not preserve four definitions and 11 occurrences")
             await beat("beat: STEP publish")

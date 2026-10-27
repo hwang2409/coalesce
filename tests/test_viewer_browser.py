@@ -102,6 +102,13 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
         terminal_feature="shaft-extrude",
     )
     pin = ScenePart("pin/body", Box(4, 4, 12), label="Pin", terminal_feature="pin-extrude")
+    query_bom = {
+        "rows": [
+            {"partId": "pin/body", "label": "Pin", "count": 3, "occurrenceIds": ["pin-left", "pin-right", "pin-top"]},
+            {"partId": "shaft/body", "label": "Shaft", "count": 2, "occurrenceIds": ["shaft", "shaft-skew"]},
+        ],
+        "excluded": [],
+    }
     store.publish(
         1,
         [
@@ -116,6 +123,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
             SceneOccurrence("pin-top", pin, RigidTransform((0, 12, 0), (0, 0, 1), 0)),
         ],
         assembly_state={
+            "bom": query_bom,
             "solveStatus": "UNDER_CONSTRAINED",
             "underConstrainedOccurrenceIds": ["shaft", "pin-left", "pin-right"],
             "conflicts": [],
@@ -229,6 +237,12 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["initial"]["solveStatus"] == "solved · free motion remains"
     assert data["initial"]["solveWarning"] == "shaft: spin · 3 pins: spin"
     assert data["initial"]["solveSummary"] == "1 grounded · 0 conflicts"
+    assert data["initial"]["bomCount"] == f'{len(query_bom["rows"])} definitions'
+    assert data["initial"]["bomRows"] == [
+        f'{row["label"]} · {row["count"]}' for row in query_bom["rows"]
+    ]
+    assert data["initial"]["bomExpanded"] is True
+    assert data["initial"]["bomRows"][0] == f'{query_bom["rows"][0]["label"]} · {query_bom["rows"][0]["count"]}'
     assert data["initial"]["mateRows"] == [
         "pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"
     ]

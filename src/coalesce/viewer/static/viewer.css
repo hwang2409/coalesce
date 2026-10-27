@@ -175,7 +175,9 @@ button {
 .assembly-state details { margin-top: 8px; }
 .assembly-state summary { min-height: 28px; cursor: pointer; font-weight: 600; }
 .assembly-state summary .unit { float: right; }
-#mate-rows { display: grid; gap: 2px; max-height: 244px; padding: 0; overflow-y: auto; list-style: none; }
+#mate-rows, #bom-rows { display: grid; gap: 2px; max-height: 244px; padding: 0; overflow-y: auto; list-style: none; }
+.bom-row { padding: 4px 0; color: var(--ink); }
+.bom-excluded { margin-top: 6px; color: var(--mute); font-size: 11px; }
 .mate-row {
   display: grid;
   width: 100%;
