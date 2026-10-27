@@ -58,14 +58,14 @@ def _assert_xcaf_tree(preflight):
 
 
 def test_drive_demo_models_the_eccentric_journal_in_the_shaft_definition():
-    source = DEMO.read_text()
+    source = DEMO.read_text(encoding="utf-8")
 
     assert '("eccentric", "pin/pin"' not in source
     assert '"operation": "join"' in source
 
 
 def test_drive_demo_does_not_compute_pin_transforms_with_trigonometry():
-    tree = ast.parse(DEMO.read_text())
+    tree = ast.parse(DEMO.read_text(encoding="utf-8"))
     calls = {
         f"{node.func.value.id}.{node.func.attr}"
         for node in ast.walk(tree)

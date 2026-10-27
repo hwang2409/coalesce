@@ -466,7 +466,7 @@ def test_generated_history_mapping_is_required(tmp_path, monkeypatch):
 
 
 def test_revolve_guide_example_is_json_and_registered():
-    guide = Path("docs/revolve.md").read_text()
+    guide = Path("docs/revolve.md").read_text(encoding="utf-8")
     payload = json.loads(guide.split("```json\n", 1)[1].split("\n```", 1)[0])
     assert payload["kind"] == "revolve"
     assert payload["parameters"]["angle"] == {"value": 360, "unit": "deg"}

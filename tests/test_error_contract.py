@@ -25,7 +25,7 @@ def documented_families() -> dict[str, str]:
     path = ROOT / "docs" / "errors.md"
     assert path.is_file(), "docs/errors.md must document the public error contract"
     return dict(
-        re.findall(r"^\| `([A-Z0-9_]+)` \| ([a-z]+) \|", path.read_text(), re.MULTILINE)
+        re.findall(r"^\| `([A-Z0-9_]+)` \| ([a-z]+) \|", path.read_text(encoding="utf-8"), re.MULTILINE)
     )
 
 
@@ -55,7 +55,7 @@ def test_registry_is_the_exact_documented_public_contract():
 
 def test_viewer_code_sets_are_registered():
     registry = getattr(service_module, "ERROR_REGISTRY", {})
-    viewer = (ROOT / "src" / "coalesce" / "viewer" / "static" / "viewer.js").read_text()
+    viewer = (ROOT / "src" / "coalesce" / "viewer" / "static" / "viewer.js").read_text(encoding="utf-8")
     code_sets = [set(re.findall(r"'([A-Z0-9_]+)'", body)) for body in VIEWER_CODE_SET.findall(viewer)]
 
     assert code_sets
@@ -186,7 +186,7 @@ async def test_unknown_id_and_revision_conflict_have_recovery_shape(tmp_path):
 def test_error_document_is_machine_readable():
     path = ROOT / "docs" / "errors.md"
     assert path.is_file()
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert "## error shape" in text
     assert "## families" in text
     assert all(f"| `{code}` |" in text for code in documented_codes())
@@ -248,7 +248,7 @@ def emitted_codes(root: Path = ROOT) -> tuple[list[tuple[str, int, str]], set[tu
 
     for path in sorted((root / "src" / "coalesce").rglob("*.py")):
         rel = path.relative_to(root).as_posix()
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Call) and _builder_name(node) in ERROR_BUILDERS:
                 name = _builder_name(node)
                 value = _code_argument(node, ERROR_BUILDERS[name])
@@ -262,7 +262,7 @@ def emitted_codes(root: Path = ROOT) -> tuple[list[tuple[str, int, str]], set[tu
 
 
 def edge_treatment_table_codes(root: Path = ROOT) -> set[str]:
-    source = (root / "src" / "coalesce" / "edge_treatment.py").read_text()
+    source = (root / "src" / "coalesce" / "edge_treatment.py").read_text(encoding="utf-8")
     codes = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "(invalid_code, failed_code)":
@@ -274,7 +274,7 @@ def edge_treatment_table_codes(root: Path = ROOT) -> set[str]:
 
 
 def documented_warnings() -> set[str]:
-    text = (ROOT / "docs" / "errors.md").read_text().split("## inspection warnings", 1)[-1]
+    text = (ROOT / "docs" / "errors.md").read_text(encoding="utf-8").split("## inspection warnings", 1)[-1]
     return set(re.findall(r"^\| `([A-Z0-9_]+)` \|", text, re.MULTILINE))
 
 
