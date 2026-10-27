@@ -36,10 +36,11 @@ controls.enableDamping = false;
 controls.addEventListener('change', () => { markUserMoved(); requestRender(); });
 
 const model = new THREE.Group();
+const overlap = new THREE.Group();
 const diagnostic = new THREE.Group();
 const helpers = new THREE.Group();
 diagnostic.renderOrder = 20;
-scene.add(helpers, model, diagnostic);
+scene.add(helpers, model, overlap, diagnostic);
 
 // corner axes, drawn into their own small viewport
 const gizmoScene = new THREE.Scene();
@@ -287,7 +288,10 @@ function clearGroup(group, { ownsGeometry }) {
 
 // frees every cached part geometry that the shown revision does not use
 function pruneGeometries() {
-  const used = new Set(current?.parts.map((part) => part.mesh.id));
+  const used = new Set([
+    ...(current?.parts.map((part) => part.mesh.id) ?? []),
+    ...(current?.assemblyInspection?.flatMap((row) => row.overlapMesh?.id ?? []) ?? []),
+  ]);
   for (const [id, geometry] of geometries) {
     if (used.has(id)) continue;
     geometry.surface.dispose();
@@ -757,7 +761,7 @@ function assemblyRow(row, key) {
   item.setAttribute('aria-label', `${shown ? 'Show all parts again' : `Focus ${titles.join(' and ')}`}: ${row.status}, ${value}`);
   item.addEventListener('click', () => {
     if (shown) return showAll();
-    showPart({ key, partIds: row.occurrenceIds });
+    showPart({ ...row, key, partIds: row.occurrenceIds });
     fitRowFor(key)?.focus();
   });
   return item;
@@ -767,6 +771,10 @@ function renderInspection(fit, assembly = []) {
   $('inspection').hidden = !fit.length && !assembly.length;
   $('inspection-name').textContent = fit.length ? 'Fit check' : 'Assembly inspection';
   const assemblyRows = groupAssemblyRows(assembly);
+  if (selected?.key.startsWith('assembly/')) {
+    const refreshed = assemblyRows.find((row) => assemblyKey(current.revision, row) === selected.key);
+    if (refreshed) selected = { ...refreshed, key: selected.key, partIds: refreshed.occurrenceIds };
+  }
   const rows = [...fit.flatMap((summary) => summary.rows), ...assemblyRows];
   const counts = Object.entries(STATUS_TEXT)
     .map(([status, text]) => [rows.filter((row) => row.status === status).length, text.toLowerCase()])
@@ -848,6 +856,16 @@ function renderInspection(fit, assembly = []) {
   $('inspection-raw').textContent = JSON.stringify(raw, null, 1);
   $('showing').hidden = !selected;
   $('showing-text').textContent = selected ? `Showing ${selected.partIds.map(partTitle).join(' and ')}, other parts faded.` : '';
+  const badge = $('selection-evidence');
+  const overlapValue = selected?.overlapVolume?.value;
+  badge.hidden = !selected?.status;
+  badge.dataset.status = selected?.status ?? '';
+  badge.textContent = !selected?.status ? ''
+    : selected.status === 'ERROR' ? 'Inspection error'
+    : selected.status === 'UNKNOWN' ? 'Inspection unknown'
+    : overlapValue > 0 ? `Exact overlap: ${formatAssemblyMm(overlapValue)} mm³`
+    : selected.clearance?.value <= current.assemblyLinearTolerance ? 'Touching · no collision'
+    : selected.status === 'PASS' ? 'Pass · no overlap' : selected.status;
   updateMore();
 }
 
@@ -998,6 +1016,21 @@ function fade(group, on) {
   }
 }
 
+const INSPECTION_COLORS = { FAIL: 0xc62828, ERROR: 0xc77800, UNKNOWN: 0xc77800, PASS: 0x2f7a46 };
+
+function showOverlap() {
+  clearGroup(overlap, { ownsGeometry: false });
+  const mesh = selected?.status === 'FAIL' && selected.overlapVolume?.value > 0
+    ? selected.overlapMesh : null;
+  if (!mesh) return;
+  const object = new THREE.Mesh(geometries.get(mesh.id).surface, new THREE.MeshStandardMaterial({
+    color: 0xe02020, transparent: true, opacity: 0.58, depthWrite: false, roughness: 0.8,
+  }));
+  object.name = 'exact-overlap';
+  object.renderOrder = 10;
+  overlap.add(object);
+}
+
 // the enclosure-only review modes apply only when the scene has an enclosure fit check
 function hasEnclosure() {
   return Boolean(current?.fit?.length);
@@ -1036,7 +1069,10 @@ function applyPartMode(part, index, offsets, toggle) {
   const lifted = mode === 'lid-off' && isLid(part);
   group.visible = (hiddenByUser.get(part.name) ?? part.visible) && !lifted;
   setCut(group, part, index, mode === 'section');
-  fade(group, Boolean(selected) && !selected.partIds.includes(part.occurrenceId ?? part.partId));
+  const focused = selected?.partIds.includes(part.occurrenceId ?? part.partId);
+  group.children[0].material.color.set(focused && INSPECTION_COLORS[selected.status]
+    ? INSPECTION_COLORS[selected.status] : part.color);
+  fade(group, Boolean(selected) && !focused);
   if (mode === 'section') positionCutFace(group, part);
   toggle.disabled = lifted;
   toggle.title = lifted ? 'Hidden by the Lid off view' : `Show or hide ${toggle.dataset.title}`;
@@ -1069,6 +1105,7 @@ function applyMode() {
   if (mode === 'section') setSection(parts);
   const toggles = document.querySelectorAll('#parts .visibility');
   parts.forEach((part, index) => applyPartMode(part, index, offsets, toggles[index]));
+  showOverlap();
   renderModeControls(parts, enclosure);
   $('modes').classList.toggle('single', !enclosure);
   $('section-help').textContent = enclosure ? 'Escape returns to the Assembled view.' : 'Escape returns to the default view.';
@@ -1439,7 +1476,11 @@ async function loadOne(revision) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     if (data.superseded) throw new Superseded();
-    await loadMeshes(data.parts);
+    await loadMeshes([
+      ...data.parts,
+      ...(data.assemblyInspection ?? []).filter((row) => row.overlapMesh)
+        .map((row) => ({ mesh: row.overlapMesh })),
+    ]);
     if (revision !== wanted) return; // a newer revision arrived meanwhile
     // a shown part outlives a new revision while its fit row still points at it; else all parts again,
     // and focus on its row follows to the replacement row
@@ -1576,6 +1617,8 @@ if (window.coalesceDebug === true) {
       })),
       cut: model.children.map((group) => Boolean(group.children[0].material.clippingPlanes?.length)),
       faded: model.children.map((group) => group.children[0].material.transparent),
+      colors: model.children.map((group) => `#${group.children[0].material.color.getHexString()}`),
+      overlapCount: overlap.children.length,
       edgeStyles: model.children.map((group) => ({
         color: `#${group.children[1].material.color.getHexString()}`,
         opacity: group.children[1].material.opacity,

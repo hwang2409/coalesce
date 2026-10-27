@@ -5372,13 +5372,25 @@ class DocumentService:
                 revision,
                 measure_clearance="minimumClearance" in requirement,
                 deadline=deadline,
+                capture_overlap_shapes=True,
             )
+            overlap_shapes = {
+                tuple(row["occurrenceIds"]): row.pop("_overlapShape")
+                for row in inspection
+                if "_overlapShape" in row
+            }
             [result] = evaluate_requirements([requirement], inspection, revision)["results"]
             results.append(result)
             failed = result.get("measured", {}).get("failedPairs", [])
             for row in inspection:
                 status = "ERROR" if "error" in row else "FAIL" if row in failed else "PASS"
-                rows.append({**row, "requirementId": requirement["id"], "status": status})
+                shape = overlap_shapes.get(tuple(row["occurrenceIds"]))
+                rows.append({
+                    **row,
+                    "requirementId": requirement["id"],
+                    "status": status,
+                    **({"_overlapShape": shape} if shape is not None else {}),
+                })
         return results, rows
 
     def _evaluate_enclosure_requirements(

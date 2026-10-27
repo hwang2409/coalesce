@@ -25,6 +25,9 @@ const state = async () => page.evaluate(() => ({
   description: document.querySelector('#view-description')?.textContent,
   memory: window.coalesceViewer.memory,
   worldBounds: window.coalesceViewer.drawn.worldBounds,
+  colors: window.coalesceViewer.drawn.colors,
+  overlapCount: window.coalesceViewer.drawn.overlapCount,
+  selectionEvidence: document.querySelector('#selection-evidence:not([hidden])')?.textContent ?? null,
   inspectionCount: document.querySelector('#inspection-count')?.textContent,
   inspectionStatuses: [...document.querySelectorAll('.assembly-row')].map(node => node.dataset.status),
   inspectionLabels: [...document.querySelectorAll('.assembly-row .fit-label')].map(node => node.textContent),
@@ -58,7 +61,10 @@ const firstToggle = page.locator('.visibility').first();
 await firstToggle.click();
 const hidden = await state();
 await firstToggle.click();
-await page.locator('.assembly-row').first().click();
+await page.locator('.assembly-row[data-status="ERROR"]').first().click();
+const errorFocused = await state();
+await page.keyboard.press('Escape');
+await page.locator('.assembly-row[data-status="FAIL"]').first().click();
 const focused = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-pair-focused-r2.png`, fullPage: true });
 await page.locator('.assembly-more button').click();
@@ -75,7 +81,10 @@ await page.keyboard.press('Escape');
 const escaped = await state();
 await page.locator('.assembly-more button').click();
 const collapsed = await state();
+await page.locator('.assembly-row').filter({ hasText: 'touching' }).click();
+const touching = await state();
+await page.keyboard.press('Escape');
 await page.getByRole('button', { name: 'Section' }).click();
 const section = await state();
-console.log(JSON.stringify({ initial, mateFocused, hidden, focused, expanded, focusedPass, selectedCollapsed, refreshed, escaped, collapsed, section, errors }));
+console.log(JSON.stringify({ initial, mateFocused, hidden, errorFocused, focused, expanded, focusedPass, selectedCollapsed, refreshed, escaped, collapsed, touching, section, errors }));
 await browser.close();

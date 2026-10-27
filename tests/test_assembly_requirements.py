@@ -66,6 +66,7 @@ def test_real_overlap_reports_volume_ids_and_composes_with_valid_brep(tmp_path):
     assert service.feature(occurrence_create(2, "place-a", "a", 0))["ok"]
     assert service.feature(occurrence_create(3, "place-b", "b", 20))["ok"]
 
+    before = service.store.path.read_bytes()
     response = service.check(
         {
             "action": "evaluate",
@@ -81,7 +82,9 @@ def test_real_overlap_reports_volume_ids_and_composes_with_valid_brep(tmp_path):
     assert result["status"] == "FAIL"
     assert result["measured"]["failedPairs"][0]["occurrenceIds"] == ["a", "b"]
     assert result["measured"]["failedPairs"][0]["overlapVolume"]["value"] > 0
+    assert "_overlapShape" not in result["measured"]["failedPairs"][0]
     assert response["results"][1]["status"] == "PASS"
+    assert service.store.path.read_bytes() == before
 
 
 def test_clearance_threshold_fails_with_units_then_real_move_passes(tmp_path):

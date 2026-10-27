@@ -154,6 +154,33 @@ def test_overlapping_pair_keeps_exact_volume():
 
     assert row["overlapVolume"]["value"] == pytest.approx(40.0)
     assert row["clearance"] == {"value": 0.0, "unit": "mm"}
+    assert "_overlapShape" not in row
+
+
+def test_overlap_shape_reuses_the_single_common_operation(monkeypatch):
+    symbols = _load_kernel_symbols(True)
+    common = symbols.common
+    calls = 0
+
+    def count_common():
+        nonlocal calls
+        calls += 1
+        return common()
+
+    monkeypatch.setattr(
+        "coalesce.assembly_inspection._load_kernel_symbols",
+        lambda _measure_clearance: replace(symbols, common=count_common),
+    )
+
+    row = inspect_assembly(
+        [_resolved("a"), _resolved("b")],
+        None,
+        1,
+        capture_overlap_shapes=True,
+    )[0]
+
+    assert calls == 1
+    assert row["_overlapShape"].volume == pytest.approx(row["overlapVolume"]["value"])
 
 
 @pytest.mark.parametrize("small_id", ["a", "b"])
