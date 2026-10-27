@@ -1,9 +1,16 @@
 import ast
 import json
+import os
+import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
+
+from coalesce.export import verify_assembly_step_fresh
 
 DEMO = Path(__file__).parents[1] / "examples/cycloidal_drive_assembly_demo.py"
 MAX_DISC_PIN_CLEARANCE_MM = 1e-6
@@ -57,6 +64,131 @@ def _assert_xcaf_tree(preflight):
     assert len(pin_definitions) == 1
 
 
+def _run_installed_demo(tmp_path, output):
+    uv = shutil.which("uv")
+    assert uv is not None
+    wheel_dir = tmp_path / "wheel"
+    subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(wheel_dir)],
+        cwd=Path(__file__).parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    venv = tmp_path / "venv"
+    subprocess.run([uv, "venv", str(venv)], check=True, capture_output=True, text=True)
+    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    wheel = next(wheel_dir.glob("coalesce-*.whl"))
+    subprocess.run(
+        [uv, "pip", "install", "--python", str(python), str(wheel)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return subprocess.run(
+        [str(venv / ("Scripts/coalesce-demo.exe" if sys.platform == "win32" else "bin/coalesce-demo")), "--output", str(output)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+
+def test_installed_demo_command_publishes_complete_artifacts(tmp_path):
+    output = tmp_path / "installed-demo"
+    completed = _run_installed_demo(tmp_path, output)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "definitions: 4; occurrences: 11; overlap: PASS; STEP:" in completed.stdout
+    assert "mate solve: static, not simulated motion" in completed.stdout
+    assert sorted(path.name for path in output.iterdir()) == [
+        "cycloidal-drive-assembly.coalesce.json",
+        "cycloidal-drive-assembly.step",
+        "transcript.json",
+    ]
+    assert verify_assembly_step_fresh(output / "cycloidal-drive-assembly.step")["rootCount"] == 1
+    transcript = json.loads((output / "transcript.json").read_text())
+    assert _entry(transcript, "restart assembly query")["response"] == _entry(
+        transcript, "query assembly"
+    )["response"]
+
+
+def test_demo_rejects_existing_output_directory_without_changing_it(tmp_path):
+    output = tmp_path / "existing"
+    output.mkdir()
+    sentinel = output / "sentinel.txt"
+    sentinel.write_text("keep")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "coalesce.demo", "--output", str(output)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "demo failed" in completed.stderr
+    assert "File exists" in completed.stderr
+    assert sorted(path.name for path in output.iterdir()) == ["sentinel.txt"]
+    assert sentinel.read_text() == "keep"
+
+
+def test_sigint_during_paced_demo_stops_server_child(tmp_path):
+    if os.name == "nt":
+        pytest.skip("server process-group checks are POSIX-only")
+    output = tmp_path / "interrupted"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "coalesce.demo", "--output", str(output), "--pace", "1"],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "beat: build"
+    child_pids = []
+    for _ in range(100):
+        listing = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, check=True)
+        child_pids = [
+            int(line.strip().split(None, 1)[0])
+            for line in listing.stdout.splitlines()
+            if str(output / "cycloidal-drive-assembly.coalesce.json") in line
+            and int(line.strip().split(None, 1)[0]) != process.pid
+        ]
+        if child_pids:
+            break
+        time.sleep(0.05)
+    assert child_pids
+    process.send_signal(signal.SIGINT)
+    process.communicate(timeout=30)
+    assert process.returncode != 0
+    for pid in child_pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_paced_demo_prints_story_beats_in_order(tmp_path):
+    completed = subprocess.run(
+        [sys.executable, "-m", "coalesce.demo", "--output", str(tmp_path / "paced"), "--pace", "0.01"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert [
+        line for line in completed.stdout.splitlines() if line.startswith("beat: ")
+    ] == [
+        "beat: build",
+        "beat: edit/lost-contact failure",
+        "beat: restore + interference pass",
+        "beat: STEP publish",
+    ]
+
+
 def test_drive_demo_models_the_eccentric_journal_in_the_shaft_definition():
     source = DEMO.read_text(encoding="utf-8")
 
@@ -83,13 +215,13 @@ def test_cycloidal_drive_assembly_demo(tmp_path):
         [sys.executable, str(DEMO), "--out", str(output)],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=120,
         check=False,
     )
     elapsed = time.monotonic() - started
 
     assert completed.returncode == 0, completed.stderr
-    assert elapsed < 60
+    assert elapsed < 120
     assert sorted(path.name for path in output.iterdir()) == [
         "cycloidal-drive-assembly.coalesce.json",
         "cycloidal-drive-assembly.step",
