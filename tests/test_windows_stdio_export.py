@@ -30,22 +30,27 @@ def _windows_process_tree_command(root_pid):
     return ["powershell.exe", "-NoProfile", "-Command", script]
 
 
+def _posix_process_rows(output):
+    processes = []
+    for line in output.splitlines():
+        row = line.strip()
+        fields = row.split(maxsplit=3)
+        if len(fields) >= 2:
+            processes.append((int(fields[0]), int(fields[1]), row))
+    return processes
+
+
 def _format_posix_process_tree(root_pid, output):
-    rows = [line.strip() for line in output.splitlines()]
+    processes = _posix_process_rows(output)
     descendants = {root_pid}
     while True:
         before = len(descendants)
-        for row in rows:
-            fields = row.split(maxsplit=3)
-            if len(fields) >= 2 and int(fields[1]) in descendants:
-                descendants.add(int(fields[0]))
+        for process_id, parent_id, _ in processes:
+            if parent_id in descendants:
+                descendants.add(process_id)
         if len(descendants) == before:
             break
-    selected = [
-        row
-        for row in rows
-        if (fields := row.split(maxsplit=3)) and int(fields[0]) in descendants
-    ]
+    selected = [row for process_id, _, row in processes if process_id in descendants]
     return "\n".join(selected) or "<empty>"
 
 
