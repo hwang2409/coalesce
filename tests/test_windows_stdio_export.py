@@ -36,11 +36,7 @@ class StdioServer:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            env={
-                **os.environ,
-                "COALESCE_DEBUG_MODULES": "1",
-                "PYTHONUNBUFFERED": "1",
-            },
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
             start_new_session=sys.platform != "win32",
             creationflags=creationflags,
         )

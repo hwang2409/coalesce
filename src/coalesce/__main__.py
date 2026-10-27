@@ -135,6 +135,9 @@ def main() -> None:
         parser.error("--open cannot be used with --no-viewer")
     logging.basicConfig(level=logging.INFO)
     try:
+        if sys.platform == "win32":
+            # OCCT can deadlock when its first import happens on the background warmup thread.
+            __import__("build123d")
         asyncio.run(
             _run(
                 arguments.document,
