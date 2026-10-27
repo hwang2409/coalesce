@@ -586,7 +586,7 @@ def test_invalid_input_fuzz_never_raises_raw_exceptions():
 
 
 def test_documented_operand_table_matches_machine_readable_signatures():
-    docs = (Path(__file__).parents[1] / "docs" / "sketch.md").read_text()
+    docs = (Path(__file__).parents[1] / "docs" / "sketch.md").read_text(encoding="utf-8")
     documented: defaultdict[str, set[tuple[str, ...]]] = defaultdict(set)
     for line in docs.splitlines():
         if not line.startswith("| `") or "ordered operands" in line:
@@ -613,7 +613,7 @@ def test_only_solver_seam_may_import_planegcs():
     for path in source_root.rglob("*.py"):
         if path.name == "sketch_solver.py":
             continue
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(
                 alias.name == "planegcs" for alias in node.names

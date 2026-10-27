@@ -177,7 +177,7 @@ def circles_model(*, nested: bool) -> dict:
 
 @pytest.mark.anyio
 async def test_documented_line_arc_bracket_extrudes_exactly_through_real_stdio(tmp_path):
-    docs = Path("docs/sketch.md").read_text()
+    docs = Path("docs/sketch.md").read_text(encoding="utf-8")
     example = json.loads(docs.split("<!-- bracket-stdio -->\n```json\n", 1)[1].split("\n```", 1)[0])
     path = tmp_path / "documented-bracket.coalesce.json"
 

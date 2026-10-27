@@ -468,7 +468,7 @@ def assert_cycloidal_disc_step(path, bolt_count):
 
 @pytest.mark.anyio
 async def test_cycloidal_disc_documented_example_end_to_end(tmp_path):
-    markdown = (DOCS / "examples/cycloidal-disc.md").read_text()
+    markdown = (DOCS / "examples/cycloidal-disc.md").read_text(encoding="utf-8")
     namespace = {}
     exec(  # noqa: S102 - execute the documented example verbatim
         compile(ast.parse(_python_block(markdown)), "cycloidal-disc.md", "exec"), namespace

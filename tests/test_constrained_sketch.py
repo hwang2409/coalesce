@@ -236,7 +236,10 @@ def _wait_until(predicate, timeout: float = 3.0) -> bool:
     return predicate()
 
 
-@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGKILL])
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGKILL"), reason="needs POSIX signals for server-death cleanup"
+)
+@pytest.mark.parametrize("stop_signal", ["SIGTERM", "SIGKILL"])
 def test_solver_child_dies_when_stdio_server_is_killed(tmp_path, stop_signal):
     path = tmp_path / "server-death.coalesce.json"
     service = DocumentService(path, warmup=False)
@@ -268,7 +271,7 @@ def test_solver_child_dies_when_stdio_server_is_killed(tmp_path, stop_signal):
         server.stdin.flush()
         assert _wait_until(pid_file.exists), "solver child did not start"
         child_pid = int(pid_file.read_text())
-        os.kill(server.pid, stop_signal)
+        os.kill(server.pid, getattr(signal, stop_signal))
         server.wait(timeout=3)
         assert _wait_until(lambda: not _pid_exists(child_pid)), "solver child survived server death"
     finally:
@@ -507,7 +510,7 @@ async def test_malformed_constrained_payload_is_invalid_parameter(tmp_path, chan
 
 @pytest.mark.anyio
 async def test_documented_payload_is_accepted_and_fully_constrained(tmp_path):
-    docs = Path("docs/sketch.md").read_text()
+    docs = Path("docs/sketch.md").read_text(encoding="utf-8")
     payload = json.loads(docs.split("```json\n", 1)[1].split("\n```", 1)[0])
 
     result = (await run_server(tmp_path / "documented.coalesce.json", [("sketch", payload)]))[0]
