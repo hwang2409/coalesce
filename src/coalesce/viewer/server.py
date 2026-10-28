@@ -10,8 +10,8 @@ present, our own ``Origin`` (cross-site requests).
 from __future__ import annotations
 
 import hmac
-import os
 import json
+import os
 import re
 import secrets
 import threading

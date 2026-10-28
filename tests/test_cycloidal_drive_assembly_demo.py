@@ -30,7 +30,7 @@ def test_contact_summary_keeps_zero_clearance_pins_touching():
             ]}
         }]
     }
-    assert _contact_summary(inspection) == (6, 8, 1.0)
+    assert _contact_summary(inspection) == (6, 8, 0.856, 1.0)
 
 
 def _entry(transcript, label):
