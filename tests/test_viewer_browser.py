@@ -8,9 +8,11 @@ VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 import glob
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -64,7 +66,7 @@ def oversized_fillet_failure() -> dict:
 
 
 def start_cli_viewer(document: Path, port: int, environment: dict[str, str]):
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [
             os.environ.get("PYTHON", __import__("sys").executable),
             "-m",
@@ -80,14 +82,30 @@ def start_cli_viewer(document: Path, port: int, environment: dict[str, str]):
         stderr=subprocess.PIPE,
         text=True,
     )
+    process.stdin.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
+    process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+    process.stdin.write('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n')
+    process.stdin.flush()
+    return process
+
+
+def bounded_readline(stream, timeout):
+    lines = queue.Queue(maxsize=1)
+    threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=timeout)
+    except queue.Empty as error:
+        raise AssertionError("process did not produce a line before the deadline") from error
 
 
 def cli_viewer_url(process):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        line = process.stderr.readline()
+        line = bounded_readline(process.stderr, deadline - time.monotonic())
         if "coalesce viewer:" in line:
             return line.split("coalesce viewer:", 1)[1].strip()
+        if not line and process.poll() is not None:
+            break
     raise AssertionError("coalesce viewer did not start")
 
 
@@ -122,8 +140,23 @@ def module():
 def test_cli_restart_keeps_open_tab_authenticated(module, tmp_path):
     first_document = tmp_path / "first.coalesce.json"
     second_document = tmp_path / "second.coalesce.json"
+    sketch = {
+        "type": "Sketch",
+        "id": "outline",
+        "plane": {"name": "XY", "offset": 0},
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "entities": [{
+            "type": "Polyline",
+            "id": "triangle",
+            "points": [[0, 0], [2, 0], [0, 2]],
+            "closed": True,
+            "point_ids": ["p0", "p1", "p2"],
+        }],
+    }
+    graph = {"nodes": [sketch, {"id": "solid", "type": "Extrude", "sketch": "outline", "height": 1.0}]}
     for document, revision in ((first_document, 1), (second_document, 2)):
-        document.write_text(json.dumps({"formatVersion": 1, "graph": {"nodes": []}, "revision": revision}))
+        document.write_text(json.dumps({"formatVersion": 1, "graph": graph, "revision": revision}))
     environment = {key: value for key, value in os.environ.items() if key != "COALESCE_VIEWER_TOKEN"}
     first = start_cli_viewer(first_document, 0, environment)
     driver = None
@@ -136,7 +169,7 @@ def test_cli_restart_keeps_open_tab_authenticated(module, tmp_path):
             stdout=subprocess.PIPE,
             text=True,
         )
-        assert driver.stdout.readline().strip() == "ready"
+        assert bounded_readline(driver.stdout, 15).strip() == "ready"
         token = first_url.split("#token=", 1)[1]
         port = urlsplit(first_url).port
         first.terminate()
@@ -144,14 +177,15 @@ def test_cli_restart_keeps_open_tab_authenticated(module, tmp_path):
         second_environment = {**environment, "COALESCE_VIEWER_TOKEN": token}
         second = start_cli_viewer(second_document, port, second_environment)
         assert cli_viewer_url(second).split("#token=", 1)[1] == token
-        assert driver.wait(timeout=20) == 0
-        assert driver.stdout.readline().strip() == "reconnected"
+        assert bounded_readline(driver.stdout, 20).strip() == "reconnected"
+        assert driver.wait(timeout=10) == 0
     finally:
-        if driver and driver.poll() is None:
-            driver.kill()
-        for process in (first, second):
+        for process in (first, second, driver):
             if process and process.poll() is None:
                 process.terminate()
+            if process and process.poll() is None:
+                process.kill()
+            if process:
                 process.wait(timeout=10)
 
 

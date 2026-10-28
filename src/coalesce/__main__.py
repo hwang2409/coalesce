@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sys
 import webbrowser
 from pathlib import Path
@@ -124,13 +123,6 @@ async def _run(
 
 def main() -> None:
     viewer_token = os.environ.pop("COALESCE_VIEWER_TOKEN", None)
-    if viewer_token is not None and not re.fullmatch(r"[A-Za-z0-9_-]{43}", viewer_token):
-        print(
-            "coalesce: COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token",
-            file=sys.stderr,
-            flush=True,
-        )
-        sys.exit(2)
     parser = argparse.ArgumentParser(description="Run coalesce as a stdio MCP server")
     parser.add_argument(
         "--document",

@@ -9,7 +9,13 @@ try {
   console.log('ready');
   await page.waitForFunction(() => document.querySelector('#link-text')?.textContent === 'Reconnecting', null, { timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('#link-text')?.textContent === 'Live', null, { timeout: 15000 });
-  if (expectedRevision && await page.locator('#link-text').textContent() !== 'Live') throw new Error('viewer did not reconnect');
+  if (expectedRevision) {
+    await page.waitForFunction(
+      (revision) => window.coalesceViewer?.revision === Number(revision),
+      expectedRevision,
+      { timeout: 15000 },
+    );
+  }
   console.log('reconnected');
 } finally {
   await browser.close();

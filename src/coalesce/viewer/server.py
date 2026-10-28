@@ -34,6 +34,11 @@ _PAGE_POLICY = (
 )
 
 
+def _validate_token(token: str) -> None:
+    if not _TOKEN.fullmatch(token):
+        raise ValueError("COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token")
+
+
 def _static_files() -> dict[str, tuple[bytes, str]]:
     """Serve an allowlist built at startup, so request paths never reach the filesystem."""
     found = {}
@@ -67,8 +72,8 @@ class ViewerServer:
         self, store: ViewerSceneStore, port: int = 0, token: str | None = None
     ) -> None:
         self.store = store
-        if token is not None and not _TOKEN.fullmatch(token):
-            raise ValueError("COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token")
+        if token is not None:
+            _validate_token(token)
         self._token = token or secrets.token_urlsafe(32)
         self._static = _static_files()
         self._closing = threading.Event()
