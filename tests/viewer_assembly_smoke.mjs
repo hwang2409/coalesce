@@ -50,10 +50,13 @@ const state = async () => page.evaluate(() => ({
   })(),
   solveWarning: document.querySelector('#solve-warning')?.textContent,
   solveSummary: document.querySelector('#solve-summary')?.textContent,
+  inspectionSummary: document.querySelector('#inspection-summary')?.textContent,
+  matesExpanded: document.querySelector('#mate-rows')?.closest('details')?.open ?? false,
   bomCount: document.querySelector('#bom-count')?.textContent,
   bomRows: [...document.querySelectorAll('.bom-row')].map(node => node.textContent),
   bomExpanded: document.querySelector('#bom-rows')?.closest('details')?.open ?? false,
-  mateRows: [...document.querySelectorAll('.mate-row')].map(node => node.textContent),
+  mateRows: document.querySelector('#mate-rows').closest('details').open
+    ? [...document.querySelectorAll('.mate-row')].map(node => node.textContent) : [],
   occurrenceStates: [...document.querySelectorAll('.occurrence-state')].map(node => node.textContent),
   panelOverflowX: document.querySelector('#panel-scroll').scrollWidth > document.querySelector('#panel-scroll').clientWidth,
 }));
@@ -84,6 +87,7 @@ const overlapPixels = async () => {
 };
 const initial = await state();
 if (shots) await page.screenshot({ path: `${shots}/${width}-assembled-r3.png`, fullPage: true });
+await page.locator('#mate-rows').evaluate(list => { list.closest('details').open = true; });
 await page.locator('.mate-row').first().click();
 const mateFocused = await state();
 await page.keyboard.press('Escape');

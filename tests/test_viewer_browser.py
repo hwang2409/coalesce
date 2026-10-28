@@ -243,9 +243,12 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     ]
     assert data["initial"]["bomExpanded"] is True
     assert data["initial"]["bomRows"][0] == f'{query_bom["rows"][0]["label"]} · {query_bom["rows"][0]["count"]}'
-    assert data["initial"]["mateRows"] == [
-        "pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"
-    ]
+    assert data["initial"]["inspectionSummary"] == "all 10 pairs checked · 2 need attention"
+    assert data["initial"]["mateRows"] == (
+        [] if viewport == (390, 844) else
+        ["pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"]
+    )
+    assert data["initial"]["matesExpanded"] is (viewport != (390, 844))
     assert data["initial"]["occurrenceStates"] == [
         "explicit · 1 DOF",
         "grounded · 0 DOF",
@@ -398,6 +401,12 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             # the status lies over the canvas: the canvas and the model keep their place
             assert (failed["viewTop"], failed["viewBottom"]) == (0, 800)
             assert failed["pageTop"] == second["pageTop"], (failed["pageTop"], second["pageTop"])
+            store.publish(3, [ScenePart("plate", plate(8))])
+            next_step()
+
+            accepted = step("accepted-revision")
+            assert accepted["label"] == "3"
+            assert accepted["failure"] is None and accepted["banner"] is None
             next_step()
 
             front = step("front")
@@ -408,9 +417,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             lost = step("disconnected", outage=True)
             assert lost["link"] == "Reconnecting"
             # one calm status: the connection is the news, the old failure one sentence of it
-            assert lost["banner"] == (
-                "Revision 2 may be out of date. Reconnecting to coalesce. The last edit, edge_fillet, failed."
-            )
+            assert lost["banner"] == "Revision 3 may be out of date. Reconnecting to coalesce."
             assert lost["failure"] is None
             assert "grayscale(1)" in lost["filter"]
             assert (lost["viewTop"], lost["viewBottom"]) == (0, 800), lost
@@ -423,7 +430,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             back = step("reconnected", outage=True)
             assert (back["link"], back["banner"], back["filter"]) == ("Live", None, "none")
             assert back["pageTop"] == back["before"], (back["pageTop"], back["before"])
-            for revision in range(3, 53):  # back to back, so some loads lose the race
+            for revision in range(4, 53):  # back to back, so some loads lose the race
                 store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
             next_step()
 

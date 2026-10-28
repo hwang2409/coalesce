@@ -84,6 +84,7 @@ SCREENSHOT_HELPER = Path(__file__).with_name("cycloidal_drive_assembly_screensho
 PATTERN_RADIUS = 30
 EDITED_PATTERN_RADIUS = 31
 PIN_COUNT = 8
+CONTACT_TOLERANCE_MM = 1.0
 
 
 def _assert_bom_matches_xcaf(assembly, xcaf):
@@ -573,13 +574,13 @@ def _manufacturing_occurrence_ids():
     return ["disc", "ring", *(f"ring-pin-{index}" for index in range(1, PIN_COUNT + 1)), "shaft"]
 
 
-def _disc_pin_requirements():
+def _disc_pin_requirements(*, minimum_clearance=0):
     return [
         {
             "id": f"disc-pin-{index}-clearance",
             "kind": "assembly_interference",
             "occurrenceIds": ["disc", f"ring-pin-{index}"],
-            "minimumClearance": {"value": 0, "unit": "mm"},
+            "minimumClearance": {"value": minimum_clearance, "unit": "mm"},
         }
         for index in range(1, PIN_COUNT + 1)
     ]
@@ -699,13 +700,15 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                 if pace:
                     await asyncio.sleep(pace)
 
-            await beat("beat: build")
-            for label, name, request in _requests():
+            requests = _requests()
+            for label, name, request in requests[:2]:
                 await call(label, name, request)
-            revision = len(_requests())
+            await beat("beat: build · revision 2 · the disc is now visible")
+            for label, name, request in requests[2:]:
+                await call(label, name, request)
+            revision = len(requests)
             await call("query initial assembly", "query", {"select": {"kind": "assembly"}})
 
-            await beat("beat: edit/lost-contact failure")
             moved = await call(
                 "move ring pattern radius",
                 "feature",
@@ -717,14 +720,23 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             )
             revision = moved["revision"]
             edited = await call("query edited assembly", "query", {"select": {"kind": "assembly"}})
-            await call(
+            edited_check = await call(
                 "check edited pattern clearance",
                 "check",
                 {
                     "action": "evaluate",
                     "revision": revision,
-                    "requirements": _disc_pin_requirements(),
+                    "requirements": _disc_pin_requirements(
+                        minimum_clearance=CONTACT_TOLERANCE_MM
+                    ),
                 },
+            )
+            lost_contacts = sum(
+                result["status"] == "FAIL" for result in edited_check["results"]
+            )
+            await beat(
+                f"beat: edit/lost-contact failure · revision {revision} · "
+                f"contacts lost: {lost_contacts} pins no longer touch the ring"
             )
             stale = await call(
                 "reject stale ring member",
@@ -739,8 +751,11 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             )
             if unchanged != edited:
                 raise DemoFailure("stale pattern edit changed the assembly")
+            await beat(
+                f"beat: reject broken edit · revision {revision} · "
+                "server refused the stale mate reference"
+            )
 
-            await beat("beat: restore + interference pass")
             restored = await call(
                 "restore meshing radius",
                 "feature",
@@ -778,6 +793,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             if inspection["gate"] != "PASS":
                 raise DemoFailure("assembled drive checks did not pass")
             assembly = await call("query assembly", "query", {"select": {"kind": "assembly"}})
+            await beat(f"beat: restore + interference pass · revision {revision} · all 55 pairs pass")
             preflight = await call(
                 "fresh-process assembly preflight",
                 "export",
@@ -787,7 +803,6 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             _assert_bom_matches_xcaf(assembly, xcaf)
             if (xcaf["definitionCount"], xcaf["occurrenceCount"]) != (4, 11):
                 raise DemoFailure("XCAF preflight did not preserve four definitions and 11 occurrences")
-            await beat("beat: STEP publish")
             await call(
                 "publish assembly STEP",
                 "export",
@@ -798,6 +813,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     "path": str(step),
                 },
             )
+            await beat(f"beat: STEP publish · revision {revision} · STEP is saved")
             if screenshots:
                 module = await playwright_module()
                 if module is None:
@@ -805,7 +821,11 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                 else:
                     await _screenshots(module, url, output, revision)
 
-    print(f"definitions: {xcaf["definitionCount"]}; occurrences: {xcaf["occurrenceCount"]}; overlap: PASS; STEP: {step}")
+    print(
+        f"all 55 part pairs checked: pass; {xcaf['occurrenceCount']} assembled occurrences "
+        f"in {xcaf['definitionCount']} reusable part definitions; "
+        f"static mate solve; STEP saved to {step}"
+    )
     print("mate solve: static, not simulated motion")
 
     await _verify_restart(document, url, assembly, record, open_browser=open_browser, pace=pace)
@@ -815,7 +835,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="run the installed cycloidal drive demo")
     parser.add_argument("--output", "--out", dest="output", type=Path)
     parser.add_argument("--open", action="store_true")
-    parser.add_argument("--pace", type=float, default=0, metavar="SECONDS")
+    parser.add_argument(
+        "--pace", type=float, default=0, metavar="SECONDS",
+        help="pause after each story beat; 30 gives about three minutes",
+    )
     parser.add_argument("--screenshots", action="store_true")
     arguments = parser.parse_args()
     output = arguments.output or Path(tempfile.gettempdir()) / f"coalesce-demo-{os.urandom(8).hex()}"

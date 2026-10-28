@@ -120,6 +120,9 @@ await step('failure', async () => ({
   ...(await layout()),
   ...(await drawn()),
 }));
+await waitRevision(3);
+await settled();
+await step('accepted-revision', async () => ({ label: await revision().textContent(), failure: await shown('#failure'), banner: await shown('#stale'), ...(await drawn()) }));
 const beforeFront = await currentFrames();
 await page.getByRole('button', { name: 'Front' }).click();
 await settledAfter(beforeFront);

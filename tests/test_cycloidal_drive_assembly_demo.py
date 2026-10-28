@@ -104,7 +104,7 @@ def test_installed_demo_command_publishes_complete_artifacts(tmp_path):
     completed = _run_installed_demo(tmp_path, output)
 
     assert completed.returncode == 0, completed.stderr
-    assert "definitions: 4; occurrences: 11; overlap: PASS; STEP:" in completed.stdout
+    assert "all 55 part pairs checked: pass; 11 assembled occurrences in 4 reusable part definitions;" in completed.stdout
     assert "mate solve: static, not simulated motion" in completed.stdout
     assert sorted(path.name for path in output.iterdir()) == [
         "cycloidal-drive-assembly.coalesce.json",
@@ -182,7 +182,7 @@ def test_sigint_during_paced_demo_stops_server_child(tmp_path):
     )
     assert process.stdout is not None
     assert process.stdout.readline().startswith("viewer URL: ")
-    assert process.stdout.readline().strip() == "beat: build"
+    assert process.stdout.readline().strip().startswith("beat: build · revision 2")
     child_pids = []
     for _ in range(100):
         listing = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, check=True)
@@ -251,12 +251,12 @@ def test_paced_demo_prints_live_viewer_and_reuses_port(tmp_path):
                 break
         assert urlopen(final_url, timeout=5).status == 200
         assert first_url.split(":")[2].split("/", 1)[0] == final_url.split(":")[2].split("/", 1)[0]
-        assert [line for line in lines if line.startswith("beat: ")] == [
-            "beat: build",
-            "beat: edit/lost-contact failure",
-            "beat: restore + interference pass",
-            "beat: STEP publish",
-        ]
+        beats = [line for line in lines if line.startswith("beat: ")]
+        assert beats[0].startswith("beat: build · revision 2")
+        assert beats[1].startswith("beat: edit/lost-contact failure · revision 46 · contacts lost: 8")
+        assert beats[2].startswith("beat: reject broken edit · revision 46")
+        assert beats[3].startswith("beat: restore + interference pass · revision 47 · all 55 pairs pass")
+        assert beats[4].startswith("beat: STEP publish · revision 47")
         process.send_signal(signal.SIGINT)
         process.wait(timeout=30)
     finally:
