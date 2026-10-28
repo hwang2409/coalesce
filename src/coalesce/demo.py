@@ -83,14 +83,14 @@ def _viewer_failure_visible(url: str, revision: int) -> bool:
                 return json.loads(data).get("revision") == revision
 
 
-def _contact_summary(inspection: dict) -> tuple[int, int, float]:
+def _contact_summary(inspection: dict) -> tuple[int, int, float, float]:
     clearances = [
         pair["clearance"]["value"]
         for result in inspection["results"]
         for pair in result["measured"]["pairs"]
     ]
-    lost = sum(clearance > CONTACT_TOLERANCE_MM for clearance in clearances)
-    return lost, len(clearances), max(clearances)
+    lost_clearances = [clearance for clearance in clearances if clearance > CONTACT_TOLERANCE_MM]
+    return len(lost_clearances), len(clearances), min(lost_clearances), max(lost_clearances)
 
 
 async def wait_for_viewer(url: str, revision: int, *, evidence: bool = False, failure: bool = False) -> None:
@@ -102,8 +102,11 @@ async def wait_for_viewer(url: str, revision: int, *, evidence: bool = False, fa
                 if await asyncio.wait_for(asyncio.to_thread(_viewer_failure_visible, url, revision), 1.5):
                     return
             else:
-                with _viewer_request(url, f"/api/scene/{revision}", _viewer_opener(url)) as response:
-                    scene = json.load(response)
+                def read_scene():
+                    with _viewer_request(url, f"/api/scene/{revision}", _viewer_opener(url)) as response:
+                        return json.load(response)
+
+                scene = await asyncio.to_thread(read_scene)
                 if scene.get("revision") == revision and (not evidence or scene.get("assemblyInspection")):
                     return
         except (OSError, TimeoutError, json.JSONDecodeError):
@@ -146,6 +149,7 @@ SCREENSHOT_HELPER = Path(__file__).with_name("cycloidal_drive_assembly_screensho
 PATTERN_RADIUS = 30
 EDITED_PATTERN_RADIUS = 31
 PIN_COUNT = 8
+# demo display threshold; assembly inspection uses the kernel's own tolerance.
 CONTACT_TOLERANCE_MM = 1e-6
 MINIMUM_CLEARANCE_MM = 1.0
 VIEWER_READINESS_TIMEOUT = 10.0
@@ -662,6 +666,7 @@ def _pattern_update(revision, request_id, **changes):
 
 
 async def _screenshots(module: str, url: str, output: Path, revision: int) -> None:
+    output.mkdir(exist_ok=True)
     returncode, stdout, stderr = await _run_process(
         "node", str(SCREENSHOT_HELPER), module, url, str(output), str(revision), timeout=90
     )
@@ -676,7 +681,7 @@ async def _verify_restart(
         restart_server = StdioServerParameters(
             command=sys.executable,
             args=["-m", "coalesce", "--document", str(document), "--viewer-port", str(viewer_port(url))],
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
+            env={**os.environ, "COALESCE_VIEWER_TOKEN": urlsplit(url).fragment.removeprefix("token="), "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
         )
         async with stdio_client(restart_server, errlog=restart_errlog) as (read, write), ClientSession(
             read, write
@@ -759,8 +764,20 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     raise DemoFailure(f"{label} returned {code}")
                 return response
 
+            beat_number = 0
+            screenshot_module = await playwright_module() if screenshots else None
+
             async def beat(label, revision, *, evidence=False, failure=False):
+                nonlocal beat_number
                 await wait_for_viewer(url, revision, evidence=evidence, failure=failure)
+                beat_number += 1
+                if screenshots:
+                    if screenshot_module is None:
+                        print("screenshots skipped: no launchable Playwright Chromium was found")
+                    else:
+                        await _screenshots(
+                            screenshot_module, url, output / f"beat-{beat_number}", revision
+                        )
                 print(label, flush=True)
                 if pace:
                     await asyncio.sleep(pace)
@@ -796,11 +813,11 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     ),
                 },
             )
-            lost_contacts, pin_count, gap = _contact_summary(edited_check)
+            lost_contacts, pin_count, minimum_gap, maximum_gap = _contact_summary(edited_check)
             await beat(
                 f"beat: edit/lost-contact failure · revision {revision} · "
                 f"contacts lost: {lost_contacts} of {pin_count} pins no longer touch "
-                f"the ring (gap {gap:g} mm)",
+                f"the ring (gaps {minimum_gap:g}–{maximum_gap:g} mm)",
                 revision,
                 evidence=True,
             )
@@ -882,13 +899,6 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                 },
             )
             await beat(f"beat: STEP publish · revision {revision} · STEP is saved", revision)
-            if screenshots:
-                module = await playwright_module()
-                if module is None:
-                    print("screenshots skipped: no launchable Playwright Chromium was found")
-                else:
-                    await _screenshots(module, url, output, revision)
-
     print(
         f"all 55 part pairs checked: pass; {xcaf['occurrenceCount']} assembled occurrences "
         f"in {xcaf['definitionCount']} reusable part definitions; "

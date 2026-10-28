@@ -16,7 +16,9 @@ run the reproducible workflow without browser capture:
 coalesce-demo --pace 30 --output ./cycloidal-drive-assembly-demo
 ```
 
-add `--screenshots` to capture a desktop assembled view, a desktop pin-mate focus, and a phone view when a launchable playwright chromium is available. the helper always closes each page and the browser.
+add `--screenshots` to capture each paced beat at its revision, with desktop and phone views, when a launchable playwright chromium is available. the helper always closes each page and the browser.
+
+advanced: set `COALESCE_VIEWER_TOKEN` to a 43-character URL-safe token to reuse viewer access across a controlled server restart. malformed values stop startup with a clear error; when unset, the viewer uses a random token.
 
 the output contains the revisioned document, `transcript.json`, and `cycloidal-drive-assembly.step`. the transcript records:
 

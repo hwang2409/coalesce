@@ -10,6 +10,7 @@ present, our own ``Origin`` (cross-site requests).
 from __future__ import annotations
 
 import hmac
+import os
 import json
 import re
 import secrets
@@ -27,6 +28,7 @@ _STATIC = files("coalesce.viewer") / "static"
 _TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", "": "text/plain"}
 _SCENE = re.compile(r"/api/scene/(\d+)")
 _MESH = re.compile(r"/api/mesh/([0-9a-f]{32})")
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 _PAGE_POLICY = (
     "default-src 'self'; img-src 'self' data:; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
@@ -64,7 +66,10 @@ class ViewerServer:
 
     def __init__(self, store: ViewerSceneStore, port: int = 0) -> None:
         self.store = store
-        self._token = secrets.token_urlsafe(32)
+        token = os.environ.get("COALESCE_VIEWER_TOKEN")
+        if token is not None and not _TOKEN.fullmatch(token):
+            raise ValueError("COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token")
+        self._token = token or secrets.token_urlsafe(32)
         self._static = _static_files()
         self._closing = threading.Event()
         self._httpd = _HTTPServer(self, port)

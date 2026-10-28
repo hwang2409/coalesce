@@ -172,6 +172,9 @@ def main() -> None:
         failure = _graph_error_response(error.revision, None, "load", error.error)
         print(json.dumps(failure), file=sys.stderr, flush=True)
         sys.exit(2)
+    except ValueError as error:
+        print(f"coalesce: {error}", file=sys.stderr, flush=True)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
