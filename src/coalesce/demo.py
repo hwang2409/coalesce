@@ -10,8 +10,10 @@ import os
 import shutil
 import sys
 import tempfile
+from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 PIN_RADIUS = 4
 
@@ -51,6 +53,68 @@ def viewer_port(url: str) -> int:
     return port
 
 
+def _viewer_request(url: str, path: str, opener):
+    origin = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}"
+    return opener.open(Request(f"{origin}{path}", headers={"Origin": origin}), timeout=1)
+
+
+def _viewer_opener(url: str):
+    opener = build_opener(HTTPCookieProcessor(CookieJar()))
+    parts = urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    token = parts.fragment.removeprefix("token=")
+    opener.open(Request(f"{origin}/api/session", data=json.dumps({"token": token}).encode(), headers={"Origin": origin, "Content-Type": "application/json"}), timeout=1).read()
+    return opener
+
+
+def _viewer_failure_visible(url: str, revision: int) -> bool:
+    opener = _viewer_opener(url)
+    with _viewer_request(url, "/events", opener) as stream:
+        event, data = None, ""
+        while True:
+            line = stream.readline().decode()
+            if not line:
+                return False
+            if line.startswith("event: "):
+                event = line[7:].strip()
+            elif line.startswith("data: "):
+                data = line[6:].strip()
+            elif not line.strip() and event == "failure":
+                return json.loads(data).get("revision") == revision
+
+
+def _contact_summary(inspection: dict) -> tuple[int, int, float, float]:
+    clearances = [
+        pair["clearance"]["value"]
+        for result in inspection["results"]
+        for pair in result["measured"]["pairs"]
+    ]
+    lost_clearances = [clearance for clearance in clearances if clearance > CONTACT_TOLERANCE_MM]
+    return len(lost_clearances), len(clearances), min(lost_clearances), max(lost_clearances)
+
+
+def _viewer_ready(url: str, revision: int, evidence: bool, failure: bool) -> bool:
+    if failure:
+        return _viewer_failure_visible(url, revision)
+    with _viewer_request(url, f"/api/scene/{revision}", _viewer_opener(url)) as response:
+        scene = json.load(response)
+    return scene.get("revision") == revision and (not evidence or scene.get("assemblyInspection"))
+
+
+async def wait_for_viewer(url: str, revision: int, *, evidence: bool = False, failure: bool = False) -> None:
+    """Wait until the viewer has published the revision and requested evidence."""
+    deadline = asyncio.get_running_loop().time() + VIEWER_READINESS_TIMEOUT
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            if await asyncio.to_thread(_viewer_ready, url, revision, evidence, failure):
+                return
+        except (OSError, TimeoutError, json.JSONDecodeError):
+            pass
+        await asyncio.sleep(0.05)
+    expected = "failure" if failure else "scene evidence" if evidence else "scene"
+    raise DemoFailure(f"viewer did not publish revision {revision} {expected} within {VIEWER_READINESS_TIMEOUT:g}s")
+
+
 async def _run_process(*command, timeout):
     process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
     try:
@@ -84,6 +148,10 @@ SCREENSHOT_HELPER = Path(__file__).with_name("cycloidal_drive_assembly_screensho
 PATTERN_RADIUS = 30
 EDITED_PATTERN_RADIUS = 31
 PIN_COUNT = 8
+# demo display threshold; assembly inspection uses the kernel's own tolerance.
+CONTACT_TOLERANCE_MM = 1e-6
+MINIMUM_CLEARANCE_MM = 1.0
+VIEWER_READINESS_TIMEOUT = 10.0
 
 
 def _assert_bom_matches_xcaf(assembly, xcaf):
@@ -573,13 +641,13 @@ def _manufacturing_occurrence_ids():
     return ["disc", "ring", *(f"ring-pin-{index}" for index in range(1, PIN_COUNT + 1)), "shaft"]
 
 
-def _disc_pin_requirements():
+def _disc_pin_requirements(*, minimum_clearance=0):
     return [
         {
             "id": f"disc-pin-{index}-clearance",
             "kind": "assembly_interference",
             "occurrenceIds": ["disc", f"ring-pin-{index}"],
-            "minimumClearance": {"value": 0, "unit": "mm"},
+            "minimumClearance": {"value": minimum_clearance, "unit": "mm"},
         }
         for index in range(1, PIN_COUNT + 1)
     ]
@@ -597,6 +665,7 @@ def _pattern_update(revision, request_id, **changes):
 
 
 async def _screenshots(module: str, url: str, output: Path, revision: int) -> None:
+    output.mkdir(exist_ok=True)
     returncode, stdout, stderr = await _run_process(
         "node", str(SCREENSHOT_HELPER), module, url, str(output), str(revision), timeout=90
     )
@@ -611,7 +680,7 @@ async def _verify_restart(
         restart_server = StdioServerParameters(
             command=sys.executable,
             args=["-m", "coalesce", "--document", str(document), "--viewer-port", str(viewer_port(url))],
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
+            env={**os.environ, "COALESCE_VIEWER_TOKEN": urlsplit(url).fragment.removeprefix("token="), "PYTHONUNBUFFERED": "1", "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent.parent), os.environ.get("PYTHONPATH")]))},
         )
         async with stdio_client(restart_server, errlog=restart_errlog) as (read, write), ClientSession(
             read, write
@@ -694,18 +763,33 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     raise DemoFailure(f"{label} returned {code}")
                 return response
 
-            async def beat(label):
+            beat_number = 0
+            screenshot_module = await playwright_module() if screenshots else None
+
+            async def beat(label, revision, *, evidence=False, failure=False):
+                nonlocal beat_number
+                await wait_for_viewer(url, revision, evidence=evidence, failure=failure)
+                beat_number += 1
+                if screenshots:
+                    if screenshot_module is None:
+                        print("screenshots skipped: no launchable Playwright Chromium was found")
+                    else:
+                        await _screenshots(
+                            screenshot_module, url, output / f"beat-{beat_number}", revision
+                        )
                 print(label, flush=True)
                 if pace:
                     await asyncio.sleep(pace)
 
-            await beat("beat: build")
-            for label, name, request in _requests():
+            requests = _requests()
+            for label, name, request in requests[:2]:
                 await call(label, name, request)
-            revision = len(_requests())
+            await beat("beat: build · revision 2 · the disc is now visible", 2)
+            for label, name, request in requests[2:]:
+                await call(label, name, request)
+            revision = len(requests)
             await call("query initial assembly", "query", {"select": {"kind": "assembly"}})
 
-            await beat("beat: edit/lost-contact failure")
             moved = await call(
                 "move ring pattern radius",
                 "feature",
@@ -717,14 +801,25 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             )
             revision = moved["revision"]
             edited = await call("query edited assembly", "query", {"select": {"kind": "assembly"}})
-            await call(
+            edited_check = await call(
                 "check edited pattern clearance",
                 "check",
                 {
                     "action": "evaluate",
                     "revision": revision,
-                    "requirements": _disc_pin_requirements(),
+                    "requirements": _disc_pin_requirements(
+                        minimum_clearance=MINIMUM_CLEARANCE_MM
+                    ),
                 },
+            )
+            lost_contacts, pin_count, minimum_gap, maximum_gap = _contact_summary(edited_check)
+            await beat(
+                f"beat: edit/lost-contact failure · revision {revision} · "
+                f"{pin_count} pins are closer than the {MINIMUM_CLEARANCE_MM:g} mm clearance rule; "
+                f"{lost_contacts} of them no longer touch the ring (gaps "
+                f"{minimum_gap:.2f}–{maximum_gap:.2f} mm)",
+                revision,
+                evidence=True,
             )
             stale = await call(
                 "reject stale ring member",
@@ -739,8 +834,13 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             )
             if unchanged != edited:
                 raise DemoFailure("stale pattern edit changed the assembly")
+            await beat(
+                f"beat: reject broken edit · revision {revision} · "
+                "server refused the stale mate reference",
+                revision,
+                failure=True,
+            )
 
-            await beat("beat: restore + interference pass")
             restored = await call(
                 "restore meshing radius",
                 "feature",
@@ -778,6 +878,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             if inspection["gate"] != "PASS":
                 raise DemoFailure("assembled drive checks did not pass")
             assembly = await call("query assembly", "query", {"select": {"kind": "assembly"}})
+            await beat(f"beat: restore + interference pass · revision {revision} · all 55 pairs pass", revision, evidence=True)
             preflight = await call(
                 "fresh-process assembly preflight",
                 "export",
@@ -787,7 +888,6 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             _assert_bom_matches_xcaf(assembly, xcaf)
             if (xcaf["definitionCount"], xcaf["occurrenceCount"]) != (4, 11):
                 raise DemoFailure("XCAF preflight did not preserve four definitions and 11 occurrences")
-            await beat("beat: STEP publish")
             await call(
                 "publish assembly STEP",
                 "export",
@@ -798,14 +898,12 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     "path": str(step),
                 },
             )
-            if screenshots:
-                module = await playwright_module()
-                if module is None:
-                    print("screenshots skipped: no launchable Playwright Chromium was found")
-                else:
-                    await _screenshots(module, url, output, revision)
-
-    print(f"definitions: {xcaf["definitionCount"]}; occurrences: {xcaf["occurrenceCount"]}; overlap: PASS; STEP: {step}")
+            await beat(f"beat: STEP publish · revision {revision} · STEP is saved", revision)
+    print(
+        f"all 55 part pairs checked: pass; {xcaf['occurrenceCount']} assembled occurrences "
+        f"in {xcaf['definitionCount']} reusable part definitions; "
+        f"static mate solve; STEP saved to {step}"
+    )
     print("mate solve: static, not simulated motion")
 
     await _verify_restart(document, url, assembly, record, open_browser=open_browser, pace=pace)
@@ -815,7 +913,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="run the installed cycloidal drive demo")
     parser.add_argument("--output", "--out", dest="output", type=Path)
     parser.add_argument("--open", action="store_true")
-    parser.add_argument("--pace", type=float, default=0, metavar="SECONDS")
+    parser.add_argument(
+        "--pace", type=float, default=0, metavar="SECONDS",
+        help="pause after each story beat; 30 gives about three minutes",
+    )
     parser.add_argument("--screenshots", action="store_true")
     arguments = parser.parse_args()
     output = arguments.output or Path(tempfile.gettempdir()) / f"coalesce-demo-{os.urandom(8).hex()}"

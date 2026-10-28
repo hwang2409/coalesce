@@ -144,7 +144,9 @@ button {
   margin-top: 2px;
   color: var(--mute);
   font-size: 12px;
+  transition: color 1200ms ease;
 }
+.revision-meta.reconnected { color: var(--live); }
 
 .repair-history {
   padding: 12px 16px 14px;
@@ -169,6 +171,8 @@ button {
 .assembly-state h2 { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .solve-label { white-space: nowrap; }
 .solve-status { min-width: 0; color: var(--live); font-size: 10px; font-weight: 650; letter-spacing: 0.03em; text-align: right; }
+.inspection-summary { margin: 4px 0 0; color: var(--live); font-size: 11px; font-weight: 650; }
+.inspection-summary.failure { color: var(--fail); }
 .solve-warning { margin-top: 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .solve-warning.unexpected { color: var(--wait); }
 .solve-summary { margin-top: 3px; color: var(--mute); font-size: 11px; }
@@ -843,6 +847,7 @@ button.fit-row[aria-pressed="true"] { background: rgba(46, 95, 158, 0.08); box-s
   /* the status, then the review controls, span the top of the model view */
   .overlay { top: 12px; left: 12px; right: 12px; flex-direction: column; align-items: stretch; gap: 8px; }
   .status { flex: none; max-height: 30vh; }
+  .inspection-summary { margin-top: 6px; }
   .review { margin-left: 0; align-items: stretch; }
   #modes button { flex: 1; min-width: 0; padding: 0 6px; }
   /* a lone Section button keeps its own width instead of spanning the view */

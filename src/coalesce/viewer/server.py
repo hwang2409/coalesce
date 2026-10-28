@@ -27,10 +27,16 @@ _STATIC = files("coalesce.viewer") / "static"
 _TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", "": "text/plain"}
 _SCENE = re.compile(r"/api/scene/(\d+)")
 _MESH = re.compile(r"/api/mesh/([0-9a-f]{32})")
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 _PAGE_POLICY = (
     "default-src 'self'; img-src 'self' data:; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
 )
+
+
+def _validate_token(token: str) -> None:
+    if not _TOKEN.fullmatch(token):
+        raise ValueError("COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token")
 
 
 def _static_files() -> dict[str, tuple[bytes, str]]:
@@ -62,9 +68,13 @@ class _HTTPServer(ThreadingHTTPServer):
 class ViewerServer:
     """Serves one ``ViewerSceneStore`` on 127.0.0.1 and a free port until ``close``."""
 
-    def __init__(self, store: ViewerSceneStore, port: int = 0) -> None:
+    def __init__(
+        self, store: ViewerSceneStore, port: int = 0, token: str | None = None
+    ) -> None:
         self.store = store
-        self._token = secrets.token_urlsafe(32)
+        if token is not None:
+            _validate_token(token)
+        self._token = token or secrets.token_urlsafe(32)
         self._static = _static_files()
         self._closing = threading.Event()
         self._httpd = _HTTPServer(self, port)

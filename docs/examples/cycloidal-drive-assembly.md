@@ -13,10 +13,12 @@ the result is a static pose of the mechanism. the mate solve is static, not simu
 run the reproducible workflow without browser capture:
 
 ```bash
-coalesce-demo --output ./cycloidal-drive-assembly-demo
+coalesce-demo --pace 30 --output ./cycloidal-drive-assembly-demo
 ```
 
-add `--screenshots` to capture a desktop assembled view, a desktop pin-mate focus, and a phone view when a launchable playwright chromium is available. the helper always closes each page and the browser.
+add `--screenshots` to capture each paced beat at its revision, with desktop and phone views, when a launchable playwright chromium is available. the helper always closes each page and the browser.
+
+during the controlled restart, the demo passes the first viewer token only to the restarted server. malformed values stop startup with a clear error; otherwise the viewer token stays out of the demo process environment.
 
 the output contains the revisioned document, `transcript.json`, and `cycloidal-drive-assembly.step`. the transcript records:
 

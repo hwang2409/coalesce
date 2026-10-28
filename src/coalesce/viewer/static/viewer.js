@@ -587,6 +587,14 @@ function renderAssemblyState(state) {
     : motion.text;
   const grounded = state.occurrences.filter((row) => row.grounded).length;
   $('solve-summary').textContent = `${grounded} grounded · ${state.conflicts.length} conflicts`;
+  const inspection = groupAssemblyRows(current?.assemblyInspection ?? []);
+  const passed = inspection.filter((row) => row.status === 'PASS').length;
+  const inspectionSummary = $('inspection-summary');
+  inspectionSummary.hidden = !inspection.length;
+  inspectionSummary.classList.toggle('failure', inspection.some((row) => row.status !== 'PASS'));
+  inspectionSummary.textContent = inspection.length
+    ? `all ${inspection.length} pairs checked · ${passed === inspection.length ? 'pass' : `${inspection.length - passed} need attention`}`
+    : '';
   const bom = state.bom ?? { rows: [], excluded: [] };
   $('bom-count').textContent = `${bom.rows.length} ${bom.rows.length === 1 ? 'definition' : 'definitions'}`;
   const bomList = $('bom-rows');
@@ -603,6 +611,7 @@ function renderAssemblyState(state) {
   $('mate-count').textContent = `${state.mates.length}`;
   const list = $('mate-rows');
   list.replaceChildren();
+  $('mate-rows').closest('details').open = !narrow.matches;
   for (const mate of state.mates) {
     const item = document.createElement('li');
     const button = document.createElement('button');
@@ -1594,6 +1603,13 @@ function listen() {
   events.addEventListener('open', () => {
     clearDiagnostic();
     setLink('live', 'Live');
+    if (lostAt !== null && current) {
+      const meta = $('revision-meta');
+      meta.textContent = `reconnected · revision ${current.revision}`;
+      meta.classList.add('reconnected');
+      setTimeout(() => meta.classList.remove('reconnected'), 2600);
+      lostAt = null;
+    }
     if (!current) notice('Waiting for the first revision',
       'Geometry appears here after your agent commits its first edit. This page updates by itself.');
   });
@@ -1604,9 +1620,11 @@ function listen() {
   });
   events.addEventListener('revision', (event) => {
     const { revision, refresh = false } = JSON.parse(event.data);
-    failure = null;
-    clearDiagnostic();
-    showFailure();
+    if (failure && revision > failure.revision) {
+      failure = null;
+      clearDiagnostic();
+      showFailure();
+    }
     loadRevision(revision, refresh);
   });
   events.addEventListener('failure', (event) => {
@@ -1628,7 +1646,6 @@ async function lost() {
   if (access === null && Date.now() - lostAt < OUTAGE_LIMIT_MS) {
     setTimeout(lost, 2000);
   } else if (access) {
-    lostAt = null;
     listen();
   } else {
     setLink('ended', ENDED);

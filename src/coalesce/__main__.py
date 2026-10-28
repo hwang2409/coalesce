@@ -94,6 +94,7 @@ async def _run(
     open_browser: bool,
     sketch_solve_timeout: float,
     viewer_port: int,
+    viewer_token: str | None,
 ) -> None:
     if not viewer_enabled:
         service = await asyncio.to_thread(
@@ -105,7 +106,7 @@ async def _run(
     from .viewer import ViewerSceneStore, ViewerServer
 
     store = ViewerSceneStore()
-    with ViewerServer(store, port=viewer_port) as viewer:
+    with ViewerServer(store, port=viewer_port, token=viewer_token) as viewer:
         # Load persisted structure off the event loop; exact geometry starts in the background.
         service = await asyncio.to_thread(
             _load_service,
@@ -121,6 +122,7 @@ async def _run(
 
 
 def main() -> None:
+    viewer_token = os.environ.pop("COALESCE_VIEWER_TOKEN", None)
     parser = argparse.ArgumentParser(description="Run coalesce as a stdio MCP server")
     parser.add_argument(
         "--document",
@@ -166,11 +168,15 @@ def main() -> None:
                 open_browser=arguments.open,
                 sketch_solve_timeout=arguments.sketch_solve_timeout,
                 viewer_port=arguments.viewer_port,
+                viewer_token=viewer_token,
             )
         )
     except _DocumentLoadFailure as error:
         failure = _graph_error_response(error.revision, None, "load", error.error)
         print(json.dumps(failure), file=sys.stderr, flush=True)
+        sys.exit(2)
+    except ValueError as error:
+        print(f"coalesce: {error}", file=sys.stderr, flush=True)
         sys.exit(2)
 
 

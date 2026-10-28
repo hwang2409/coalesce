@@ -8,11 +8,14 @@ VIEWER_SCREENSHOTS to a directory to keep a screenshot of every step.
 import glob
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from build123d import Align, Box, Location
@@ -62,6 +65,50 @@ def oversized_fillet_failure() -> dict:
     return {key: error[key] for key in ("code", "message", "hint") if key in error}  # as publish_failure
 
 
+def start_cli_viewer(document: Path, port: int, environment: dict[str, str]):
+    process = subprocess.Popen(
+        [
+            os.environ.get("PYTHON", __import__("sys").executable),
+            "-m",
+            "coalesce",
+            "--document",
+            str(document),
+            "--viewer-port",
+            str(port),
+        ],
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    process.stdin.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
+    process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+    process.stdin.write('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n')
+    process.stdin.flush()
+    return process
+
+
+def bounded_readline(stream, timeout):
+    lines = queue.Queue(maxsize=1)
+    threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=timeout)
+    except queue.Empty as error:
+        raise AssertionError("process did not produce a line before the deadline") from error
+
+
+def cli_viewer_url(process):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        line = bounded_readline(process.stderr, deadline - time.monotonic())
+        if "coalesce viewer:" in line:
+            return line.split("coalesce viewer:", 1)[1].strip()
+        if not line and process.poll() is not None:
+            break
+    raise AssertionError("coalesce viewer did not start")
+
+
 def playwright_module() -> str | None:
     node = shutil.which("node")
     if not node:
@@ -88,6 +135,58 @@ def module():
     if not found:
         pytest.skip("no Node with a launchable Playwright Chromium on this machine")
     return found
+
+
+def test_cli_restart_keeps_open_tab_authenticated(module, tmp_path):
+    first_document = tmp_path / "first.coalesce.json"
+    second_document = tmp_path / "second.coalesce.json"
+    sketch = {
+        "type": "Sketch",
+        "id": "outline",
+        "plane": {"name": "XY", "offset": 0},
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "entities": [{
+            "type": "Polyline",
+            "id": "triangle",
+            "points": [[0, 0], [2, 0], [0, 2]],
+            "closed": True,
+            "point_ids": ["p0", "p1", "p2"],
+        }],
+    }
+    graph = {"nodes": [sketch, {"id": "solid", "type": "Extrude", "sketch": "outline", "height": 1.0}]}
+    for document, revision in ((first_document, 1), (second_document, 2)):
+        document.write_text(json.dumps({"formatVersion": 1, "graph": graph, "revision": revision}))
+    environment = {key: value for key, value in os.environ.items() if key != "COALESCE_VIEWER_TOKEN"}
+    first = start_cli_viewer(first_document, 0, environment)
+    driver = None
+    second = None
+    try:
+        first_url = cli_viewer_url(first)
+        driver = subprocess.Popen(
+            ["node", str(Path(__file__).with_name("viewer_restart_smoke.mjs")), module, first_url, "2"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert bounded_readline(driver.stdout, 15).strip() == "ready"
+        token = first_url.split("#token=", 1)[1]
+        port = urlsplit(first_url).port
+        first.terminate()
+        first.wait(timeout=10)
+        second_environment = {**environment, "COALESCE_VIEWER_TOKEN": token}
+        second = start_cli_viewer(second_document, port, second_environment)
+        assert cli_viewer_url(second).split("#token=", 1)[1] == token
+        assert bounded_readline(driver.stdout, 20).strip() == "reconnected"
+        assert driver.wait(timeout=10) == 0
+    finally:
+        for process in (first, second, driver):
+            if process and process.poll() is None:
+                process.terminate()
+            if process and process.poll() is None:
+                process.kill()
+            if process:
+                process.wait(timeout=10)
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
@@ -204,6 +303,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     )
     expected_bounds = {part["name"]: part["bbox"] for part in store.scene(1)["parts"]}
     refresh_trigger = tmp_path / "refresh-ready"
+    failure_trigger = tmp_path / "failure-ready"
     with ViewerServer(store) as server:
         process = subprocess.Popen(
             [
@@ -215,6 +315,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
                 str(height),
                 shots,
                 str(refresh_trigger),
+                str(failure_trigger),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -224,6 +325,11 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
         while not refresh_trigger.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
         assert refresh_trigger.exists(), process.communicate(timeout=5)[1]
+        store.publish_failure(["refresh-check"], oversized_fillet_failure())
+        deadline = time.monotonic() + 30
+        while not failure_trigger.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert failure_trigger.exists(), process.communicate(timeout=5)[1]
         refreshed_rows = store.scene(1)["assemblyInspection"]
         refreshed_rows[-1] = {
             **refreshed_rows[-1],
@@ -243,9 +349,15 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     ]
     assert data["initial"]["bomExpanded"] is True
     assert data["initial"]["bomRows"][0] == f'{query_bom["rows"][0]["label"]} · {query_bom["rows"][0]["count"]}'
-    assert data["initial"]["mateRows"] == [
-        "pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"
-    ]
+    assert data["initial"]["inspectionSummary"] == "all 10 pairs checked · 2 need attention"
+    assert data["initial"]["inspectionSummaryColor"] == "rgb(180, 35, 24)"
+    assert data["refreshed"]["failure"] is not None
+    assert "refreshed-clearance" in data["refreshed"]["rawInspection"]
+    assert data["initial"]["mateRows"] == (
+        [] if viewport == (390, 844) else
+        ["pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"]
+    )
+    assert data["initial"]["matesExpanded"] is (viewport != (390, 844))
     assert data["initial"]["occurrenceStates"] == [
         "explicit · 1 DOF",
         "grounded · 0 DOF",
@@ -398,6 +510,12 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             # the status lies over the canvas: the canvas and the model keep their place
             assert (failed["viewTop"], failed["viewBottom"]) == (0, 800)
             assert failed["pageTop"] == second["pageTop"], (failed["pageTop"], second["pageTop"])
+            store.publish(3, [ScenePart("plate", plate(8))])
+            next_step()
+
+            accepted = step("accepted-revision")
+            assert accepted["label"] == "3"
+            assert accepted["failure"] is None and accepted["banner"] is None
             next_step()
 
             front = step("front")
@@ -408,22 +526,19 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             lost = step("disconnected", outage=True)
             assert lost["link"] == "Reconnecting"
             # one calm status: the connection is the news, the old failure one sentence of it
-            assert lost["banner"] == (
-                "Revision 2 may be out of date. Reconnecting to coalesce. The last edit, edge_fillet, failed."
-            )
+            assert lost["banner"] == "Revision 3 may be out of date. Reconnecting to coalesce."
             assert lost["failure"] is None
             assert "grayscale(1)" in lost["filter"]
             assert (lost["viewTop"], lost["viewBottom"]) == (0, 800), lost
             assert lost["pageTop"] == lost["before"], (lost["pageTop"], lost["before"])
             # same port and key, as after a brief drop: the page must recover by itself
-            restarted = ViewerServer(store, port=server.port)
-            restarted._token = server._token  # test-only: a real restart would print a new key
+            restarted = ViewerServer(store, port=server.port, token=server._token)
             next_step()
 
             back = step("reconnected", outage=True)
             assert (back["link"], back["banner"], back["filter"]) == ("Live", None, "none")
             assert back["pageTop"] == back["before"], (back["pageTop"], back["before"])
-            for revision in range(3, 53):  # back to back, so some loads lose the race
+            for revision in range(4, 53):  # back to back, so some loads lose the race
                 store.publish(revision, [ScenePart("plate", plate(4 + revision % 7))])
             next_step()
 
