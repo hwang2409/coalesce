@@ -247,6 +247,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["initial"]["inspectionSummary"] == "all 10 pairs checked · 2 need attention"
     assert data["initial"]["inspectionSummaryColor"] == "rgb(180, 35, 24)"
     assert data["refreshed"]["failure"] is not None
+    assert "refreshed-clearance" in data["refreshed"]["inspectionLabels"]
     assert data["initial"]["mateRows"] == (
         [] if viewport == (390, 844) else
         ["pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"]
