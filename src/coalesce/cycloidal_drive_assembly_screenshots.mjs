@@ -33,7 +33,6 @@ try {
     await phone.addInitScript(() => { window.coalesceDebug = true; });
     await phone.goto(url);
     await phone.waitForFunction(expected => window.coalesceViewer?.drawn?.revision === expected, revision, { timeout: 30000 });
-    await phone.waitForSelector('#assembly-state:not([hidden])');
     if (await phone.locator('#panel-scroll').evaluate(node => node.scrollWidth > node.clientWidth)) throw new Error('phone panel overflows horizontally');
     await phone.screenshot({ path: path.join(output, 'phone-r3.png') });
   } finally {
