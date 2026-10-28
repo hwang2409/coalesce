@@ -1,4 +1,4 @@
-const [, , modulePath, url, width, height, shots, refreshTrigger] = process.argv;
+const [, , modulePath, url, width, height, shots, refreshTrigger, failureTrigger] = process.argv;
 const { writeFile } = await import('node:fs/promises');
 const { chromium } = await import(modulePath);
 const browser = await chromium.launch();
@@ -114,7 +114,9 @@ await page.locator('.assembly-more button').click();
 const selectedCollapsed = await state();
 await page.locator('.assembly-more button').click();
 await writeFile(refreshTrigger, 'ready');
-await page.waitForFunction(() => document.body.innerText.includes('refreshed-clearance'));
+await page.waitForSelector('#failure:not([hidden])');
+await writeFile(failureTrigger, 'ready');
+await page.waitForFunction(() => document.querySelector('#inspection-raw')?.textContent.includes('refreshed-clearance'));
 if (!(await page.locator('#failure:not([hidden])').isVisible())) throw new Error('same-revision refresh cleared failure banner');
 const refreshed = await state();
 await page.keyboard.press('Escape');

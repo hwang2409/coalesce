@@ -204,6 +204,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     )
     expected_bounds = {part["name"]: part["bbox"] for part in store.scene(1)["parts"]}
     refresh_trigger = tmp_path / "refresh-ready"
+    failure_trigger = tmp_path / "failure-ready"
     with ViewerServer(store) as server:
         process = subprocess.Popen(
             [
@@ -215,6 +216,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
                 str(height),
                 shots,
                 str(refresh_trigger),
+                str(failure_trigger),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -225,6 +227,10 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
             time.sleep(0.05)
         assert refresh_trigger.exists(), process.communicate(timeout=5)[1]
         store.publish_failure(["refresh-check"], oversized_fillet_failure())
+        deadline = time.monotonic() + 30
+        while not failure_trigger.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert failure_trigger.exists(), process.communicate(timeout=5)[1]
         refreshed_rows = store.scene(1)["assemblyInspection"]
         refreshed_rows[-1] = {
             **refreshed_rows[-1],
