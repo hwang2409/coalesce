@@ -82,3 +82,13 @@ def test_viewer_port_rejects_invalid_values_without_traceback(value):
     assert completed.returncode == 2
     assert "usage:" in completed.stderr
     assert "traceback" not in completed.stderr.lower()
+
+
+def test_viewer_token_is_removed_from_the_environment_before_startup(monkeypatch):
+    import os
+
+    monkeypatch.setenv("COALESCE_VIEWER_TOKEN", "a" * 43)
+    monkeypatch.setattr(sys, "argv", ["coalesce", "--help"])
+    with pytest.raises(SystemExit):
+        main()
+    assert "COALESCE_VIEWER_TOKEN" not in os.environ
