@@ -10,8 +10,10 @@ import os
 import shutil
 import sys
 import tempfile
+from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 PIN_RADIUS = 4
 
@@ -51,6 +53,66 @@ def viewer_port(url: str) -> int:
     return port
 
 
+def _viewer_request(url: str, path: str, opener):
+    origin = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}"
+    return opener.open(Request(f"{origin}{path}", headers={"Origin": origin}), timeout=1)
+
+
+def _viewer_opener(url: str):
+    opener = build_opener(HTTPCookieProcessor(CookieJar()))
+    parts = urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    token = parts.fragment.removeprefix("token=")
+    opener.open(Request(f"{origin}/api/session", data=json.dumps({"token": token}).encode(), headers={"Origin": origin, "Content-Type": "application/json"}), timeout=1).read()
+    return opener
+
+
+def _viewer_failure_visible(url: str, revision: int) -> bool:
+    opener = _viewer_opener(url)
+    with _viewer_request(url, "/events", opener) as stream:
+        event, data = None, ""
+        while True:
+            line = stream.readline().decode()
+            if not line:
+                return False
+            if line.startswith("event: "):
+                event = line[7:].strip()
+            elif line.startswith("data: "):
+                data = line[6:].strip()
+            elif not line.strip() and event == "failure":
+                return json.loads(data).get("revision") == revision
+
+
+def _contact_summary(inspection: dict) -> tuple[int, int, float]:
+    clearances = [
+        pair["clearance"]["value"]
+        for result in inspection["results"]
+        for pair in result["measured"]["pairs"]
+    ]
+    lost = sum(clearance > CONTACT_TOLERANCE_MM for clearance in clearances)
+    return lost, len(clearances), max(clearances)
+
+
+async def wait_for_viewer(url: str, revision: int, *, evidence: bool = False, failure: bool = False) -> None:
+    """Wait until the viewer has published the revision and requested evidence."""
+    deadline = asyncio.get_running_loop().time() + VIEWER_READINESS_TIMEOUT
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            if failure:
+                if await asyncio.wait_for(asyncio.to_thread(_viewer_failure_visible, url, revision), 1.5):
+                    return
+            else:
+                with _viewer_request(url, f"/api/scene/{revision}", _viewer_opener(url)) as response:
+                    scene = json.load(response)
+                if scene.get("revision") == revision and (not evidence or scene.get("assemblyInspection")):
+                    return
+        except (OSError, TimeoutError, json.JSONDecodeError):
+            pass
+        await asyncio.sleep(0.05)
+    expected = "failure" if failure else "scene evidence" if evidence else "scene"
+    raise DemoFailure(f"viewer did not publish revision {revision} {expected} within {VIEWER_READINESS_TIMEOUT:g}s")
+
+
 async def _run_process(*command, timeout):
     process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
     try:
@@ -84,7 +146,9 @@ SCREENSHOT_HELPER = Path(__file__).with_name("cycloidal_drive_assembly_screensho
 PATTERN_RADIUS = 30
 EDITED_PATTERN_RADIUS = 31
 PIN_COUNT = 8
-CONTACT_TOLERANCE_MM = 1.0
+CONTACT_TOLERANCE_MM = 1e-6
+MINIMUM_CLEARANCE_MM = 1.0
+VIEWER_READINESS_TIMEOUT = 10.0
 
 
 def _assert_bom_matches_xcaf(assembly, xcaf):
@@ -695,7 +759,8 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     raise DemoFailure(f"{label} returned {code}")
                 return response
 
-            async def beat(label):
+            async def beat(label, revision, *, evidence=False, failure=False):
+                await wait_for_viewer(url, revision, evidence=evidence, failure=failure)
                 print(label, flush=True)
                 if pace:
                     await asyncio.sleep(pace)
@@ -703,7 +768,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             requests = _requests()
             for label, name, request in requests[:2]:
                 await call(label, name, request)
-            await beat("beat: build · revision 2 · the disc is now visible")
+            await beat("beat: build · revision 2 · the disc is now visible", 2)
             for label, name, request in requests[2:]:
                 await call(label, name, request)
             revision = len(requests)
@@ -727,16 +792,17 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     "action": "evaluate",
                     "revision": revision,
                     "requirements": _disc_pin_requirements(
-                        minimum_clearance=CONTACT_TOLERANCE_MM
+                        minimum_clearance=MINIMUM_CLEARANCE_MM
                     ),
                 },
             )
-            lost_contacts = sum(
-                result["status"] == "FAIL" for result in edited_check["results"]
-            )
+            lost_contacts, pin_count, gap = _contact_summary(edited_check)
             await beat(
                 f"beat: edit/lost-contact failure · revision {revision} · "
-                f"contacts lost: {lost_contacts} pins no longer touch the ring"
+                f"contacts lost: {lost_contacts} of {pin_count} pins no longer touch "
+                f"the ring (gap {gap:g} mm)",
+                revision,
+                evidence=True,
             )
             stale = await call(
                 "reject stale ring member",
@@ -753,7 +819,9 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                 raise DemoFailure("stale pattern edit changed the assembly")
             await beat(
                 f"beat: reject broken edit · revision {revision} · "
-                "server refused the stale mate reference"
+                "server refused the stale mate reference",
+                revision,
+                failure=True,
             )
 
             restored = await call(
@@ -793,7 +861,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             if inspection["gate"] != "PASS":
                 raise DemoFailure("assembled drive checks did not pass")
             assembly = await call("query assembly", "query", {"select": {"kind": "assembly"}})
-            await beat(f"beat: restore + interference pass · revision {revision} · all 55 pairs pass")
+            await beat(f"beat: restore + interference pass · revision {revision} · all 55 pairs pass", revision, evidence=True)
             preflight = await call(
                 "fresh-process assembly preflight",
                 "export",
@@ -813,7 +881,7 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
                     "path": str(step),
                 },
             )
-            await beat(f"beat: STEP publish · revision {revision} · STEP is saved")
+            await beat(f"beat: STEP publish · revision {revision} · STEP is saved", revision)
             if screenshots:
                 module = await playwright_module()
                 if module is None:

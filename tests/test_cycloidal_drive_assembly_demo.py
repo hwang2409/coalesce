@@ -13,11 +13,24 @@ from urllib.request import urlopen
 
 import pytest
 
+from coalesce.demo import _contact_summary
 from coalesce.export import verify_assembly_step_fresh
 
 DEMO = Path(__file__).parents[1] / "examples/cycloidal_drive_assembly_demo.py"
 PACKAGED_DEMO = Path(__file__).parents[1] / "src/coalesce/demo.py"
 MAX_DISC_PIN_CLEARANCE_MM = 1e-6
+
+
+def test_contact_summary_keeps_zero_clearance_pins_touching():
+    inspection = {
+        "results": [{
+            "measured": {"pairs": [
+                {"clearance": {"value": value}}
+                for value in (1.0, 0.856, 0, 0.967, 0, 0.967, 0.890, 0.856)
+            ]}
+        }]
+    }
+    assert _contact_summary(inspection) == (6, 8, 1.0)
 
 
 def _entry(transcript, label):
@@ -253,7 +266,7 @@ def test_paced_demo_prints_live_viewer_and_reuses_port(tmp_path):
         assert first_url.split(":")[2].split("/", 1)[0] == final_url.split(":")[2].split("/", 1)[0]
         beats = [line for line in lines if line.startswith("beat: ")]
         assert beats[0].startswith("beat: build · revision 2")
-        assert beats[1].startswith("beat: edit/lost-contact failure · revision 46 · contacts lost: 8")
+        assert beats[1].startswith("beat: edit/lost-contact failure · revision 46 · contacts lost: 6 of 8")
         assert beats[2].startswith("beat: reject broken edit · revision 46")
         assert beats[3].startswith("beat: restore + interference pass · revision 47 · all 55 pairs pass")
         assert beats[4].startswith("beat: STEP publish · revision 47")

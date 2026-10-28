@@ -591,6 +591,7 @@ function renderAssemblyState(state) {
   const passed = inspection.filter((row) => row.status === 'PASS').length;
   const inspectionSummary = $('inspection-summary');
   inspectionSummary.hidden = !inspection.length;
+  inspectionSummary.classList.toggle('failure', inspection.some((row) => row.status !== 'PASS'));
   inspectionSummary.textContent = inspection.length
     ? `all ${inspection.length} pairs checked · ${passed === inspection.length ? 'pass' : `${inspection.length - passed} need attention`}`
     : '';
@@ -1619,9 +1620,11 @@ function listen() {
   });
   events.addEventListener('revision', (event) => {
     const { revision, refresh = false } = JSON.parse(event.data);
-    failure = null;
-    clearDiagnostic();
-    showFailure();
+    if (failure && revision > failure.revision) {
+      failure = null;
+      clearDiagnostic();
+      showFailure();
+    }
     loadRevision(revision, refresh);
   });
   events.addEventListener('failure', (event) => {

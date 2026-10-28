@@ -51,6 +51,8 @@ const state = async () => page.evaluate(() => ({
   solveWarning: document.querySelector('#solve-warning')?.textContent,
   solveSummary: document.querySelector('#solve-summary')?.textContent,
   inspectionSummary: document.querySelector('#inspection-summary')?.textContent,
+  inspectionSummaryColor: getComputedStyle(document.querySelector('#inspection-summary')).color,
+  failure: document.querySelector('#failure:not([hidden])')?.textContent ?? null,
   matesExpanded: document.querySelector('#mate-rows')?.closest('details')?.open ?? false,
   bomCount: document.querySelector('#bom-count')?.textContent,
   bomRows: [...document.querySelectorAll('.bom-row')].map(node => node.textContent),
@@ -112,7 +114,7 @@ await page.locator('.assembly-more button').click();
 const selectedCollapsed = await state();
 await page.locator('.assembly-more button').click();
 await writeFile(refreshTrigger, 'ready');
-await page.waitForSelector('.fit-reason:has-text("refreshed-clearance")');
+await page.waitForSelector('#failure:not([hidden])');
 const refreshed = await state();
 await page.keyboard.press('Escape');
 const escaped = await state();

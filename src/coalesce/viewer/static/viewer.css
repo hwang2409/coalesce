@@ -172,6 +172,7 @@ button {
 .solve-label { white-space: nowrap; }
 .solve-status { min-width: 0; color: var(--live); font-size: 10px; font-weight: 650; letter-spacing: 0.03em; text-align: right; }
 .inspection-summary { margin: 4px 0 0; color: var(--live); font-size: 11px; font-weight: 650; }
+.inspection-summary.failure { color: var(--fail); }
 .solve-warning { margin-top: 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .solve-warning.unexpected { color: var(--wait); }
 .solve-summary { margin-top: 3px; color: var(--mute); font-size: 11px; }

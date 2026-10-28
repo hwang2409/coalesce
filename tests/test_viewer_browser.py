@@ -224,6 +224,7 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
         while not refresh_trigger.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
         assert refresh_trigger.exists(), process.communicate(timeout=5)[1]
+        store.publish_failure(["refresh-check"], oversized_fillet_failure())
         refreshed_rows = store.scene(1)["assemblyInspection"]
         refreshed_rows[-1] = {
             **refreshed_rows[-1],
@@ -244,6 +245,8 @@ def test_assembly_occurrences_and_pair_focus_in_a_real_browser(module, viewport,
     assert data["initial"]["bomExpanded"] is True
     assert data["initial"]["bomRows"][0] == f'{query_bom["rows"][0]["label"]} · {query_bom["rows"][0]["count"]}'
     assert data["initial"]["inspectionSummary"] == "all 10 pairs checked · 2 need attention"
+    assert data["initial"]["inspectionSummaryColor"] == "rgb(180, 35, 24)"
+    assert data["refreshed"]["failure"] is not None
     assert data["initial"]["mateRows"] == (
         [] if viewport == (390, 844) else
         ["pin-axis · concentricshaft-skew ↔ pin-leftsatisfied · aligned"]
