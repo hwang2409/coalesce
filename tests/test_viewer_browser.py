@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from build123d import Align, Box, Location
@@ -62,6 +63,34 @@ def oversized_fillet_failure() -> dict:
     return {key: error[key] for key in ("code", "message", "hint") if key in error}  # as publish_failure
 
 
+def start_cli_viewer(document: Path, port: int, environment: dict[str, str]):
+    return subprocess.Popen(
+        [
+            os.environ.get("PYTHON", __import__("sys").executable),
+            "-m",
+            "coalesce",
+            "--document",
+            str(document),
+            "--viewer-port",
+            str(port),
+        ],
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def cli_viewer_url(process):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        line = process.stderr.readline()
+        if "coalesce viewer:" in line:
+            return line.split("coalesce viewer:", 1)[1].strip()
+    raise AssertionError("coalesce viewer did not start")
+
+
 def playwright_module() -> str | None:
     node = shutil.which("node")
     if not node:
@@ -88,6 +117,42 @@ def module():
     if not found:
         pytest.skip("no Node with a launchable Playwright Chromium on this machine")
     return found
+
+
+def test_cli_restart_keeps_open_tab_authenticated(module, tmp_path):
+    first_document = tmp_path / "first.coalesce.json"
+    second_document = tmp_path / "second.coalesce.json"
+    for document, revision in ((first_document, 1), (second_document, 2)):
+        document.write_text(json.dumps({"formatVersion": 1, "graph": {"nodes": []}, "revision": revision}))
+    environment = {key: value for key, value in os.environ.items() if key != "COALESCE_VIEWER_TOKEN"}
+    first = start_cli_viewer(first_document, 0, environment)
+    driver = None
+    second = None
+    try:
+        first_url = cli_viewer_url(first)
+        driver = subprocess.Popen(
+            ["node", str(Path(__file__).with_name("viewer_restart_smoke.mjs")), module, first_url, "2"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert driver.stdout.readline().strip() == "ready"
+        token = first_url.split("#token=", 1)[1]
+        port = urlsplit(first_url).port
+        first.terminate()
+        first.wait(timeout=10)
+        second_environment = {**environment, "COALESCE_VIEWER_TOKEN": token}
+        second = start_cli_viewer(second_document, port, second_environment)
+        assert cli_viewer_url(second).split("#token=", 1)[1] == token
+        assert driver.wait(timeout=20) == 0
+        assert driver.stdout.readline().strip() == "reconnected"
+    finally:
+        if driver and driver.poll() is None:
+            driver.kill()
+        for process in (first, second):
+            if process and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
 
 
 @pytest.mark.parametrize("viewport", [(1280, 800), (390, 844)])
@@ -433,8 +498,7 @@ def test_page_draws_and_follows_revisions_in_a_real_browser(module):
             assert (lost["viewTop"], lost["viewBottom"]) == (0, 800), lost
             assert lost["pageTop"] == lost["before"], (lost["pageTop"], lost["before"])
             # same port and key, as after a brief drop: the page must recover by itself
-            restarted = ViewerServer(store, port=server.port)
-            restarted._token = server._token  # test-only: a real restart would print a new key
+            restarted = ViewerServer(store, port=server.port, token=server._token)
             next_step()
 
             back = step("reconnected", outage=True)

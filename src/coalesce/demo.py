@@ -93,22 +93,21 @@ def _contact_summary(inspection: dict) -> tuple[int, int, float, float]:
     return len(lost_clearances), len(clearances), min(lost_clearances), max(lost_clearances)
 
 
+def _viewer_ready(url: str, revision: int, evidence: bool, failure: bool) -> bool:
+    if failure:
+        return _viewer_failure_visible(url, revision)
+    with _viewer_request(url, f"/api/scene/{revision}", _viewer_opener(url)) as response:
+        scene = json.load(response)
+    return scene.get("revision") == revision and (not evidence or scene.get("assemblyInspection"))
+
+
 async def wait_for_viewer(url: str, revision: int, *, evidence: bool = False, failure: bool = False) -> None:
     """Wait until the viewer has published the revision and requested evidence."""
     deadline = asyncio.get_running_loop().time() + VIEWER_READINESS_TIMEOUT
     while asyncio.get_running_loop().time() < deadline:
         try:
-            if failure:
-                if await asyncio.wait_for(asyncio.to_thread(_viewer_failure_visible, url, revision), 1.5):
-                    return
-            else:
-                def read_scene():
-                    with _viewer_request(url, f"/api/scene/{revision}", _viewer_opener(url)) as response:
-                        return json.load(response)
-
-                scene = await asyncio.to_thread(read_scene)
-                if scene.get("revision") == revision and (not evidence or scene.get("assemblyInspection")):
-                    return
+            if await asyncio.to_thread(_viewer_ready, url, revision, evidence, failure):
+                return
         except (OSError, TimeoutError, json.JSONDecodeError):
             pass
         await asyncio.sleep(0.05)
@@ -816,8 +815,9 @@ async def run_demo(output: Path, *, screenshots: bool = False, pace: float = 0, 
             lost_contacts, pin_count, minimum_gap, maximum_gap = _contact_summary(edited_check)
             await beat(
                 f"beat: edit/lost-contact failure · revision {revision} · "
-                f"contacts lost: {lost_contacts} of {pin_count} pins no longer touch "
-                f"the ring (gaps {minimum_gap:g}–{maximum_gap:g} mm)",
+                f"{pin_count} pins are closer than the {MINIMUM_CLEARANCE_MM:g} mm clearance rule; "
+                f"{lost_contacts} of them no longer touch the ring (gaps "
+                f"{minimum_gap:.2f}–{maximum_gap:.2f} mm)",
                 revision,
                 evidence=True,
             )

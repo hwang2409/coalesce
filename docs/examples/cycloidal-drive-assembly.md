@@ -18,7 +18,7 @@ coalesce-demo --pace 30 --output ./cycloidal-drive-assembly-demo
 
 add `--screenshots` to capture each paced beat at its revision, with desktop and phone views, when a launchable playwright chromium is available. the helper always closes each page and the browser.
 
-advanced: set `COALESCE_VIEWER_TOKEN` to a 43-character URL-safe token to reuse viewer access across a controlled server restart. malformed values stop startup with a clear error; when unset, the viewer uses a random token.
+during the controlled restart, the demo passes the first viewer token only to the restarted server. malformed values stop startup with a clear error; otherwise the viewer token stays out of the demo process environment.
 
 the output contains the revisioned document, `transcript.json`, and `cycloidal-drive-assembly.step`. the transcript records:
 

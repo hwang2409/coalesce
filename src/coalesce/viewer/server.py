@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import os
 import re
 import secrets
 import threading
@@ -64,9 +63,10 @@ class _HTTPServer(ThreadingHTTPServer):
 class ViewerServer:
     """Serves one ``ViewerSceneStore`` on 127.0.0.1 and a free port until ``close``."""
 
-    def __init__(self, store: ViewerSceneStore, port: int = 0) -> None:
+    def __init__(
+        self, store: ViewerSceneStore, port: int = 0, token: str | None = None
+    ) -> None:
         self.store = store
-        token = os.environ.get("COALESCE_VIEWER_TOKEN")
         if token is not None and not _TOKEN.fullmatch(token):
             raise ValueError("COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token")
         self._token = token or secrets.token_urlsafe(32)

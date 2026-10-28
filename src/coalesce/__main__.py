@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import webbrowser
 from pathlib import Path
@@ -94,6 +95,7 @@ async def _run(
     open_browser: bool,
     sketch_solve_timeout: float,
     viewer_port: int,
+    viewer_token: str | None,
 ) -> None:
     if not viewer_enabled:
         service = await asyncio.to_thread(
@@ -105,7 +107,7 @@ async def _run(
     from .viewer import ViewerSceneStore, ViewerServer
 
     store = ViewerSceneStore()
-    with ViewerServer(store, port=viewer_port) as viewer:
+    with ViewerServer(store, port=viewer_port, token=viewer_token) as viewer:
         # Load persisted structure off the event loop; exact geometry starts in the background.
         service = await asyncio.to_thread(
             _load_service,
@@ -121,6 +123,14 @@ async def _run(
 
 
 def main() -> None:
+    viewer_token = os.environ.pop("COALESCE_VIEWER_TOKEN", None)
+    if viewer_token is not None and not re.fullmatch(r"[A-Za-z0-9_-]{43}", viewer_token):
+        print(
+            "coalesce: COALESCE_VIEWER_TOKEN must be a 43-character URL-safe token",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(2)
     parser = argparse.ArgumentParser(description="Run coalesce as a stdio MCP server")
     parser.add_argument(
         "--document",
@@ -166,6 +176,7 @@ def main() -> None:
                 open_browser=arguments.open,
                 sketch_solve_timeout=arguments.sketch_solve_timeout,
                 viewer_port=arguments.viewer_port,
+                viewer_token=viewer_token,
             )
         )
     except _DocumentLoadFailure as error:

@@ -266,7 +266,7 @@ def test_paced_demo_prints_live_viewer_and_reuses_port(tmp_path):
         assert first_url.split(":")[2].split("/", 1)[0] == final_url.split(":")[2].split("/", 1)[0]
         beats = [line for line in lines if line.startswith("beat: ")]
         assert beats[0].startswith("beat: build · revision 2")
-        assert beats[1].startswith("beat: edit/lost-contact failure · revision 46 · contacts lost: 6 of 8")
+        assert beats[1].startswith("beat: edit/lost-contact failure · revision 46 · 8 pins are closer than the 1 mm clearance rule; 6 of them no longer touch")
         assert beats[2].startswith("beat: reject broken edit · revision 46")
         assert beats[3].startswith("beat: restore + interference pass · revision 47 · all 55 pairs pass")
         assert beats[4].startswith("beat: STEP publish · revision 47")
