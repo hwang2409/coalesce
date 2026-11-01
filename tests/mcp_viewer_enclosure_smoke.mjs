@@ -138,7 +138,6 @@ async function refreshSummary({ name, page }) {
 
 async function repaired({ name, page }) {
   await settled(page, 7);
-  await page.locator('#failure').waitFor({ state: 'hidden' });
   const change = page.locator('#change');
   await change.scrollIntoViewIfNeeded();
   await shot(name, page, 'repaired');
