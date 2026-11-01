@@ -25,7 +25,11 @@ every failed tool call returns the last unchanged document `revision` and this s
 }
 ```
 
-`featureId` and `affectedParts` are present only when coalesce can identify them. `retryable` is `true` only for a revision conflict. retrying any other failure without changing the request will not help.
+`featureId` and `affectedParts` are present only when coalesce can identify them. `retryable` is `true` only for a revision conflict. retrying any other failure without changing the request will not help. Successful
+mutations include `changed`; `false` means the canonical persisted document was
+unchanged, so the revision, receipt, history, file, and viewer scene stay the
+same. The request id still replays its original result, and expected-revision
+checks are still enforced for new requests.
 
 `limits`, `alternatives`, and `legalTargets` are present only when the normal edit and regeneration path proved them. a limit is not a general safe range unless it includes `minimum` and `maximum`. `suggested` is one verified value. each item in `alternatives` is a verified edit. each item in `legalTargets` names a target proved by the current lineage.
 

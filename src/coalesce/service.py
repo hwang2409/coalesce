@@ -27,6 +27,7 @@ from .assembly import (
     MateSide,
     Occurrence,
     RigidTransform,
+    assembly_to_dict,
     bill_of_materials,
     normalize_transform,
     resolve_occurrences,
@@ -2022,6 +2023,10 @@ def _canonical(value: Any) -> Any:
     return value
 
 
+def _persisted_state(graph: Any, assembly: Assembly) -> tuple[str, dict[str, Any]]:
+    return dumps(graph), assembly_to_dict(assembly)
+
+
 def _hash(operation: MutationOperation) -> str:
     intent = {"type": type(operation).__name__, **asdict(operation)}
     # Full revolves predate the angle field, so their replay identity keeps the legacy shape.
@@ -3832,6 +3837,7 @@ class DocumentService:
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
+        self._noop_replays: dict[str, tuple[str, dict[str, Any]]] = {}
         self._regen = None
         self._graph_error: GraphError | None = None
         self._viewer_url = viewer_url
@@ -4167,6 +4173,13 @@ class DocumentService:
         receipt = next(
             (item for item in self._document.receipts if item["requestId"] == request_id), None
         )
+        if receipt is None and request_id in self._noop_replays:
+            replay_hash, replay = self._noop_replays[request_id]
+            if replay_hash == body_hash:
+                return parsed, body_hash, replay
+            raise RequestError(
+                "REQUEST_ID_REUSED", "requestId was already used for a different request body"
+            )
         if receipt is not None:
             if receipt["requestHash"] == body_hash:
                 return parsed, body_hash, receipt["response"]
@@ -4281,13 +4294,15 @@ class DocumentService:
         summary_prefix = change["summary"].removesuffix(", no value changed")
         if selection_summary := _pattern_selection_summary(selection_changes, summary_prefix):
             change["summary"] = selection_summary
+        changed = _persisted_state(graph, solved.assembly) != _persisted_state(before, self._document.assembly)
         response = {
             "ok": True,
-            "revision": previous + 1,
+            "revision": previous + 1 if changed else previous,
             "previousRevision": previous,
+            "changed": changed,
             "requestId": payload["requestId"],
             "units": "mm",
-            "changedFeatureIds": changed_ids,
+            "changedFeatureIds": changed_ids if changed else [],
             "regeneration": {
                 "status": "OK" if result.availability.geometry_available else "UNAVAILABLE",
                 "valid": result.availability.geometry_available,
@@ -4298,6 +4313,10 @@ class DocumentService:
             **response_fields(graph, result, changed_id),
             **refresh_fields,
         }
+        if not changed:
+            self._noop_replays[payload["requestId"]] = (body_hash, response)
+            return response
+        response["revision"] = previous + 1
         document, durable = self._save_response(graph, solved.assembly, response, body_hash)
         self._document = document
         self._regen = result
