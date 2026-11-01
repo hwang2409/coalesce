@@ -906,13 +906,13 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
             assert result_json(await session.call_tool("feature", bad))["error"]["code"] == "FILLET_FAILED"
             failed = await step("failure")
             fixed = _edge_treatment("update", 7, "repair-fillet", "base_fillet", "fillet", 1)
-            assert result_json(await session.call_tool("feature", fixed))["revision"] == 8
+            assert result_json(await session.call_tool("feature", fixed))["revision"] == 7
             repaired = await step("repaired")
             refresh = {
-                **import_request(KICAD_MOVED_FIXTURE, revision=8, request_id="refresh-delta", action="refresh"),
+                **import_request(KICAD_MOVED_FIXTURE, revision=7, request_id="refresh-delta", action="refresh"),
                 "path": str(KICAD_MOVED_FIXTURE.resolve()),
             }
-            assert result_json(await session.call_tool("import", refresh))["revision"] == 9
+            assert result_json(await session.call_tool("import", refresh))["revision"] == 8
             refreshed = await step("refreshSummary")
             driver.stdin.write_eof()
             assert await asyncio.wait_for(driver.wait(), timeout=15) == 0
