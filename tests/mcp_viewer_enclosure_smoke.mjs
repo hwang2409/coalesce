@@ -124,7 +124,7 @@ async function failure({ name, page }) {
 }
 
 async function refreshSummary({ name, page }) {
-  await settled(page, 9);
+  await settled(page, 8);
   const change = page.locator('#change');
   await change.scrollIntoViewIfNeeded();
   const text = await change.textContent();
@@ -137,7 +137,7 @@ async function refreshSummary({ name, page }) {
 }
 
 async function repaired({ name, page }) {
-  await settled(page, 8);
+  await settled(page, 7);
   await page.locator('#failure').waitFor({ state: 'hidden' });
   const change = page.locator('#change');
   await change.scrollIntoViewIfNeeded();
