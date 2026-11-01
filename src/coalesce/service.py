@@ -4258,6 +4258,40 @@ class DocumentService:
         )
         return document, self.store.save(document)
 
+    def _finalize_mutation(
+        self,
+        payload: dict[str, Any],
+        graph: Any,
+        assembly: Assembly,
+        result: RegenResult,
+        response: dict[str, Any],
+        body_hash: str,
+        publish: Callable[[], None],
+    ) -> dict[str, Any]:
+        previous = self._document.revision
+        changed = _persisted_state(graph, assembly) != _persisted_state(
+            self._document.graph, self._document.assembly
+        )
+        response["changed"] = changed
+        response["revision"] = previous + 1 if changed else previous
+        if "changedFeatureIds" in response:
+            response["changedFeatureIds"] = response["changedFeatureIds"] if changed else []
+        if not changed:
+            self._noop_replays[payload["requestId"]] = (body_hash, response)
+            while len(self._noop_replays) > MAX_REQUEST_HASHES:
+                self._noop_replays.pop(next(iter(self._noop_replays)))
+            return response
+        document, durable = self._save_response(graph, assembly, response, body_hash)
+        self._document = document
+        self._regen = result
+        self._graph_error = None
+        publish()
+        if not durable:
+            _LOG.warning(
+                "document rename committed but directory fsync failed; durability is unconfirmed"
+            )
+        return response
+
     def _commit_mutation(
         self,
         payload: dict[str, Any],
@@ -4294,15 +4328,14 @@ class DocumentService:
         summary_prefix = change["summary"].removesuffix(", no value changed")
         if selection_summary := _pattern_selection_summary(selection_changes, summary_prefix):
             change["summary"] = selection_summary
-        changed = _persisted_state(graph, solved.assembly) != _persisted_state(before, self._document.assembly)
         response = {
             "ok": True,
-            "revision": previous + 1 if changed else previous,
+            "revision": previous + 1,
             "previousRevision": previous,
-            "changed": changed,
+            "changed": True,
             "requestId": payload["requestId"],
             "units": "mm",
-            "changedFeatureIds": changed_ids if changed else [],
+            "changedFeatureIds": changed_ids,
             "regeneration": {
                 "status": "OK" if result.availability.geometry_available else "UNAVAILABLE",
                 "valid": result.availability.geometry_available,
@@ -4313,20 +4346,15 @@ class DocumentService:
             **response_fields(graph, result, changed_id),
             **refresh_fields,
         }
-        if not changed:
-            self._noop_replays[payload["requestId"]] = (body_hash, response)
-            return response
-        response["revision"] = previous + 1
-        document, durable = self._save_response(graph, solved.assembly, response, body_hash)
-        self._document = document
-        self._regen = result
-        self._graph_error = None
-        self._publish_mutation(result, before, changed_id, change, accepted_edit)
-        if not durable:
-            _LOG.warning(
-                "document rename committed but directory fsync failed; durability is unconfirmed"
-            )
-        return response
+        return self._finalize_mutation(
+            payload,
+            graph,
+            solved.assembly,
+            result,
+            response,
+            body_hash,
+            lambda: self._publish_mutation(result, before, changed_id, change, accepted_edit),
+        )
 
     def _mutation_failure(
         self,
@@ -4732,17 +4760,15 @@ class DocumentService:
                             occurrence, status, solved.assembly.mates
                         )
                     ]
-                document, durable = self._save_response(
-                    self._document.graph, solved.assembly, response, body_hash
+                return self._finalize_mutation(
+                    payload,
+                    self._document.graph,
+                    solved.assembly,
+                    self._regen,
+                    response,
+                    body_hash,
+                    lambda: self._publish_regeneration(self._regen),
                 )
-                self._document = document
-                assert self._regen is not None
-                self._publish_regeneration(self._regen)
-                if not durable:
-                    _LOG.warning(
-                        "document rename committed but directory fsync failed; durability is unconfirmed"
-                    )
-                return response
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
                 return self._mutation_failure("feature", payload, error, None)
 
@@ -4766,17 +4792,15 @@ class DocumentService:
                     if assembly.occurrences[occurrence_id].transform
                     != solved.assembly.occurrences[occurrence_id].transform
                 ]
-                document, durable = self._save_response(
-                    self._document.graph, solved.assembly, response, body_hash
+                return self._finalize_mutation(
+                    payload,
+                    self._document.graph,
+                    solved.assembly,
+                    self._regen,
+                    response,
+                    body_hash,
+                    lambda: self._publish_regeneration(self._regen),
                 )
-                self._document = document
-                assert self._regen is not None
-                self._publish_regeneration(self._regen)
-                if not durable:
-                    _LOG.warning(
-                        "document rename committed but directory fsync failed; durability is unconfirmed"
-                    )
-                return response
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
                 return self._mutation_failure("feature", payload, error, None)
 

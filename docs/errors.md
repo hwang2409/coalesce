@@ -89,6 +89,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `SKETCH_BRANCH_FLIP` | request | constrained sketch changed branch | preserve the branch landmark |
 | `SKETCH_PROFILE_UNSUPPORTED` | geometry | a constrained profile is open, degenerate, self-intersecting, exceeds the 64-loop limit, or its loops touch, cross, have ambiguous containment, form multiple outer bodies, or contain an island inside a hole | inspect `reason`; for `too_many_loops`, inspect `limit` and `count`; otherwise inspect `loops` and provide exactly one outer loop with only directly contained hole loops |
 | `REQUEST_ID_REUSED` | request | a request id was used for a different body or its receipt expired | send the intended edit with a new request id |
+
 | `REVISION_CONFLICT` | request | a mutation was based on an old revision | query revision, review the model, and retry against that revision |
 | `STALE_REVISION` | request | export was requested from an old revision | query revision, review the model, and export that revision |
 | `INVALID_DOCUMENT` | request | a saved document cannot be loaded under the current format | correct or migrate the named field before starting coalesce |
@@ -106,6 +107,8 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `BODY_LINEAGE_DIVERGED` | dependency | one edit would combine divergent body lineages | target one terminal body lineage |
 | `MIXED_BODY_ANCESTRY` | dependency | a result face does not have one source body | change the operation so each result has one body ancestry |
 | `JOIN_TARGET_REQUIRED` | dependency | a join extrude has no target | provide one terminal target feature |
+
+no-op request ids are kept only in process memory because a no-op writes no receipt or request history. after a restart, a no-op request id can be reused; within one process, reusing it with a different body returns `REQUEST_ID_REUSED`.
 | `JOIN_TARGET_BODY` | dependency | join output cannot be assigned to the target body | change the profile or target so the join has one target body |
 | `REFERENCE_FAILED` | reference | an edge reference resolves with a non-OK status | inspect `resolution.status` and choose from `resolution.availableRoles` |
 | `EMPTY` | reference | a persisted lid outline source has no provenance-backed outer rim loop | choose a current terminal source with one intact rim loop |
