@@ -107,8 +107,6 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `BODY_LINEAGE_DIVERGED` | dependency | one edit would combine divergent body lineages | target one terminal body lineage |
 | `MIXED_BODY_ANCESTRY` | dependency | a result face does not have one source body | change the operation so each result has one body ancestry |
 | `JOIN_TARGET_REQUIRED` | dependency | a join extrude has no target | provide one terminal target feature |
-
-no-op request ids are kept only in process memory because a no-op writes no receipt or request history. after a restart, a no-op request id can be reused; within one process, reusing it with a different body returns `REQUEST_ID_REUSED`.
 | `JOIN_TARGET_BODY` | dependency | join output cannot be assigned to the target body | change the profile or target so the join has one target body |
 | `REFERENCE_FAILED` | reference | an edge reference resolves with a non-OK status | inspect `resolution.status` and choose from `resolution.availableRoles` |
 | `EMPTY` | reference | a persisted lid outline source has no provenance-backed outer rim loop | choose a current terminal source with one intact rim loop |
@@ -156,6 +154,8 @@ no-op request ids are kept only in process memory because a no-op writes no rece
 | `EXPORT_PATH_EXISTS` | export | a separate-export target is not an empty real directory or changed before atomic publication | on a POSIX system (macOS or Linux), choose an empty or new directory; separate STEP export is not supported on Windows |
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
+
+no-op request ids are kept only in process memory because a no-op writes no receipt or request history. after a restart, a no-op request id can be reused; within one process, reusing it with a different body returns `REQUEST_ID_REUSED`.
 
 ### `REFERENCE_FAILED` sketch segments
 
