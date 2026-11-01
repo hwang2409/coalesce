@@ -159,12 +159,18 @@ def test_change_names_sketch_edits_and_board_import_and_refresh(tmp_path):
         ("import", refresh("changed"), "refreshed board: board thickness 1.2 → 1.6 mm"),
     ]
     summaries = []
-    for revision, (tool, arguments, _) in enumerate(mutations, start=1):
-        if revision == 6:
+    expected_revision = 0
+    for index, (tool, arguments, summary) in enumerate(mutations, start=1):
+        if index == 6:
             source.write_bytes(source.read_bytes().replace(b"(thickness 1.2)", b"(thickness 1.6)"))
-        result = call(service, tool, {**arguments, "expectedRevision": revision - 1})
-        assert result.get("revision") == revision, result
-        summaries.append(wait_for(store, revision)["change"]["summary"])
+        result = call(service, tool, {**arguments, "expectedRevision": expected_revision})
+        assert result.get("revision") == expected_revision + (result["changed"]), result
+        if result["changed"]:
+            expected_revision += 1
+            summaries.append(wait_for(store, expected_revision)["change"]["summary"])
+        else:
+            assert result["boardChanges"] == {"mountingHoles": [], "footprints": [], "outlineChanged": False, "dependentFeatures": []}
+            summaries.append("refreshed board controller_board, source unchanged")
     assert summaries == [summary for *_, summary in mutations]
 
 

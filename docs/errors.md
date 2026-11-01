@@ -25,7 +25,11 @@ every failed tool call returns the last unchanged document `revision` and this s
 }
 ```
 
-`featureId` and `affectedParts` are present only when coalesce can identify them. `retryable` is `true` only for a revision conflict. retrying any other failure without changing the request will not help.
+`featureId` and `affectedParts` are present only when coalesce can identify them. `retryable` is `true` only for a revision conflict. retrying any other failure without changing the request will not help. Successful
+mutations include `changed`; `false` means the canonical persisted document was
+unchanged, so the revision, receipt, history, file, and viewer scene stay the
+same. The request id still replays its original result, and expected-revision
+checks are still enforced for new requests.
 
 `limits`, `alternatives`, and `legalTargets` are present only when the normal edit and regeneration path proved them. a limit is not a general safe range unless it includes `minimum` and `maximum`. `suggested` is one verified value. each item in `alternatives` is a verified edit. each item in `legalTargets` names a target proved by the current lineage.
 
@@ -85,6 +89,7 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `SKETCH_BRANCH_FLIP` | request | constrained sketch changed branch | preserve the branch landmark |
 | `SKETCH_PROFILE_UNSUPPORTED` | geometry | a constrained profile is open, degenerate, self-intersecting, exceeds the 64-loop limit, or its loops touch, cross, have ambiguous containment, form multiple outer bodies, or contain an island inside a hole | inspect `reason`; for `too_many_loops`, inspect `limit` and `count`; otherwise inspect `loops` and provide exactly one outer loop with only directly contained hole loops |
 | `REQUEST_ID_REUSED` | request | a request id was used for a different body or its receipt expired | send the intended edit with a new request id |
+
 | `REVISION_CONFLICT` | request | a mutation was based on an old revision | query revision, review the model, and retry against that revision |
 | `STALE_REVISION` | request | export was requested from an old revision | query revision, review the model, and export that revision |
 | `INVALID_DOCUMENT` | request | a saved document cannot be loaded under the current format | correct or migrate the named field before starting coalesce |
@@ -149,6 +154,8 @@ failed and empty edge-reference resolutions include `availableRoles`. each entry
 | `EXPORT_PATH_EXISTS` | export | a separate-export target is not an empty real directory or changed before atomic publication | on a POSIX system (macOS or Linux), choose an empty or new directory; separate STEP export is not supported on Windows |
 | `EXPORT_VALIDATION_FAILED` | export | fresh-process step reimport does not match the source | inspect the model and retry to a different new path |
 | `EXPORT_WRITE_FAILED` | export | step bytes cannot be safely published | check the directory and use a new path; inspect any incomplete file |
+
+no-op request ids are kept only in process memory because a no-op writes no receipt or request history. after a restart, a no-op request id can be reused; within one process, reusing it with a different body returns `REQUEST_ID_REUSED`.
 
 ### `REFERENCE_FAILED` sketch segments
 

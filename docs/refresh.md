@@ -1,6 +1,9 @@
 # board refresh changes
 
-A successful `import` refresh returns `boardChanges`. The object always contains:
+A successful `import` refresh returns `boardChanges` and `changed`. An unchanged
+source is a no-op: `changed` is `false`, the revision and persisted file stay the
+same, no receipt or viewer scene is created, and `boardChanges` contains no
+changes. The object always contains:
 
 - `mountingHoles`: changed mounting-hole records.
 - `footprints`: changed non-mounting-footprint records.

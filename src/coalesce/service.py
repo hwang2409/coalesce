@@ -27,6 +27,7 @@ from .assembly import (
     MateSide,
     Occurrence,
     RigidTransform,
+    assembly_to_dict,
     bill_of_materials,
     normalize_transform,
     resolve_occurrences,
@@ -2022,6 +2023,10 @@ def _canonical(value: Any) -> Any:
     return value
 
 
+def _persisted_state(graph: Any, assembly: Assembly) -> tuple[str, dict[str, Any]]:
+    return dumps(graph), assembly_to_dict(assembly)
+
+
 def _hash(operation: MutationOperation) -> str:
     intent = {"type": type(operation).__name__, **asdict(operation)}
     # Full revolves predate the angle field, so their replay identity keeps the legacy shape.
@@ -3832,6 +3837,7 @@ class DocumentService:
         self.store = DocumentStore(path)
         self._lock = threading.RLock()
         self._document = self.store.load()
+        self._noop_replays: dict[str, tuple[str, dict[str, Any]]] = {}
         self._regen = None
         self._graph_error: GraphError | None = None
         self._viewer_url = viewer_url
@@ -4167,6 +4173,13 @@ class DocumentService:
         receipt = next(
             (item for item in self._document.receipts if item["requestId"] == request_id), None
         )
+        if receipt is None and request_id in self._noop_replays:
+            replay_hash, replay = self._noop_replays[request_id]
+            if replay_hash == body_hash:
+                return parsed, body_hash, replay
+            raise RequestError(
+                "REQUEST_ID_REUSED", "requestId was already used for a different request body"
+            )
         if receipt is not None:
             if receipt["requestHash"] == body_hash:
                 return parsed, body_hash, receipt["response"]
@@ -4245,6 +4258,40 @@ class DocumentService:
         )
         return document, self.store.save(document)
 
+    def _finalize_mutation(
+        self,
+        payload: dict[str, Any],
+        graph: Any,
+        assembly: Assembly,
+        result: RegenResult,
+        response: dict[str, Any],
+        body_hash: str,
+        publish: Callable[[], None],
+    ) -> dict[str, Any]:
+        previous = self._document.revision
+        changed = _persisted_state(graph, assembly) != _persisted_state(
+            self._document.graph, self._document.assembly
+        )
+        response["changed"] = changed
+        response["revision"] = previous + 1 if changed else previous
+        if "changedFeatureIds" in response:
+            response["changedFeatureIds"] = response["changedFeatureIds"] if changed else []
+        if not changed:
+            self._noop_replays[payload["requestId"]] = (body_hash, response)
+            while len(self._noop_replays) > MAX_REQUEST_HASHES:
+                self._noop_replays.pop(next(iter(self._noop_replays)))
+            return response
+        document, durable = self._save_response(graph, assembly, response, body_hash)
+        self._document = document
+        self._regen = result
+        self._graph_error = None
+        publish()
+        if not durable:
+            _LOG.warning(
+                "document rename committed but directory fsync failed; durability is unconfirmed"
+            )
+        return response
+
     def _commit_mutation(
         self,
         payload: dict[str, Any],
@@ -4285,6 +4332,7 @@ class DocumentService:
             "ok": True,
             "revision": previous + 1,
             "previousRevision": previous,
+            "changed": True,
             "requestId": payload["requestId"],
             "units": "mm",
             "changedFeatureIds": changed_ids,
@@ -4298,16 +4346,15 @@ class DocumentService:
             **response_fields(graph, result, changed_id),
             **refresh_fields,
         }
-        document, durable = self._save_response(graph, solved.assembly, response, body_hash)
-        self._document = document
-        self._regen = result
-        self._graph_error = None
-        self._publish_mutation(result, before, changed_id, change, accepted_edit)
-        if not durable:
-            _LOG.warning(
-                "document rename committed but directory fsync failed; durability is unconfirmed"
-            )
-        return response
+        return self._finalize_mutation(
+            payload,
+            graph,
+            solved.assembly,
+            result,
+            response,
+            body_hash,
+            lambda: self._publish_mutation(result, before, changed_id, change, accepted_edit),
+        )
 
     def _mutation_failure(
         self,
@@ -4713,17 +4760,15 @@ class DocumentService:
                             occurrence, status, solved.assembly.mates
                         )
                     ]
-                document, durable = self._save_response(
-                    self._document.graph, solved.assembly, response, body_hash
+                return self._finalize_mutation(
+                    payload,
+                    self._document.graph,
+                    solved.assembly,
+                    self._regen,
+                    response,
+                    body_hash,
+                    lambda: self._publish_regeneration(self._regen),
                 )
-                self._document = document
-                assert self._regen is not None
-                self._publish_regeneration(self._regen)
-                if not durable:
-                    _LOG.warning(
-                        "document rename committed but directory fsync failed; durability is unconfirmed"
-                    )
-                return response
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
                 return self._mutation_failure("feature", payload, error, None)
 
@@ -4747,17 +4792,15 @@ class DocumentService:
                     if assembly.occurrences[occurrence_id].transform
                     != solved.assembly.occurrences[occurrence_id].transform
                 ]
-                document, durable = self._save_response(
-                    self._document.graph, solved.assembly, response, body_hash
+                return self._finalize_mutation(
+                    payload,
+                    self._document.graph,
+                    solved.assembly,
+                    self._regen,
+                    response,
+                    body_hash,
+                    lambda: self._publish_regeneration(self._regen),
                 )
-                self._document = document
-                assert self._regen is not None
-                self._publish_regeneration(self._regen)
-                if not durable:
-                    _LOG.warning(
-                        "document rename committed but directory fsync failed; durability is unconfirmed"
-                    )
-                return response
             except Exception as error:  # noqa: BLE001 - translate failures at this seam
                 return self._mutation_failure("feature", payload, error, None)
 

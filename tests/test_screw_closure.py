@@ -224,7 +224,7 @@ async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_
                 "export",
                 {
                     "action": "preflight",
-                    "expectedRevision": 6,
+                    "expectedRevision": 5,
                     "base": "base",
                     "requirements": [
                         {"id": "valid", "kind": "valid_brep"},
@@ -244,7 +244,7 @@ async def test_real_stdio_screw_closure_refresh_and_fresh_process_preflight(tmp_
     assert checked["ok"], checked
     assert rechecked["ok"], rechecked
     assert checked["gate"] == rechecked["gate"] == "PASS"
-    assert refreshed["revision"] == 6
+    assert refreshed["revision"] == 5
     assert rechecked["results"][0]["measured"]["names"] == [point["name"] for point in POINTS]
     assert preflight["ready"] is True
     assert len(preflight["parts"]) == 2
