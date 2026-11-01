@@ -959,7 +959,7 @@ async def test_live_enclosure_review_in_browser(tmp_path, browser_module):
         }
         assert failed[size] == {"code": "FILLET_FAILED"}
         assert repaired[size] == {
-            "change": "Edited fillet base_fillet, no value changed",
+            "change": "Added chamfer lid_chamfer on lid",
             "visible": True,
         }
         assert refreshed[size]["text"] == (
